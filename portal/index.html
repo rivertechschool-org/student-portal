@@ -15760,6 +15760,47 @@
                 <option value="">— No Room —</option>
               </select>
             </div>
+            <div class="form-group">
+              <label for="class-secondary-teacher">Secondary Teacher</label>
+              <select id="class-secondary-teacher" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                <option value="">None</option>
+              </select>
+              <span style="font-size: 11px; color: var(--muted); display: block; margin-top: 4px;">Secondary teachers can add assignments, grade, add notes, and take attendance but cannot edit or delete the class.</span>
+            </div>
+            ${this.userInfo.profile?.user_type === 'admin' ? `
+            <!-- Credits Section - Admin Only -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label for="class-credits" style="font-weight: 600; margin-bottom: 10px; display: block;">
+                🪙 Credits
+                <span style="font-size: 11px; color: var(--muted); font-weight: normal; display: block; margin-top: 4px;">Admin only - credit value earned for passing this class (default 1). Can be overridden per student in Manage Students.</span>
+              </label>
+              <input type="number" id="class-credits" step="0.25" min="0" max="20" value="1" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            </div>
+            <!-- Course Weight Section - Admin Only -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label style="font-weight: 600; margin-bottom: 10px; display: block;">
+                🎓 Course Weight (GPA Modifier)
+              </label>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+                <label style="display: flex; gap: 8px; align-items: flex-start; font-weight: normal; cursor: pointer;">
+                  <input type="radio" name="course-weight" value="normal" checked style="margin-top: 3px;">
+                  <span>Normal</span>
+                </label>
+                <label style="display: flex; gap: 8px; align-items: flex-start; font-weight: normal; cursor: pointer;">
+                  <input type="radio" name="course-weight" value="honors" style="margin-top: 3px;">
+                  <span>Honors</span>
+                </label>
+                <label style="display: flex; gap: 8px; align-items: flex-start; font-weight: normal; cursor: pointer;">
+                  <input type="radio" name="course-weight" value="ap" style="margin-top: 3px;">
+                  <span>AP</span>
+                </label>
+                <label style="display: flex; gap: 8px; align-items: flex-start; font-weight: normal; cursor: pointer;">
+                  <input type="radio" name="course-weight" value="dual_credit" style="margin-top: 3px;">
+                  <span>Dual Credit</span>
+                </label>
+              </div>
+            </div>
+            ` : ''}
 
             <!-- Class Schedule Section -->
             <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
@@ -15818,6 +15859,25 @@
             opt.textContent = `${f.name} (${f.type}${f.capacity ? ', cap: ' + f.capacity : ''})`;
             roomSelect.appendChild(opt);
           });
+        }
+
+        // Populate secondary-teacher dropdown. Same source as the edit modal;
+        // the creator is the primary teacher, so exclude them.
+        const { data: allTeachers } = await this.supabaseQuery(() => this.auth.supabase
+          .from('user_profiles')
+          .select('id, first_name, last_name, user_type')
+          .in('user_type', ['teacher', 'admin'])
+          .order('last_name'));
+        const secondarySelect = document.getElementById('class-secondary-teacher');
+        if (secondarySelect && allTeachers) {
+          allTeachers
+            .filter(t => t.id !== this.userInfo.user.id)
+            .forEach(t => {
+              const opt = document.createElement('option');
+              opt.value = t.id;
+              opt.textContent = `${t.last_name}, ${t.first_name}`;
+              secondarySelect.appendChild(opt);
+            });
         }
       }
 
@@ -15895,8 +15955,22 @@
           max_students: parseInt(document.getElementById('max-students').value) || 30,
           teacher_id: this.userInfo.user.id,
           grading_weight: gradingWeight,
-          facility_id: document.getElementById('class-room')?.value || null
+          facility_id: document.getElementById('class-room')?.value || null,
+          secondary_teacher_id: document.getElementById('class-secondary-teacher')?.value || null
         };
+
+        // Credits and course weight are admin-only, exactly as in editClass.
+        if (this.userInfo.profile?.user_type === 'admin') {
+          classData.course_weight = document.querySelector('input[name="course-weight"]:checked')?.value || 'normal';
+
+          const creditsRaw = document.getElementById('class-credits')?.value.trim();
+          const creditsVal = creditsRaw === '' || creditsRaw === undefined ? 1 : Number(creditsRaw);
+          if (!Number.isFinite(creditsVal) || creditsVal < 0) {
+            this.showNotification('Enter a valid non-negative credit value', 'error');
+            return;
+          }
+          classData.credits = creditsVal;
+        }
 
         if (!classData.name || !classData.subject) {
           if (window.PortalUI) {
