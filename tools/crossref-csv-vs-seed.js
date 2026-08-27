@@ -10,9 +10,10 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+const BACKEND = require('./backend-path');  // private backend repo
 const CSV_PATH   = path.join(ROOT, 'Trees', 'master_tree.csv');
-const NODES_PATH = path.join(ROOT, 'supabase', 'migrations', 'seed_2_nodes.sql');
-const EDGES_PATH = path.join(ROOT, 'supabase', 'migrations', 'seed_3_edges.sql');
+const NODES_PATH = path.join(BACKEND, 'supabase', 'migrations', 'seed_2_nodes.sql');
+const EDGES_PATH = path.join(BACKEND, 'supabase', 'migrations', 'seed_3_edges.sql');
 const OUT_PATH   = path.join(ROOT, 'tools', 'crossref-report.md');
 
 // --------------------------------------------------------------

@@ -4,6 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
+const BACKEND = require('./backend-path');  // private backend repo
 const R = p => JSON.parse(fs.readFileSync(path.join(ROOT, p), 'utf8'));
 
 const v2 = R('data/creative_curriculum_v2.json');
@@ -95,7 +96,7 @@ for (const e of langIncident) {
   sql += `INSERT INTO curriculum_edges (id,from_node,to_node,edge_type) VALUES ('${idc}','${esc(e.from)}','${esc(e.to)}','${esc(e.type)}') ON CONFLICT (id) DO NOTHING;\n`;
 }
 sql += `\nCOMMIT;\n`;
-fs.writeFileSync(path.join(ROOT, 'supabase/migrations/zzzzzz_creative_graph_v2_seed.sql'), sql);
+fs.writeFileSync(path.join(BACKEND, 'supabase/migrations/zzzzzz_creative_graph_v2_seed.sql'), sql);
 
 console.log('=== LANG COMPILE DONE ===');
 console.log(`master_graph: ${mg.nodes.length} nodes (${langNodes.length} Science + ${others.length} other)`);

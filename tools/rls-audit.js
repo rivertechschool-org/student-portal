@@ -8,7 +8,8 @@
 const fs = require('fs');
 const path = require('path');
 
-const MIG_DIR = 'supabase/migrations';
+const BACKEND = require('./backend-path');  // private backend repo
+const MIG_DIR = path.join(BACKEND, 'supabase', 'migrations');
 const files = fs.readdirSync(MIG_DIR).filter(f => f.endsWith('.sql')).sort();
 
 // State: Map(tableName => {

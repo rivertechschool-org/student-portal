@@ -6,7 +6,8 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
-const seedPath = path.join(ROOT, 'supabase', 'migrations', 'curriculum_graph_seed.sql');
+const BACKEND = require('./backend-path');  // private backend repo
+const seedPath = path.join(BACKEND, 'supabase', 'migrations', 'curriculum_graph_seed.sql');
 const sql = fs.readFileSync(seedPath, 'utf-8');
 const lines = sql.split('\n');
 
@@ -20,7 +21,7 @@ for (const line of lines) {
     else if (line.startsWith('INSERT INTO curriculum_edges')) edgeLines.push(line);
 }
 
-const outDir = path.join(ROOT, 'supabase', 'migrations');
+const outDir = path.join(BACKEND, 'supabase', 'migrations');
 
 fs.writeFileSync(path.join(outDir, 'seed_1_clusters.sql'),
     `-- Step 1: Clusters (${clusterLines.length} rows)\n` + clusterLines.join('\n') + '\n');

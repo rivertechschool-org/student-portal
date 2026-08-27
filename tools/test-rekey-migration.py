@@ -13,6 +13,7 @@ Fixtures cover every shape the real table can present:
 
 Then it runs the migration a second time to prove it is idempotent.
 """
+import os
 import sys
 import uuid
 
@@ -20,7 +21,13 @@ import psycopg2
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-MIGRATION = r"D:/LLCWork/student-portal/supabase/migrations/zzzzzzz_rekey_math_skill_progress_names.sql"
+# The migrations live in the private student-portal-backend repo. Override with
+# BACKEND_REPO=/path/to/student-portal-backend, else assume a sibling checkout.
+_BACKEND = os.environ.get(
+    "BACKEND_REPO",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "student-portal-backend"),
+)
+MIGRATION = os.path.join(_BACKEND, "supabase", "migrations", "zzzzzzz_rekey_math_skill_progress_names.sql")
 DB = "rekey_test_scratch"
 
 root = psycopg2.connect(host="localhost", user="postgres", password="postgres", dbname="postgres")

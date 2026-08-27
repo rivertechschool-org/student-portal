@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const P = p => path.join(ROOT, p);
+const BACKEND = require('./backend-path');  // private backend repo
 
 // id, title, stage, prereqs[], demonstration
 const NEW = [
@@ -122,7 +123,7 @@ sql += `\n`;
 for (const e of newEdges) {
   sql += `INSERT INTO curriculum_edges (id, from_node, to_node, edge_type) VALUES ('${e.id}', '${e.from}', '${e.to}', '${e.type}') ON CONFLICT (from_node, to_node, edge_type) DO NOTHING;\n`;
 }
-fs.writeFileSync(P('supabase/migrations/seed_4_english_nodes.sql'), sql);
+fs.writeFileSync(path.join(BACKEND, 'supabase/migrations/seed_4_english_nodes.sql'), sql);
 
 // ---- append CSV rows (source of truth) ----
 let csv = fs.readFileSync(P('Trees/master_tree.csv'), 'utf8');

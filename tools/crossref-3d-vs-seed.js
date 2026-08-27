@@ -11,8 +11,9 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 const ROOT = path.resolve(__dirname, '..');
-const NODES_PATH = path.join(ROOT, 'supabase', 'migrations', 'seed_2_nodes.sql');
-const EDGES_PATH = path.join(ROOT, 'supabase', 'migrations', 'seed_3_edges.sql');
+const BACKEND = require('./backend-path');  // private backend repo
+const NODES_PATH = path.join(BACKEND, 'supabase', 'migrations', 'seed_2_nodes.sql');
+const EDGES_PATH = path.join(BACKEND, 'supabase', 'migrations', 'seed_3_edges.sql');
 const TREE_PATH  = path.join(ROOT, 'Trees', '3D Skill Tree', 'data.js');
 const OUT_PATH   = path.join(ROOT, 'tools', 'crossref-3d-report.md');
 

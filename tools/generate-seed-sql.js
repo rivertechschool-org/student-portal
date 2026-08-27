@@ -10,8 +10,9 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+const BACKEND = require('./backend-path');  // private backend repo
 const COMPILED_DIR = path.join(ROOT, 'data', 'compiled');
-const OUT_PATH = path.join(ROOT, 'supabase', 'migrations', 'curriculum_graph_seed.sql');
+const OUT_PATH = path.join(BACKEND, 'supabase', 'migrations', 'curriculum_graph_seed.sql');
 
 const masterGraph = JSON.parse(fs.readFileSync(path.join(COMPILED_DIR, 'master_graph.json'), 'utf-8'));
 const edgesData = JSON.parse(fs.readFileSync(path.join(COMPILED_DIR, 'edges.json'), 'utf-8'));

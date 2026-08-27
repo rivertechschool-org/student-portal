@@ -34,11 +34,62 @@ here.** Contact a repo admin directly.
 
 ---
 
+## The two repos
+
+The portal is split across two repositories. They deploy separately, by different
+mechanisms, and only one of them is public.
+
+| | `student-portal` (you are here) | [`student-portal-backend`](https://github.com/rivertechschool-org/student-portal-backend) |
+| --- | --- | --- |
+| **Visibility** | **Public** — every file is served at rivertech.me | **Private** |
+| **Holds** | Everything the browser loads: pages, games, curriculum data, viewers | Database schema, RLS policies, functions, edge functions |
+| **Deploys by** | Push to `main` → GitHub Pages, ~25s, live | Applying migrations to Supabase by hand |
+| **Breaking it** | Wrong page content, broken layout | Wrong data, wrong permissions, locked-out users |
+
+They meet at exactly one seam: **`shared/config.js`**, which holds the Supabase project
+URL and anon key. Everything the browser can do is whatever that anon key plus the RLS
+policies in the backend repo allow. There is no application server in between.
+
+That has a consequence worth internalizing: **this repo cannot enforce security.** A
+client-side `if (admin)` check is a UX affordance, not a control — anyone can bypass it
+with devtools. If a rule matters, it must exist as an RLS policy in the backend repo.
+
+### Where do I look for...
+
+| I need to change... | Repo | Where |
+| --- | --- | --- |
+| A page, a game, wording, layout | **here** | the relevant `.html` |
+| What data a role can see or edit | backend | a new migration with an RLS policy |
+| A new table or column | backend | a new migration |
+| Scheduled email, PIN login, account deletion, Drive upload | backend | `supabase/functions/` |
+| Curriculum content (nodes, edges, lessons) | **here** | `Trees/master_tree.csv`, then the `tools/` pipeline |
+| Curriculum seed data **in the database** | backend | the `*_seed*.sql` migrations |
+| "Why can this user see that?" | backend | `MIGRATION_MAP.md` → the table index |
+
+**If it changes what the database allows or stores, it belongs in the backend repo.** If it
+changes what the browser draws, it belongs here.
+
+### The curriculum pipeline spans both
+
+The compile tools in `tools/` read `Trees/master_tree.csv` from **this** repo and write seed
+SQL into `supabase/migrations/` in the **backend** repo. Clone the two side by side and they
+find each other automatically:
+
+```
+<somewhere>/student-portal/
+<somewhere>/student-portal-backend/
+```
+
+`tools/backend-path.js` resolves the backend checkout — `$BACKEND_REPO` if set, else the
+sibling directory. If it can't find one it fails with instructions rather than writing to
+the wrong place.
+
 ## Stack, in one breath
 
 - **Frontend:** vanilla JS + HTML + CSS. No framework, no bundler, no npm, no build step.
   Each page is a self-contained HTML file with embedded JS.
-- **Backend:** Supabase — Postgres, Auth, RLS, Realtime, Edge Functions.
+- **Backend:** Supabase — Postgres, Auth, RLS, Realtime, Edge Functions. The migrations and
+  edge functions are **not in this repo** — see [The two repos](#the-two-repos).
 - **Deploy:** push to `main` → GitHub Pages classic build (~25s) → live at rivertech.me.
   There is no CI and no staging. `main` *is* production.
 
@@ -54,11 +105,13 @@ Firebase web API keys: public by design, guarded by Firebase rules.
    breaks the page in some browsers. Be careful with template-literal escaping, and load the
    page you changed before you push.
 2. **RLS is the security model.** Client-side `if (admin)` checks are UX only; anyone can
-   bypass them. Every access rule must exist as a policy on the table.
-3. **Migrations sort alphabetically**, not by timestamp. Give them descriptive names, and use a
-   `zz_` prefix for fixes that must apply after an earlier migration. Take extra care with
-   anything touching `user_profiles` RLS — there is a recovery migration in the tree because
-   locking that table out has happened before.
+   bypass them. Every access rule must exist as a policy on the table — defined in the
+   backend repo, not here.
+3. **Migrations live in the backend repo**, and they sort **alphabetically**, not by timestamp,
+   so the filename decides when a migration runs and a later file silently overrides an earlier
+   one. That is why fixes carry a `zz_` prefix. Read `MIGRATION_MAP.md` there before changing
+   the schema, and take extra care with anything touching `user_profiles` RLS — a recovery
+   migration exists because locking that table out has happened before.
 4. **The big files are big.** `portal/index.html` is ~55k lines and the student `index.html`
    is ~6k. Search for the section you need; don't open them whole.
 5. **`index.html` and `portal/index.html` do not share modules.** They duplicate some logic.
