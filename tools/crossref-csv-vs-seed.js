@@ -437,7 +437,7 @@ push(`- Missing prereq edges:            ${missingPrereqEdges.length}`);
 push(`- Missing LeadsTo edges:           ${missingLeadsEdges.length}`);
 push(`- Missing CrossLinks:              ${missingCross.length}`);
 push('');
-push('_Per CLAUDE.md protocol: the migration is truth. To reconcile, fix the CSV._');
+push('_Protocol: the migration is truth. To reconcile, fix the CSV._');
 
 fs.writeFileSync(OUT_PATH, report.join('\n'), 'utf8');
 console.log(`Wrote ${OUT_PATH}`);

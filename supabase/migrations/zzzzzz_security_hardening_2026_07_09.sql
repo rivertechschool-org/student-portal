@@ -5,7 +5,7 @@
 -- existing 'zzzzz_' files) so these definitions win the alphabetical
 -- apply order and cannot be silently reverted by an earlier file.
 --
--- Findings addressed (see AUDIT_2026-07-09.md):
+-- Findings addressed (audit doc removed 2026-08-27; see git history):
 --   C-1  Unbounded RTC minting via free-text skill_progress -> earn_skill.
 --        (a) mastery trigger now only pays for REAL curriculum nodes.
 --        (b) process_rtc_transaction rate-limits earn_skill to 200 RTC/24h.
@@ -20,7 +20,7 @@
 --        re-ensures math_dojo_sessions.subject exists for fresh deploys.
 --
 -- SAFETY: does NOT touch protect_user_profile_columns (must stay SECURITY
--- INVOKER — see AUDIT_NOTES.md). Every SECURITY DEFINER function pins
+-- INVOKER). Every SECURITY DEFINER function pins
 -- SET search_path = '' and schema-qualifies objects. All statements are
 -- idempotent (CREATE OR REPLACE / DROP POLICY IF EXISTS + CREATE).
 -- ============================================================

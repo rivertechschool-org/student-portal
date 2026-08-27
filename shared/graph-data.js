@@ -242,7 +242,7 @@ class CurriculumGraph {
         // The viewer derives unlock gates (canUnlock) from CONNECTIONS, so soft
         // deps (leads_to / reinforces / cross_domain) must NOT go here or they'd
         // be treated as hard prerequisites. Mirrors viewer/3d/data.js, which
-        // builds prereqs from prerequisite_hard only. (Per TreeGraphPlan.txt,
+        // builds prereqs from prerequisite_hard only. (Per the graph plan in git history,
         // leads_to is a soft "suggested next" edge, not a gate.)
         const CONNECTIONS = [];
         for (const edge of edges) {
