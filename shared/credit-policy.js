@@ -137,20 +137,51 @@
    * @param {object} profile    student user_profiles row (day flags, grade_level, arts_performer)
    * @param {string} schoolYear e.g. "2026-2027"; policy applies from its start year
    */
+  var WEEKDAYS = [
+    ['meets_monday', 'attends_monday'],
+    ['meets_tuesday', 'attends_tuesday'],
+    ['meets_wednesday', 'attends_wednesday'],
+    ['meets_thursday', 'attends_thursday'],
+    ['meets_friday', 'attends_friday']
+  ];
+
   function effective(enrollment, cls, profile, schoolYear) {
     // 1. An explicit per-student value always wins. This is the a la carte path
     //    for Cooking, Drawing and Traditional Art.
     var override = enrollment && enrollment.credits_override;
     if (override !== null && override !== undefined) return Number(override);
 
-    var subject = cls && cls.credit_subject;
-    if (!subject || !state.rules.length) return legacy(enrollment, cls);
-
     // 2. Policy 9: records before the effective year keep their issued value.
     var year = startYear(schoolYear);
     if (year != null && year < Number(state.settings.policy_effective_year)) {
       return legacy(enrollment, cls);
     }
+
+    // 3. Primary mechanism: the class carries what it is worth at full
+    //    attendance; credit is adjusted for the days this student attends.
+    var weight = cls && cls.credit_weight;
+    if (weight !== null && weight !== undefined && weight !== '') {
+      weight = Number(weight);
+      // Core subjects hold their value on any pattern (policy s3).
+      if (cls.credit_scales_with_attendance === false) return weight;
+
+      var total = 0, attended = 0;
+      for (var d = 0; d < WEEKDAYS.length; d++) {
+        if (!cls[WEEKDAYS[d][0]]) continue;
+        total++;
+        if (!profile || profile[WEEKDAYS[d][1]] !== false) attended++;
+      }
+      // No meeting days recorded: cannot prorate, so award full value rather
+      // than silently zeroing a student's credit.
+      if (total === 0) return weight;
+      // Policy s3: these round to clean quarter- and half-credits.
+      return Math.round((weight * attended / total) * 4) / 4;
+    }
+
+    // 4. No per-class weight -> fall back to the subject grid. This is the path
+    //    the Annual Essay uses, since its value tracks grade level.
+    var subject = cls && cls.credit_subject;
+    if (!subject || !state.rules.length) return legacy(enrollment, cls);
 
     var rule = findRule(
       subject,

@@ -197,6 +197,61 @@ check('unmapped class = legacy',
     profile('five_day', false, 11), '2026-2027'), 7);
 check('a la carte needs an override', credit('a_la_carte', 'five_day', false, 11), 0);
 
+// --------------------------------------------------- the class-level model
+// This is the primary path: an admin sets what a class is worth at full
+// attendance and which days it meets, and credit follows the student's days.
+// It should reproduce every published grid value WITHOUT consulting the grid,
+// so the rules are cleared first.
+
+console.log('\nClass-level model — weight + meeting days, grid not consulted');
+const savedGrid = grid;
+RTCredit._setRules([]);
+
+function klass(weight, scales, days) {
+  return {
+    credit_weight: weight,
+    credit_scales_with_attendance: scales,
+    meets_monday: days.includes('mon'), meets_tuesday: days.includes('tue'),
+    meets_wednesday: days.includes('wed'), meets_thursday: days.includes('thu'),
+    meets_friday: days.includes('fri'),
+    credits: SENTINEL,
+  };
+}
+function classCredit(cls, pattern) {
+  return RTCredit.effective({ credits_override: null }, cls, profile(pattern, false, 11), '2026-2027');
+}
+
+// Meeting days are the school's real timetable, not something the policy
+// states. These are the schedules that reproduce the published grid; confirm
+// them against the actual timetable before trusting the numbers.
+[
+  ['mathematics',             klass(2,   false, ['mon','tue','wed','thu','fri']), [2, 2, 2]],
+  ['english',                 klass(2,   false, ['mon','tue','wed','thu','fri']), [2, 2, 2]],
+  ['science',                 klass(1,   false, ['tue','wed','thu']),             [1, 1, 1]],
+  ['physical_education',      klass(1,   true,  ['tue','wed','thu']),             [1, 1, 1]],
+  ['filmmaking',              klass(1,   true,  ['tue','wed','thu']),             [1, 1, 1]],
+  ['yearbook',                klass(0.5, true,  ['wed']),                         [0.5, 0.5, 0.5]],
+  ['coding_ai',               klass(2,   true,  ['tue','wed','thu','fri']),       [1.5, 2, 2]],
+  ['robotics',                klass(0.5, true,  ['fri']),                         [0, 0.5, 0.5]],
+  ['arts_monday_production',  klass(2,   true,  ['mon']),                         [2, 0, 2]],
+  ['arts_monday_alternative', klass(1,   true,  ['mon']),                         [1, 0, 1]],
+  ['arts_instruments_dance',  klass(0.5, true,  ['wed']),                         [0.5, 0.5, 0.5]],
+  ['arts_fine_arts',          klass(0.5, true,  ['fri']),                         [0, 0.5, 0.5]],
+].forEach(([name, cls, want]) => {
+  ['mon_thu', 'tue_fri', 'five_day'].forEach((p, i) =>
+    check(`${name} / ${p}`, classCredit(cls, p), want[i]));
+});
+
+console.log('\nClass-level guards');
+check('no meeting days = full value', classCredit(klass(1.5, true, []), 'mon_thu'), 1.5);
+check('override beats class weight',
+  RTCredit.effective({ credits_override: 0.25 }, klass(2, true, ['fri']), profile('mon_thu', false, 11), '2026-2027'), 0.25);
+check('no weight set = legacy',
+  RTCredit.effective({ credits_override: null }, { credit_weight: null, credit_subject: null, credits: 7 },
+    profile('five_day', false, 11), '2026-2027'), 7);
+
+RTCredit._setRules(savedGrid);
+
 console.log('\nAttendance pattern derived from the registrar\'s day flags');
 Object.keys(DAY_FLAGS).forEach(p => {
   const got = RTCredit.pattern(profile(p, false, 11));
