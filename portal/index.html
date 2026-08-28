@@ -4949,6 +4949,10 @@
         const navItemsHTML = window.PortalUI.buildUnifiedNav('portal', this.currentSection);
         nav.innerHTML = navItemsHTML;
 
+        // Staff-only "Suggest" button, top-right of the nav. Idempotent — it
+        // re-mounts only if a re-render dropped it.
+        window.PortalUI.mountSuggestionButton();
+
         // Setup scroll arrow visibility
         this.setupNavScrollArrows(nav);
 
@@ -44364,7 +44368,8 @@
         'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
-        'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
+        'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE',
+        'SUBMIT_SUGGESTION'];
 
       const patterns = [
         // UNDO_RTC (uses context, no student/amount needed)
@@ -44430,6 +44435,40 @@
             /\b(log|record|document|jot down)\s+that\b/,
             /\b(log|record|document)\b.+\b(was|is|has|had|did|does|keeps|kept|said|told|showed|helped|refused|arrived|left)\b/,
             /\b(remember|write down|jot down)\s+that\b/,
+          ]
+        },
+        // SUBMIT_SUGGESTION / VIEW_SUGGESTIONS — feedback about the PORTAL
+        // itself, not about a student. Teachers hit a bug mid-class and then
+        // forget it by the time they're at a desk; this catches it in the
+        // moment. Deliberately narrow: a submit verb plus a feedback noun, or
+        // an explicit "suggestion:" prefix. `notIfNoteCommand` keeps "add a
+        // note about the gradebook" a note — an explicit note command already
+        // wins outright by +8, and this makes that agreement structural.
+        {
+          intent: 'VIEW_SUGGESTIONS',
+          w: 8, notIfCurrency: true,
+          patterns: [
+            { re: /^(show|list|see|view|open|pull up)\b[^.]*\b(suggestions?|feature requests?|bug reports?)\b/, w: 9 },
+            { re: /\bmy\s+(suggestions?|feature requests?|bug reports?)\b/, w: 9 },
+            { re: /\b(suggestions?|feature request)\s+(list|log|queue|box|inbox|tracker)\b/, w: 9 },
+            { re: /\b(what|which|any|how many)\b[^.]*\b(suggestions?|feature requests?|bug reports?)\b[^.]*\b(are|were|have|has|been|open|pending|submitted|filed|left|outstanding)\b/, w: 8 }
+          ]
+        },
+        {
+          intent: 'SUBMIT_SUGGESTION',
+          w: 9, notIfNoteCommand: true, notIfCurrency: true, notIfQuestion: true,
+          notIfReadQuery: true, notIfAmount: true,
+          patterns: [
+            { re: /\b(add|submit|file|make|leave|log|send|record|put in|raise|open)\s+(me\s+)?(a\s+|an\s+|another\s+|the\s+)?(new\s+|quick\s+)?(suggestion|feature request|bug report|idea|ticket)\b/, w: 10 },
+            { re: /^(suggestion|idea|bug|feature request|feature)\s*[:\-]/, w: 10 },
+            { re: /\bfeature request\b/, w: 9 },
+            { re: /\bi\s+(have|got|'?ve got|'?d like to (make|file|submit|leave))\s+(a\s+)?(suggestion|idea|feature request|bug (report)?)\b/, w: 9 },
+            { re: /\b(suggestion|idea)\s+for\s+(the\s+)?(portal|site|website|app|system|riven|dashboard|gradebook)\b/, w: 9 },
+            { re: /\b(report|reporting|flag|flagging)\s+(a\s+|an\s+|this\s+)?(bug|glitch|issue|problem|error)\b/, w: 9 },
+            // "the gradebook keeps freezing", "attendance is broken" — a
+            // complaint about the software IS a bug report; the noun has to be
+            // a part of the portal so a complaint about a student never lands here.
+            { re: /\b(the\s+)?(portal|site|website|app|page|system|dashboard|gradebook|attendance|transcript|report card|skill tree|arcade|messaging)\b[^.]*\b(is|are|keeps?|kept|won'?t|wont|doesn'?t|does not|isn'?t)\b[^.]*\b(broken|buggy|bugged|crash(ing|es|ed)?|freez(e|es|ing)|frozen|glitch(ing|es|ed)?|not working|working|load(ing)?|sav(e|ing)|open(ing)?)\b/, w: 8 }
           ]
         },
         // CREATE_ASSIGNMENT — "assign chapter 4 problems to math due friday".
@@ -45933,6 +45972,14 @@
           await this.terminalAddNote(entities);
           break;
 
+        case 'SUBMIT_SUGGESTION':
+          await this.terminalSubmitSuggestion(entities);
+          break;
+
+        case 'VIEW_SUGGESTIONS':
+          await this.terminalShowSuggestions(entities);
+          break;
+
         case 'VIEW_NOTES':
           await this.terminalShowNotes(entities);
           break;
@@ -46217,6 +46264,9 @@
     • "What are [student]'s grades?" / "Grades for [class]"<br>
     • "Change [student]'s phone to 555-1234" / "What's [student]'s contact info?"<br>
     • "How much RTC did [student] have last week?"<br>
+    • "Suggestion: let me sort the roster by grade" — files it in the suggestion box<br>
+    • "File a bug: attendance won't save after switching quarters"<br>
+    • "Show me my suggestions" / "Any open bugs?"<br>
     • "Undo that" (reverses my recent changes, one at a time)<br>
     • "Anything I should know?" — briefing: unread notifications, grading queue,<br>
     &nbsp;&nbsp;&nbsp;missing assignments, quarter deadline, attendance, birthdays<br>
@@ -51643,6 +51693,158 @@
         }
       }
       return best;
+    }
+
+    // ==================== SUGGESTIONS (portal feedback) ====================
+    // Riven's half of the suggestion box. The row shape and the insert itself
+    // live in PortalUI.submitSuggestion (shared/config.js) so the button and
+    // Riven can never disagree about what a suggestion is.
+
+    async terminalSubmitSuggestion(entities) {
+      const original = (entities.original || '').trim();
+      const text = this._rivenExtractSuggestionText(original);
+
+      if (!text || text.length < 4) {
+        this.terminalPrintError(
+          'Tell me the suggestion itself — e.g. "suggestion: let me sort the roster by grade", ' +
+          '"file a bug: attendance won\'t save after switching quarters", or just click 💡 Suggest up top.'
+        );
+        return;
+      }
+
+      const type = this._rivenSuggestionType(original);
+      const priority = this._rivenSuggestionPriority(original);
+
+      // A suggestion is one line plus optional detail. The first sentence is
+      // the summary; anything after it is the body, so a teacher who types a
+      // paragraph doesn't get all of it crammed into the title.
+      const split = text.match(/^(.{10,140}?[.!?])\s+(\S[\s\S]*)$/);
+      const title = (split ? split[1] : text).replace(/[.\s]+$/, '').slice(0, 200);
+      const details = split ? split[2].trim() : '';
+
+      try {
+        const saved = await window.PortalUI.submitSuggestion({
+          type, title, details, priority, source: 'riven'
+        });
+
+        if (saved?.id) {
+          this._pushUndo(`the suggestion "${title}"`, async () => {
+            const { error } = await this.auth.supabase
+              .from(window.PortalUI.SUGGESTION_TABLE).delete().eq('id', saved.id);
+            if (error) throw error;
+          });
+        }
+
+        const typeWord = { bug: 'bug report', feature: 'feature request',
+          improvement: 'improvement', content: 'curriculum suggestion' }[type] || 'suggestion';
+        this._naturalSuccess([
+          `Filed that as a ${typeWord}: "${title}". Say "undo" if that wasn't what you meant.`,
+          `Logged — ${typeWord} recorded: "${title}".`,
+          `Got it. Your ${typeWord} is in: "${title}".`
+        ]);
+      } catch (err) {
+        this.terminalPrintError('Could not file that suggestion: ' + window.PortalUI.describeSuggestionError(err));
+      }
+    }
+
+    // Peel the command wrapper off and keep what the teacher actually wants
+    // said. Quoted text always wins, then a colon, then a connector word.
+    _rivenExtractSuggestionText(original) {
+      if (!original) return '';
+
+      const quoted = original.match(/["“”'‘’](.{4,}?)["“”'‘’]/);
+      if (quoted) return quoted[1].trim();
+
+      const colon = original.indexOf(':');
+      if (colon > -1 && colon < 60) {
+        const after = original.slice(colon + 1).trim();
+        if (after.length >= 4) return after;
+      }
+
+      const connector = original.match(
+        /\b(suggestion|idea|feature request|bug report|bug|ticket)\s+(that|to|for|about|saying|is)\s+(.+)$/i
+      );
+      if (connector) return connector[3].trim();
+
+      // No explicit marker — strip the leading command phrase and keep the rest.
+      // "add a suggestion we should be able to sort the roster" → "we should…"
+      const stripped = original
+        .replace(/^(please\s+)?(can you\s+|could you\s+|would you\s+)?/i, '')
+        .replace(/^(add|submit|file|make|leave|log|send|record|put in|raise|open)\s+(me\s+)?(a\s+|an\s+|another\s+|the\s+)?(new\s+|quick\s+)?(suggestion|feature request|bug report|idea|ticket)\b[\s,\-—]*/i, '')
+        .replace(/^i\s+(have|got|'?ve got|'?d like to (make|file|submit|leave))\s+(a\s+)?(suggestion|idea|feature request|bug(\s+report)?)\b[\s,:\-—]*/i, '')
+        .replace(/^(report|reporting|flag|flagging)\s+(a\s+|an\s+|this\s+)?(bug|glitch|issue|problem|error)\b[\s,:\-—]*/i, '')
+        .trim();
+
+      // If stripping removed everything, the sentence WAS the report
+      // ("the gradebook keeps freezing") — use it whole.
+      return stripped || original;
+    }
+
+    _rivenSuggestionType(original) {
+      const t = (original || '').toLowerCase();
+      if (/\b(bug|broken|crash(ing|es|ed)?|freez(e|es|ing)|frozen|glitch|error|not working|isn'?t working|won'?t (save|load|open)|fails?|failing|blank (page|screen))\b/.test(t)) return 'bug';
+      if (/\b(curriculum|lesson|skill tree|standard|answer key|question bank|content)\b/.test(t)) return 'content';
+      if (/\b(feature request|new feature|add (a|an|the)? ?(button|page|tab|report|field|filter)|would be (great|nice|good|helpful)|it'?d be (great|nice|good)|wish (i|we) could|can we (have|get)|could we (have|get)|there should be)\b/.test(t)) return 'feature';
+      if (/\b(improve|improvement|better|easier|faster|simpler|clunky|confusing|annoying|hard to (find|use|read)|too many clicks)\b/.test(t)) return 'improvement';
+      return 'other';
+    }
+
+    _rivenSuggestionPriority(original) {
+      const t = (original || '').toLowerCase();
+      if (/\b(urgent|asap|critical|blocking|blocked|can'?t teach|cannot teach|emergency|right now)\b/.test(t)) return 'urgent';
+      if (/\b(high priority|important|slowing me down|every day|all the time|keeps happening)\b/.test(t)) return 'high';
+      if (/\b(low priority|whenever|no rush|not urgent|minor|nitpick|someday|nice to have)\b/.test(t)) return 'low';
+      return 'normal';
+    }
+
+    async terminalShowSuggestions(entities) {
+      this.terminalPrint('Pulling up the suggestion box…', '#6aa9ff');
+      let rows;
+      try {
+        rows = await window.PortalUI.fetchSuggestions({ limit: 50 });
+      } catch (err) {
+        this.terminalPrintError('Could not load the suggestions: ' + window.PortalUI.describeSuggestionError(err));
+        return;
+      }
+
+      const lower = (entities?.original || '').toLowerCase();
+      // "any open suggestions?" / "what bugs are still outstanding?"
+      if (/\b(open|outstanding|pending|unresolved|still|left)\b/.test(lower)) {
+        rows = rows.filter(r => r.status !== 'done' && r.status !== 'declined');
+      }
+      if (/\bbugs?\b/.test(lower) && !/\bsuggestions?\b/.test(lower)) {
+        rows = rows.filter(r => r.suggestion_type === 'bug');
+      }
+
+      if (!rows.length) {
+        this._naturalInfo([
+          "Nothing in the suggestion box right now. Say \"suggestion: ...\" and I'll add the first one.",
+          'The suggestion box is empty. Tell me an idea and I\'ll file it.'
+        ]);
+        return;
+      }
+
+      const statuses = window.PortalUI.SUGGESTION_STATUSES;
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      const shown = rows.slice(0, 10);
+      let html = `<div style="font-weight:600;margin-bottom:8px;">💡 ${rows.length} suggestion${rows.length === 1 ? '' : 's'}${isAdmin ? '' : ' from you'}:</div>`;
+      shown.forEach(r => {
+        const st = statuses[r.status] || { label: r.status, color: '#97a2b0' };
+        html += `
+          <div style="background: rgba(0,0,0,0.12); border-radius: 8px; padding: 8px 12px; margin: 6px 0;">
+            <div style="font-size: 12px; color: var(--muted);">
+              <span style="color:${st.color};">${this.escapeHtml(st.label)}</span>
+              · ${this.escapeHtml(r.suggestion_type || 'other')}
+              · ${this.escapeHtml(r.priority || 'normal')}
+              ${isAdmin && r.user_name ? '· ' + this.escapeHtml(r.user_name) : ''}
+            </div>
+            <div style="margin-top: 4px;">${this.escapeHtml(r.title)}</div>
+          </div>`;
+      });
+      if (rows.length > shown.length) {
+        html += `<div style="font-size:12px;color:var(--muted);margin-top:4px;">…and ${rows.length - shown.length} more — open 💡 Suggest in the top bar for the full list.</div>`;
+      }
+      this._showRivenMessage(html, true);
     }
 
     async terminalAddNote(entities) {

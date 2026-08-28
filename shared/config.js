@@ -1145,6 +1145,488 @@ body.has-bg-image .alert {
         `;
         document.head.appendChild(style);
     }
+
+    // ==================== TEACHER SUGGESTION BOX ====================
+    // A staff-only "Add Suggestion" button that rides in the top-right of the
+    // nav on every page that loads this file. Teachers report bugs and pitch
+    // features from wherever they hit the problem, instead of remembering it
+    // until they're back at a desk.
+    //
+    // Everything here is self-contained — its own DOM, its own styles, its own
+    // Supabase call — because index.html and portal/index.html do not share a
+    // modal system (see CONTRIBUTING: "they duplicate some logic"). One
+    // implementation here beats two that drift.
+
+    static SUGGESTION_TABLE = 'suggestions';
+
+    static SUGGESTION_TYPES = [
+        { value: 'bug',         label: '🐛 Bug — something is broken' },
+        { value: 'feature',     label: '✨ Feature — something new' },
+        { value: 'improvement', label: '🔧 Improvement — make something better' },
+        { value: 'content',     label: '📚 Curriculum or content' },
+        { value: 'other',       label: '💬 Something else' }
+    ];
+
+    static SUGGESTION_PRIORITIES = [
+        { value: 'low',    label: 'Low — whenever' },
+        { value: 'normal', label: 'Normal' },
+        { value: 'high',   label: 'High — slowing me down' },
+        { value: 'urgent', label: 'Urgent — blocking my class' }
+    ];
+
+    static SUGGESTION_STATUSES = {
+        'new':         { label: 'New',         color: '#6aa9ff' },
+        'planned':     { label: 'Planned',     color: '#ffd36a' },
+        'in_progress': { label: 'In Progress', color: '#c084fc' },
+        'done':        { label: 'Done',        color: '#8bffb0' },
+        'declined':    { label: 'Declined',    color: '#97a2b0' }
+    };
+
+    // Suggestions are staff feedback about the software. Students and parents
+    // have their own channels (messaging, materials requests) and would only
+    // add noise here. RLS enforces this for real — this check is UX only.
+    static canSubmitSuggestions() {
+        const type = window.portalAuth?.getUserInfo?.()?.profile?.user_type;
+        return type === 'teacher' || type === 'admin';
+    }
+
+    static _suggestionsAreAdmin() {
+        return window.portalAuth?.getUserInfo?.()?.profile?.user_type === 'admin';
+    }
+
+    static _suggestionEscape(str) {
+        return String(str ?? '').replace(/[&<>"']/g, c => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+        ));
+    }
+
+    // Called once from _portalInit, then again on every auth change so the
+    // button appears the moment a teacher signs in and disappears on sign-out.
+    static initSuggestionWidget() {
+        if (!this._suggestionAuthHooked) {
+            this._suggestionAuthHooked = true;
+            window.addEventListener('portalAuthChange', () => this.mountSuggestionButton());
+        }
+        this.mountSuggestionButton();
+    }
+
+    static mountSuggestionButton() {
+        if (!document.body) return;
+
+        const existing = document.getElementById('rtc-suggestion-btn');
+        if (!this.canSubmitSuggestions()) {
+            existing?.remove();
+            return;
+        }
+        // Already mounted and still attached to a live nav — nothing to do.
+        if (existing && existing.isConnected) return;
+
+        this._addSuggestionStyles();
+
+        const btn = document.createElement('button');
+        btn.id = 'rtc-suggestion-btn';
+        btn.type = 'button';
+        btn.className = 'rtc-sg-btn';
+        btn.title = 'Suggest a feature or report a bug';
+        btn.setAttribute('aria-label', 'Add a suggestion');
+        btn.innerHTML = '<span aria-hidden="true">💡</span><span class="rtc-sg-btn-label">Suggest</span>';
+        btn.addEventListener('click', () => this.openSuggestionModal());
+
+        // Preferred home: the unified nav bar, immediately left of the
+        // notification bell so both live in the top-right cluster and the
+        // bell keeps its familiar far-right anchor (its dropdown is
+        // positioned relative to it).
+        const navWrapper = document.querySelector('.app-nav-wrapper');
+        if (navWrapper) {
+            const bell = navWrapper.querySelector('#notification-bell-mount');
+            if (bell) navWrapper.insertBefore(btn, bell);
+            else navWrapper.appendChild(btn);
+        } else {
+            // Standalone pages (assessments, games) have no nav bar — float it.
+            btn.classList.add('rtc-sg-btn-floating');
+            document.body.appendChild(btn);
+        }
+    }
+
+    static _addSuggestionStyles() {
+        if (document.getElementById('rtc-suggestion-styles')) return;
+        const style = document.createElement('style');
+        style.id = 'rtc-suggestion-styles';
+        style.textContent = `
+            .rtc-sg-btn {
+                display: inline-flex; align-items: center; gap: 6px;
+                flex: 0 0 auto; align-self: center;
+                margin: 0 4px; padding: 7px 12px;
+                background: transparent;
+                border: 1px solid var(--border, #2a3140);
+                border-radius: 8px;
+                color: var(--nav-text, var(--muted, #97a2b0));
+                font: inherit; font-size: 13px; font-weight: 500;
+                cursor: pointer; white-space: nowrap;
+                transition: color .15s, border-color .15s, background .15s;
+                touch-action: manipulation; -webkit-tap-highlight-color: transparent;
+            }
+            .rtc-sg-btn:hover {
+                color: var(--nav-hover, var(--accent, #6aa9ff));
+                border-color: var(--accent, #6aa9ff);
+                background: rgba(106, 169, 255, 0.08);
+            }
+            .rtc-sg-btn-floating {
+                position: fixed; top: 12px; right: 12px; z-index: 9998;
+                background: var(--card, #151a21);
+                box-shadow: 0 2px 10px rgba(0,0,0,.35);
+            }
+            @media (max-width: 720px) {
+                .rtc-sg-btn-label { display: none; }
+                .rtc-sg-btn { padding: 7px 9px; }
+            }
+
+            .rtc-sg-overlay {
+                position: fixed; inset: 0; z-index: 10001;
+                background: rgba(0,0,0,.6);
+                display: flex; align-items: flex-start; justify-content: center;
+                padding: 24px 16px; overflow-y: auto;
+                font-family: inherit;
+            }
+            .rtc-sg-modal {
+                width: 100%; max-width: 560px; margin: auto;
+                background: var(--card, #151a21);
+                color: var(--text, #e6edf3);
+                border: 1px solid var(--border, #2a3140);
+                border-radius: 14px;
+                box-shadow: 0 16px 48px rgba(0,0,0,.5);
+                overflow: hidden;
+            }
+            .rtc-sg-head {
+                display: flex; align-items: center; justify-content: space-between;
+                gap: 12px; padding: 16px 20px;
+                border-bottom: 1px solid var(--border, #2a3140);
+            }
+            .rtc-sg-head h3 { margin: 0; font-size: 17px; }
+            .rtc-sg-close {
+                background: none; border: none; cursor: pointer;
+                color: var(--muted, #97a2b0); font-size: 24px; line-height: 1;
+                padding: 0 4px;
+            }
+            .rtc-sg-close:hover { color: var(--text, #e6edf3); }
+            .rtc-sg-tabs {
+                display: flex; gap: 4px; padding: 12px 20px 0;
+                border-bottom: 1px solid var(--border, #2a3140);
+            }
+            .rtc-sg-tab {
+                background: none; border: none; border-bottom: 2px solid transparent;
+                color: var(--muted, #97a2b0); font: inherit; font-size: 14px;
+                padding: 8px 12px; cursor: pointer;
+            }
+            .rtc-sg-tab.active {
+                color: var(--accent, #6aa9ff);
+                border-bottom-color: var(--accent, #6aa9ff);
+            }
+            .rtc-sg-body { padding: 20px; }
+            .rtc-sg-field { margin-bottom: 14px; }
+            .rtc-sg-field label {
+                display: block; margin-bottom: 5px;
+                font-size: 13px; font-weight: 600;
+                color: var(--text, #e6edf3);
+            }
+            .rtc-sg-field input, .rtc-sg-field select, .rtc-sg-field textarea {
+                width: 100%; box-sizing: border-box; padding: 10px;
+                background: var(--input-bg, var(--bg, #0e1319));
+                border: 1px solid var(--border, #2a3140);
+                border-radius: 8px; color: var(--text, #e6edf3);
+                font: inherit; font-size: 14px;
+            }
+            .rtc-sg-field textarea { resize: vertical; min-height: 90px; }
+            .rtc-sg-hint { font-size: 12px; color: var(--muted, #97a2b0); margin-top: 4px; }
+            .rtc-sg-actions {
+                display: flex; gap: 10px; justify-content: flex-end;
+                margin-top: 18px; flex-wrap: wrap;
+            }
+            .rtc-sg-action {
+                padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border, #2a3140);
+                font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+                background: transparent; color: var(--text, #e6edf3);
+            }
+            .rtc-sg-action.primary {
+                background: var(--btn-bg, linear-gradient(135deg, #6aa9ff, #8bffb0));
+                color: var(--btn-text, #0b0f14); border-color: transparent;
+            }
+            .rtc-sg-action[disabled] { opacity: .6; cursor: default; }
+            .rtc-sg-msg {
+                padding: 10px 12px; border-radius: 8px; font-size: 13px;
+                margin-bottom: 14px; line-height: 1.5;
+            }
+            .rtc-sg-msg.error {
+                background: rgba(255,106,106,.12);
+                border: 1px solid var(--danger, #ff6a6a);
+                color: var(--danger, #ff6a6a);
+            }
+            .rtc-sg-card {
+                border: 1px solid var(--border, #2a3140); border-radius: 10px;
+                padding: 12px 14px; margin-bottom: 10px;
+                background: var(--surface-bg, rgba(0,0,0,.12));
+            }
+            .rtc-sg-card h4 { margin: 0 0 6px; font-size: 14px; }
+            .rtc-sg-pill {
+                display: inline-block; padding: 2px 9px; border-radius: 11px;
+                font-size: 11px; margin-right: 6px; margin-bottom: 4px;
+                border: 1px solid var(--border, #2a3140);
+            }
+            .rtc-sg-meta { font-size: 12px; color: var(--muted, #97a2b0); margin-top: 6px; }
+            .rtc-sg-empty { text-align: center; color: var(--muted, #97a2b0); padding: 30px 10px; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // `prefill` lets a caller (Riven, a future "report this page" link) open the
+    // form with fields already filled in: { type, title, details, priority }.
+    static openSuggestionModal(prefill = {}) {
+        if (!this.canSubmitSuggestions()) return;
+        this._addSuggestionStyles();
+        this.closeSuggestionModal();
+
+        const overlay = document.createElement('div');
+        overlay.className = 'rtc-sg-overlay';
+        overlay.id = 'rtc-sg-overlay';
+        overlay.innerHTML = `
+            <div class="rtc-sg-modal" role="dialog" aria-modal="true" aria-label="Add a suggestion">
+                <div class="rtc-sg-head">
+                    <h3>💡 Add a Suggestion</h3>
+                    <button type="button" class="rtc-sg-close" aria-label="Close">&times;</button>
+                </div>
+                <div class="rtc-sg-tabs">
+                    <button type="button" class="rtc-sg-tab active" data-tab="new">New suggestion</button>
+                    <button type="button" class="rtc-sg-tab" data-tab="list">${this._suggestionsAreAdmin() ? 'All suggestions' : 'Mine'}</button>
+                </div>
+                <div class="rtc-sg-body" id="rtc-sg-body"></div>
+            </div>
+        `;
+
+        // Click-outside and Escape both close — matched to how the rest of the
+        // portal's modals behave.
+        overlay.addEventListener('click', e => { if (e.target === overlay) this.closeSuggestionModal(); });
+        overlay.querySelector('.rtc-sg-close').addEventListener('click', () => this.closeSuggestionModal());
+        overlay.querySelectorAll('.rtc-sg-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                overlay.querySelectorAll('.rtc-sg-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                if (tab.dataset.tab === 'new') this._renderSuggestionForm(prefill);
+                else this._renderSuggestionList();
+            });
+        });
+
+        this._suggestionKeyHandler = e => { if (e.key === 'Escape') this.closeSuggestionModal(); };
+        document.addEventListener('keydown', this._suggestionKeyHandler);
+
+        document.body.appendChild(overlay);
+        this._renderSuggestionForm(prefill);
+    }
+
+    static closeSuggestionModal() {
+        document.getElementById('rtc-sg-overlay')?.remove();
+        if (this._suggestionKeyHandler) {
+            document.removeEventListener('keydown', this._suggestionKeyHandler);
+            this._suggestionKeyHandler = null;
+        }
+    }
+
+    static _renderSuggestionForm(prefill = {}) {
+        const body = document.getElementById('rtc-sg-body');
+        if (!body) return;
+        const esc = s => this._suggestionEscape(s);
+
+        body.innerHTML = `
+            <div id="rtc-sg-formmsg"></div>
+            <form id="rtc-sg-form">
+                <div class="rtc-sg-field">
+                    <label for="rtc-sg-type">What kind of suggestion is this? *</label>
+                    <select id="rtc-sg-type" required>
+                        ${this.SUGGESTION_TYPES.map(t =>
+                            `<option value="${t.value}"${prefill.type === t.value ? ' selected' : ''}>${t.label}</option>`
+                        ).join('')}
+                    </select>
+                </div>
+                <div class="rtc-sg-field">
+                    <label for="rtc-sg-title">One-line summary *</label>
+                    <input type="text" id="rtc-sg-title" required maxlength="200"
+                        placeholder="e.g. Attendance won't save when I switch quarters"
+                        value="${esc(prefill.title || '')}">
+                </div>
+                <div class="rtc-sg-field">
+                    <label for="rtc-sg-details">Details</label>
+                    <textarea id="rtc-sg-details" rows="5"
+                        placeholder="For a bug: what you did, what happened, what you expected. For a feature: what it would let you do.">${esc(prefill.details || '')}</textarea>
+                </div>
+                <div class="rtc-sg-field">
+                    <label for="rtc-sg-priority">How much is this affecting you? *</label>
+                    <select id="rtc-sg-priority" required>
+                        ${this.SUGGESTION_PRIORITIES.map(p =>
+                            `<option value="${p.value}"${(prefill.priority || 'normal') === p.value ? ' selected' : ''}>${p.label}</option>`
+                        ).join('')}
+                    </select>
+                </div>
+                <div class="rtc-sg-hint">
+                    The page you're on is attached automatically. Please don't include student
+                    names or any other student information here.
+                </div>
+                <div class="rtc-sg-actions">
+                    <button type="button" class="rtc-sg-action" id="rtc-sg-cancel">Cancel</button>
+                    <button type="submit" class="rtc-sg-action primary" id="rtc-sg-submit">Submit suggestion</button>
+                </div>
+            </form>
+        `;
+
+        body.querySelector('#rtc-sg-cancel').addEventListener('click', () => this.closeSuggestionModal());
+        body.querySelector('#rtc-sg-form').addEventListener('submit', e => this._handleSuggestionSubmit(e));
+    }
+
+    static async _handleSuggestionSubmit(event) {
+        event.preventDefault();
+        const btn = document.getElementById('rtc-sg-submit');
+        const msg = document.getElementById('rtc-sg-formmsg');
+        const title = document.getElementById('rtc-sg-title').value.trim();
+        if (!title) return;
+
+        btn.disabled = true;
+        btn.textContent = 'Submitting…';
+        if (msg) msg.innerHTML = '';
+
+        try {
+            await this.submitSuggestion({
+                type: document.getElementById('rtc-sg-type').value,
+                title,
+                details: document.getElementById('rtc-sg-details').value.trim(),
+                priority: document.getElementById('rtc-sg-priority').value,
+                source: 'button'
+            });
+            this.closeSuggestionModal();
+            this.showNotification('Thanks — your suggestion was submitted.', 'success');
+        } catch (error) {
+            console.error('Error submitting suggestion:', error);
+            if (msg) {
+                msg.innerHTML = `<div class="rtc-sg-msg error">${this._suggestionEscape(this.describeSuggestionError(error))}</div>`;
+            }
+            btn.disabled = false;
+            btn.textContent = 'Submit suggestion';
+        }
+    }
+
+    // The one place a suggestion row is written. Riven calls this too, so the
+    // shape of a suggestion can only be defined once.
+    static async submitSuggestion({ type, title, details, priority, source = 'button', pageUrl } = {}) {
+        const auth = window.portalAuth;
+        if (!auth?.supabase) throw new Error('Not connected to the portal yet — reload and try again.');
+        const info = auth.getUserInfo();
+        if (!info.isAuthenticated) throw new Error('You need to be signed in to submit a suggestion.');
+
+        const clean = String(title || '').trim();
+        if (!clean) throw new Error('A suggestion needs a one-line summary.');
+
+        const profile = info.profile || {};
+        const submitterName = [profile.first_name, profile.last_name].filter(Boolean).join(' ')
+            || info.user?.email || 'Unknown';
+
+        const row = {
+            user_id: info.user.id,
+            user_email: info.user.email || null,
+            user_name: submitterName,
+            user_type: profile.user_type || null,
+            suggestion_type: this.SUGGESTION_TYPES.some(t => t.value === type) ? type : 'other',
+            title: clean.slice(0, 200),
+            details: (details || '').trim() || null,
+            priority: this.SUGGESTION_PRIORITIES.some(p => p.value === priority) ? priority : 'normal',
+            status: 'new',
+            source,
+            // Where they were standing when they hit the problem — the single
+            // most useful field for reproducing a bug report.
+            page_url: (pageUrl || window.location.pathname + window.location.hash).slice(0, 300),
+            created_at: new Date().toISOString()
+        };
+
+        const { data, error } = await auth.supabase
+            .from(this.SUGGESTION_TABLE)
+            .insert(row)
+            .select()
+            .single();
+        if (error) throw error;
+        return data;
+    }
+
+    static async fetchSuggestions({ limit = 50 } = {}) {
+        const auth = window.portalAuth;
+        if (!auth?.supabase) throw new Error('Not connected to the portal yet — reload and try again.');
+
+        let query = auth.supabase
+            .from(this.SUGGESTION_TABLE)
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(limit);
+
+        // RLS is what actually scopes this; the filter just saves a round trip
+        // of rows a teacher would never be shown anyway.
+        if (!this._suggestionsAreAdmin()) {
+            query = query.eq('user_id', auth.getUserInfo().user.id);
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+        return data || [];
+    }
+
+    // A missing table is the expected failure until the backend migration is
+    // applied, and "relation does not exist" tells a teacher nothing.
+    static describeSuggestionError(error) {
+        const text = error?.message || String(error);
+        if (/suggestions/i.test(text) && /(does not exist|schema cache|relation)/i.test(text)) {
+            return 'The suggestions table has not been set up yet — an admin needs to run the suggestions migration in the backend repo.';
+        }
+        if (/row-level security|permission denied|violates/i.test(text)) {
+            return 'Your account is not allowed to post suggestions. Ask an admin to check your role.';
+        }
+        return text;
+    }
+
+    static async _renderSuggestionList() {
+        const body = document.getElementById('rtc-sg-body');
+        if (!body) return;
+        body.innerHTML = '<div class="rtc-sg-empty">Loading…</div>';
+
+        let rows;
+        try {
+            rows = await this.fetchSuggestions();
+        } catch (error) {
+            body.innerHTML = `<div class="rtc-sg-msg error">${this._suggestionEscape(this.describeSuggestionError(error))}</div>`;
+            return;
+        }
+
+        if (!rows.length) {
+            body.innerHTML = '<div class="rtc-sg-empty">No suggestions yet. The first one is yours to make.</div>';
+            return;
+        }
+
+        const esc = s => this._suggestionEscape(s);
+        const isAdmin = this._suggestionsAreAdmin();
+        body.innerHTML = rows.map(row => {
+            const status = this.SUGGESTION_STATUSES[row.status] || { label: row.status, color: '#97a2b0' };
+            const typeLabel = this.SUGGESTION_TYPES.find(t => t.value === row.suggestion_type)?.label
+                || row.suggestion_type;
+            return `
+                <div class="rtc-sg-card">
+                    <h4>${esc(row.title)}</h4>
+                    <div>
+                        <span class="rtc-sg-pill" style="color:${status.color};border-color:${status.color}66;">${esc(status.label)}</span>
+                        <span class="rtc-sg-pill">${esc(typeLabel)}</span>
+                        <span class="rtc-sg-pill">${esc(row.priority || 'normal')}</span>
+                    </div>
+                    ${row.details ? `<div class="rtc-sg-meta" style="color:var(--text,#e6edf3);white-space:pre-wrap;">${esc(row.details)}</div>` : ''}
+                    ${row.admin_response ? `<div class="rtc-sg-meta">💬 ${esc(row.admin_response)}</div>` : ''}
+                    <div class="rtc-sg-meta">
+                        ${isAdmin && row.user_name ? esc(row.user_name) + ' · ' : ''}${new Date(row.created_at).toLocaleDateString()}${row.page_url ? ' · ' + esc(row.page_url) : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
+    }
 }
 
 // Initialize shared portal system
@@ -1185,7 +1667,13 @@ window.PortalUI = PortalUI;
 
 // Auto-initialize when DOM is ready
 function _portalInit() {
-    window.portalAuth.initialize();
+    // The suggestion button needs a resolved profile to know whether this is a
+    // teacher. Hook the auth listener first — unconditionally, so a sign-in
+    // after a failed init still mounts it — then mount once auth settles.
+    PortalUI.initSuggestionWidget();
+    window.portalAuth.initialize()
+        .then(() => PortalUI.mountSuggestionButton())
+        .catch(() => {});
     PortalUI.addNavigationStyles();
     // If the IIFE cached a pending bg image, apply it now that document.body exists
     if (PortalUI._pendingBgImage) {
