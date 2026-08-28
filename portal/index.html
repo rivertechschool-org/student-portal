@@ -4542,6 +4542,20 @@
       // Fetch every row of a query that could exceed Supabase's default 1000-row
       // cap. `buildQuery(from, to)` must return a query with `.range(from, to)`
       // applied. Loops page-by-page until a short page signals the end.
+      // Format a date-only value ("2026-09-01") for display.
+      //
+      // new Date('2026-09-01') parses as UTC midnight, and toLocaleDateString()
+      // then renders it in the viewer's zone — so anywhere west of UTC shows the
+      // PREVIOUS day. A quarter starting 09/01 displayed as 08/31. The stored
+      // value was always right; only the rendering was wrong. Build the date
+      // from its parts so it stays local and cannot drift.
+      _formatDateOnly(value) {
+        if (!value) return '';
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value));
+        if (m) return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString();
+        return new Date(value).toLocaleDateString();
+      }
+
       // Split a list into batches. A PostgREST .in() filter travels in the URL,
       // so a few hundred UUIDs will blow the length limit and the request fails
       // outright rather than truncating.
@@ -6502,7 +6516,7 @@
                   <div>
                     <strong style="color: var(--accent);">📅 ${quarterInfo.name}</strong>
                     <span style="color: var(--muted); font-size: 12px; margin-left: 10px;">
-                      ${quarterInfo.school_year} • ${new Date(quarterInfo.start_date).toLocaleDateString()} - ${new Date(quarterInfo.end_date).toLocaleDateString()}
+                      ${quarterInfo.school_year} • ${this._formatDateOnly(quarterInfo.start_date)} - ${this._formatDateOnly(quarterInfo.end_date)}
                     </span>
                   </div>
                   <button class="btn btn-secondary small" onclick="app.showStudentQuarterHistory()">
@@ -7270,7 +7284,7 @@
               <option value="all" ${isAllTime ? 'selected' : ''}>All Time</option>
               ${quarterOptions}
             </select>
-            ${activeQuarter ? `<span style="font-size: 12px; color: var(--muted);">${new Date(activeQuarter.start_date).toLocaleDateString()} - ${new Date(activeQuarter.end_date).toLocaleDateString()}</span>` : ''}
+            ${activeQuarter ? `<span style="font-size: 12px; color: var(--muted);">${this._formatDateOnly(activeQuarter.start_date)} - ${this._formatDateOnly(activeQuarter.end_date)}</span>` : ''}
           </div>
         `;
 
@@ -25552,7 +25566,7 @@
                   <div style="font-size: 18px; font-weight: 600; margin-bottom: 5px;">${currentQuarter.name}</div>
                   <div style="color: var(--muted); font-size: 14px;">
                     ${currentQuarter.school_year} • 
-                    ${new Date(currentQuarter.start_date).toLocaleDateString()} - ${new Date(currentQuarter.end_date).toLocaleDateString()}
+                    ${this._formatDateOnly(currentQuarter.start_date)} - ${this._formatDateOnly(currentQuarter.end_date)}
                   </div>
                   <div style="margin-top: 15px; display: flex; gap: 10px;">
                     <button class="btn btn-secondary small" onclick="app.editQuarter('${currentQuarter.id}')">
@@ -25588,7 +25602,7 @@
                             ${q.is_current ? '<span style="background: var(--accent); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">CURRENT</span>' : ''}
                           </div>
                           <div class="list-item-meta">
-                            ${q.school_year} • ${new Date(q.start_date).toLocaleDateString()} - ${new Date(q.end_date).toLocaleDateString()}
+                            ${q.school_year} • ${this._formatDateOnly(q.start_date)} - ${this._formatDateOnly(q.end_date)}
                           </div>
                         </div>
                         <div style="display: flex; gap: 5px;">
@@ -25821,19 +25835,25 @@
           // This stores grades in quarter_grade_snapshots keyed by (enrollment_id, quarter_id),
           // so they won't be lost when the enrollment's live fields change.
           if (currentQuarter) {
-            const activeEnrollments = await this.fetchAllRows((from, to) => this.auth.supabase
-              .from('class_enrollments')
-              .select('id')
-              .eq('status', 'active')
-              .range(from, to));
+            // snapshot_quarter_grades is the only thing that actually WRITES
+            // quarter_grade_snapshots. This used to loop calculate_quarter_grades
+            // over every enrollment, which RETURNS TABLE — it computes grades and
+            // returns them, so the results were discarded and nothing was ever
+            // saved. Past-quarter report cards and transcripts read from the
+            // snapshot table, so the outgoing quarter would have shown blank.
+            this.showNotification('Saving grades for the outgoing quarter...', 'info');
 
-            if (activeEnrollments && activeEnrollments.length > 0) {
-              await Promise.allSettled(activeEnrollments.map(enrollment =>
-                this.auth.supabase.rpc('calculate_quarter_grades', {
-                  p_enrollment_id: enrollment.id,
-                  p_quarter_id: currentQuarter.id
-                })
-              ));
+            const { error: snapshotError } = await this.supabaseQuery(() => this.auth.supabase
+              .rpc('snapshot_quarter_grades', { p_quarter_id: currentQuarter.id }));
+
+            if (snapshotError) {
+              // Nothing is destroyed by switching, but without the snapshot the
+              // outgoing quarter has no historical record. Stop and surface it
+              // rather than silently leaving a hole in the transcripts.
+              throw new Error(
+                'Could not save grades for the outgoing quarter, so the switch was cancelled. '
+                + 'Nothing has changed. (' + snapshotError.message + ')'
+              );
             }
           }
 
@@ -26012,7 +26032,7 @@
             <div>
               <h3>📊 ${quarter.name} - Final Grades</h3>
               <p style="color: var(--muted); margin-bottom: 20px;">
-                ${quarter.school_year} • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+                ${quarter.school_year} • ${this._formatDateOnly(quarter.start_date)} - ${this._formatDateOnly(quarter.end_date)}
               </p>
               
               <div style="overflow-x: auto;">
@@ -26274,7 +26294,7 @@
                         ${quarter.is_archived ? '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">ARCHIVED</span>' : ''}
                       </div>
                       <div class="list-item-meta">
-                        ${quarter.school_year} • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+                        ${quarter.school_year} • ${this._formatDateOnly(quarter.start_date)} - ${this._formatDateOnly(quarter.end_date)}
                       </div>
                     </div>
                     <div style="display: flex; gap: 10px;">
@@ -26375,7 +26395,7 @@
             <div>
               <h3>📊 ${quarter.name} - Your Grades</h3>
               <p style="color: var(--muted); margin-bottom: 20px;">
-                ${quarter.school_year} • ${new Date(quarter.start_date).toLocaleDateString()} - ${new Date(quarter.end_date).toLocaleDateString()}
+                ${quarter.school_year} • ${this._formatDateOnly(quarter.start_date)} - ${this._formatDateOnly(quarter.end_date)}
               </p>
               
               ${quarter.is_archived ? `
@@ -29766,7 +29786,7 @@
                   <div>
                     <strong style="color: var(--accent);">⭐ Current: ${currentQuarter.name}</strong>
                     <div style="color: var(--muted); font-size: 13px; margin-top: 3px;">
-                      ${currentQuarter.school_year} • ${new Date(currentQuarter.start_date).toLocaleDateString()} - ${new Date(currentQuarter.end_date).toLocaleDateString()}
+                      ${currentQuarter.school_year} • ${this._formatDateOnly(currentQuarter.start_date)} - ${this._formatDateOnly(currentQuarter.end_date)}
                     </div>
                   </div>
                 </div>
