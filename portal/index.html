@@ -16583,6 +16583,24 @@
               
               // Filter out already enrolled students (only active enrollments)
               const availableStudents = students.filter(s => !enrolledIds.includes(s.id));
+
+              // Groups are an admin-defined filter axis. Staff-readable only, so
+              // a failure here must not break enrolling — degrade to no group
+              // filter rather than blocking the whole modal.
+              let groups = [];
+              const groupsByStudent = {};
+              try {
+                  const [{ data: groupRows }, { data: memberRows }] = await Promise.all([
+                      this.auth.supabase.from('student_groups').select('id, name, color').order('name'),
+                      this.auth.supabase.from('student_group_members').select('group_id, student_id')
+                  ]);
+                  groups = groupRows || [];
+                  (memberRows || []).forEach(m => {
+                      (groupsByStudent[m.student_id] = groupsByStudent[m.student_id] || []).push(m.group_id);
+                  });
+              } catch (groupErr) {
+                  console.warn('Student groups unavailable, continuing without that filter:', groupErr);
+              }
               
               if (availableStudents.length === 0) {
                   listDiv.innerHTML = `
@@ -16595,7 +16613,26 @@
               }
               
               listDiv.innerHTML = `
-                  <p style="margin-bottom: 15px;">Select students to add to <strong>${classData?.name || 'this class'}</strong>:</p>
+                  <p style="margin-bottom: 15px;">Select students to add to <strong>${classData?.name || 'this class'}</strong>
+                  <div style="display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px;">
+                      <input type="text" id="add-students-search" placeholder="Search by name..."
+                             oninput="app.filterAddStudentsList()"
+                             style="flex: 2; min-width: 180px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                      <select id="add-students-grade" onchange="app.filterAddStudentsList()"
+                              style="flex: 1; min-width: 120px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                          <option value="">All grades</option>
+                          ${[...new Set(availableStudents.map(s => s.grade_level).filter(g => g !== null && g !== undefined && g !== ''))]
+                              .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }))
+                              .map(g => `<option value="${g}">Grade ${g}</option>`).join('')}
+                      </select>
+                      ${groups.length ? `
+                      <select id="add-students-group" onchange="app.filterAddStudentsList()"
+                              style="flex: 1; min-width: 140px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                          <option value="">All groups</option>
+                          ${groups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)}</option>`).join('')}
+                      </select>` : ''}
+                  </div>
+                  <p id="add-students-count" style="color: var(--muted); font-size: 12px; margin-bottom: 10px;"></p>:</p>
                   <div style="max-height: 400px; overflow-y: auto;">
                       <table style="width: 100%;">
                           <thead>
@@ -16608,12 +16645,16 @@
                           </thead>
                           <tbody>
                               ${availableStudents.map(student => {
+                                  const memberOf = groupsByStudent[student.id] || [];
                                   const statusBadge = this.isActivated(student) 
                                       ? '<span style="color: var(--accent-2);">✓ Active</span>'
                                       : '<span style="color: var(--warning);">⊘ Inactive</span>';
                                   
                                   return `
-                                      <tr>
+                                      <tr class="add-student-row"
+                                          data-name="${(student.first_name + ' ' + student.last_name).toLowerCase()}"
+                                          data-grade="${student.grade_level ?? ''}"
+                                          data-groups="${memberOf.join(' ')}">
                                           <td>${student.first_name} ${student.last_name}</td>
                                           <td>${student.grade_level || 'N/A'}</td>
                                           <td>${statusBadge}</td>
@@ -16631,7 +16672,9 @@
                       </table>
                   </div>
               `;
-              
+
+              this.filterAddStudentsList();
+
           } catch (error) {
               console.error('Error loading students:', error);
               const listDiv = document.getElementById('available-students-list');
@@ -16639,6 +16682,37 @@
                   listDiv.innerHTML = '<p style="color: var(--danger);">Error loading students: ' + error.message + '</p>';
               }
           }
+      }
+
+      // Filter the "Add Students to Class" list by name, grade and group.
+      //
+      // Purely client-side: the whole student list is already in the DOM, and
+      // re-querying per keystroke would be slower and would fight the enrol
+      // buttons mid-click. Rows are hidden, not removed, so a student enrolled
+      // while a filter is active still updates in place.
+      filterAddStudentsList() {
+        const term  = (document.getElementById('add-students-search')?.value || '').trim().toLowerCase();
+        const grade = document.getElementById('add-students-grade')?.value || '';
+        const group = document.getElementById('add-students-group')?.value || '';
+
+        const rows = document.querySelectorAll('.add-student-row');
+        let shown = 0;
+
+        rows.forEach(row => {
+          const matchesName  = !term  || (row.dataset.name || '').includes(term);
+          const matchesGrade = !grade || row.dataset.grade === grade;
+          const matchesGroup = !group || (row.dataset.groups || '').split(' ').includes(group);
+          const visible = matchesName && matchesGrade && matchesGroup;
+          row.style.display = visible ? '' : 'none';
+          if (visible) shown++;
+        });
+
+        const countEl = document.getElementById('add-students-count');
+        if (countEl) {
+          countEl.textContent = shown === rows.length
+            ? `${rows.length} student${rows.length === 1 ? '' : 's'} available`
+            : `Showing ${shown} of ${rows.length}`;
+        }
       }
 
       async enrollStudentInClass(classId, studentId, buttonElement) {
@@ -31970,6 +32044,7 @@
               <div class="card" style="margin-bottom: 30px; background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);">
                 <h3 style="margin-bottom: 15px;">➕ Add Inactive Student</h3>
                 <p style="color: var(--muted); margin-bottom: 20px;">Create an account for a student who isn't old enough to use the system yet. They'll be tracked but won't be able to log in until activated.</p>
+                <button class="btn btn-secondary" onclick="app.showStudentGroups()" style="margin-right:8px;">Manage Student Groups</button>
                 <button class="btn btn-primary" onclick="app.showCreateInactiveStudentForm()">
                   ➕ Create Inactive Student Account
                 </button>
@@ -32119,6 +32194,179 @@
         }
       }
       
+      // ---------------- Student groups (admin) ----------------
+      // Admin-defined tags used to filter rosters. Orthogonal to grade level
+      // and to enrollment status: a student can be in any number of groups.
+
+      async showStudentGroups() {
+        const existing = document.getElementById('student-groups-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'student-groups-overlay';
+        overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:10000;display:flex;align-items:center;justify-content:center;';
+        overlay.innerHTML = '<div class="card" style="max-width:760px;width:92%;max-height:88vh;overflow-y:auto;"><h3>Student Groups</h3><div id="student-groups-body">Loading...</div></div>';
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        document.body.appendChild(overlay);
+
+        await this.renderStudentGroupsBody();
+      }
+
+      async renderStudentGroupsBody() {
+        const body = document.getElementById('student-groups-body');
+        if (!body) return;
+
+        try {
+          const [{ data: groups, error }, { data: members }] = await Promise.all([
+            this.auth.supabase.from('student_groups').select('*').order('name'),
+            this.auth.supabase.from('student_group_members').select('group_id')
+          ]);
+          if (error) throw error;
+
+          const counts = {};
+          (members || []).forEach(m => { counts[m.group_id] = (counts[m.group_id] || 0) + 1; });
+
+          body.innerHTML = `
+            <p style="color:var(--muted);font-size:12px;">Groups are a filter axis for rosters. They do not affect enrollment or account access.</p>
+
+            <div style="display:flex;gap:8px;margin:14px 0;">
+              <input type="text" id="new-group-name" placeholder="New group name"
+                     style="flex:2;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);">
+              <input type="text" id="new-group-desc" placeholder="Description (optional)"
+                     style="flex:3;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);">
+              <button class="btn btn-primary" onclick="app.createStudentGroup()">Create</button>
+            </div>
+
+            ${(groups || []).length ? `
+              <table style="width:100%;">
+                <thead><tr><th>Group</th><th>Students</th><th>Actions</th></tr></thead>
+                <tbody>
+                  ${groups.map(g => `
+                    <tr>
+                      <td>
+                        <strong>${this.escapeHtml(g.name)}</strong>
+                        ${g.description ? `<div style="color:var(--muted);font-size:11px;">${this.escapeHtml(g.description)}</div>` : ''}
+                      </td>
+                      <td>${counts[g.id] || 0}</td>
+                      <td>
+                        <button class="btn btn-secondary small" onclick="app.showManageGroupMembers('${g.id}')">Manage Students</button>
+                        <button class="btn btn-danger small" onclick="app.deleteStudentGroup('${g.id}')">Delete</button>
+                      </td>
+                    </tr>`).join('')}
+                </tbody>
+              </table>` : '<p style="color:var(--muted);">No groups yet. Create one above.</p>'}
+
+            <div style="margin-top:18px;text-align:right;">
+              <button class="btn btn-secondary" onclick="document.getElementById('student-groups-overlay')?.remove()">Close</button>
+            </div>`;
+        } catch (e) {
+          console.error('Error loading student groups:', e);
+          body.innerHTML = `<p style="color:var(--danger);">Could not load groups: ${this.escapeHtml(e.message)}</p>`;
+        }
+      }
+
+      async createStudentGroup() {
+        const name = (document.getElementById('new-group-name')?.value || '').trim();
+        const description = (document.getElementById('new-group-desc')?.value || '').trim() || null;
+        if (!name) { this.showNotification('Give the group a name', 'error'); return; }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_groups')
+            .insert({ name, description, created_by: this.userInfo.user.id }));
+          if (error) throw error;
+          this.showNotification(`Group "${name}" created`, 'success');
+          await this.renderStudentGroupsBody();
+        } catch (e) {
+          // The unique index is on lower(name), so a near-duplicate collides.
+          const dup = e.code === '23505' || /duplicate|unique/i.test(e.message || '');
+          this.showNotification(dup ? `A group called "${name}" already exists` : `Failed to create group: ${e.message}`, 'error');
+        }
+      }
+
+      async deleteStudentGroup(groupId) {
+        if (!confirm('Delete this group? Students are not affected - only the grouping is removed.')) return;
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_groups').delete().eq('id', groupId));
+          if (error) throw error;
+          this.showNotification('Group deleted', 'success');
+          await this.renderStudentGroupsBody();
+        } catch (e) {
+          this.showNotification(`Failed to delete group: ${e.message}`, 'error');
+        }
+      }
+
+      async showManageGroupMembers(groupId) {
+        const body = document.getElementById('student-groups-body');
+        if (!body) return;
+        body.innerHTML = 'Loading students...';
+
+        try {
+          const [{ data: group }, { data: students }, { data: members }] = await Promise.all([
+            this.auth.supabase.from('student_groups').select('*').eq('id', groupId).single(),
+            this.auth.supabase.from('user_profiles').select('id, first_name, last_name, grade_level, student_status')
+              .eq('user_type', 'student').order('last_name'),
+            this.auth.supabase.from('student_group_members').select('student_id').eq('group_id', groupId)
+          ]);
+
+          const inGroup = new Set((members || []).map(m => m.student_id));
+          const enrolled = (students || []).filter(s => this.isEnrolled(s));
+          const past = (students || []).filter(s => !this.isEnrolled(s));
+
+          const row = (s) => `
+            <label style="display:flex;align-items:center;gap:8px;padding:4px 0;" data-group-student-name="${(s.first_name + ' ' + s.last_name).toLowerCase()}">
+              <input type="checkbox" class="group-member-check" value="${s.id}" ${inGroup.has(s.id) ? 'checked' : ''}>
+              <span>${this.escapeHtml(s.first_name + ' ' + s.last_name)}</span>
+              <span style="color:var(--muted);font-size:11px;">${s.grade_level ? 'Grade ' + s.grade_level : ''}</span>
+            </label>`;
+
+          body.innerHTML = `
+            <p><strong>${this.escapeHtml(group.name)}</strong> - tick the students in this group.</p>
+            <input type="text" id="group-member-search" placeholder="Search students..."
+                   oninput="app.filterGroupMemberList()"
+                   style="width:100%;padding:8px;margin:10px 0;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);">
+            <div style="max-height:44vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:10px;">
+              <div style="color:var(--muted);font-size:11px;margin-bottom:4px;">Currently enrolled</div>
+              ${enrolled.map(row).join('') || '<div style="color:var(--muted);">None</div>'}
+              ${past.length ? `<div style="color:var(--muted);font-size:11px;margin:10px 0 4px;">Past students</div>${past.map(row).join('')}` : ''}
+            </div>
+            <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;">
+              <button class="btn btn-secondary" onclick="app.renderStudentGroupsBody()">Back</button>
+              <button class="btn btn-primary" onclick="app.saveGroupMembers('${groupId}')">Save Members</button>
+            </div>`;
+        } catch (e) {
+          console.error('Error loading group members:', e);
+          body.innerHTML = `<p style="color:var(--danger);">Could not load: ${this.escapeHtml(e.message)}</p>`;
+        }
+      }
+
+      filterGroupMemberList() {
+        const term = (document.getElementById('group-member-search')?.value || '').trim().toLowerCase();
+        document.querySelectorAll('[data-group-student-name]').forEach(el => {
+          el.style.display = !term || el.dataset.groupStudentName.includes(term) ? '' : 'none';
+        });
+      }
+
+      async saveGroupMembers(groupId) {
+        const ids = [...document.querySelectorAll('.group-member-check:checked')].map(c => c.value);
+        try {
+          // One RPC in one transaction: sending the whole checked set means a
+          // partial failure cannot leave the group half-populated.
+          const { data, error } = await this.auth.supabase.rpc('set_student_group_members', {
+            p_group_id: groupId,
+            p_student_ids: ids
+          });
+          if (error) throw error;
+          if (data && data.success === false) throw new Error(data.error || 'Could not save membership');
+          this.showNotification(`Saved - ${ids.length} student${ids.length === 1 ? '' : 's'} in this group`, 'success');
+          await this.renderStudentGroupsBody();
+        } catch (e) {
+          console.error('Error saving group members:', e);
+          this.showNotification(`Failed to save members: ${e.message}`, 'error');
+        }
+      }
+
       setupStudentSearch() {
         const activeSearch = document.getElementById('active-student-search');
         const inactiveSearch = document.getElementById('inactive-student-search');
