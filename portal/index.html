@@ -4702,6 +4702,245 @@
         });
       }
       
+      // ---------------- School Google Drive ----------------
+      //
+      // One Drive for the whole school — the same one the handbook lives in —
+      // rather than a folder tree inside each teacher's personal account.
+      //
+      // SCOPE NOTE. The per-teacher flow uses drive.file, which only reaches
+      // files the app itself created. That is fine when the app also creates the
+      // root, but it CANNOT write into a folder that already exists, which is
+      // exactly what the school Drive is. So this connection asks for the full
+      // drive scope. It is a broad grant, which is why it is admin-only, done
+      // once, and the token is never readable from the browser — RLS denies
+      // SELECT on school_drive_config to everyone and school_drive_public()
+      // returns only folder ids.
+
+      async loadSchoolDriveStatus() {
+        try {
+          const { data, error } = await this.auth.supabase.rpc('school_drive_public');
+          if (error) throw error;
+          this._schoolDrive = (typeof data === 'string') ? JSON.parse(data) : data;
+        } catch (e) {
+          console.warn('Could not load school Drive status:', e);
+          this._schoolDrive = { connected: false };
+        }
+        return this._schoolDrive;
+      }
+
+      renderSchoolDriveCard() {
+        const d = this._schoolDrive || { connected: false };
+        const connected = !!d.connected;
+
+        return `
+          <div class="card" style="margin-bottom: 20px;">
+            <h3 style="margin-bottom: 6px;">🗂️ School Google Drive</h3>
+            <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
+              Class folders, assignment folders and resources all live in one school Drive — the same one holding the handbook.
+              Connect it once here; teachers do not each connect their own.
+            </p>
+
+            ${connected ? `
+              <div class="card" style="padding: 10px 14px; margin-bottom: 12px; border-left: 3px solid var(--accent-2);">
+                <div style="font-size: 13px;">Connected${d.connected_email ? ' as <strong>' + this.escapeHtml(d.connected_email) + '</strong>' : ''}</div>
+                <div style="color: var(--muted); font-size: 11px; margin-top: 4px;">
+                  ${d.connected_at ? 'Since ' + this._formatDateOnly(d.connected_at) : ''}
+                </div>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                ${d.root_folder_url ? `<a class="btn btn-secondary" href="${d.root_folder_url}" target="_blank" rel="noopener noreferrer">Open school Drive</a>` : ''}
+                ${d.classes_folder_url ? `<a class="btn btn-secondary" href="${d.classes_folder_url}" target="_blank" rel="noopener noreferrer">Open Classes folder</a>` : ''}
+                <button class="btn btn-secondary" onclick="app.connectSchoolDrive()">Reconnect</button>
+              </div>
+            ` : `
+              <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
+                <div style="flex: 1; min-width: 260px;">
+                  <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">
+                    School Drive folder (paste the folder link or its ID)
+                  </label>
+                  <input type="text" id="school-drive-root" placeholder="https://drive.google.com/drive/folders/..."
+                    style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">
+                  <span style="color: var(--muted); font-size: 11px;">Leave blank and a "River Tech" folder is created in the connected account instead.</span>
+                </div>
+                <button class="btn btn-primary" onclick="app.connectSchoolDrive()">Connect School Drive</button>
+              </div>
+            `}
+          </div>
+        `;
+      }
+
+      // Accepts a full Drive URL or a bare id, because people paste both.
+      _parseDriveFolderId(value) {
+        const v = (value || '').trim();
+        if (!v) return null;
+        const m = v.match(/\/folders\/([a-zA-Z0-9_-]+)/) || v.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+        const id = m ? m[1] : v;
+        return /^[a-zA-Z0-9_-]+$/.test(id) ? id : null;
+      }
+
+      async connectSchoolDrive() {
+        if (this.userInfo?.profile?.user_type !== 'admin') {
+          this.showNotification('Only an admin can connect the school Drive', 'error');
+          return;
+        }
+        if (typeof google === 'undefined' || !google.accounts || !google.accounts.oauth2) {
+          this.showNotification('Google Identity Services not loaded. Reload and try again.', 'error');
+          return;
+        }
+
+        const rawRoot = document.getElementById('school-drive-root')?.value;
+        const providedRoot = this._parseDriveFolderId(rawRoot);
+        if (rawRoot && rawRoot.trim() && !providedRoot) {
+          this.showNotification('That does not look like a Drive folder link or ID', 'error');
+          return;
+        }
+
+        const client = google.accounts.oauth2.initCodeClient({
+          client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
+          // Full drive scope: see the note above — drive.file cannot write into
+          // a pre-existing folder, which is the entire point here.
+          scope: 'https://www.googleapis.com/auth/drive',
+          ux_mode: 'popup',
+          callback: async (response) => {
+            try {
+              this.showNotification('Connecting school Drive...', 'info');
+
+              const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+              const session = sessionResult?.data?.session;
+              if (!session) throw new Error('No active session');
+
+              const tokenResponse = await fetch(
+                'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/exchange-google-code',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                  },
+                  body: JSON.stringify({ code: response.code })
+                }
+              );
+              if (!tokenResponse.ok) throw new Error('Failed to exchange authorization code');
+
+              const tokens = await tokenResponse.json();
+              if (!tokens.refresh_token) {
+                // Google only returns a refresh token on first consent. Revoking
+                // access forces a fresh one rather than leaving a connection
+                // that dies at the next token expiry.
+                this.showNotification('No refresh token returned — revoke RiverTech access in Google, then reconnect.', 'error');
+                window.open('https://myaccount.google.com/permissions', '_blank', 'noopener,noreferrer');
+                return;
+              }
+
+              const rootId = providedRoot || await this._createSchoolRootFolder(tokens.access_token);
+              const classesId = await this._findOrCreateDriveFolder(tokens.access_token, 'Classes', rootId);
+
+              const { error } = await this.supabaseQuery(() => this.auth.supabase
+                .from('school_drive_config')
+                .update({
+                  refresh_token: tokens.refresh_token,
+                  root_folder_id: rootId,
+                  root_folder_url: `https://drive.google.com/drive/folders/${rootId}`,
+                  classes_folder_id: classesId,
+                  classes_folder_url: `https://drive.google.com/drive/folders/${classesId}`,
+                  connected_email: tokens.email || null,
+                  connected_by: this.userInfo.profile.id,
+                  connected_at: new Date().toISOString(),
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', true));
+              if (error) throw error;
+
+              this.showNotification('School Drive connected. Class folders will be created here from now on.', 'success');
+              await this.loadSchoolDriveStatus();
+              this.renderAdminSettings();
+
+            } catch (err) {
+              console.error('School Drive connect failed:', err);
+              this.showNotification(`Could not connect school Drive: ${err.message}`, 'error');
+            }
+          }
+        });
+
+        client.requestCode();
+      }
+
+      async _createSchoolRootFolder(accessToken) {
+        const resp = await fetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'River Tech',
+            mimeType: 'application/vnd.google-apps.folder',
+            description: 'River Tech School — class folders, assignments and resources'
+          })
+        });
+        if (!resp.ok) throw new Error('Could not create the school root folder');
+        return (await resp.json()).id;
+      }
+
+      async _findOrCreateDriveFolder(accessToken, name, parentId) {
+        const safe = name.replace(/'/g, "\\'");
+        const q = `name='${safe}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+        const search = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
+          { headers: { 'Authorization': `Bearer ${accessToken}` } }
+        );
+        if (search.ok) {
+          const found = await search.json();
+          if (found.files?.length) return found.files[0].id;
+        }
+        const create = await fetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: [parentId]
+          })
+        });
+        if (!create.ok) throw new Error(`Could not create the ${name} folder`);
+        return (await create.json()).id;
+      }
+
+      // Opens (creating on first use) the Drive folder for a class, an
+      // assignment, or the Resources area of either. The edge function does the
+      // work and records the id, so the second click is a straight link.
+      async openDriveFolder(scope, targetId) {
+        try {
+          this.showNotification('Opening Drive folder...', 'info');
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const body = { scope };
+          if (scope === 'class' || scope === 'class_resources') body.classId = targetId;
+          else body.assignmentId = targetId;
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/ensure-drive-folder',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify(body)
+            }
+          );
+          const result = await resp.json();
+          if (!resp.ok || !result.success) throw new Error(result.error || 'Could not open the folder');
+
+          window.open(result.folderUrl, '_blank', 'noopener,noreferrer');
+          if (result.created) {
+            this.showNotification('Folder created in the school Drive.', 'success');
+          }
+        } catch (e) {
+          console.error('openDriveFolder failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
       async authorizeGoogleDrive() {
         try {
           // Check if Google Identity Services is loaded
@@ -16398,6 +16637,14 @@
                   <button class="btn btn-secondary" onclick="app.classAnalytics('${classId}')">
                     📊 Analytics
                   </button>
+                  <button class="btn btn-secondary" onclick="app.openDriveFolder('class', '${classId}')"
+                    title="The class folder in the school Drive. Created on first use.">
+                    🗂️ Class Folder
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.openDriveFolder('class_resources', '${classId}')"
+                    title="Material you supply for this class, kept apart from student submissions.">
+                    📚 Resources
+                  </button>
                   <button class="btn btn-primary" onclick="teacherGrades.showGradeManagementModal('${classId}')">
                     📊 Manage Grades
                   </button>
@@ -19225,6 +19472,14 @@
                     <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border); flex-wrap: wrap;">
                       <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
                         📋 View Submissions${counts.total > 0 ? ` (${counts.total})` : ''}
+                      </button>
+                      <button class="btn btn-secondary small" onclick="app.openDriveFolder('assignment_resources', '${assignment.id}')"
+                        title="Material you supply for this assignment. Separate from the submissions folder.">
+                        📚 Resources
+                      </button>
+                      <button class="btn btn-secondary small" onclick="app.openDriveFolder('assignment', '${assignment.id}')"
+                        title="The Drive folder student submissions are uploaded into.">
+                        🗂️ Files
                       </button>
                       <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
                         ✏️ Edit
@@ -29924,6 +30179,8 @@
           console.error('❌ Admin settings section not found!');
           return;
         }
+
+        await this.loadSchoolDriveStatus();
         
         section.innerHTML = `
           <div style="padding: 20px;">
@@ -29934,6 +30191,8 @@
               </button>
             </div>
             
+            ${this.renderSchoolDriveCard()}
+
             <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">🏫 School Information</h3>
               <p style="color: var(--muted); margin-bottom: 15px;">Basic school settings</p>
