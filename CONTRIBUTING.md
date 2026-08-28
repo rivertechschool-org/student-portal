@@ -126,6 +126,19 @@ Firebase web API keys: public by design, guarded by Firebase rules.
 10. **`.nojekyll` is load-bearing.** It disables Jekyll processing. Deleting it changes how
     every page is served.
 
+11. **A class has TWO independent state flags. Do not mix them.**
+    - `status = 'closed'` — **closed for the year**. Archived, still viewable, grades and
+      enrollments intact. This is what *Close for Year* writes.
+    - `is_active = false` — **soft-deleted**. Gone from every list, recoverable only from
+      Deleted Classes. This is what *Delete* writes.
+
+    They are written by different actions and read by different queries, so getting them
+    backwards is silent rather than loud. "Close all my classes" in the Riven terminal used
+    to set the *delete* flag while the button set `status`, and the teacher dashboard
+    counted `is_active` — so closing a class never removed it from "Active Classes". When
+    you add a query, decide which question you are asking: *is it deleted* (`is_active`) or
+    *is it over* (`status`).
+
 ---
 
 ## Before you push

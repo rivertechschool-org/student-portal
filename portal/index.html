@@ -42765,7 +42765,7 @@
         const [{ data, error }, { data: staff }] = await Promise.all([
           this.auth.supabase
             .from('classes')
-            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, grading_weight')
+            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, status, grading_weight')
             .eq('is_active', true)
             .order('name'),
           this.auth.supabase
@@ -49028,14 +49028,17 @@
     async terminalListClasses(entities) {
       const { data, error } = await this.auth.supabase
         .from('classes')
-        .select('id, name, subject, teacher_id, secondary_teacher_id, is_active')
+        .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, status')
         .order('name');
       if (error) { this.terminalPrintError('Could not load classes: ' + error.message); return; }
       let classes = data || [];
       const norm = entities.normalized || '';
       // Current classes by default — "archived"/"inactive" shows the rest
       const wantArchived = /\b(archived|inactive|deactivated|closed|past|old)\b/.test(norm);
-      classes = classes.filter(c => wantArchived ? c.is_active === false : c.is_active !== false);
+      // "closed"/"archived" means closed for the year (status), NOT soft-deleted.
+      // Deleted classes are never listed here; they live in Deleted Classes.
+      classes = classes.filter(c => c.is_active !== false);
+      classes = classes.filter(c => wantArchived ? c.status === 'closed' : c.status !== 'closed');
       // "show me my classes" / "what do I teach" — the asker's own classes
       const mine = /\bmy\b|\bi teach\b/.test(norm);
       const myId = this.userInfo?.user?.id;
@@ -49863,7 +49866,7 @@
       const sb = this.auth.supabase;
       const isAdmin = this.userInfo.profile.user_type === 'admin';
       this._requestConfirmation(
-        `Deactivate the class <b>${this.escapeHtml(row.name)}</b>? It disappears from active lists but nothing is deleted — enrollments and grades stay, and it can be restored.`,
+        `Delete the class <b>${this.escapeHtml(row.name)}</b>? This is the DELETE path, not Close — it is removed from every list and only reachable from Deleted Classes. Enrollments and grades are kept and it can be restored. To archive it for the year instead, say "close ${this.escapeHtml(row.name)}".`,
         async () => {
           let q = sb.from('classes').update({ is_active: false }).eq('id', row.id);
           if (!isAdmin) q = q.eq('teacher_id', this.userInfo.user.id);
@@ -49887,8 +49890,10 @@
       const isAdmin = this.userInfo.profile.user_type === 'admin';
       const myId = this.userInfo.user.id;
       // "close all my classes" closes only the caller's own classes; admin "close all" closes everything they teach
+      // Only classes that are actually open. Closing an already-closed class is
+      // a no-op that would still be counted and announced.
       const targets = (this._terminalAllClasses || []).filter(c =>
-        c.teacher_id === myId || c.secondary_teacher_id === myId
+        (c.teacher_id === myId || c.secondary_teacher_id === myId) && c.status !== 'closed'
       );
       if (!targets.length) {
         this._showRivenMessage("You have no active classes to close.", true);
@@ -49897,20 +49902,22 @@
       const nameList = targets.map(c => `<b>${this.escapeHtml(c.name)}</b>`).join(', ');
       const ids = targets.map(c => c.id);
       this._requestConfirmation(
-        `Deactivate all ${targets.length} of your active classes? (${nameList})<br>Nothing is deleted — enrollments and grades stay, and they can be restored.`,
+        `Close all ${targets.length} of your open classes for the year? (${nameList})<br>They move to Closed. Nothing is deleted — enrollments and grades stay and remain viewable.`,
         async () => {
           const sb = this.auth.supabase;
-          const { error } = await sb.from('classes').update({ is_active: false }).in('id', ids);
+          // CLOSE = archive for the year (status), NOT the soft-delete flag.
+          // is_active is the delete path and belongs to Delete Class only.
+          const { error } = await sb.from('classes').update({ status: 'closed' }).in('id', ids);
           if (error) throw error;
           await this._loadTerminalClasses();
-          this._pushUndo(`deactivating all ${targets.length} classes`, async () => {
-            const { error: e } = await sb.from('classes').update({ is_active: true }).in('id', ids);
+          this._pushUndo(`closing all ${targets.length} classes`, async () => {
+            const { error: e } = await sb.from('classes').update({ status: 'active' }).in('id', ids);
             if (e) throw e;
             await this._loadTerminalClasses();
           });
           this._naturalSuccess([
-            `Done — all ${targets.length} classes are deactivated. Say "undo" to bring them back.`,
-            `Closed ${targets.length} classes. Say "undo" to restore them all.`
+            `Done — all ${targets.length} classes are closed for the year. Say "undo" to reopen them.`,
+            `Closed ${targets.length} classes. Grades and enrollments are kept. Say "undo" to reopen.`
           ]);
         }
       );
