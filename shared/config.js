@@ -647,9 +647,8 @@ class PortalUI {
             { icon: '💬', label: 'Messages', app: 'portal', section: 'messaging', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🏆', label: 'Activities', app: 'portal', section: 'activities', roles: ['student', 'teacher', 'admin', 'parent'] },
 
-            { icon: '🏦', label: 'Bank Helper', app: 'portal', section: 'rtc-bank-helper', roles: ['teacher', 'admin'] },
+            { icon: '💰', label: 'RTC', app: 'portal', section: 'admin-rtc-management', roles: ['teacher', 'admin'] },
             { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
-            { icon: '🛒', label: 'IRL Store', app: 'portal', section: 'irl-purchases', roles: ['teacher', 'admin'] },
             { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
         ];
