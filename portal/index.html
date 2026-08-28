@@ -32002,6 +32002,24 @@
           // Enrollment first, then account state within it. Past students used to
           // be mixed into these groups: someone who left the school but still had
           // an activated account showed up under "Active Students".
+          // Groups are an optional filter axis. Staff-read-only, so a failure
+          // must not break Student Management — degrade to no group filter.
+          let groups = [];
+          const groupsByStudent = {};
+          try {
+            const [{ data: groupRows }, { data: memberRows }] = await Promise.all([
+              this.auth.supabase.from('student_groups').select('id, name').order('name'),
+              this.auth.supabase.from('student_group_members').select('group_id, student_id')
+            ]);
+            groups = groupRows || [];
+            (memberRows || []).forEach(m => {
+              (groupsByStudent[m.student_id] = groupsByStudent[m.student_id] || []).push(m.group_id);
+            });
+          } catch (groupErr) {
+            console.warn('Student groups unavailable, continuing without that filter:', groupErr);
+          }
+          this._smGroupsByStudent = groupsByStudent;
+
           const enrolledStudents = allStudents.filter(s => this.isEnrolled(s));
           const pastStudents     = allStudents.filter(s => !this.isEnrolled(s));
           const activeStudents   = enrolledStudents.filter(s => this.isActivated(s));
@@ -32040,6 +32058,24 @@
               </div>
               <p style="color: var(--muted); margin-bottom: 20px; font-size: 14px;">Click "View Details" on any student to manage everything in one place: profile, records, attendance, notes, strikes, and family links.</p>
 
+              <!-- Roster filters: apply across all three sections below. -->
+              <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:20px;">
+                <select id="sm-filter-grade" onchange="app.filterStudentManagement()"
+                        style="min-width:130px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);">
+                  <option value="">All grades</option>
+                  ${[...new Set(allStudents.map(s => s.grade_level).filter(g => g !== null && g !== undefined && g !== ''))]
+                      .sort((a, b) => String(a).localeCompare(String(b), undefined, { numeric: true }))
+                      .map(g => `<option value="${g}">Grade ${g}</option>`).join('')}
+                </select>
+                ${groups.length ? `
+                <select id="sm-filter-group" onchange="app.filterStudentManagement()"
+                        style="min-width:160px;padding:8px;border:1px solid var(--border);border-radius:4px;background:var(--card);color:var(--text);">
+                  <option value="">All groups</option>
+                  ${groups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)}</option>`).join('')}
+                </select>` : ''}
+                <span id="sm-filter-count" style="color:var(--muted);font-size:12px;"></span>
+              </div>
+
               <!-- Add Inactive Student Form -->
               <div class="card" style="margin-bottom: 30px; background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%);">
                 <h3 style="margin-bottom: 15px;">➕ Add Inactive Student</h3>
@@ -32072,7 +32108,7 @@
                       </thead>
                       <tbody id="active-students-tbody">
                         ${activeStudents.map(student => `
-                          <tr data-student-name="${student.first_name} ${student.last_name}">
+                          <tr data-student-name="${student.first_name} ${student.last_name}" data-grade="${student.grade_level ?? ''}" data-groups="${(groupsByStudent[student.id] || []).join(' ')}">
                             <td><strong>${student.first_name} ${student.last_name}</strong></td>
                             <td>${student.grade_level || 'N/A'}</td>
                             <td>${student.username}</td>
@@ -32113,7 +32149,7 @@
                       </thead>
                       <tbody id="inactive-students-tbody">
                         ${inactiveStudents.map(student => `
-                          <tr data-student-name="${student.first_name} ${student.last_name}">
+                          <tr data-student-name="${student.first_name} ${student.last_name}" data-grade="${student.grade_level ?? ''}" data-groups="${(groupsByStudent[student.id] || []).join(' ')}">
                             <td><strong>${student.first_name} ${student.last_name}</strong></td>
                             <td>${student.grade_level || 'N/A'}</td>
                             <td>${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</td>
@@ -32161,7 +32197,7 @@
                       </thead>
                       <tbody id="past-students-tbody">
                         ${pastStudents.map(student => `
-                          <tr data-student-name="${student.first_name} ${student.last_name}">
+                          <tr data-student-name="${student.first_name} ${student.last_name}" data-grade="${student.grade_level ?? ''}" data-groups="${(groupsByStudent[student.id] || []).join(' ')}">
                             <td><strong>${student.first_name} ${student.last_name}</strong></td>
                             <td>${student.grade_level || '-'}</td>
                             <td>${student.left_date ? this._formatDateOnly(student.left_date) : '-'}</td>
@@ -32367,43 +32403,51 @@
         }
       }
 
-      setupStudentSearch() {
-        const activeSearch = document.getElementById('active-student-search');
-        const inactiveSearch = document.getElementById('inactive-student-search');
-        const pastSearch = document.getElementById('past-student-search');
-        
-        if (activeSearch) {
-          activeSearch.addEventListener('input', (e) => {
-            const searchTerm = e.target.value.toLowerCase();
-            const rows = document.querySelectorAll('#active-students-tbody tr');
-            rows.forEach(row => {
-              const name = row.dataset.studentName.toLowerCase();
-              row.style.display = name.includes(searchTerm) ? '' : 'none';
-            });
-          });
-        }
-        
-        if (inactiveSearch) {
-          inactiveSearch.addEventListener('input', (e) => {
-            const searchTerm = e.target.value.toLowerCase();
-            const rows = document.querySelectorAll('#inactive-students-tbody tr');
-            rows.forEach(row => {
-              const name = row.dataset.studentName.toLowerCase();
-              row.style.display = name.includes(searchTerm) ? '' : 'none';
-            });
-          });
-        }
+      // One filter across all three Student Management sections.
+      //
+      // Each section keeps its own name box, and grade/group apply globally, so
+      // a row is visible only if it passes its own search AND the shared
+      // filters. Wiring them separately would let one silently undo the other.
+      filterStudentManagement() {
+        const grade = document.getElementById('sm-filter-grade')?.value || '';
+        const group = document.getElementById('sm-filter-group')?.value || '';
 
-        if (pastSearch) {
-          pastSearch.addEventListener('input', (e) => {
-            const searchTerm = e.target.value.toLowerCase();
-            const rows = document.querySelectorAll('#past-students-tbody tr');
-            rows.forEach(row => {
-              const name = row.dataset.studentName.toLowerCase();
-              row.style.display = name.includes(searchTerm) ? '' : 'none';
-            });
+        const sections = [
+          ['active-students-tbody',   'active-student-search'],
+          ['inactive-students-tbody', 'inactive-student-search'],
+          ['past-students-tbody',     'past-student-search'],
+        ];
+
+        let shown = 0;
+        let total = 0;
+
+        sections.forEach(([tbodyId, searchId]) => {
+          const term = (document.getElementById(searchId)?.value || '').trim().toLowerCase();
+          document.querySelectorAll(`#${tbodyId} tr`).forEach(row => {
+            const name = (row.dataset.studentName || '').toLowerCase();
+            const visible =
+              (!term  || name.includes(term)) &&
+              (!grade || row.dataset.grade === grade) &&
+              (!group || (row.dataset.groups || '').split(' ').includes(group));
+            row.style.display = visible ? '' : 'none';
+            total++;
+            if (visible) shown++;
           });
+        });
+
+        const countEl = document.getElementById('sm-filter-count');
+        if (countEl) {
+          countEl.textContent = (grade || group) ? `Showing ${shown} of ${total} students` : '';
         }
+      }
+
+      setupStudentSearch() {
+        // All three name boxes go through the shared filter so the global
+        // grade/group selects are always respected.
+        ['active-student-search', 'inactive-student-search', 'past-student-search'].forEach(id => {
+          const el = document.getElementById(id);
+          if (el) el.addEventListener('input', () => this.filterStudentManagement());
+        });
       }
       
       async activateStudent(studentId, studentName) {
