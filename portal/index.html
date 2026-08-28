@@ -4866,7 +4866,7 @@
       }
 
       async _createSchoolRootFolder(accessToken) {
-        const resp = await fetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+        const resp = await fetch('https://www.googleapis.com/drive/v3/files?fields=id&supportsAllDrives=true', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -4883,14 +4883,17 @@
         const safe = name.replace(/'/g, "\\'");
         const q = `name='${safe}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
         const search = await fetch(
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id)`,
+          // Shared Drive items need these or the search returns nothing and we
+          // create a duplicate alongside a folder that already exists.
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}`
+            + `&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`,
           { headers: { 'Authorization': `Bearer ${accessToken}` } }
         );
         if (search.ok) {
           const found = await search.json();
           if (found.files?.length) return found.files[0].id;
         }
-        const create = await fetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+        const create = await fetch('https://www.googleapis.com/drive/v3/files?fields=id&supportsAllDrives=true', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -16095,7 +16098,58 @@
         `;
       }
 
+      // The 37 subjects come from subject_groups, which mirrors the school's
+      // START HERE document and decides which Drive group a class folder lands
+      // in. Hard-coding them here is how the two drift: the old nine options
+      // (Mathematics, Physical Education, History, Computer Science...) did not
+      // match a single one of Dan's folder names except English and Science.
+      async loadSubjectOptions() {
+        if (this._subjectGroups) return this._subjectGroups;
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('subject_groups')
+            .select('subject, group_name')
+            .order('group_name')
+            .order('subject');
+          if (error) throw error;
+          this._subjectGroups = data || [];
+        } catch (e) {
+          console.warn('Could not load subjects, falling back to a free-text subject:', e);
+          this._subjectGroups = [];
+        }
+        return this._subjectGroups;
+      }
+
+      // Grouped <optgroup> so the Drive group each subject belongs to is visible
+      // at the point of choosing — the folder it lands in is not a surprise.
+      buildSubjectOptions(selected) {
+        const rows = this._subjectGroups || [];
+        if (!rows.length) {
+          return `<option value="${selected ? this.escapeHtml(selected) : ''}">${selected ? this.escapeHtml(selected) : 'Select Subject'}</option>`;
+        }
+        const byGroup = {};
+        rows.forEach(r => { (byGroup[r.group_name] = byGroup[r.group_name] || []).push(r.subject); });
+
+        let html = `<option value="">Select Subject</option>`;
+        ['Core', 'Tech', 'Arts', 'Life', 'Health'].forEach(g => {
+          if (!byGroup[g]) return;
+          html += `<optgroup label="${g}">`;
+          byGroup[g].forEach(s => {
+            const sel = (s === selected) ? ' selected' : '';
+            html += `<option value="${this.escapeHtml(s)}"${sel}>${this.escapeHtml(s)}</option>`;
+          });
+          html += `</optgroup>`;
+        });
+        // A subject that predates the list stays selectable so editing a class
+        // does not silently change what it is.
+        if (selected && !rows.some(r => r.subject === selected)) {
+          html += `<optgroup label="Not in the subject list"><option value="${this.escapeHtml(selected)}" selected>${this.escapeHtml(selected)}</option></optgroup>`;
+        }
+        return html;
+      }
+
       async createNewClass() {
+        await this.loadSubjectOptions();
         if (!window.portalModal) {
           alert('Modal system not loaded');
           return;
@@ -16137,16 +16191,7 @@
             <div class="form-group">
               <label for="class-subject">Subject *</label>
               <select id="class-subject" required>
-                <option value="">Select Subject</option>
-                <option value="Mathematics">Mathematics</option>
-                <option value="Science">Science</option>
-                <option value="English">English</option>
-                <option value="History">History</option>
-                <option value="Art">Art</option>
-                <option value="Music">Music</option>
-                <option value="Physical Education">Physical Education</option>
-                <option value="Computer Science">Computer Science</option>
-                <option value="Other">Other</option>
+                ${this.buildSubjectOptions(null)}
               </select>
             </div>
             <div class="form-group">
@@ -18560,6 +18605,7 @@
       }
 
       async editClass(classId) {
+        await this.loadSubjectOptions();
         // Try to find in loaded classes, fall back to currentClass (for admin viewing other teachers' classes)
         let classData = this.classes.find(c => c.id === classId);
         if (!classData && this.currentClass && this.currentClass.id === classId) {
@@ -18670,15 +18716,7 @@
             <div class="form-group">
               <label for="edit-class-subject">Subject *</label>
               <select id="edit-class-subject" required>
-                <option value="Mathematics" ${classData.subject === 'Mathematics' ? 'selected' : ''}>Mathematics</option>
-                <option value="Science" ${classData.subject === 'Science' ? 'selected' : ''}>Science</option>
-                <option value="English" ${classData.subject === 'English' ? 'selected' : ''}>English</option>
-                <option value="History" ${classData.subject === 'History' ? 'selected' : ''}>History</option>
-                <option value="Art" ${classData.subject === 'Art' ? 'selected' : ''}>Art</option>
-                <option value="Music" ${classData.subject === 'Music' ? 'selected' : ''}>Music</option>
-                <option value="Physical Education" ${classData.subject === 'Physical Education' ? 'selected' : ''}>Physical Education</option>
-                <option value="Computer Science" ${classData.subject === 'Computer Science' ? 'selected' : ''}>Computer Science</option>
-                <option value="Other" ${classData.subject === 'Other' ? 'selected' : ''}>Other</option>
+                ${this.buildSubjectOptions(classData.subject)}
               </select>
             </div>
             <div class="form-group">
