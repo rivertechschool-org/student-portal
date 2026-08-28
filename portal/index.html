@@ -4542,6 +4542,47 @@
       // Fetch every row of a query that could exceed Supabase's default 1000-row
       // cap. `buildQuery(from, to)` must return a query with `.range(from, to)`
       // applied. Loops page-by-page until a short page signals the end.
+      // Split a list into batches. A PostgREST .in() filter travels in the URL,
+      // so a few hundred UUIDs will blow the length limit and the request fails
+      // outright rather than truncating.
+      _chunk(arr, size = 100) {
+        const out = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      }
+
+      // Enrollments that should FOLLOW students into a new quarter: active
+      // enrollments whose class is also still active.
+      //
+      // Closed classes stay behind in the quarter they were taught in. Their
+      // grades are snapshotted first either way, so nothing is lost -- this only
+      // stops last year's roster from being carried forward as current-quarter
+      // enrollments. Closing a class sets classes.status only and never touches
+      // class_enrollments.status, so without this filter every closed class
+      // transitions exactly like an open one.
+      async _enrollmentIdsForActiveClasses() {
+        const activeClasses = await this.fetchAllRows((from, to) => this.auth.supabase
+          .from('classes')
+          .select('id')
+          .eq('status', 'active')
+          .range(from, to));
+
+        const classIds = (activeClasses || []).map(c => c.id);
+        if (!classIds.length) return [];
+
+        const ids = [];
+        for (const batch of this._chunk(classIds)) {
+          const rows = await this.fetchAllRows((from, to) => this.auth.supabase
+            .from('class_enrollments')
+            .select('id')
+            .eq('status', 'active')
+            .in('class_id', batch)
+            .range(from, to));
+          ids.push(...(rows || []).map(r => r.id));
+        }
+        return ids;
+      }
+
       async fetchAllRows(buildQuery, pageSize = 1000) {
         let all = [];
         let from = 0;
@@ -25716,34 +25757,34 @@
           if (setCurrent) {
             this.showNotification('Transitioning enrollments to new quarter...', 'info');
             
-            const { error: updateError } = await this.supabaseQuery(() => this.auth.supabase
-              .from('class_enrollments')
-              .update({ 
-                current_quarter_id: newQuarter.id,
-                // Reset participation grade for new quarter (optional)
-                participation_grade: null,
-                teacher_notes: null
-              })
-              .eq('status', 'active'));
-            
-            if (updateError) throw updateError;
+            // Only enrollments in classes that are STILL ACTIVE move forward.
+            // Closed classes stay in the quarter they were taught in; their
+            // grades were snapshotted above.
+            const movingIds = await this._enrollmentIdsForActiveClasses();
+
+            for (const batch of this._chunk(movingIds)) {
+              const { error: updateError } = await this.supabaseQuery(() => this.auth.supabase
+                .from('class_enrollments')
+                .update({
+                  current_quarter_id: newQuarter.id,
+                  // Reset participation grade for new quarter (optional)
+                  participation_grade: null,
+                  teacher_notes: null
+                })
+                .in('id', batch));
+
+              if (updateError) throw updateError;
+            }
             
             // Recalculate all grades for new quarter (they should be empty/null initially)
             this.showNotification('Recalculating grades for new quarter...', 'info');
             
-            const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
-              .from('class_enrollments')
-              .select('id')
-              .eq('status', 'active'));
-            
-            if (enrollments) {
-              // Run grade updates in parallel
-              await Promise.allSettled(enrollments.map(enrollment =>
-                this.auth.supabase.rpc('update_enrollment_grades', {
-                  p_enrollment_id: enrollment.id
-                })
-              ));
-            }
+            // Recalculate only what actually moved.
+            await Promise.allSettled(movingIds.map(id =>
+              this.auth.supabase.rpc('update_enrollment_grades', {
+                p_enrollment_id: id
+              })
+            ));
           }
 
           this.showNotification('Quarter created successfully!', 'success');
@@ -25871,10 +25912,19 @@
 
           // Update enrollment quarter pointer only - do NOT reset participation/notes
           // as that destroys data. Per-quarter grades live in quarter_grade_snapshots.
-          await this.supabaseQuery(() => this.auth.supabase
-            .from('class_enrollments')
-            .update({ current_quarter_id: quarterId })
-            .eq('status', 'active'));
+          //
+          // Only enrollments in still-active classes move forward. The snapshot
+          // above deliberately covers EVERY active enrollment, including those in
+          // closed classes, so a closed class keeps its final grades even though
+          // it does not follow students into the new quarter.
+          const movingIds = await this._enrollmentIdsForActiveClasses();
+
+          for (const batch of this._chunk(movingIds)) {
+            await this.supabaseQuery(() => this.auth.supabase
+              .from('class_enrollments')
+              .update({ current_quarter_id: quarterId })
+              .in('id', batch));
+          }
 
           this.showNotification('Quarter set as current!', 'success');
           this.closeModal('quarter-management');
