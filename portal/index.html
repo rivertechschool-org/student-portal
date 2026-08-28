@@ -4542,6 +4542,29 @@
       // Fetch every row of a query that could exceed Supabase's default 1000-row
       // cap. `buildQuery(from, to)` must return a query with `.range(from, to)`
       // applied. Loops page-by-page until a short page signals the end.
+      // Student state has TWO independent dimensions. Keep them apart.
+      //
+      //   ENROLLMENT  student_status  'active' = presently enrolled
+      //                               'past'   = no longer attends
+      //   ACCOUNT     account_status  'activated' = has portal access
+      //                               'inactive'  = no access yet / revoked
+      //
+      // They are orthogonal: a past student can still have an activated
+      // account, and a currently enrolled student may never have claimed one.
+      // The word "active" used to mean both, so "Active Students" counted
+      // account_status in one view and student_status in another.
+      //
+      // isActivated() accepts the legacy 'active' as well as 'activated' so
+      // these read correctly both before and after the rename migration.
+      isEnrolled(profile) {
+        return profile?.student_status !== 'past';
+      }
+
+      isActivated(profile) {
+        const s = profile?.account_status;
+        return s === 'activated' || s === 'active';
+      }
+
       // Format a date-only value ("2026-09-01") for display.
       //
       // new Date('2026-09-01') parses as UTC midnight, and toLocaleDateString()
@@ -16549,7 +16572,7 @@
                           </thead>
                           <tbody>
                               ${availableStudents.map(student => {
-                                  const statusBadge = student.account_status === 'active' 
+                                  const statusBadge = this.isActivated(student) 
                                       ? '<span style="color: var(--accent-2);">✓ Active</span>'
                                       : '<span style="color: var(--warning);">⊘ Inactive</span>';
                                   
@@ -30478,7 +30501,7 @@
                 this.auth.supabase.rpc('create_enrollment_profile', {
                   p_application_id: app.id,
                   p_create_auth_user: createAuthUser,
-                  p_account_status: 'active',
+                  p_account_status: 'activated',
                   p_admin_user_id: this.userInfo.user.id
                 })
               );
@@ -31159,8 +31182,10 @@
           const activeTeachers = allUsers.filter(u => u.user_type === 'teacher' && u.account_status !== 'inactive');
           const inactiveTeachers = allUsers.filter(u => u.user_type === 'teacher' && u.account_status === 'inactive');
           const parents = allUsers.filter(u => u.user_type === 'parent');
-          const activeStudents = allUsers.filter(u => u.user_type === 'student' && u.account_status === 'active');
-          const inactiveStudents = allUsers.filter(u => u.user_type === 'student' && u.account_status === 'inactive');
+          // Account dimension only — enrollment is shown per row. See isActivated().
+          const students = allUsers.filter(u => u.user_type === 'student' && this.isEnrolled(u));
+          const activeStudents = students.filter(u => this.isActivated(u));
+          const inactiveStudents = students.filter(u => !this.isActivated(u));
 
           // Load parent-child links
           const { data: parentChildLinks } = await this.supabaseQuery(() => this.auth.supabase
@@ -31353,7 +31378,7 @@
 
               <!-- Active Students -->
               <div class="card" style="margin-bottom: 20px;">
-                <h3 style="margin-bottom: 15px;">👨‍🎓 Active Students (${activeStudents.length})</h3>
+                <h3 style="margin-bottom: 15px;">👨‍🎓 Enrolled &middot; Account Activated (${activeStudents.length})</h3>
                 ${activeStudents.length > 0 ? `
                   <div style="max-height: 400px; overflow-y: auto;">
                     <table style="width: 100%;">
@@ -31390,7 +31415,7 @@
               
               <!-- Inactive Students -->
               <div class="card">
-                <h3 style="margin-bottom: 15px;">⊘ Inactive Students (${inactiveStudents.length})</h3>
+                <h3 style="margin-bottom: 15px;">⊘ Enrolled &middot; Account Not Activated (${inactiveStudents.length})</h3>
                 ${inactiveStudents.length > 0 ? `
                   <div style="max-height: 400px; overflow-y: auto;">
                     <table style="width: 100%;">
@@ -31503,7 +31528,7 @@
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .update({ account_status: 'active' })
+            .update({ account_status: 'activated' })
             .eq('id', userId));
 
           if (error) throw error;
@@ -31524,7 +31549,7 @@
             .from('user_profiles')
             .select('id, first_name, last_name, email, grade_level, account_status')
             .eq('user_type', 'student')
-            .in('account_status', ['active', 'inactive'])
+            .in('account_status', ['activated', 'active', 'inactive'])
             .order('last_name'));
 
           // Get already linked children for this parent
@@ -31864,8 +31889,13 @@
 
           if (error) throw error;
 
-          const activeStudents = allStudents.filter(s => s.account_status === 'active');
-          const inactiveStudents = allStudents.filter(s => s.account_status === 'inactive');
+          // Enrollment first, then account state within it. Past students used to
+          // be mixed into these groups: someone who left the school but still had
+          // an activated account showed up under "Active Students".
+          const enrolledStudents = allStudents.filter(s => this.isEnrolled(s));
+          const pastStudents     = allStudents.filter(s => !this.isEnrolled(s));
+          const activeStudents   = enrolledStudents.filter(s => this.isActivated(s));
+          const inactiveStudents = enrolledStudents.filter(s => !this.isActivated(s));
 
           // Batch query enrollment data for all active students (fixes N+1 timeout issue)
           if (activeStudents.length > 0) {
@@ -31912,7 +31942,7 @@
               <!-- Active Students -->
               <div class="card" style="margin-bottom: 30px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                  <h3>✅ Active Students (${activeStudents.length})</h3>
+                  <h3>✅ Enrolled &middot; Account Activated (${activeStudents.length})</h3>
                   <input type="text" id="active-student-search" placeholder="Search students..." style="max-width: 300px; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
                 </div>
                 
@@ -31953,7 +31983,7 @@
               <!-- Inactive Students -->
               <div class="card">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                  <h3>⊘ Inactive Students (${inactiveStudents.length})</h3>
+                  <h3>⊘ Enrolled &middot; Account Not Activated (${inactiveStudents.length})</h3>
                   <input type="text" id="inactive-student-search" placeholder="Search inactive students..." style="max-width: 300px; padding: 8px; border: 1px solid var(--border); border-radius: 4px;">
                 </div>
                 
@@ -31994,6 +32024,51 @@
                     </table>
                   </div>
                 ` : '<p style="color: var(--muted);">No inactive students</p>'}
+
+              <!-- Past Students: no longer enrolled. Shown separately because
+                   enrollment and account access are independent — a past
+                   student may still have an activated account. -->
+              <div class="card" style="margin-bottom: 30px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                  <h3>📦 Past Students (${pastStudents.length})</h3>
+                  <input type="text" id="past-student-search" placeholder="Search past students..." style="max-width: 300px; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                </div>
+                <p style="color: var(--muted); font-size: 12px; margin-bottom: 12px;">
+                  No longer enrolled. Their records and grades are preserved. Account access is a separate setting, shown per row.
+                </p>
+                ${pastStudents.length > 0 ? `
+                  <div style="max-height: 400px; overflow-y: auto;">
+                    <table style="width: 100%;">
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Grade</th>
+                          <th>Left</th>
+                          <th>Account</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody id="past-students-tbody">
+                        ${pastStudents.map(student => `
+                          <tr data-student-name="${student.first_name} ${student.last_name}">
+                            <td><strong>${student.first_name} ${student.last_name}</strong></td>
+                            <td>${student.grade_level || '-'}</td>
+                            <td>${student.left_date ? this._formatDateOnly(student.left_date) : '-'}</td>
+                            <td>
+                              ${this.isActivated(student)
+                                ? '<span style="background: var(--accent-2); color: var(--bg); padding: 2px 8px; border-radius: 4px; font-size: 11px;">Activated</span>'
+                                : '<span style="background: var(--muted); color: var(--bg); padding: 2px 8px; border-radius: 4px; font-size: 11px;">Inactive</span>'}
+                            </td>
+                            <td>
+                              <button class="btn btn-secondary small" onclick="app.viewStudentDetails('${student.id}')">View Details</button>
+                            </td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                ` : '<p style="color: var(--muted);">No past students.</p>'}
+              </div>
               </div>
             </div>
           `;
@@ -32010,6 +32085,7 @@
       setupStudentSearch() {
         const activeSearch = document.getElementById('active-student-search');
         const inactiveSearch = document.getElementById('inactive-student-search');
+        const pastSearch = document.getElementById('past-student-search');
         
         if (activeSearch) {
           activeSearch.addEventListener('input', (e) => {
@@ -32032,6 +32108,17 @@
             });
           });
         }
+
+        if (pastSearch) {
+          pastSearch.addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase();
+            const rows = document.querySelectorAll('#past-students-tbody tr');
+            rows.forEach(row => {
+              const name = row.dataset.studentName.toLowerCase();
+              row.style.display = name.includes(searchTerm) ? '' : 'none';
+            });
+          });
+        }
       }
       
       async activateStudent(studentId, studentName) {
@@ -32042,7 +32129,7 @@
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .update({ account_status: 'active' })
+            .update({ account_status: 'activated' })
             .eq('id', studentId));
           
           if (error) throw error;
@@ -32184,7 +32271,7 @@
                   <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 10px;">
                     <h2 style="margin: 0; color: white;">${student.first_name} ${student.last_name}</h2>
                     <span style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 12px;">
-                      ${student.account_status === 'active' ? '✅ Active' : '⊘ Inactive'}
+                      ${this.isActivated(student) ? '✅ Activated' : '⊘ Inactive'}
                     </span>
                   </div>
                   <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px; opacity: 0.9;">
@@ -42227,7 +42314,7 @@
         <div style="font-weight: 700; font-size: 16px; margin-bottom: 8px;">👤 ${this.escapeHtml(n)}</div>
         <div style="line-height: 1.9; font-size: 13px;">
           <span style="color: #f39c12; font-weight: 700;">${s.rtc_balance || 0} RTC</span> ·
-          <span style="color: ${s.account_status === 'active' ? '#2f6b6d' : '#b05f24'};">${this.escapeHtml(s.account_status || 'active')}</span><br>
+          <span style="color: ${this.isActivated(s) ? '#2f6b6d' : '#b05f24'};">${this.escapeHtml(s.account_status || 'active')}</span><br>
           ${this.escapeHtml(s.email || '')}<br>
           <span style="color: #6b5236;">Classes (${classes.length}):</span> ${this.escapeHtml(classes.join(', ') || '—')}
         </div>
@@ -45923,7 +46010,7 @@
   <div style="line-height: 2; color: #e6edf3; font-size: 13px;">
     <div><span style="color: #97a2b0;">Email:</span> ${this.escapeHtml(student.email)}</div>
     <div><span style="color: #97a2b0;">RTC Balance:</span> <span style="color: #f39c12; font-weight: bold; font-size: 16px;">${student.rtc_balance || 0}</span> RTC</div>
-    <div><span style="color: #97a2b0;">Status:</span> <span style="color: ${student.account_status === 'active' ? '#8bffb0' : '#ffd36a'};">${student.account_status || 'active'}</span></div>
+    <div><span style="color: #97a2b0;">Status:</span> <span style="color: ${this.isActivated(student) ? '#8bffb0' : '#ffd36a'};">${student.account_status || 'active'}</span></div>
     ${student.created_at ? `<div><span style="color: #97a2b0;">Joined:</span> ${new Date(student.created_at).toLocaleDateString()}</div>` : ''}
     <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1);">
       <span style="color: #97a2b0; font-size: 11px;">ID: ${student.id}</span>
@@ -45946,7 +46033,7 @@
         .order('first_name');
 
       if (filter === 'active') {
-        query = query.eq('account_status', 'active');
+        query = query.in('account_status', ['activated', 'active']);
       } else if (filter === 'inactive') {
         query = query.eq('account_status', 'inactive');
       }
@@ -45971,7 +46058,7 @@
 `;
 
       students.forEach(s => {
-        const statusColor = s.account_status === 'active' ? '#8bffb0' : '#ffd36a';
+        const statusColor = this.isActivated(s) ? '#8bffb0' : '#ffd36a';
         html += `
           <div style="background: rgba(106, 169, 255, 0.05); border: 1px solid rgba(106, 169, 255, 0.2); padding: 10px; border-radius: 6px; font-size: 12px;">
             <div style="font-weight: bold; margin-bottom: 4px; color: #e6edf3;">${this.escapeHtml(s.full_name)}</div>
@@ -51605,7 +51692,7 @@
 
       const stats = {
         total: students.length,
-        active: students.filter(s => s.account_status === 'active').length,
+        activated: students.filter(s => this.isActivated(s)).length,
         inactive: students.filter(s => s.account_status === 'inactive').length,
         totalRTC: students.reduce((sum, s) => sum + (s.rtc_balance || 0), 0),
         avgRTC: 0,
@@ -51627,8 +51714,8 @@
     </div>
 
     <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
-      <div style="font-size: 24px; font-weight: bold; color: #8bffb0;">${stats.active}</div>
-      <div style="color: #97a2b0; font-size: 11px; margin-top: 4px;">Active</div>
+      <div style="font-size: 24px; font-weight: bold; color: #8bffb0;">${stats.activated}</div>
+      <div style="color: #97a2b0; font-size: 11px; margin-top: 4px;">Activated</div>
     </div>
 
     <div style="background: rgba(0,0,0,0.2); padding: 12px; border-radius: 6px; text-align: center;">
