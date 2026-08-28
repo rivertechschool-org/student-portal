@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=12"></script>
+  <script src="../shared/config.js?v=13"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -5146,8 +5146,11 @@
             this.renderTeacherTerminal();
             break;
           case 'notes':
-            this.renderNotesSection();
-            break;
+            // Now a tab under My Students. Route there so old links, the Riven
+            // section map and any bookmark still land on the notes view.
+            this._msPendingTab = 'notes';
+            this.showSection('my-students');
+            return;
           case 'spreadsheet':
             // Sheets are now per-class, opened via showClassSheets()
             break;
@@ -7620,13 +7623,49 @@
         content.innerHTML = `
           <div class="card" style="margin-bottom: 20px;">
             <h2>👥 My Students</h2>
-            <p style="color: var(--muted);">View student information, parent contacts, and medical notes for students in your classes.</p>
+            <p style="color: var(--muted);">Student information, parent contacts and medical notes for students in your classes — and the notes you have written about them.</p>
           </div>
+
+          <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border);">
+            <button id="ms-tab-directory" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; background: var(--accent); color: #fff;"
+              onclick="app.switchMyStudentsTab('directory')">Directory</button>
+            <button id="ms-tab-notes" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; background: transparent; color: var(--text);"
+              onclick="app.switchMyStudentsTab('notes')">Notes</button>
+          </div>
+
+          <div id="ms-tab-content"></div>
+        `;
+
+        this.switchMyStudentsTab(this._msPendingTab || 'directory');
+      }
+
+      // Directory and Notes are both "the students I teach", so they live under
+      // one nav entry. Notes renders through its own section renderer with
+      // embedded = true, so there is still one source of that markup.
+      switchMyStudentsTab(tab) {
+        this._msPendingTab = null;
+        ['directory', 'notes'].forEach(t => {
+          const btn = document.getElementById('ms-tab-' + t);
+          if (btn) {
+            btn.style.background = t === tab ? 'var(--accent)' : 'transparent';
+            btn.style.color = t === tab ? '#fff' : 'var(--text)';
+          }
+        });
+
+        const pane = document.getElementById('ms-tab-content');
+        if (!pane) return;
+
+        if (tab === 'notes') {
+          this.renderNotesSection(pane, true);
+          return;
+        }
+
+        pane.innerHTML = `
           <div class="card">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
               <h3>Student Directory</h3>
               <input type="text" id="student-search" placeholder="Search students..."
-                     style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); width: 250px;"
+                     style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);"
                      oninput="app.filterMyStudents(this.value)">
             </div>
             <div id="my-students-list" style="display: flex; align-items: center; justify-content: center; padding: 40px;">
@@ -7635,8 +7674,7 @@
             </div>
           </div>
         `;
-
-        await this.loadMyStudentsList();
+        this.loadMyStudentsList();
       }
 
       async loadMyStudentsList() {
@@ -29807,6 +29845,18 @@
                   </div>
                 </div>
 
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #e67e22; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(230, 126, 34, 0.1)'" onmouseout="this.style.background='transparent'"
+                     onclick="app.showAdminSection('materials')">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">📦</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Materials</div>
+                      <div style="color: var(--muted); font-size: 11px;">Supply &amp; material requests</div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #1abc9c; transition: background 0.2s;"
                      onmouseover="this.style.background='rgba(26, 188, 156, 0.1)'" onmouseout="this.style.background='var(--card)'"
                      onclick="app.showAdminSection('facilities')">
@@ -30036,6 +30086,10 @@
           case 'rtc-management':
             this.showSection('admin-rtc-management');
             this.renderAdminRTCManagement();
+            break;
+          case 'materials':
+            // Left the nav; it is admin-only and belongs with its peers here.
+            this.showSection('materials-requests');
             break;
           default:
             console.warn('Unknown admin section:', section);
@@ -41086,9 +41140,11 @@
       return (n.source === 'unified' && n.visibility === 'staff') || n.source === 'student';
     }
 
-    async renderNotesSection() {
+    // target/embedded let Notes render inside the My Students tab strip as well
+    // as standalone. Same markup either way — one source, so the two cannot drift.
+    async renderNotesSection(target = null, embedded = false) {
       const userType = this.userInfo.profile.user_type;
-      const section = document.getElementById('notes-section');
+      const section = target || document.getElementById('notes-section');
       if (!section) return;
       if (userType !== 'teacher' && userType !== 'admin') {
         section.innerHTML = '<p style="color: var(--muted); padding: 20px;">Notes are only available to staff.</p>';
@@ -41097,7 +41153,7 @@
 
       section.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px;">
-          <h2 style="margin: 0;">🗒️ Notes</h2>
+          ${embedded ? '' : '<h2 style="margin: 0;">🗒️ Notes</h2>'}
           <button class="btn btn-primary" onclick="app.openNoteComposer()">+ New Note</button>
         </div>
         <div id="notes-warnings"></div>
