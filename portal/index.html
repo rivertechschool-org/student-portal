@@ -5137,8 +5137,11 @@
             this.renderAdminRTCManagement();
             break;
           case 'rtc-bank-helper':
-            this.renderRTCBankHelper();
-            break;
+            // Folded into RTC Management as the Bank tab. Route there so old
+            // links, nav entries and Riven references still land correctly.
+            this._rtcPendingTab = 'bank';
+            this.showSection('admin-rtc-management');
+            return;
           case 'teacher-terminal':
             this.renderTeacherTerminal();
             break;
@@ -5149,8 +5152,10 @@
             // Sheets are now per-class, opened via showClassSheets()
             break;
           case 'irl-purchases':
-            this.renderIRLPurchases();
-            break;
+            // Folded into RTC Management as the IRL Store tab.
+            this._rtcPendingTab = 'store';
+            this.showSection('admin-rtc-management');
+            return;
           default:
             console.warn('Unknown section:', sectionName);
         }
@@ -38267,7 +38272,9 @@
         this._rtcLogData = [];
 
         this._renderRTCManagementShell(section);
-        this.switchRTCTab(this._rtcCurrentTab);
+        // A pending tab is set when an old rtc-bank-helper / irl-purchases route
+        // redirected here, so those links open on the right tab.
+        this.switchRTCTab(this._rtcPendingTab || this._rtcCurrentTab);
 
       } catch (error) {
         console.error('Error loading RTC management:', error);
@@ -38287,7 +38294,7 @@
           <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
             <button class="btn btn-secondary" onclick="app.showAdminSection('dashboard')" style="padding: 6px 12px;">← Back</button>
             <h2 style="margin: 0;">💰 RTC Management</h2>
-            <button class="btn" onclick="app.showSection('rtc-bank-helper')" style="padding: 6px 12px; margin-left: auto;" title="Push bank deposits/withdrawals on behalf of students">🏦 Bank Helper</button>
+
           </div>
 
           <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
@@ -38322,6 +38329,10 @@
               onclick="app.switchRTCTab('categories')">Categories</button>
             <button id="rtc-tab-privileges" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
               onclick="app.switchRTCTab('privileges')">Privileges</button>
+            <button id="rtc-tab-bank" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; background: transparent; color: var(--text);"
+              onclick="app.switchRTCTab('bank')">Bank</button>
+            <button id="rtc-tab-store" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; background: transparent; color: var(--text);"
+              onclick="app.switchRTCTab('store')">IRL Store</button>
             <button id="rtc-tab-cosmetics" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
               onclick="app.switchRTCTab('cosmetics')">Cosmetics</button>
           </div>
@@ -38333,7 +38344,8 @@
 
     switchRTCTab(tab) {
       this._rtcCurrentTab = tab;
-      ['balances', 'log', 'categories', 'privileges', 'cosmetics'].forEach(t => {
+      this._rtcPendingTab = null;
+      ['balances', 'log', 'categories', 'privileges', 'cosmetics', 'bank', 'store'].forEach(t => {
         const btn = document.getElementById('rtc-tab-' + t);
         if (btn) {
           btn.style.background = t === tab ? 'var(--accent)' : 'transparent';
@@ -38361,6 +38373,75 @@
         case 'cosmetics':
           this._renderRTCCosmeticsTab(content);
           break;
+        case 'bank':
+          this._renderRTCBankTab(content);
+          break;
+        case 'store':
+          this._renderRTCStoreTab(content);
+          break;
+      }
+    }
+
+    // ---- Bank + IRL Store, folded in as tabs ----
+    //
+    // Both were separate top-level sections. They render through the SAME shell
+    // functions as before, called with embedded = true so the page chrome is
+    // dropped — one source of markup, so the tab and the standalone route
+    // cannot drift apart.
+
+    async _renderRTCBankTab(container) {
+      container.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p style="color: var(--muted);">Loading bank data...</p></div>';
+      try {
+        const { data, error } = await this.auth.supabase.rpc('admin_bank_list_students');
+        if (error) throw error;
+        if (data && data.success === false) throw new Error(data.error || 'Failed to load students');
+
+        this._bankHelperStudents = (data && data.students) || [];
+        this._bankHelperFilter = this._bankHelperFilter || { search: '', status: 'all' };
+        this._renderRTCBankHelperShell(container, true);
+        this._renderRTCBankHelperTable();
+      } catch (err) {
+        console.error('Error loading bank tab:', err);
+        container.innerHTML = `<div class="card"><p style="color: var(--danger);">Error loading bank data: ${this.escapeHtml(err.message)}</p></div>`;
+      }
+    }
+
+    async _renderRTCStoreTab(container) {
+      container.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p style="color: var(--muted);">Loading store...</p></div>';
+      try {
+        const [studentsRes, itemsRes, purchasesRes] = await Promise.all([
+          this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, grade_level, rtc_balance')
+            .eq('user_type', 'student')
+            .or('student_status.is.null,student_status.neq.past')
+            .order('last_name', { ascending: true })),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('irl_store_items')
+            .select('*')
+            .order('sort_order', { ascending: true })
+            .order('name', { ascending: true })),
+          this.supabaseQuery(() => this.auth.supabase
+            .from('irl_purchases')
+            .select('*, student:user_profiles!irl_purchases_student_id_fkey(first_name, last_name), processor:user_profiles!irl_purchases_processed_by_fkey(first_name, last_name)')
+            .order('created_at', { ascending: false })
+            .limit(100))
+        ]);
+
+        if (studentsRes.error) throw studentsRes.error;
+
+        this._irlStudents = studentsRes.data || [];
+        this._irlStoreItems = (itemsRes.data || []).filter(i => i.is_active);
+        this._irlAllItems = itemsRes.data || [];
+        this._irlPurchases = purchasesRes.data || [];
+        this._irlCurrentTab = this._irlCurrentTab || 'new-purchase';
+        this._irlSelectedStudent = null;
+
+        this._renderIRLShell(container, true);
+        this._switchIRLTab(this._irlCurrentTab);
+      } catch (error) {
+        console.error('Error loading store tab:', error);
+        container.innerHTML = `<div class="card"><p style="color: var(--danger);">Error loading store: ${this.escapeHtml(error.message)}</p></div>`;
       }
     }
 
@@ -38812,7 +38893,10 @@
       }
     }
 
-    _renderRTCBankHelperShell(section) {
+    // embedded = rendering inside the RTC Management tab strip rather than as a
+    // standalone page, so skip the page chrome (back button, own heading).
+    // Same markup either way — one source, so the two cannot drift.
+    _renderRTCBankHelperShell(section, embedded = false) {
       const totals = (this._bankHelperStudents || []).reduce((acc, s) => {
         acc.wallet += s.wallet_balance || 0;
         acc.bank += s.bank_balance || 0;
@@ -38821,11 +38905,11 @@
       }, { wallet: 0, bank: 0, past: 0 });
 
       section.innerHTML = `
-        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
-          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
+        <div style="${embedded ? '' : 'max-width: 1200px; margin: 0 auto; padding: 20px;'}">
+          ${embedded ? '' : `<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
             <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
             <h2 style="margin: 0;">🏦 RTC Bank Helper</h2>
-          </div>
+          </div>`}
 
           <div class="card" style="padding: 12px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); font-size: 13px; color: var(--muted);">
             Move RTC between a student's wallet and their bank on their behalf — useful for students who can't access the bank UI themselves (left the school, locked out, etc.). No early-withdrawal tax is charged on staff pushes. Every action is logged with your name in the transaction history.
@@ -52597,13 +52681,14 @@
       }
     }
 
-    _renderIRLShell(section) {
+    // embedded = inside the RTC Management tab strip; skip the page chrome.
+    _renderIRLShell(section, embedded = false) {
       const isAdmin = this.userInfo?.profile?.user_type === 'admin';
       section.innerHTML = `
-        <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
-          <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
+        <div style="${embedded ? '' : 'max-width: 1200px; margin: 0 auto; padding: 20px;'}">
+          ${embedded ? '' : `<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
             <h2 style="margin: 0;">🛒 IRL Store</h2>
-          </div>
+          </div>`}
 
           <div style="display: flex; gap: 0; margin-bottom: 20px; border-bottom: 2px solid var(--border);">
             <button id="irl-tab-new-purchase" class="btn" style="border: none; border-radius: 6px 6px 0 0; padding: 10px 20px; cursor: pointer; font-weight: 600;"
