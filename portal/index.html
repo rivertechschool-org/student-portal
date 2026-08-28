@@ -25675,15 +25675,11 @@
                 <label>End Date *</label>
                 <input type="date" id="end-date" required>
               </div>
-              <div class="form-group">
-                <label style="display: flex; align-items: center; gap: 8px;">
-                  <input type="checkbox" id="set-current" checked>
-                  <span>Set as current quarter and transition from previous quarter</span>
-                </label>
-                <p style="color: var(--muted); font-size: 12px; margin-top: 5px;">
-                  This will snapshot the current quarter's grades and update all enrollments to the new quarter.
-                </p>
-              </div>
+                  <p style="color: var(--muted); font-size: 12px; margin-top: 5px;">
+                    Creating a quarter does not switch to it. Use <strong>Set as Current</strong> on the
+                    quarter list when you are ready — that snapshots the outgoing quarter's grades and
+                    moves enrollments across without clearing participation grades or teacher notes.
+                  </p>
               <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button type="submit" class="btn btn-primary" style="flex: 1;">Create Quarter</button>
                 <button type="button" class="btn btn-secondary" onclick="app.closeModal('create-quarter')" style="flex: 1;">Cancel</button>
@@ -25697,108 +25693,47 @@
       
       async handleCreateQuarter(event) {
         event.preventDefault();
-        
+
         const name = document.getElementById('quarter-name').value;
         const schoolYear = document.getElementById('school-year').value;
         const startDate = document.getElementById('start-date').value;
         const endDate = document.getElementById('end-date').value;
-        const setCurrent = document.getElementById('set-current').checked;
-        
+
         try {
           if (window.portalLoading) {
             window.portalLoading.show('create-quarter', 'Creating quarter...');
           }
-          
-          // Get current quarter before creating new one
-          let currentQuarter = null;
-          if (setCurrent) {
-            const { data: existing } = await this.supabaseQuery(() => this.auth.supabase
-              .from('quarters')
-              .select('*')
-              .eq('is_current', true)
-              .limit(1)
-              .maybeSingle());
 
-            currentQuarter = existing;
-          }
-
-          // If setting as current, snapshot current quarter grades first
-          if (setCurrent && currentQuarter) {
-            this.showNotification('Snapshotting current quarter grades...', 'info');
-
-            const { error: snapshotError } = await this.supabaseQuery(() => this.auth.supabase
-              .rpc('snapshot_quarter_grades', { p_quarter_id: currentQuarter.id }));
-
-            if (snapshotError) {
-              console.error('Snapshot error:', snapshotError);
-              // Critical: we are about to null participation grades & teacher notes
-              // on every active enrollment below. If the snapshot failed those
-              // grades have nowhere to be recovered from, so abort instead.
-              throw new Error('Could not snapshot the outgoing quarter grades — aborting quarter switch so participation grades and notes are not lost. (' + (snapshotError.message || 'unknown error') + ')');
-            }
-
-            // Unset all other quarters
-            await this.supabaseQuery(() => this.auth.supabase
-              .from('quarters')
-              .update({ is_current: false })
-              .eq('is_current', true));
-          }
-          
-          // Create new quarter
-          const { data: newQuarter, error: createError } = await this.supabaseQuery(() => this.auth.supabase
+          // Creating a quarter NEVER changes which quarter is current.
+          //
+          // This used to offer "set as current", which snapshotted the outgoing
+          // quarter and then nulled participation_grade and teacher_notes on
+          // every active enrollment. That made the snapshot the only copy of
+          // those notes, so a snapshot writing less than expected would take
+          // them with it.
+          //
+          // Switching quarters now happens in exactly one place,
+          // setCurrentQuarter(), which snapshots and moves the enrollment
+          // pointer but resets nothing.
+          const { error: createError } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
             .insert({
               name,
               school_year: schoolYear,
               start_date: startDate,
               end_date: endDate,
-              is_current: setCurrent
+              is_current: false
             })
             .select()
             .single());
-          
+
           if (createError) throw createError;
-          
-          // If setting as current, update all active enrollments to new quarter
-          if (setCurrent) {
-            this.showNotification('Transitioning enrollments to new quarter...', 'info');
-            
-            // Only enrollments in classes that are STILL ACTIVE move forward.
-            // Closed classes stay in the quarter they were taught in; their
-            // grades were snapshotted above.
-            const movingIds = await this._enrollmentIdsForActiveClasses();
 
-            for (const batch of this._chunk(movingIds)) {
-              const { error: updateError } = await this.supabaseQuery(() => this.auth.supabase
-                .from('class_enrollments')
-                .update({
-                  current_quarter_id: newQuarter.id,
-                  // Reset participation grade for new quarter (optional)
-                  participation_grade: null,
-                  teacher_notes: null
-                })
-                .in('id', batch));
-
-              if (updateError) throw updateError;
-            }
-            
-            // Recalculate all grades for new quarter (they should be empty/null initially)
-            this.showNotification('Recalculating grades for new quarter...', 'info');
-            
-            // Recalculate only what actually moved.
-            await Promise.allSettled(movingIds.map(id =>
-              this.auth.supabase.rpc('update_enrollment_grades', {
-                p_enrollment_id: id
-              })
-            ));
-          }
-
-          this.showNotification('Quarter created successfully!', 'success');
+          this.showNotification('Quarter created. Use "Set as Current" on the quarter list when you are ready to switch.', 'success');
           this.closeModal('create-quarter');
-          
-          // Reload quarter management
+
           setTimeout(() => this.showQuarterManagement(), 100);
-          
+
         } catch (error) {
           console.error('Error creating quarter:', error);
           this.showNotification(`Failed to create quarter: ${error.message}`, 'error');
@@ -25808,7 +25743,7 @@
           }
         }
       }
-      
+
       async snapshotQuarterGrades(quarterId, quarterName) {
         if (!confirm(`Snapshot all grades for ${quarterName}? This will calculate and store academic, participation, and class grades for every active enrollment in this quarter.`)) {
           return;
@@ -54599,12 +54534,11 @@
                 <label>End Date</label>
                 <input type="date" id="end-date" required>
               </div>
-              <div class="form-group">
-                <label style="display: flex; align-items: center; gap: 8px;">
-                  <input type="checkbox" id="set-current" checked>
-                  <span>Set as current quarter</span>
-                </label>
-              </div>
+                  <p style="color: var(--muted); font-size: 12px; margin-top: 5px;">
+                    Creating a quarter does not switch to it. Use <strong>Set as Current</strong> on the
+                    quarter list when you are ready — that snapshots the outgoing quarter's grades and
+                    moves enrollments across without clearing participation grades or teacher notes.
+                  </p>
               <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button type="submit" class="btn btn-primary" style="flex: 1;">Create Quarter</button>
                 <button type="button" class="btn btn-secondary" onclick="teacherGrades.closeGradeModal()" style="flex: 1;">Cancel</button>
@@ -54621,17 +54555,13 @@
         const schoolYear = document.getElementById('school-year').value;
         const startDate = document.getElementById('start-date').value;
         const endDate = document.getElementById('end-date').value;
-        const setCurrent = document.getElementById('set-current').checked;
-        
-        try {
-          // If setting as current, unset all other quarters
-          if (setCurrent) {
-            await window.app.auth.supabase
-              .from('quarters')
-              .update({ is_current: false })
-              .neq('id', '00000000-0000-0000-0000-000000000000');
-          }
-          
+
+          try {
+            // Creating a quarter never changes which quarter is current. This
+            // path used to flip is_current with NO snapshot at all, so the
+            // outgoing quarter's grades were never written to
+            // quarter_grade_snapshots and enrollment pointers were left behind.
+            // Switch from the quarter list instead, via setCurrentQuarter().
           const { error } = await window.app.auth.supabase
             .from('quarters')
             .insert({
@@ -54639,7 +54569,7 @@
               school_year: schoolYear,
               start_date: startDate,
               end_date: endDate,
-              is_current: setCurrent
+              is_current: false
             });
           
           if (error) throw error;
