@@ -614,6 +614,37 @@ class PortalUI {
         return this.buildUnifiedNav(currentApp, currentSection);
     }
 
+    // Single source for every nav destination. buildUnifiedNav renders the
+    // primary ones as the bar; getSecondaryNavItems returns the `secondary`
+    // ones for the Portal page launcher. Move an item between the two by
+    // toggling that one flag — there is no second list to keep in step.
+    static navDestinations(userType, currentApp = 'main') {
+        const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
+        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle;"><img src="${sharedPath}/riven-avatar.png" alt="" style="width: 100%; height: 100%; object-fit: cover;"></span>`;
+        return [
+            { icon: '🏠', label: 'Home', app: 'main', section: 'dashboard', roles: ['student', 'parent', 'teacher', 'admin'] },
+            { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
+            { icon: '🌟', label: 'Skills', app: 'main', section: 'skills', roles: ['student'] },
+            { icon: '📊', label: 'Portal', app: 'portal', section: 'home', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '📄', label: 'Documents', app: 'portal', section: 'documents', roles: ['student', 'teacher', 'admin', 'parent'] , secondary: true },
+            { icon: '📚', label: userType === 'parent' ? "Children's Classes" : 'Classes', app: 'portal', section: 'classes', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '📝', label: 'Testing', app: 'portal', section: 'testing-center', roles: ['student', 'teacher', 'admin'] , secondary: true },
+            { icon: '👥', label: 'My Students', app: 'portal', section: 'my-students', roles: ['teacher', 'admin'] },
+            { icon: '💬', label: 'Messages', app: 'portal', section: 'messaging', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '🏆', label: 'Activities', app: 'portal', section: 'activities', roles: ['student', 'teacher', 'admin', 'parent'] , secondary: true },
+
+            { icon: '💰', label: 'RTC', app: 'portal', section: 'admin-rtc-management', roles: ['teacher', 'admin'] , secondary: true },
+            { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
+            { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
+            { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
+        ];
+    }
+
+    static getSecondaryNavItems(userType, currentApp = 'portal') {
+        return this.navDestinations(userType, currentApp)
+            .filter(i => i.secondary && i.roles.includes(userType));
+    }
+
     static buildUnifiedNav(currentApp = 'main', currentSection = '') {
         const auth = window.portalAuth;
         const userInfo = auth ? auth.getUserInfo() : { isAuthenticated: false };
@@ -632,27 +663,15 @@ class PortalUI {
         const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
         const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;"></span>`;
 
-        // Define all nav items — each knows which app it belongs to
-        const allItems = [
-            { icon: '🏠', label: 'Home', app: 'main', section: 'dashboard', roles: ['student', 'parent', 'teacher', 'admin'] },
-            { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
-            { icon: '🌟', label: 'Skills', app: 'main', section: 'skills', roles: ['student'] },
-            { icon: '📊', label: 'Portal', app: 'portal', section: 'home', roles: ['student', 'teacher', 'admin', 'parent'] },
-            { icon: '📄', label: 'Documents', app: 'portal', section: 'documents', roles: ['student', 'teacher', 'admin', 'parent'] },
-            { icon: '📚', label: userType === 'parent' ? "Children's Classes" : 'Classes', app: 'portal', section: 'classes', roles: ['student', 'teacher', 'admin', 'parent'] },
-            { icon: '📝', label: 'Testing', app: 'portal', section: 'testing-center', roles: ['student', 'teacher', 'admin'] },
-            { icon: '👥', label: 'My Students', app: 'portal', section: 'my-students', roles: ['teacher', 'admin'] },
-            { icon: '💬', label: 'Messages', app: 'portal', section: 'messaging', roles: ['student', 'teacher', 'admin', 'parent'] },
-            { icon: '🏆', label: 'Activities', app: 'portal', section: 'activities', roles: ['student', 'teacher', 'admin', 'parent'] },
+        const allItems = PortalUI.navDestinations(userType, currentApp);
 
-            { icon: '💰', label: 'RTC', app: 'portal', section: 'admin-rtc-management', roles: ['teacher', 'admin'] },
-            { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
-            { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
-            { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
-        ];
-
-        // Filter to items visible for this user type
-        let visibleItems = allItems.filter(item => item.roles.includes(userType));
+        // Filter to items visible for this user type.
+        // `secondary` items are the periodic ones — they live on the Portal page
+        // rather than the nav bar, so the bar stays scannable. Same definitions
+        // either way; getSecondaryNavItems() reads the same list.
+        let visibleItems = allItems
+            .filter(item => item.roles.includes(userType))
+            .filter(item => !item.secondary);
 
         // PIN-only students see only Games and Skills. Everything else
         // belongs to a fully claimed account.
