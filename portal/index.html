@@ -4751,7 +4751,6 @@
               </div>
               <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 ${d.root_folder_url ? `<a class="btn btn-secondary" href="${d.root_folder_url}" target="_blank" rel="noopener noreferrer">Open school Drive</a>` : ''}
-                ${d.classes_folder_url ? `<a class="btn btn-secondary" href="${d.classes_folder_url}" target="_blank" rel="noopener noreferrer">Open Classes folder</a>` : ''}
                 <button class="btn btn-secondary" onclick="app.verifySchoolDrive()">Test connection</button>
                 <button class="btn btn-secondary" onclick="app.connectSchoolDrive()">Reconnect</button>
                 <button class="btn btn-secondary" onclick="app.disconnectSchoolDrive()">Disconnect</button>
@@ -4899,8 +4898,12 @@
                 return;
               }
 
+              // No container folder is created here. The school Drive holds the
+              // five group folders (Core, Tech, Arts, Life, Health) directly at
+              // its root, and ensure-drive-folder finds or creates the right
+              // one per class. Making a "Classes" folder at connect time just
+              // left a stray empty folder beside the five real ones.
               const rootId = providedRoot || await this._createSchoolRootFolder(tokens.access_token);
-              const classesId = await this._findOrCreateDriveFolder(tokens.access_token, 'Classes', rootId);
 
               // Written through set_school_drive rather than a table update.
               // The table denies all direct access because it holds the refresh
@@ -4912,8 +4915,6 @@
                   p_refresh_token: tokens.refresh_token,
                   p_root_folder_id: rootId,
                   p_root_folder_url: `https://drive.google.com/drive/folders/${rootId}`,
-                  p_classes_folder_id: classesId,
-                  p_classes_folder_url: `https://drive.google.com/drive/folders/${classesId}`,
                   p_connected_email: tokens.email || null
                 }));
               if (error) throw error;
@@ -4970,32 +4971,6 @@
         return (await resp.json()).id;
       }
 
-      async _findOrCreateDriveFolder(accessToken, name, parentId) {
-        const safe = name.replace(/'/g, "\\'");
-        const q = `name='${safe}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-        const search = await fetch(
-          // Shared Drive items need these or the search returns nothing and we
-          // create a duplicate alongside a folder that already exists.
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}`
-            + `&fields=files(id)&supportsAllDrives=true&includeItemsFromAllDrives=true&corpora=allDrives`,
-          { headers: { 'Authorization': `Bearer ${accessToken}` } }
-        );
-        if (search.ok) {
-          const found = await search.json();
-          if (found.files?.length) return found.files[0].id;
-        }
-        const create = await fetch('https://www.googleapis.com/drive/v3/files?fields=id&supportsAllDrives=true', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            name,
-            mimeType: 'application/vnd.google-apps.folder',
-            parents: [parentId]
-          })
-        });
-        if (!create.ok) throw new Error(`Could not create the ${name} folder`);
-        return (await create.json()).id;
-      }
 
       // Opens (creating on first use) the Drive folder for a class, an
       // assignment, or the Resources area of either. The edge function does the
