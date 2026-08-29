@@ -23458,7 +23458,19 @@
             .eq('id', submissionId));
       
           if (error) throw error;
-      
+
+          // Resubmitting replaces the Drive file, and the old one would
+          // otherwise stay in the assignment folder - the teacher opens it,
+          // finds two files for one student, and cannot tell which is current.
+          // After the write, never before: doing it first risks leaving the
+          // student with no file at all if the update fails.
+          const previousDriveFileId = existingSubmission?.drive_file_id || null;
+          if (previousDriveFileId && updateData.drive_file_id
+              && previousDriveFileId !== updateData.drive_file_id) {
+            this.trashDriveFile(previousDriveFileId).catch(e =>
+              console.warn('Could not remove the replaced Drive file:', e));
+          }
+
           this.showNotification('Submission updated successfully!', 'success');
           this.closeModal('resubmit-assignment');
           
@@ -23500,6 +23512,10 @@
       }
 
       async submitAssignmentSubmission(assignmentId, isEdit) {
+        // Captured before the upload: this upserts as well, so a replaced file
+        // is abandoned in the assignment folder unless it is cleaned up after.
+        const priorDriveFileId = this.assignments
+          ?.find(a => a.id === assignmentId)?.student_submission?.drive_file_id || null;
         const content = document.getElementById('submission-content').value;
         const fileInput = document.getElementById('submission-file');
       
@@ -23582,6 +23598,12 @@
           if (error) {
             console.error('Submission DB error:', error);
             throw new Error(error.message || 'Failed to save submission');
+          }
+
+          if (priorDriveFileId && submissionData.drive_file_id
+              && priorDriveFileId !== submissionData.drive_file_id) {
+            this.trashDriveFile(priorDriveFileId).catch(e =>
+              console.warn('Could not remove the replaced Drive file:', e));
           }
 
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
