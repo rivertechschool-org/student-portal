@@ -23166,6 +23166,20 @@
             submissionData.submission_type = content ? 'text_and_file' : 'file';
           }
 
+
+          // Trashed BEFORE the write, and awaited. The server proves ownership
+          // by finding this exact id in the submission row - once the row has
+          // been updated to the new file, the old id matches nothing and the
+          // request is refused, which is the 404 this used to produce. If the
+          // write below then fails, the row points at a trashed file: it stays
+          // restorable for 30 days and the student can submit again, which is a
+          // smaller problem than not being able to verify ownership at all.
+          if (previousDriveFileId && submissionData.drive_file_id
+              && previousDriveFileId !== submissionData.drive_file_id) {
+            await this.trashDriveFile(previousDriveFileId).catch(e =>
+              console.warn('Could not remove the replaced Drive file:', e));
+          }
+
           // Submit to database (extended timeout for writes)
           const { data: submitResult, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignment_submissions')
@@ -23179,14 +23193,6 @@
             throw new Error(error.message || 'Failed to save submission');
           }
 
-          if (previousDriveFileId && submissionData.drive_file_id
-              && previousDriveFileId !== submissionData.drive_file_id) {
-            // Best effort, and deliberately after the write: a failure here
-            // leaves a stray file, which is untidy. Doing it first would risk
-            // leaving the student with no file at all.
-            this.trashDriveFile(previousDriveFileId).catch(e =>
-              console.warn('Could not remove the replaced Drive file:', e));
-          }
 
           this.showNotification('Assignment submitted successfully!', 'success');
           this.closeModal('submit-assignment');
@@ -23451,6 +23457,20 @@
             updateData.drive_file_id = existingSubmission.drive_file_id;
           }
       
+          // Trashed BEFORE the write, and awaited. The server proves ownership
+          // by finding this exact id in the submission row; once the row names
+          // the new file, the old id matches nothing and the request is
+          // refused - the 404 this used to produce. If the write below then
+          // fails, the row points at a trashed file, which stays restorable for
+          // 30 days and can be resubmitted. That is a smaller problem than not
+          // being able to verify ownership at all.
+          const previousDriveFileId = existingSubmission?.drive_file_id || null;
+          if (previousDriveFileId && updateData.drive_file_id
+              && previousDriveFileId !== updateData.drive_file_id) {
+            await this.trashDriveFile(previousDriveFileId).catch(e =>
+              console.warn('Could not remove the replaced Drive file:', e));
+          }
+
           // Update submission
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignment_submissions')
@@ -23458,18 +23478,6 @@
             .eq('id', submissionId));
       
           if (error) throw error;
-
-          // Resubmitting replaces the Drive file, and the old one would
-          // otherwise stay in the assignment folder - the teacher opens it,
-          // finds two files for one student, and cannot tell which is current.
-          // After the write, never before: doing it first risks leaving the
-          // student with no file at all if the update fails.
-          const previousDriveFileId = existingSubmission?.drive_file_id || null;
-          if (previousDriveFileId && updateData.drive_file_id
-              && previousDriveFileId !== updateData.drive_file_id) {
-            this.trashDriveFile(previousDriveFileId).catch(e =>
-              console.warn('Could not remove the replaced Drive file:', e));
-          }
 
           this.showNotification('Submission updated successfully!', 'success');
           this.closeModal('resubmit-assignment');
@@ -23587,6 +23595,20 @@
             submissionData.drive_file_id = result.fileId;
           }
 
+
+          // Trashed BEFORE the write, and awaited. The server proves ownership
+          // by finding this exact id in the submission row - once the row has
+          // been updated to the new file, the old id matches nothing and the
+          // request is refused, which is the 404 this used to produce. If the
+          // write below then fails, the row points at a trashed file: it stays
+          // restorable for 30 days and the student can submit again, which is a
+          // smaller problem than not being able to verify ownership at all.
+          if (priorDriveFileId && submissionData.drive_file_id
+              && priorDriveFileId !== submissionData.drive_file_id) {
+            await this.trashDriveFile(priorDriveFileId).catch(e =>
+              console.warn('Could not remove the replaced Drive file:', e));
+          }
+
           // Submit to database (extended timeout for writes)
           const { data: submitResult, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignment_submissions')
@@ -23600,11 +23622,6 @@
             throw new Error(error.message || 'Failed to save submission');
           }
 
-          if (priorDriveFileId && submissionData.drive_file_id
-              && priorDriveFileId !== submissionData.drive_file_id) {
-            this.trashDriveFile(priorDriveFileId).catch(e =>
-              console.warn('Could not remove the replaced Drive file:', e));
-          }
 
           this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
           this.closeModal('submit-assignment');
