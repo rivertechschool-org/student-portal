@@ -5650,6 +5650,12 @@
 
         this.classes = classes || [];
 
+        // Attach the teacher's name. The query above selects teacher_id only, so
+        // a student's class list could not say who taught the class. Fetched in
+        // one batch rather than per card - a class list is small, but a query
+        // per card is not something to leave in a render path.
+        await this.attachTeacherNames(this.classes);
+
         // Attach enrollment info to classes for student filtering and unenrollment
         this.classes.forEach(cls => {
           const enrollment = enrollments.find(e => e.class_id === cls.id);
@@ -5813,6 +5819,7 @@
               }
             });
             this.classes = Object.values(uniqueClasses);
+            await this.attachTeacherNames(this.classes);
           }
         } catch (error) {
           console.error('Error in loadParentData:', error);
@@ -16165,6 +16172,26 @@
         this.renderClasses();
       }
 
+      // Fills in teacher_name on a set of classes, in one query.
+      async attachTeacherNames(classes) {
+        const ids = [...new Set((classes || []).map(c => c.teacher_id).filter(Boolean))];
+        if (!ids.length) return classes;
+        try {
+          const { data } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name')
+            .in('id', ids));
+          const byId = {};
+          (data || []).forEach(t => {
+            byId[t.id] = `${t.first_name || ''} ${t.last_name || ''}`.trim();
+          });
+          (classes || []).forEach(c => { c.teacher_name = byId[c.teacher_id] || ''; });
+        } catch (e) {
+          console.warn('Could not load teacher names:', e);
+        }
+        return classes;
+      }
+
       renderClassCard(cls, isWithdrawn = false) {
         const userType = this.userInfo.profile.user_type;
         const isTeacher = userType === 'teacher' || userType === 'admin';
@@ -16203,6 +16230,7 @@
             <div class="class-stats">
               <span>📚 ${cls.subject}</span>
               <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
+              ${!isTeacher && cls.teacher_name ? `<span>🧑‍🏫 ${this.escapeHtml(cls.teacher_name)}</span>` : ''}
             </div>
             ${isTeacher ? `
               <div class="class-stats" style="margin-top: 8px;">
@@ -16705,6 +16733,19 @@
         const isOwnClass = isPrimaryTeacher || isSecondaryTeacher;
         const showTeacherFeatures = isTeacher && (isOwnClass || isAdmin);
         
+        // Who teaches this class. The student class query selects teacher_id but
+        // no name, so a student had no way to see who their teacher was - the
+        // details panel showed them the creation date instead.
+        let teacherName = '';
+        if (classData.teacher_id) {
+          const { data: t } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('first_name, last_name')
+            .eq('id', classData.teacher_id)
+            .maybeSingle());
+          if (t) teacherName = `${t.first_name || ''} ${t.last_name || ''}`.trim();
+        }
+
         // Fetch secondary teacher name if one is assigned
         let secondaryTeacherName = '';
         if (classData.secondary_teacher_id) {
@@ -16784,10 +16825,11 @@
                 ${showTeacherFeatures ? `<strong>Class Code:</strong> <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${classData.class_code}</span>` : ''}
               </div>
               <div>
+                ${teacherName ? `<strong>Teacher:</strong> ${this.escapeHtml(teacherName)}<br>` : ''}
+                ${secondaryTeacherName ? `<strong>Also teaching:</strong> ${this.escapeHtml(secondaryTeacherName)}<br>` : ''}
                 <strong>Max Students:</strong> ${classData.max_students || 30}<br>
-                <strong>Created:</strong> ${new Date(classData.created_at).toLocaleDateString()}<br>
+                ${showTeacherFeatures ? `<strong>Created:</strong> ${new Date(classData.created_at).toLocaleDateString()}<br>` : ''}
                 ${showTeacherFeatures ? `<strong>Current Students:</strong> ${classData.student_count || 0}` : ''}
-                ${secondaryTeacherName && showTeacherFeatures ? `<br><strong>Secondary Teacher:</strong> ${secondaryTeacherName}` : ''}
               </div>
             </div>
             
