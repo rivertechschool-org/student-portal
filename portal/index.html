@@ -16356,9 +16356,12 @@
             </div>
             <div class="form-group">
               <label for="class-subject">Subject *</label>
-              <select id="class-subject" required>
+              <select id="class-subject" required onchange="app.showSubjectGroupHint('create')">
                 ${this.buildSubjectOptions(null)}
               </select>
+              <span id="create-subject-group-hint" style="color: var(--muted); font-size: 11px;">
+                Pick a subject to see which Drive group it belongs to.
+              </span>
             </div>
             <div class="form-group">
               <label for="class-grade">Grade Range</label>
@@ -18759,6 +18762,49 @@
         }
       }
 
+      // "Leadership" is an alias for "Leadership Mindset"; "History" for
+      // "Social Studies". The dropdown matched exactly, so a class stored under
+      // an alias matched none of the 37 options and fell into "Not in the
+      // subject list" - showing the legacy value and never revealing that the
+      // class already belongs to Life.
+      //
+      // rt_subject_group is the same resolver the Drive folders use, aliases
+      // and punctuation included. Asking it beats reimplementing the matching
+      // here, which is how the subject list drifted from Dan's folders to begin
+      // with.
+      // Shows which of the five Drive groups the chosen subject lands in, at
+      // the moment of choosing. The group is derived from the subject rather
+      // than picked, so without this the only way to find out is to open the
+      // folder afterwards.
+      showSubjectGroupHint(which) {
+        const sel = document.getElementById(which === 'edit' ? 'edit-class-subject' : 'class-subject');
+        const hint = document.getElementById(which === 'edit' ? 'edit-subject-group-hint' : 'create-subject-group-hint');
+        if (!sel || !hint) return;
+        const group = this.subjectGroupOf(sel.value);
+        hint.innerHTML = group
+          ? `Drive folder: ${this.escapeHtml(group)} &rsaquo; ${this.escapeHtml(sel.value)}`
+          : (sel.value ? 'Not in the subject list - this class will have no Drive folder until its subject is one of the listed subjects.' : 'Pick a subject to see which Drive group it belongs to.');
+      }
+
+      async canonicalSubject(raw) {
+        if (!raw) return raw;
+        if ((this._subjectGroups || []).some(r => r.subject === raw)) return raw;
+        try {
+          const { data } = await this.auth.supabase.rpc('rt_subject_group', { p_subject: raw });
+          const row = Array.isArray(data) ? data[0] : data;
+          return row?.subject || raw;
+        } catch (e) {
+          console.warn('Could not resolve subject alias:', e);
+          return raw;
+        }
+      }
+
+      // Which Drive group a subject lands in, so choosing one is not a guess.
+      subjectGroupOf(subject) {
+        const row = (this._subjectGroups || []).find(r => r.subject === subject);
+        return row?.group_name || null;
+      }
+
       async editClass(classId) {
         await this.loadSubjectOptions();
         await this.loadGradeBands();
@@ -18835,6 +18881,7 @@
                 <button type="button" onclick="app.removeScheduleSlot(this)" class="btn btn-secondary" style="padding: 8px 12px;">✕</button>
               </div>
             `;
+        const resolvedSubject = await this.canonicalSubject(classData.subject);
 
         const modalContent = `
           <form id="edit-class-form">
@@ -18871,9 +18918,14 @@
             </div>
             <div class="form-group">
               <label for="edit-class-subject">Subject *</label>
-              <select id="edit-class-subject" required>
-                ${this.buildSubjectOptions(classData.subject)}
+              <select id="edit-class-subject" required onchange="app.showSubjectGroupHint('edit')">
+                ${this.buildSubjectOptions(resolvedSubject)}
               </select>
+              <span id="edit-subject-group-hint" style="color: var(--muted); font-size: 11px;">
+                ${resolvedSubject && this.subjectGroupOf(resolvedSubject)
+                    ? `Drive folder: ${this.subjectGroupOf(resolvedSubject)} &rsaquo; ${this.escapeHtml(resolvedSubject)}`
+                    : 'Pick a subject to see which Drive group it belongs to.'}
+              </span>
             </div>
             <div class="form-group">
               <label for="edit-class-grade">Grade Range</label>
@@ -19036,9 +19088,17 @@
             query = query.eq('teacher_id', this.userInfo.user.id);
           }
 
-          const { error } = await this.supabaseQuery(() => query);
+          // .select() so a blocked update is visible. PostgREST returns no
+          // error when an UPDATE matches zero rows, so without this an admin
+          // editing a class RLS would not let them touch got a success
+          // message and no saved change - exactly what happened.
+          const { data: updatedRows, error } = await this.supabaseQuery(() => query.select('id'));
 
           if (error) throw error;
+          if (!updatedRows || updatedRows.length === 0) {
+            throw new Error('That change was not saved - the database refused the update. '
+              + 'If you are an admin editing a class owned by another teacher, the admin edit policy may not be applied yet.');
+          }
 
           // Update class schedule - delete existing and insert new
           await this.auth.supabase
