@@ -4752,6 +4752,7 @@
               <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 ${d.root_folder_url ? `<a class="btn btn-secondary" href="${d.root_folder_url}" target="_blank" rel="noopener noreferrer">Open school Drive</a>` : ''}
                 ${d.classes_folder_url ? `<a class="btn btn-secondary" href="${d.classes_folder_url}" target="_blank" rel="noopener noreferrer">Open Classes folder</a>` : ''}
+                <button class="btn btn-secondary" onclick="app.verifySchoolDrive()">Test connection</button>
                 <button class="btn btn-secondary" onclick="app.connectSchoolDrive()">Reconnect</button>
                 <button class="btn btn-secondary" onclick="app.disconnectSchoolDrive()">Disconnect</button>
               </div>
@@ -4785,6 +4786,41 @@
       // reconnecting adopts the existing tree in Drive rather than building a
       // second one beside it. This is the way out of a Drive connected under
       // the wrong Google account.
+      // Asks the server to use the STORED refresh token against the configured
+      // root folder and report what it finds. This is the check that matters:
+      // "File not found" from Drive means any of wrong account, too-narrow
+      // grant, or a Shared Drive not opted into, and the server can tell which.
+      async verifySchoolDrive({ silent = false } = {}) {
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/ensure-drive-folder',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ scope: 'verify' })
+            }
+          );
+          const result = await resp.json();
+          const ok = resp.ok && result.success;
+          if (!silent) {
+            this.showNotification(
+              ok ? 'School Drive is reachable and writable.' : result.error || 'Could not verify the Drive',
+              ok ? 'success' : 'error');
+          }
+          return { ok, error: result.error };
+        } catch (e) {
+          if (!silent) this.showNotification(`Could not verify: ${e.message}`, 'error');
+          return { ok: false, error: e.message };
+        }
+      }
+
       async disconnectSchoolDrive() {
         if (this.userInfo?.profile?.user_type !== 'admin') {
           this.showNotification('Only an admin can disconnect the school Drive', 'error');
@@ -4895,8 +4931,20 @@
                 throw new Error('Saved, but the Drive still reads as not connected. Check that your account is an admin.');
               }
 
-              this.showNotification('School Drive connected. Class folders will be created here from now on.', 'success');
+              // The folders above were created with the access token from this
+              // consent, which proves nothing about the refresh token we just
+              // stored — that is the one the server uses, and it can carry a
+              // narrower grant. Exercise it now, so a broken connection is the
+              // admin's problem here rather than a teacher's when they open
+              // Resources.
+              const verdict = await this.verifySchoolDrive({ silent: true });
               this.renderAdminSettings();
+              if (!verdict.ok) {
+                this.showNotification(`Saved, but not usable yet: ${verdict.error}`, 'error');
+                return;
+              }
+
+              this.showNotification('School Drive connected and verified. Class folders will be created here from now on.', 'success');
 
             } catch (err) {
               console.error('School Drive connect failed:', err);
