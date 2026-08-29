@@ -620,7 +620,10 @@ class PortalUI {
     // toggling that one flag — there is no second list to keep in step.
     static navDestinations(userType, currentApp = 'main') {
         const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
-        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle;"><img src="${sharedPath}/riven-avatar.png" alt="" style="width: 100%; height: 100%; object-fit: cover;"></span>`;
+        // .jpg, not .png - there is no PNG in shared/, and referencing one 404s
+        // on every page render. The crop and border match how Riven is framed
+        // everywhere else.
+        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;"></span>`;
         return [
             { icon: '🏠', label: 'Home', app: 'main', section: 'dashboard', roles: ['student', 'parent', 'teacher', 'admin'] },
             { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
@@ -658,10 +661,6 @@ class PortalUI {
         // full account later via the regular Activate Account flow.
         const isPinOnlyStudent = userType === 'student'
             && userInfo.profile?.account_status === 'inactive';
-
-        // Riven's avatar lives in shared/, whose relative path depends on which app is rendering the nav
-        const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
-        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;"></span>`;
 
         const allItems = PortalUI.navDestinations(userType, currentApp);
 

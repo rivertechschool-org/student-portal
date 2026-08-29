@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=14"></script>
+  <script src="../shared/config.js?v=15"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -4753,6 +4753,7 @@
                 ${d.root_folder_url ? `<a class="btn btn-secondary" href="${d.root_folder_url}" target="_blank" rel="noopener noreferrer">Open school Drive</a>` : ''}
                 ${d.classes_folder_url ? `<a class="btn btn-secondary" href="${d.classes_folder_url}" target="_blank" rel="noopener noreferrer">Open Classes folder</a>` : ''}
                 <button class="btn btn-secondary" onclick="app.connectSchoolDrive()">Reconnect</button>
+                <button class="btn btn-secondary" onclick="app.disconnectSchoolDrive()">Disconnect</button>
               </div>
             ` : `
               <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end;">
@@ -4778,6 +4779,34 @@
         const m = v.match(/\/folders\/([a-zA-Z0-9_-]+)/) || v.match(/[?&]id=([a-zA-Z0-9_-]+)/);
         const id = m ? m[1] : v;
         return /^[a-zA-Z0-9_-]+$/.test(id) ? id : null;
+      }
+
+      // Clears the stored Google credentials. Folder ids are kept, so
+      // reconnecting adopts the existing tree in Drive rather than building a
+      // second one beside it. This is the way out of a Drive connected under
+      // the wrong Google account.
+      async disconnectSchoolDrive() {
+        if (this.userInfo?.profile?.user_type !== 'admin') {
+          this.showNotification('Only an admin can disconnect the school Drive', 'error');
+          return;
+        }
+        if (!confirm('Disconnect the school Google Drive?\n\nClass and assignment folders stay where they are in Drive, and reconnecting will pick the same ones back up. Until then, opening a class folder will not work.')) {
+          return;
+        }
+        try {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .rpc('clear_school_drive'));
+          if (error) throw error;
+          const result = (typeof data === 'string') ? JSON.parse(data) : data;
+          if (!result || !result.success) throw new Error(result?.error || 'Could not disconnect');
+
+          this.showNotification('School Drive disconnected.', 'success');
+          await this.loadSchoolDriveStatus();
+          this.renderAdminSettings();
+        } catch (e) {
+          console.error('disconnectSchoolDrive failed:', e);
+          this.showNotification(`Could not disconnect: ${e.message}`, 'error');
+        }
       }
 
       async connectSchoolDrive() {
@@ -4837,24 +4866,36 @@
               const rootId = providedRoot || await this._createSchoolRootFolder(tokens.access_token);
               const classesId = await this._findOrCreateDriveFolder(tokens.access_token, 'Classes', rootId);
 
-              const { error } = await this.supabaseQuery(() => this.auth.supabase
-                .from('school_drive_config')
-                .update({
-                  refresh_token: tokens.refresh_token,
-                  root_folder_id: rootId,
-                  root_folder_url: `https://drive.google.com/drive/folders/${rootId}`,
-                  classes_folder_id: classesId,
-                  classes_folder_url: `https://drive.google.com/drive/folders/${classesId}`,
-                  connected_email: tokens.email || null,
-                  connected_by: this.userInfo.profile.id,
-                  connected_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString()
-                })
-                .eq('id', true));
+              // Written through set_school_drive rather than a table update.
+              // The table denies all direct access because it holds the refresh
+              // token, and a PostgREST update that matches no row reports NO
+              // error — which is how this screen used to say "connected" while
+              // saving nothing.
+              const { data: saved, error } = await this.supabaseQuery(() => this.auth.supabase
+                .rpc('set_school_drive', {
+                  p_refresh_token: tokens.refresh_token,
+                  p_root_folder_id: rootId,
+                  p_root_folder_url: `https://drive.google.com/drive/folders/${rootId}`,
+                  p_classes_folder_id: classesId,
+                  p_classes_folder_url: `https://drive.google.com/drive/folders/${classesId}`,
+                  p_connected_email: tokens.email || null
+                }));
               if (error) throw error;
 
+              const result = (typeof saved === 'string') ? JSON.parse(saved) : saved;
+              if (!result || !result.success) {
+                throw new Error(result?.error || 'The connection was not saved');
+              }
+
+              // Read it back before claiming success. Anything that silently
+              // failed to persist shows up here rather than three days later
+              // when a teacher opens a class folder.
+              const status = await this.loadSchoolDriveStatus();
+              if (!status?.connected) {
+                throw new Error('Saved, but the Drive still reads as not connected. Check that your account is an admin.');
+              }
+
               this.showNotification('School Drive connected. Class folders will be created here from now on.', 'success');
-              await this.loadSchoolDriveStatus();
               this.renderAdminSettings();
 
             } catch (err) {
