@@ -25619,9 +25619,20 @@
       // folder is listed here and each item is fetched through the portal.
       // Read-only by design: it lists what the teacher put there and never
       // creates the folder - that stays a teacher action.
-      async showClassResources(classId) {
+      // Students have no Google access to the school Drive, so the Resources
+      // folder is listed here and each item is fetched through the portal.
+      // Read-only by design: it lists what the teacher put there and never
+      // creates the folder - that stays a teacher action.
+      //
+      // Teachers organise material into per-unit subfolders, so this navigates.
+      // The trail is kept client-side only for the breadcrumb; the server
+      // re-proves on every request that the folder asked for really sits inside
+      // this class's Resources folder, so a crafted id gets nowhere.
+      async showClassResources(classId, folderId = null, folderName = null, push = true) {
         try {
+          if (!folderId) this._resourceTrail = [];
           this.showNotification('Loading resources...', 'info');
+
           const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
           const session = sessionResult?.data?.session;
           if (!session) throw new Error('No active session');
@@ -25634,13 +25645,18 @@
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${session.access_token}`
               },
-              body: JSON.stringify({ action: 'listResources', classId })
+              body: JSON.stringify({ action: 'listResources', classId, folderId })
             }
           );
           const result = await resp.json().catch(() => ({}));
           if (!resp.ok || !result.success) {
             throw new Error(result.error || 'Could not load resources');
           }
+
+          if (folderId && push) {
+            this._resourceTrail = (this._resourceTrail || []).concat([{ id: folderId, name: folderName || 'Folder' }]);
+          }
+          const trail = this._resourceTrail || [];
 
           const files = result.files || [];
           const sizeOf = f => {
@@ -25654,13 +25670,25 @@
           const isFolder = f => f.mimeType === 'application/vnd.google-apps.folder';
           const safeName = n => String(n || 'file').replace(/[^A-Za-z0-9 ._()-]/g, '_');
 
+          const crumbs = `
+            <div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center; margin-bottom:12px; font-size:12px;">
+              <a href="#" onclick="event.preventDefault(); app.openResourceCrumb('${classId}', -1)"
+                 style="color:${trail.length ? 'var(--accent)' : 'var(--muted)'}; text-decoration:none;">Resources</a>
+              ${trail.map((t, i) => `
+                <span style="color:var(--muted);">&rsaquo;</span>
+                <a href="#" onclick="event.preventDefault(); app.openResourceCrumb('${classId}', ${i})"
+                   style="color:${i === trail.length - 1 ? 'var(--muted)' : 'var(--accent)'}; text-decoration:none;">${this.escapeHtml(t.name)}</a>
+              `).join('')}
+            </div>`;
+
           const body = files.length ? `
             <div style="display: flex; flex-direction: column; gap: 8px;">
-              ${files.map(f => isFolder(f) ? `
-                <div style="padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 13px;">
+              ${files.map((f, idx) => isFolder(f) ? `
+                <button class="btn btn-secondary" style="justify-content: flex-start; text-align: left;"
+                  onclick="app.openResourceFolder('${classId}', ${idx})">
                   \u{1F4C1} ${this.escapeHtml(f.name)}
-                  <span style="font-size: 11px;">(folder - ask your teacher to share these files directly)</span>
-                </div>
+                  <span style="color: var(--muted); font-size: 11px; margin-left: 8px;">open</span>
+                </button>
               ` : `
                 <div style="display: flex; gap: 6px; align-items: stretch;">
                   <button class="btn btn-secondary" style="flex: 1; justify-content: flex-start; text-align: left;"
@@ -25678,16 +25706,22 @@
           ` : `
             <div class="empty-state">
               <h3>Nothing here yet</h3>
-              <p>Your teacher has not added any resources for this class.</p>
+              <p>${trail.length ? 'This folder is empty.' : 'Your teacher has not added any resources for this class.'}</p>
             </div>
           `;
 
+          // Held so a folder click can look the row up by index rather than
+          // passing a name through an inline onclick, where an apostrophe in
+          // "Unit 3 - Ohm's Law" would break the handler.
+          this._resourceListing = files;
+
           this.showModal('class-resources', 'Class Resources', `
             <div>
-              <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
-                Files your teacher has shared. Selecting one opens it here; the arrow downloads it.
+              <p style="color: var(--muted); font-size: 12px; margin-bottom: 10px;">
+                Files your teacher has shared. Selecting a file opens it here; the arrow downloads it.
                 PDFs, images, text, audio and video preview in place - other formats download.
               </p>
+              ${crumbs}
               ${body}
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
                 <button class="btn btn-secondary" onclick="app.closeModal('class-resources')">Close</button>
@@ -25698,6 +25732,25 @@
           console.error('showClassResources failed:', e);
           this.showNotification(e.message, 'error');
         }
+      }
+
+      openResourceFolder(classId, index) {
+        const f = (this._resourceListing || [])[index];
+        if (!f) return;
+        return this.showClassResources(classId, f.id, f.name);
+      }
+
+      // Jump to a point in the breadcrumb. -1 is the Resources root.
+      openResourceCrumb(classId, index) {
+        const trail = this._resourceTrail || [];
+        if (index < 0) {
+          this._resourceTrail = [];
+          return this.showClassResources(classId);
+        }
+        const target = trail[index];
+        if (!target) return;
+        this._resourceTrail = trail.slice(0, index + 1);
+        return this.showClassResources(classId, target.id, target.name, false);
       }
 
       // One fetch for both viewing and saving. The bytes come back through the
