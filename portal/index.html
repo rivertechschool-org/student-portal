@@ -3979,7 +3979,7 @@
                 id,
                 name,
                 subject,
-                grade_level,
+                grade_band,
                 class_enrollments!inner (
                   id,
                   student_id,
@@ -4002,7 +4002,7 @@
             id: c.id,
             name: c.name,
             subject: c.subject,
-            grade_level: c.grade_level,
+            grade_band: c.grade_band,
             students: (c.class_enrollments || []).map(e => ({
               id: e.user_profiles.id,
               name: `${e.user_profiles.first_name} ${e.user_profiles.last_name}`,
@@ -5507,6 +5507,9 @@
       }
 
       async loadTeacherData() {
+        // Bands before classes: the filter bar renders band LABELS, and without
+        // them it would show raw codes like "young_middle".
+        await this.loadGradeBands();
         console.log('🔍 Loading teacher/admin classes...');
         console.log('🔍 User ID:', this.userInfo.user.id);
         console.log('🔍 User Type:', this.userInfo.profile.user_type);
@@ -5566,6 +5569,7 @@
       }
 
       async loadStudentData() {
+        await this.loadGradeBands();
         console.log('Loading student classes...');
 
         // Get enrollments first (extended timeout for initial load)
@@ -5601,7 +5605,7 @@
           this.supabaseQuery(() =>
             this.auth.supabase
               .from('classes')
-              .select('id, name, subject, description, teacher_id, is_active, status')
+              .select('id, name, subject, description, teacher_id, is_active, status, grade_band')
               .in('id', classIds)
               .eq('is_active', true), 30000),
           this.supabaseQuery(() =>
@@ -5724,6 +5728,7 @@
       }
 
       async loadParentData() {
+        await this.loadGradeBands();
         console.log('Loading parent data...');
 
         // Initialize children array
@@ -16053,25 +16058,29 @@
       classMatchesFilters(cls) {
         if (!cls) return false;
         const subjectOk = this.classFilterSubject === 'all' || (cls.subject || '') === this.classFilterSubject;
-        const gradeOk = this.classFilterGrade === 'all' || String(cls.grade_level ?? '') === this.classFilterGrade;
+        const gradeOk = this.classFilterGrade === 'all' || String(cls.grade_band ?? '') === this.classFilterGrade;
         return subjectOk && gradeOk;
       }
 
       renderClassFilterBar() {
         const all = this.classes || [];
         const subjects = Array.from(new Set(all.map(c => c.subject).filter(Boolean))).sort();
-        const grades = Array.from(new Set(all.map(c => String(c.grade_level ?? '')).filter(Boolean))).sort((a, b) => {
-          const na = parseInt(a, 10), nb = parseInt(b, 10);
-          if (!isNaN(na) && !isNaN(nb)) return na - nb;
-          return a.localeCompare(b);
-        });
+        // Ordered by the bands' own sort_order, not alphabetically - "Highschool"
+        // before "Young Middle" would read as nonsense to anyone using it.
+        const bandOrder = (this._gradeBands || []).map(x => x.code);
+        const grades = Array.from(new Set(all.map(c => String(c.grade_band ?? '')).filter(Boolean)))
+          .sort((a, b) => {
+            const ia = bandOrder.indexOf(a), ib = bandOrder.indexOf(b);
+            if (ia !== -1 && ib !== -1) return ia - ib;
+            return String(a).localeCompare(String(b));
+          });
         if (subjects.length <= 1 && grades.length <= 1) return '';   // nothing to filter
 
         const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
         const subjectOptions = ['<option value="all">All subjects</option>',
           ...subjects.map(s => `<option value="${escape(s)}"${s === this.classFilterSubject ? ' selected' : ''}>${escape(s)}</option>`)].join('');
         const gradeOptions = ['<option value="all">All grades</option>',
-          ...grades.map(g => `<option value="${escape(g)}"${g === this.classFilterGrade ? ' selected' : ''}>${escape(g)}</option>`)].join('');
+          ...grades.map(g => `<option value="${escape(g)}"${g === this.classFilterGrade ? ' selected' : ''}>${escape(this.gradeBandLabel(g) || g)}</option>`)].join('');
 
         const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
         return `
@@ -16147,7 +16156,7 @@
             <p>${cls.description || 'No description available'}</p>
             <div class="class-stats">
               <span>📚 ${cls.subject}</span>
-              <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+              <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
             </div>
             ${isTeacher ? `
               <div class="class-stats" style="margin-top: 8px;">
@@ -16186,6 +16195,50 @@
         return this._subjectGroups;
       }
 
+      // Grade bands come from the grade_bands table, never from a list in here.
+      // The school runs bands, not single grades, and expects to reshape them —
+      // splitting Highschool, adding a Kindergarten band. Anything hard-coded
+      // would have to be found and changed in the create form, the edit form,
+      // two filters, the report card and the Drive folder name, which is how
+      // the subject list drifted out of step with Dan's folders.
+      async loadGradeBands() {
+        if (this._gradeBands) return this._gradeBands;
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('grade_bands')
+            .select('code, label, min_grade, max_grade, sort_order')
+            .order('sort_order');
+          if (error) throw error;
+          this._gradeBands = data || [];
+        } catch (e) {
+          console.warn('Could not load grade bands:', e);
+          this._gradeBands = [];
+        }
+        return this._gradeBands;
+      }
+
+      gradeBandLabel(code) {
+        if (!code) return null;
+        const b = (this._gradeBands || []).find(x => x.code === code);
+        return b ? b.label : code;
+      }
+
+      // Shows the grades each band covers, so picking one does not require
+      // knowing the school's shorthand.
+      buildGradeBandOptions(selected, allLabel = 'All Grades') {
+        const rows = this._gradeBands || [];
+        const opts = [`<option value="">${this.escapeHtml(allLabel)}</option>`];
+        rows.forEach(b => {
+          const span = b.min_grade === b.max_grade
+            ? `${b.min_grade}`
+            : `${b.min_grade}-${b.max_grade}`;
+          opts.push(
+            `<option value="${this.escapeHtml(b.code)}"${b.code === selected ? ' selected' : ''}>`
+            + `${this.escapeHtml(b.label)} (${this.escapeHtml(span)})</option>`);
+        });
+        return opts.join('');
+      }
+
       // Grouped <optgroup> so the Drive group each subject belongs to is visible
       // at the point of choosing — the folder it lands in is not a surprise.
       buildSubjectOptions(selected) {
@@ -16216,6 +16269,7 @@
 
       async createNewClass() {
         await this.loadSubjectOptions();
+        await this.loadGradeBands();
         if (!window.portalModal) {
           alert('Modal system not loaded');
           return;
@@ -16261,23 +16315,8 @@
               </select>
             </div>
             <div class="form-group">
-              <label for="class-grade">Grade Level</label>
-              <select id="class-grade">
-                <option value="">All Grades</option>
-                <option value="K">Kindergarten</option>
-                <option value="1">1st Grade</option>
-                <option value="2">2nd Grade</option>
-                <option value="3">3rd Grade</option>
-                <option value="4">4th Grade</option>
-                <option value="5">5th Grade</option>
-                <option value="6">6th Grade</option>
-                <option value="7">7th Grade</option>
-                <option value="8">8th Grade</option>
-                <option value="9">9th Grade</option>
-                <option value="10">10th Grade</option>
-                <option value="11">11th Grade</option>
-                <option value="12">12th Grade</option>
-              </select>
+              <label for="class-grade">Grade Range</label>
+              <select id="class-grade">${this.buildGradeBandOptions('')}</select>
             </div>
             <div class="form-group">
               <label for="class-description">Description</label>
@@ -16483,7 +16522,7 @@
         const classData = {
           name: document.getElementById('class-name').value,
           subject: document.getElementById('class-subject').value,
-          grade_level: document.getElementById('class-grade').value || null,
+          grade_band: document.getElementById('class-grade').value || null,
           description: document.getElementById('class-description').value || null,
           max_students: parseInt(document.getElementById('max-students').value) || 30,
           teacher_id: this.userInfo.user.id,
@@ -16692,7 +16731,7 @@
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
               <div>
                 <strong>Subject:</strong> ${classData.subject}<br>
-                <strong>Grade Level:</strong> ${classData.grade_level || 'All Grades'}<br>
+                <strong>Grade Range:</strong> ${this.gradeBandLabel(classData.grade_band) || 'All Grades'}<br>
                 ${showTeacherFeatures ? `<strong>Class Code:</strong> <span style="background: var(--accent); color: black; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${classData.class_code}</span>` : ''}
               </div>
               <div>
@@ -18672,6 +18711,7 @@
 
       async editClass(classId) {
         await this.loadSubjectOptions();
+        await this.loadGradeBands();
         // Try to find in loaded classes, fall back to currentClass (for admin viewing other teachers' classes)
         let classData = this.classes.find(c => c.id === classId);
         if (!classData && this.currentClass && this.currentClass.id === classId) {
@@ -18784,6 +18824,10 @@
               <select id="edit-class-subject" required>
                 ${this.buildSubjectOptions(classData.subject)}
               </select>
+            </div>
+            <div class="form-group">
+              <label for="edit-class-grade">Grade Range</label>
+              <select id="edit-class-grade">${this.buildGradeBandOptions(classData.grade_band || '')}</select>
             </div>
             <div class="form-group">
               <label for="edit-class-description">Description</label>
@@ -18901,6 +18945,7 @@
         const updatedData = {
           name: document.getElementById('edit-class-name').value,
           subject: document.getElementById('edit-class-subject').value,
+          grade_band: document.getElementById('edit-class-grade')?.value || null,
           description: document.getElementById('edit-class-description').value || null,
           max_students: parseInt(document.getElementById('edit-max-students').value) || 30,
           grading_weight: gradingWeight,
@@ -27224,7 +27269,7 @@
             class: {
               name: classData.name,
               subject: classData.subject,
-              grade_level: classData.grade_level,
+              grade_band: classData.grade_band,
               class_code: classData.class_code,
               created_at: classData.created_at
             },
@@ -27363,7 +27408,7 @@
         csv += 'Field,Value\n';
         csv += `Class Name,"${data.class.name}"\n`;
         csv += `Subject,"${data.class.subject}"\n`;
-        csv += `Grade Level,"${data.class.grade_level || 'All'}"\n`;
+        csv += `Grade Range,"${this.gradeBandLabel(data.class.grade_band) || 'All'}"\n`;
         csv += `Class Code,"${data.class.class_code}"\n`;
         csv += `Teacher,"${data.teacher}"\n`;
         csv += `Exported,"${data.exported_at}"\n\n`;
@@ -27523,7 +27568,7 @@
             </head>
             <body>
               <h1>Class Report: ${classData.name}</h1>
-              <p><strong>Subject:</strong> ${classData.subject} | <strong>Grade Level:</strong> ${classData.grade_level || 'All'}</p>
+              <p><strong>Subject:</strong> ${classData.subject} | <strong>Grade Range:</strong> ${this.gradeBandLabel(classData.grade_band) || 'All'}</p>
               <p><strong>Report Generated:</strong> ${new Date().toLocaleString()}</p>
               
               <h2>📊 Class Overview</h2>
@@ -31298,7 +31343,14 @@
         // Get unique values for filter dropdowns
         const teachers = [...new Map(allClasses.filter(c => c.teacher).map(c => [c.teacher_id, c.teacher])).values()];
         const subjects = [...new Set(allClasses.map(c => c.subject).filter(Boolean))].sort();
-        const gradeLevels = [...new Set(allClasses.map(c => c.grade_level).filter(Boolean))].sort();
+        // Ordered by the bands' own sort_order, not alphabetically.
+        const bandOrder = (this._gradeBands || []).map(x => x.code);
+        const gradeLevels = [...new Set(allClasses.map(c => c.grade_band).filter(Boolean))]
+          .sort((a, b) => {
+            const ia = bandOrder.indexOf(a), ib = bandOrder.indexOf(b);
+            if (ia !== -1 && ib !== -1) return ia - ib;
+            return String(a).localeCompare(String(b));
+          });
 
         // Apply filters
         let filteredClasses = allClasses.filter(cls => {
@@ -31311,7 +31363,7 @@
             return false;
           }
           // Grade level filter
-          if (this.adminClassFilters.gradeLevel && cls.grade_level !== this.adminClassFilters.gradeLevel) {
+          if (this.adminClassFilters.gradeLevel && cls.grade_band !== this.adminClassFilters.gradeLevel) {
             return false;
           }
           // Search filter
@@ -31394,7 +31446,7 @@
                     style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-color);">
                     <option value="">All Grades</option>
                     ${gradeLevels.map(g => `
-                      <option value="${g}" ${this.adminClassFilters.gradeLevel === g ? 'selected' : ''}>${g}</option>
+                      <option value="${g}" ${this.adminClassFilters.gradeLevel === g ? 'selected' : ''}>${this.gradeBandLabel(g) || g}</option>
                     `).join('')}
                   </select>
                 </div>
@@ -31420,7 +31472,7 @@
                       <p>${cls.description || 'No description available'}</p>
                       <div class="class-stats">
                         <span>📚 ${cls.subject}</span>
-                        <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+                        <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
                       </div>
                       <div class="class-stats" style="margin-top: 8px;">
                         <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
@@ -31447,7 +31499,7 @@
                       <p>${cls.description || 'No description available'}</p>
                       <div class="class-stats">
                         <span>📚 ${cls.subject}</span>
-                        <span>🎓 ${cls.grade_level || 'All Grades'}</span>
+                        <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
                       </div>
                       <div class="class-stats" style="margin-top: 8px;">
                         <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
@@ -31568,7 +31620,7 @@
                          </p>
                          <div style="font-size: 12px; color: var(--muted);">
                            <span>📚 ${cls.subject || 'N/A'}</span> •
-                           <span>🎓 ${cls.grade_level || 'All Grades'}</span> •
+                           <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span> •
                            <span>👨‍🏫 ${teacher ? `${teacher.first_name} ${teacher.last_name}` : 'No Teacher'}</span>
                          </div>
                        </div>
@@ -32975,7 +33027,7 @@
             const classIds = [...new Set(enrollments.map(e => e.class_id))];
             const { data: classes } = await this.supabaseQuery(() => this.auth.supabase
               .from('classes')
-              .select('id, name, subject, grade_level, teacher_id')
+              .select('id, name, subject, grade_band, teacher_id')
               .in('id', classIds));
             
             // Create class map
