@@ -15919,15 +15919,26 @@
           `;
         } else if (userType === 'student') {
           // Filter student classes by enrollment status (active vs archived/withdrawn)
-          const activeEnrollments = matched.filter(c => c.enrollment_status === 'active');
+          // Two independent things can hide a class from a student: they
+          // withdrew (enrollment_status), or the teacher closed the class
+          // (status). Only the first was handled, so a closed class the student
+          // is still enrolled in sat in their current list all year.
+          const activeEnrollments = matched.filter(c => c.enrollment_status === 'active' && c.status !== 'closed');
+          const closedEnrollments = matched.filter(c => c.enrollment_status === 'active' && c.status === 'closed');
           const withdrawnEnrollments = matched.filter(c => c.enrollment_status === 'archived');
           const hasWithdrawn = withdrawnEnrollments.length > 0;
+          const hasClosed = closedEnrollments.length > 0;
 
           classesActions.innerHTML = `
             <div style="display: flex; gap: 10px; align-items: center;">
               <button class="btn btn-primary" onclick="app.enrollInClass()">
                 ➕ Join Class
               </button>
+              ${hasClosed ? `
+                <button class="btn btn-secondary" onclick="app.toggleClosedClasses()" id="toggle-closed-btn">
+                  ${this.showClosedClasses ? 'Hide' : 'Show'} Closed (${closedEnrollments.length})
+                </button>
+              ` : ''}
               ${hasWithdrawn ? `
                 <button class="btn btn-secondary" onclick="app.toggleWithdrawnClasses()" id="toggle-withdrawn-btn">
                   ${this.showWithdrawnClasses ? 'Show Current' : 'Show Withdrawn'} (${withdrawnEnrollments.length})
@@ -15988,7 +15999,8 @@
           `;
         } else if (userType === 'student') {
           // Student view - filter by enrollment status (active vs withdrawn/archived)
-          const activeEnrollments = matched.filter(c => c.enrollment_status === 'active');
+          const activeEnrollments = matched.filter(c => c.enrollment_status === 'active' && c.status !== 'closed');
+          const closedEnrollments = matched.filter(c => c.enrollment_status === 'active' && c.status === 'closed');
           const withdrawnEnrollments = matched.filter(c => c.enrollment_status === 'archived');
 
           let html = '';
@@ -16020,11 +16032,25 @@
                   ${activeEnrollments.map(cls => this.renderClassCard(cls)).join('')}
                 </div>
               `;
-            } else {
+            } else if (!this.showClosedClasses) {
               html += `
                 <div class="empty-state">
                   <h3>📚 No Active Classes</h3>
                   <p>You're not currently enrolled in any classes.</p>
+                </div>
+              `;
+            }
+
+            // Closed classes are hidden until asked for. The work and grades
+            // are still there, which is why they are reachable at all rather
+            // than simply dropped from the list.
+            if (this.showClosedClasses && closedEnrollments.length > 0) {
+              html += `
+                <div style="margin: 22px 0 12px; color: var(--muted); font-size: 13px;">
+                  Closed classes - past work and grades stay available
+                </div>
+                <div class="grid grid-3">
+                  ${closedEnrollments.map(cls => this.renderClassCard(cls, true)).join('')}
                 </div>
               `;
             }
@@ -23060,6 +23086,13 @@
             window.portalLoading.show('submit', 'Submitting assignment...');
           }
       
+          // The Drive file this submission points at right now. Resubmitting
+          // overwrites drive_file_id, and without this the old file stays in
+          // the assignment folder forever - the teacher opens it, finds two
+          // files for one student, and has no way to tell which is current.
+          const previousDriveFileId = this.assignments
+            ?.find(a => a.id === assignmentId)?.student_submission?.drive_file_id || null;
+
           const submissionData = {
             assignment_id: assignmentId,
             student_id: this.userInfo.user.id,
@@ -23140,6 +23173,15 @@
           if (error) {
             console.error('Submission DB error:', error);
             throw new Error(error.message || 'Failed to save submission');
+          }
+
+          if (previousDriveFileId && submissionData.drive_file_id
+              && previousDriveFileId !== submissionData.drive_file_id) {
+            // Best effort, and deliberately after the write: a failure here
+            // leaves a stray file, which is untidy. Doing it first would risk
+            // leaving the student with no file at all.
+            this.trashDriveFile(previousDriveFileId).catch(e =>
+              console.warn('Could not remove the replaced Drive file:', e));
           }
 
           this.showNotification('Assignment submitted successfully!', 'success');
@@ -25385,6 +25427,34 @@
       // ==================== FILE UPLOAD & DOWNLOAD HELPERS ====================
 
       // Resumable upload to Google Drive, proxied through edge function to avoid CORS
+      // Moves a replaced submission file to the Drive trash. The server checks
+      // the id really is a recorded submission and that the caller owns it or
+      // teaches the class, so this cannot be used to remove arbitrary files.
+      // Trash rather than delete: recoverable for 30 days, because a student
+      // replacing the wrong file should not be final.
+      async trashDriveFile(fileId) {
+        const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+        const session = sessionResult?.data?.session;
+        if (!session) throw new Error('No active session');
+
+        const resp = await fetch(
+          'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`
+            },
+            body: JSON.stringify({ action: 'trashFile', fileId })
+          }
+        );
+        const result = await resp.json().catch(() => ({}));
+        if (!resp.ok || !result.success) {
+          throw new Error(result.error || 'Could not remove the old file');
+        }
+        return true;
+      }
+
       async uploadFileToDrive(file, { assignmentId, teacherId, className, assignmentTitle, studentName, onProgress }) {
         const EDGE_FN_URL = 'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url';
 
