@@ -16876,6 +16876,10 @@
                   <button class="btn btn-secondary" onclick="app.viewGrades('${classId}')">
                     📊 My Grades
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showClassResources('${classId}')"
+                    title="Material your teacher has shared for this class">
+                    📚 Class Resources
+                  </button>
                 `}
               </div>
             </div>
@@ -22071,7 +22075,7 @@
                 ${submission.file_url ? `
                   <div style="margin: 15px 0;">
                     <strong>Attached File:</strong> 
-                    <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" class="btn btn-secondary small" style="margin-left: 10px;">
+                    <a ${this.fileLinkAttrs(submission)} class="btn btn-secondary small" style="margin-left: 10px;">
                       📎 ${this.escapeHtml(submission.file_name || 'View File')}
                     </a>
                   </div>
@@ -22438,7 +22442,7 @@
                       <span style="font-size: 20px;">📎</span>
                       <div style="flex: 1;">
                         <strong style="font-size: 13px;">File Attachment:</strong>
-                        <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                        <a ${this.fileLinkAttrs(submission)} style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
                           ${this.escapeHtml(submission.file_name || 'View File')} →
                         </a>
                       </div>
@@ -22578,7 +22582,7 @@
                           <span style="font-size: 20px;">📎</span>
                           <div style="flex: 1;">
                             <strong style="font-size: 13px;">File Attachment:</strong>
-                            <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                            <a ${this.fileLinkAttrs(submission)} style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
                               ${this.escapeHtml(submission.file_name || 'View File')} →
                             </a>
                           </div>
@@ -22881,7 +22885,7 @@
                           <span style="font-size: 20px;">📎</span>
                           <div style="flex: 1;">
                             <strong style="font-size: 13px;">File Attachment:</strong>
-                            <a href="${this.sanitizeLink(existingSubmission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                            <a ${this.fileLinkAttrs(existingSubmission)} style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
                               ${this.escapeHtml(existingSubmission.file_name || 'View File')} →
                             </a>
                           </div>
@@ -22932,7 +22936,7 @@
                           <span style="font-size: 20px;">📎</span>
                           <div style="flex: 1;">
                             <strong style="font-size: 13px;">File Attachment:</strong>
-                            <a href="${this.sanitizeLink(existingSubmission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                            <a ${this.fileLinkAttrs(existingSubmission)} style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
                               ${this.escapeHtml(existingSubmission.file_name || 'View File')} →
                             </a>
                           </div>
@@ -23280,7 +23284,7 @@
                     <span style="font-size: 24px;">📎</span>
                     <div style="flex: 1;">
                       <strong>${this.escapeHtml(submission.file_name)}</strong>
-                      <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 12px; margin-top: 4px;">
+                      <a ${this.fileLinkAttrs(submission)} style="display: block; color: var(--accent); font-size: 12px; margin-top: 4px;">
                         View Current File →
                       </a>
                     </div>
@@ -23736,7 +23740,7 @@
                       <span style="font-size: 20px;">📎</span>
                       <div style="flex: 1;">
                         <strong style="font-size: 13px;">File Attachment:</strong>
-                        <a href="${this.sanitizeLink(submission.file_url)}" target="_blank" style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
+                        <a ${this.fileLinkAttrs(submission)} style="display: block; color: var(--accent); font-size: 13px; margin-top: 4px; text-decoration: underline;">
                           ${this.escapeHtml(submission.file_name || 'View File')} →
                         </a>
                       </div>
@@ -25453,6 +25457,139 @@
           throw new Error(result.error || 'Could not remove the old file');
         }
         return true;
+      }
+
+      // Submissions live in the school Drive, owned by the school account. A
+      // student clicking a Drive link is nobody to Google, so it answers
+      // "request access" - which is exactly what they saw. Route through the
+      // portal, which reads the file with the school token and hands back the
+      // bytes. Falls back to the stored URL for anything uploaded before Drive,
+      // or to a teacher's own Drive where the link may genuinely work.
+      fileLinkAttrs(sub) {
+        if (sub && sub.drive_file_id) {
+          const id = String(sub.drive_file_id).replace(/[^a-zA-Z0-9_-]/g, '');
+          const name = String(sub.file_name || 'file').replace(/[^A-Za-z0-9 ._()-]/g, '_');
+          return `href="#" onclick="event.preventDefault(); app.openDriveFile('${id}', '${this.escapeHtml(name)}')"`;
+        }
+        return `href="${this.sanitizeLink(sub && sub.file_url)}" target="_blank"`;
+      }
+
+      // Students have no Google access to the school Drive, so the Resources
+      // folder is listed here and each item is fetched through the portal.
+      // Read-only by design: it lists what the teacher put there and never
+      // creates the folder - that stays a teacher action.
+      async showClassResources(classId) {
+        try {
+          this.showNotification('Loading resources...', 'info');
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ action: 'listResources', classId })
+            }
+          );
+          const result = await resp.json().catch(() => ({}));
+          if (!resp.ok || !result.success) {
+            throw new Error(result.error || 'Could not load resources');
+          }
+
+          const files = result.files || [];
+          const sizeOf = f => {
+            const n = Number(f.size || 0);
+            if (!n) return '';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let i = 0, v = n;
+            while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+            return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${units[i]}`;
+          };
+          const isFolder = f => f.mimeType === 'application/vnd.google-apps.folder';
+          const safeName = n => String(n || 'file').replace(/[^A-Za-z0-9 ._()-]/g, '_');
+
+          const body = files.length ? `
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              ${files.map(f => isFolder(f) ? `
+                <div style="padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); font-size: 13px;">
+                  \u{1F4C1} ${this.escapeHtml(f.name)}
+                  <span style="font-size: 11px;">(folder - ask your teacher to share these files directly)</span>
+                </div>
+              ` : `
+                <button class="btn btn-secondary" style="justify-content: flex-start; text-align: left;"
+                  onclick="app.openDriveFile('${this.escapeHtml(f.id)}', '${this.escapeHtml(safeName(f.name))}', '${classId}')">
+                  \u{1F4C4} ${this.escapeHtml(f.name)}
+                  ${sizeOf(f) ? `<span style="color: var(--muted); font-size: 11px; margin-left: 8px;">${sizeOf(f)}</span>` : ''}
+                </button>
+              `).join('')}
+            </div>
+          ` : `
+            <div class="empty-state">
+              <h3>Nothing here yet</h3>
+              <p>Your teacher has not added any resources for this class.</p>
+            </div>
+          `;
+
+          this.showModal('class-resources', 'Class Resources', `
+            <div>
+              <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
+                Files your teacher has shared. Selecting one downloads it through the portal.
+              </p>
+              ${body}
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('class-resources')">Close</button>
+              </div>
+            </div>
+          `);
+        } catch (e) {
+          console.error('showClassResources failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
+      // Streams the file back through the portal and saves it. No Google
+      // sign-in, and nothing in the school Drive is shared outward.
+      async openDriveFile(fileId, fileName, classId = null) {
+        try {
+          this.showNotification('Opening file...', 'info');
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ action: 'download', fileId, classId })
+            }
+          );
+          if (!resp.ok) {
+            const err = await resp.json().catch(() => ({}));
+            throw new Error(err.error || 'Could not open that file');
+          }
+
+          const blob = await resp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName || 'download';
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (e) {
+          console.error('openDriveFile failed:', e);
+          this.showNotification(e.message, 'error');
+        }
       }
 
       async uploadFileToDrive(file, { assignmentId, teacherId, className, assignmentTitle, studentName, onProgress }) {
