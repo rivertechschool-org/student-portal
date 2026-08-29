@@ -25560,11 +25560,17 @@
                   <span style="font-size: 11px;">(folder - ask your teacher to share these files directly)</span>
                 </div>
               ` : `
-                <button class="btn btn-secondary" style="justify-content: flex-start; text-align: left;"
-                  onclick="app.openDriveFile('${this.escapeHtml(f.id)}', '${this.escapeHtml(safeName(f.name))}', '${classId}')">
-                  \u{1F4C4} ${this.escapeHtml(f.name)}
-                  ${sizeOf(f) ? `<span style="color: var(--muted); font-size: 11px; margin-left: 8px;">${sizeOf(f)}</span>` : ''}
-                </button>
+                <div style="display: flex; gap: 6px; align-items: stretch;">
+                  <button class="btn btn-secondary" style="flex: 1; justify-content: flex-start; text-align: left;"
+                    onclick="app.previewDriveFile('${this.escapeHtml(f.id)}', '${this.escapeHtml(safeName(f.name))}', '${classId}', '${this.escapeHtml(f.mimeType || '')}')">
+                    \u{1F4C4} ${this.escapeHtml(f.name)}
+                    ${sizeOf(f) ? `<span style="color: var(--muted); font-size: 11px; margin-left: 8px;">${sizeOf(f)}</span>` : ''}
+                  </button>
+                  <button class="btn btn-secondary" title="Download"
+                    onclick="app.openDriveFile('${this.escapeHtml(f.id)}', '${this.escapeHtml(safeName(f.name))}', '${classId}')">
+                    \u{2193}
+                  </button>
+                </div>
               `).join('')}
             </div>
           ` : `
@@ -25577,7 +25583,8 @@
           this.showModal('class-resources', 'Class Resources', `
             <div>
               <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
-                Files your teacher has shared. Selecting one downloads it through the portal.
+                Files your teacher has shared. Selecting one opens it here; the arrow downloads it.
+                PDFs, images, text, audio and video preview in place - other formats download.
               </p>
               ${body}
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -25591,40 +25598,130 @@
         }
       }
 
+      // One fetch for both viewing and saving. The bytes come back through the
+      // portal using the school token, so there is no Google sign-in and
+      // nothing in the Drive is shared outward.
+      async _fetchDriveBlob(fileId, classId = null) {
+        const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+        const session = sessionResult?.data?.session;
+        if (!session) throw new Error('No active session');
+
+        const resp = await fetch(
+          'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`
+            },
+            body: JSON.stringify({ action: 'download', fileId, classId })
+          }
+        );
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.error || 'Could not open that file');
+        }
+        return await resp.blob();
+      }
+
+      // What a browser can actually render on its own.
+      //
+      // HTML and SVG are deliberately NOT previewable even though a browser
+      // would happily display them: both can carry script, and a blob URL runs
+      // in this page's origin. A resource that could run code in the portal is
+      // not worth an inline preview - those download instead.
+      //
+      // Office formats (.docx/.xlsx/.pptx) have no native renderer. Google's
+      // own formats do preview, because the server already exports them as PDF.
+      _previewKind(mime, name) {
+        const m = String(mime || '').toLowerCase();
+        const ext = String(name || '').toLowerCase().split('.').pop();
+        if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+        if (m.startsWith('image/') && !m.includes('svg')) return 'image';
+        if (m.startsWith('audio/')) return 'audio';
+        if (m.startsWith('video/')) return 'video';
+        if (m.startsWith('text/') && !m.includes('html')) return 'text';
+        if (m === 'application/json') return 'text';
+        return null;
+      }
+
+      // Opens a resource in the portal rather than downloading it. Falls back
+      // to a download for anything the browser cannot show.
+      async previewDriveFile(fileId, fileName, classId = null, mimeHint = '') {
+        let objectUrl = null;
+        try {
+          this.showNotification('Opening preview...', 'info');
+          const blob = await this._fetchDriveBlob(fileId, classId);
+          const kind = this._previewKind(blob.type || mimeHint, fileName);
+
+          if (!kind) {
+            this.showNotification('That file type cannot be previewed - downloading instead.', 'info');
+            return this._saveBlob(blob, fileName);
+          }
+
+          objectUrl = URL.createObjectURL(blob);
+          const safe = this.escapeHtml(fileName || 'File');
+          const frame =
+            kind === 'pdf'   ? `<iframe src="${objectUrl}" style="width:100%; height:70vh; border:1px solid var(--border); border-radius:8px; background:#fff;"></iframe>`
+          : kind === 'image' ? `<img src="${objectUrl}" alt="${safe}" style="max-width:100%; max-height:70vh; display:block; margin:0 auto; border-radius:8px;">`
+          : kind === 'audio' ? `<audio controls src="${objectUrl}" style="width:100%;"></audio>`
+          : kind === 'video' ? `<video controls src="${objectUrl}" style="width:100%; max-height:70vh; border-radius:8px;"></video>`
+          : `<pre id="preview-text" style="white-space:pre-wrap; word-break:break-word; max-height:70vh; overflow:auto; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--card); font-size:13px;"></pre>`;
+
+          this.showModal('resource-preview', safe, `
+            <div>
+              ${frame}
+              <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end;">
+                <button class="btn btn-secondary" onclick="app.openDriveFile('${this.escapeHtml(String(fileId))}', '${safe}', ${classId ? `'${classId}'` : 'null'})">Download</button>
+                <button class="btn btn-secondary" onclick="app.closeResourcePreview()">Close</button>
+              </div>
+            </div>
+          `);
+
+          // Text is injected as textContent, never as HTML - a resource must
+          // not be able to put markup into the portal.
+          if (kind === 'text') {
+            const el = document.getElementById('preview-text');
+            if (el) el.textContent = await blob.text();
+          }
+
+          // Held so the object URL can be released when the modal closes;
+          // revoking it now would blank the preview.
+          this._previewObjectUrl = objectUrl;
+          objectUrl = null;
+        } catch (e) {
+          console.error('previewDriveFile failed:', e);
+          this.showNotification(e.message, 'error');
+        } finally {
+          if (objectUrl) URL.revokeObjectURL(objectUrl);
+        }
+      }
+
+      closeResourcePreview() {
+        if (this._previewObjectUrl) {
+          URL.revokeObjectURL(this._previewObjectUrl);
+          this._previewObjectUrl = null;
+        }
+        this.closeModal('resource-preview');
+      }
+
+      _saveBlob(blob, fileName) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName || 'download';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      }
+
       // Streams the file back through the portal and saves it. No Google
       // sign-in, and nothing in the school Drive is shared outward.
       async openDriveFile(fileId, fileName, classId = null) {
         try {
           this.showNotification('Opening file...', 'info');
-          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
-          const session = sessionResult?.data?.session;
-          if (!session) throw new Error('No active session');
-
-          const resp = await fetch(
-            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/get-drive-upload-url',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${session.access_token}`
-              },
-              body: JSON.stringify({ action: 'download', fileId, classId })
-            }
-          );
-          if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}));
-            throw new Error(err.error || 'Could not open that file');
-          }
-
-          const blob = await resp.blob();
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = fileName || 'download';
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          setTimeout(() => URL.revokeObjectURL(url), 60000);
+          this._saveBlob(await this._fetchDriveBlob(fileId, classId), fileName);
         } catch (e) {
           console.error('openDriveFile failed:', e);
           this.showNotification(e.message, 'error');
