@@ -30749,6 +30749,273 @@
         }
       }
 
+      // ---------------- Curriculum lists (subjects + grade bands) ----------
+      //
+      // These two tables drive the class form, the class filters, the report
+      // card and - for subjects - which of the five Drive groups a class folder
+      // lands in. They were editable only by hand in SQL, which meant every
+      // change to the school's own vocabulary needed someone comfortable in the
+      // database.
+      //
+      // Writes go through rt_save_* / rt_delete_*, never straight at the
+      // tables. Classes reference both by VALUE (classes.subject is the subject
+      // text, classes.grade_band the band code), so a rename has to move the
+      // classes with it in the same transaction or they quietly stop resolving.
+
+      async loadCurriculumLists() {
+        const { data, error } = await this.supabaseQuery(() =>
+          this.auth.supabase.rpc('rt_curriculum_lists'));
+        if (error) throw error;
+        const parsed = (typeof data === 'string') ? JSON.parse(data) : data;
+        this._curriculum = { subjects: parsed?.subjects || [], bands: parsed?.bands || [] };
+        return this._curriculum;
+      }
+
+      async showCurriculumLists() {
+        try {
+          this.showNotification('Loading curriculum lists...', 'info');
+          await this.loadCurriculumLists();
+          this.renderCurriculumModal();
+        } catch (e) {
+          console.error('showCurriculumLists failed:', e);
+          this.showNotification(e.message || 'Could not load the lists', 'error');
+        }
+      }
+
+      renderCurriculumModal(tab = 'subjects') {
+        this._curriculumTab = tab;
+        const c = this._curriculum || { subjects: [], bands: [] };
+        const GROUPS = ['Core', 'Tech', 'Arts', 'Life', 'Health'];
+
+        const tabBtn = (id, label) => `
+          <button class="btn ${tab === id ? 'btn-primary' : 'btn-secondary'}"
+            onclick="app.renderCurriculumModal('${id}')">${label}</button>`;
+
+        const subjectRows = c.subjects.map((s, i) => `
+          <tr>
+            <td style="padding:6px;">
+              <input type="text" value="${this.escapeHtml(s.subject)}"
+                id="subj-name-${i}"
+                style="width:100%; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+            </td>
+            <td style="padding:6px;">
+              <select id="subj-group-${i}"
+                style="padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+                ${GROUPS.map(g => `<option value="${g}"${g === s.group_name ? ' selected' : ''}>${g}</option>`).join('')}
+              </select>
+            </td>
+            <td style="padding:6px;">
+              <input type="text" value="${this.escapeHtml((s.aliases || []).join(', '))}"
+                id="subj-alias-${i}" placeholder="other names, comma separated"
+                style="width:100%; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+            </td>
+            <td style="padding:6px; text-align:center; color:var(--muted); font-size:12px;">${s.class_count}</td>
+            <td style="padding:6px; white-space:nowrap;">
+              <button class="btn btn-secondary small" onclick="app.saveSubjectRow(${i})">Save</button>
+              <button class="btn btn-secondary small" onclick="app.deleteSubjectRow(${i})">Delete</button>
+            </td>
+          </tr>`).join('');
+
+        const bandRows = c.bands.map(b => `
+          <tr>
+            <td style="padding:6px;">
+              <input type="text" value="${this.escapeHtml(b.label)}" id="band-label-${b.code}"
+                style="width:100%; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+            </td>
+            <td style="padding:6px;">
+              <input type="number" value="${b.min_grade}" id="band-min-${b.code}" style="width:70px; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+              <span style="color:var(--muted);">to</span>
+              <input type="number" value="${b.max_grade}" id="band-max-${b.code}" style="width:70px; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+            </td>
+            <td style="padding:6px;">
+              <input type="number" value="${b.sort_order}" id="band-sort-${b.code}" style="width:70px; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+            </td>
+            <td style="padding:6px; text-align:center; color:var(--muted); font-size:12px;">${b.class_count}</td>
+            <td style="padding:6px; white-space:nowrap;">
+              <button class="btn btn-secondary small" onclick="app.saveBandRow('${b.code}')">Save</button>
+              <button class="btn btn-secondary small" onclick="app.deleteBandRow('${b.code}')">Delete</button>
+            </td>
+          </tr>`).join('');
+
+        const th = 'text-align:left; padding:6px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted);';
+
+        const subjectsPane = `
+          <p style="color:var(--muted); font-size:12px; margin-bottom:12px;">
+            The subject decides which of the five Drive groups a class folder lands in.
+            Other names are the older spellings that should still resolve here - "History"
+            for Social Studies, "P.E." for Physical Education - so existing classes keep
+            working without being renamed.
+          </p>
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+              <thead><tr>
+                <th style="${th}">Subject</th><th style="${th}">Drive group</th>
+                <th style="${th}">Other names</th><th style="${th}">Classes</th><th style="${th}"></th>
+              </tr></thead>
+              <tbody>${subjectRows}</tbody>
+              <tfoot><tr>
+                <td style="padding:6px;"><input type="text" id="new-subj-name" placeholder="New subject"
+                  style="width:100%; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;"></td>
+                <td style="padding:6px;">
+                  <select id="new-subj-group" style="padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+                    ${GROUPS.map(g => `<option value="${g}">${g}</option>`).join('')}
+                  </select>
+                </td>
+                <td style="padding:6px;"><input type="text" id="new-subj-alias" placeholder="optional"
+                  style="width:100%; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;"></td>
+                <td></td>
+                <td style="padding:6px;"><button class="btn btn-primary small" onclick="app.addSubjectRow()">Add</button></td>
+              </tr></tfoot>
+            </table>
+          </div>`;
+
+        const bandsPane = `
+          <p style="color:var(--muted); font-size:12px; margin-bottom:12px;">
+            Classes are assigned a band rather than a single grade, and the band appears in
+            the class Drive folder name. Bands cannot share a grade - an overlap would make
+            it ambiguous which band a class belongs to.
+          </p>
+          <div style="overflow-x:auto;">
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+              <thead><tr>
+                <th style="${th}">Band</th><th style="${th}">Grades</th>
+                <th style="${th}">Order</th><th style="${th}">Classes</th><th style="${th}"></th>
+              </tr></thead>
+              <tbody>${bandRows}</tbody>
+              <tfoot><tr>
+                <td style="padding:6px;"><input type="text" id="new-band-label" placeholder="New band"
+                  style="width:100%; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;"></td>
+                <td style="padding:6px;">
+                  <input type="number" id="new-band-min" placeholder="1" style="width:70px; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+                  <span style="color:var(--muted);">to</span>
+                  <input type="number" id="new-band-max" placeholder="2" style="width:70px; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;">
+                </td>
+                <td style="padding:6px;"><input type="number" id="new-band-sort" placeholder="9" style="width:70px; padding:6px; background:var(--card); color:var(--text); border:1px solid var(--border); border-radius:6px;"></td>
+                <td></td>
+                <td style="padding:6px;"><button class="btn btn-primary small" onclick="app.addBandRow()">Add</button></td>
+              </tr></tfoot>
+            </table>
+          </div>`;
+
+        const content = `
+          <div>
+            <div style="display:flex; gap:8px; margin-bottom:16px;">
+              ${tabBtn('subjects', 'Subjects &amp; Drive groups')}
+              ${tabBtn('bands', 'Grade bands')}
+            </div>
+            ${tab === 'subjects' ? subjectsPane : bandsPane}
+            <div class="card" style="margin-top:16px; padding:10px 14px; border-left:3px solid var(--accent-2);">
+              <div style="font-size:12px; color:var(--muted);">
+                Renaming carries every class with it. Existing Drive folders keep their old
+                names though - a folder is remembered by id, so rename it in Drive too if the
+                name matters. Rows in use by a class cannot be deleted.
+              </div>
+            </div>
+            <div style="display:flex; gap:10px; margin-top:18px; justify-content:flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('curriculum-lists')">Close</button>
+            </div>
+          </div>`;
+
+        this.showModal('curriculum-lists', 'Subjects & Grade Bands', content);
+      }
+
+      _val(id) {
+        const el = document.getElementById(id);
+        return el ? el.value.trim() : '';
+      }
+
+      // Cached lists elsewhere in the app are dropped after any change, so the
+      // class form does not keep offering the old vocabulary for the session.
+      async _afterCurriculumChange(msg) {
+        this._subjectGroups = null;
+        this._gradeBands = null;
+        await this.loadCurriculumLists();
+        await this.loadSubjectOptions();
+        await this.loadGradeBands();
+        this.renderCurriculumModal(this._curriculumTab);
+        this.showNotification(msg, 'success');
+      }
+
+      async _curriculumRpc(fn, args, okMsg) {
+        try {
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc(fn, args));
+          if (error) throw error;
+          const r = (typeof data === 'string') ? JSON.parse(data) : data;
+          if (!r || !r.success) throw new Error(r?.error || 'That change was not saved');
+          await this._afterCurriculumChange(
+            r.classes_moved ? `${okMsg} ${r.classes_moved} class(es) updated.` : okMsg);
+        } catch (e) {
+          console.error(`${fn} failed:`, e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
+      _aliasList(raw) {
+        return String(raw || '').split(',').map(s => s.trim()).filter(Boolean);
+      }
+
+      saveSubjectRow(i) {
+        const row = (this._curriculum?.subjects || [])[i];
+        if (!row) return;
+        return this._curriculumRpc('rt_save_subject', {
+          p_old_subject: row.subject,
+          p_subject: this._val(`subj-name-${i}`),
+          p_group: this._val(`subj-group-${i}`),
+          p_aliases: this._aliasList(this._val(`subj-alias-${i}`)),
+        }, 'Subject saved.');
+      }
+
+      addSubjectRow() {
+        const name = this._val('new-subj-name');
+        if (!name) { this.showNotification('Enter a subject name', 'error'); return; }
+        return this._curriculumRpc('rt_save_subject', {
+          p_old_subject: null,
+          p_subject: name,
+          p_group: this._val('new-subj-group'),
+          p_aliases: this._aliasList(this._val('new-subj-alias')),
+        }, 'Subject added.');
+      }
+
+      deleteSubjectRow(i) {
+        const row = (this._curriculum?.subjects || [])[i];
+        if (!row) return;
+        if (!confirm(`Remove "${row.subject}" from the subject list?`)) return;
+        return this._curriculumRpc('rt_delete_subject', { p_subject: row.subject }, 'Subject removed.');
+      }
+
+      saveBandRow(code) {
+        return this._curriculumRpc('rt_save_grade_band', {
+          p_old_code: code,
+          p_code: code,
+          p_label: this._val(`band-label-${code}`),
+          p_min: Number(this._val(`band-min-${code}`)),
+          p_max: Number(this._val(`band-max-${code}`)),
+          p_sort: Number(this._val(`band-sort-${code}`)) || 0,
+        }, 'Band saved.');
+      }
+
+      addBandRow() {
+        const label = this._val('new-band-label');
+        if (!label) { this.showNotification('Enter a band name', 'error'); return; }
+        // The code is derived from the label so an admin never has to invent an
+        // identifier; it is only ever used as a key.
+        const code = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        return this._curriculumRpc('rt_save_grade_band', {
+          p_old_code: null,
+          p_code: code,
+          p_label: label,
+          p_min: Number(this._val('new-band-min')),
+          p_max: Number(this._val('new-band-max')),
+          p_sort: Number(this._val('new-band-sort')) || 0,
+        }, 'Band added.');
+      }
+
+      deleteBandRow(code) {
+        if (!confirm('Remove this grade band?')) return;
+        return this._curriculumRpc('rt_delete_grade_band', { p_code: code }, 'Band removed.');
+      }
+
       async renderAdminSettings() {
         const section = document.getElementById('admin-settings-section');
         if (!section) {
@@ -30768,6 +31035,16 @@
             </div>
             
             ${this.renderSchoolDriveCard()}
+
+            <div class="card" style="margin-bottom: 20px;">
+              <h3 style="margin-bottom: 6px;">Subjects &amp; Grade Bands</h3>
+              <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
+                The school's own vocabulary: the 37 subjects and which of the five Drive groups each
+                belongs to, and the grade bands classes are assigned to. These drive the class form,
+                the class filters, the report card, and where a class folder lands in the Drive.
+              </p>
+              <button class="btn btn-primary" onclick="app.showCurriculumLists()">Edit lists</button>
+            </div>
 
             <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">🏫 School Information</h3>
