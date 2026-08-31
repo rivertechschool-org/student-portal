@@ -3437,10 +3437,22 @@
                     if (classIds.length > 0) {
                         // Build class name lookup map
                         const { data: classRows } = await sb.from('classes')
-                            .select('id, name, facility_id').in('id', classIds);
+                            .select('id, name, facility_id, status').in('id', classIds);
+
+                        // A closed class keeps its enrolments and its schedule, so
+                        // without this its meetings, assignments and tests all stayed
+                        // on the calendar for the rest of the year.
+                        //
+                        // Filtered here rather than with .neq('status','closed') on the
+                        // query: in PostgREST `status <> 'closed'` is NULL for a row
+                        // whose status was never set, and a NULL predicate drops the
+                        // row - every class with no status would have vanished.
+                        const openRows = (classRows || []).filter(c => c.status !== 'closed');
+                        classIds = openRows.map(c => c.id);
+
                         const classNameMap = {};
                         const classFacilityMap = {};
-                        (classRows || []).forEach(c => { classNameMap[c.id] = c.name; if (c.facility_id) classFacilityMap[c.id] = c.facility_id; });
+                        openRows.forEach(c => { classNameMap[c.id] = c.name; if (c.facility_id) classFacilityMap[c.id] = c.facility_id; });
 
                         // Fetch facility names for classes that have a facility_id
                         const facilityNameMap = {};
@@ -3494,6 +3506,7 @@
                         // Class schedule (recurring)
                         const { data: schedule } = await sb.from('class_schedule')
                             .select('day_of_week, period, class_id')
+                            .order('period')
                             .in('class_id', classIds);
                         (schedule || []).forEach(s => {
                             const name = classNameMap[s.class_id] || 'Class';
@@ -3741,6 +3754,14 @@
                     listHTML = '<p style="color:var(--muted); padding: 12px 0;">No events on this day.</p>';
                 } else {
                     for (const [key, evts] of Object.entries(grouped)) {
+                        // Class meetings and attendance carry a period; read in period
+                        // order they match the school day, which is how anyone reading
+                        // the day expects to see them.
+                        if (evts.some(e => e.period != null)) {
+                            evts.sort((a, b) =>
+                                (a.period ?? 99) - (b.period ?? 99) ||
+                                String(a.title || '').localeCompare(String(b.title || '')));
+                        }
                         listHTML += `<div style="margin-bottom:8px;font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;">${typeLabels[key] || key}</div>`;
                         listHTML += '<ul class="day-events-list">';
                         evts.forEach(ev => {
