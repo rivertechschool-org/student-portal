@@ -21326,6 +21326,45 @@
         }
       }
 
+      // Moves an assignment's submissions folder to the Drive trash. Trashed
+      // rather than deleted because it holds student work - recoverable for 30
+      // days is the difference between undoing a mistake and losing a term of
+      // submissions.
+      //
+      // Never throws: the caller decides what to do about a failure, and a
+      // Drive outage should not make assignments undeletable.
+      async trashAssignmentFolder(assignmentId) {
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/ensure-drive-folder',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ scope: 'trash_assignment_folder', assignmentId })
+            }
+          );
+          const result = await resp.json().catch(() => ({}));
+
+          // A server without this scope answers "Unknown scope". Treated as a
+          // failure with a reason rather than a silent success - otherwise the
+          // folder is abandoned and nobody finds out.
+          if (!resp.ok || !result.success) {
+            return { ok: false, error: result.error || 'The Drive folder was not removed.', folderUrl: result.folderUrl };
+          }
+          return { ok: true, trashed: result.trashed || 0 };
+        } catch (e) {
+          console.warn('trashAssignmentFolder failed:', e);
+          return { ok: false, error: e.message };
+        }
+      }
+
       async deleteAssignment(assignmentId) {
         try {
           // First get assignment details and check for submissions
@@ -21371,6 +21410,24 @@
             }
           }
       
+          // The Drive folder goes FIRST. Once the row is gone there is nothing
+          // left to look the folder up from, or to authorise the removal
+          // against - which is why deleting an assignment used to leave its
+          // submissions folder sitting in the class folder forever.
+          const folderResult = await this.trashAssignmentFolder(assignmentId);
+          if (!folderResult.ok) {
+            const stillThere = folderResult.folderUrl
+              ? `\n\nThe folder is still in Drive:\n${folderResult.folderUrl}`
+              : '';
+            const proceed = confirm(
+              `The assignment folder could not be moved to the Drive trash.`
+              + `\n\n${folderResult.error || 'Drive did not respond.'}${stillThere}`
+              + `\n\nDelete the assignment anyway? The folder will have to be removed by hand.`);
+            if (!proceed) {
+              this.showNotification('Deletion cancelled', 'info');
+              return;
+            }
+          }
           // Delete the assignment (submissions will cascade delete if foreign key is set up)
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
