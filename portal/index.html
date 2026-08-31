@@ -19222,6 +19222,11 @@
           return;
         }
 
+        // Asked before anything is touched, so the whole decision is made up
+        // front rather than a second dialog appearing after the class is gone.
+        const wantPermanent = this.askPermanentDelete(
+          'this class folder and all student work inside it');
+
         const isAdmin = this.userInfo.profile?.user_type === 'admin';
 
         try {
@@ -19244,7 +19249,21 @@
             return;
           }
 
-          this.showNotification('Class deleted successfully', 'success');
+          // The class folder goes AFTER the row update, unlike an assignment.
+          // Deleting a class only sets is_active = false, so the row survives
+          // and can still be looked up - which means there is no reason to
+          // touch Drive until the delete has actually been allowed through.
+          //
+          // This removes the whole tree under the class: Resources, every
+          // assignment folder, and every submission in them.
+          const folderResult = await this.removeClassDriveFolder(classId, wantPermanent);
+          if (!folderResult.ok) this.warnFolderLeftBehind(folderResult);
+
+          this.showNotification(
+            folderResult.ok && folderResult.permanent
+              ? 'Class deleted and its Drive folder removed.'
+              : 'Class deleted successfully',
+            'success');
 
           // Clear admin classes cache so it refreshes
           this.adminClassesData = null;
@@ -21326,14 +21345,28 @@
         }
       }
 
-      // Moves an assignment's submissions folder to the Drive trash. Trashed
-      // rather than deleted because it holds student work - recoverable for 30
-      // days is the difference between undoing a mistake and losing a term of
-      // submissions.
-      //
-      // Never throws: the caller decides what to do about a failure, and a
-      // Drive outage should not make assignments undeletable.
-      async trashAssignmentFolder(assignmentId) {
+      // Trash keeps the folder recoverable for 30 days but goes on using the
+      // school's Drive quota until the trash empties - so it is the wrong
+      // answer when the reason for deleting was to get the space back. Asked
+      // rather than assumed, because only the person deleting knows which it
+      // was. Trash is the safe default: Cancel picks it.
+      askPermanentDelete(what) {
+        return confirm(
+          `Free up storage now?\n\n`
+          + `OK  -  permanently delete ${what} from the Drive. The space is`
+          + ` reclaimed immediately and the files cannot be recovered.\n\n`
+          + `Cancel  -  move it to the Drive trash instead. Recoverable for 30`
+          + ` days, but it keeps using storage until then.`);
+      }
+
+      // Removes a class's Drive folder - Resources, every assignment folder and
+      // every submission under it. Never throws: the caller decides what a
+      // failure means, and a Drive outage should not make classes undeletable.
+      async removeClassDriveFolder(classId, permanent) {
+        return this._removeDriveFolder({ scope: 'trash_class_folder', classId, permanent });
+      }
+
+      async _removeDriveFolder(payload) {
         try {
           const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
           const session = sessionResult?.data?.session;
@@ -21347,7 +21380,54 @@
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${session.access_token}`
               },
-              body: JSON.stringify({ scope: 'trash_assignment_folder', assignmentId })
+              body: JSON.stringify(payload)
+            }
+          );
+          const result = await resp.json().catch(() => ({}));
+
+          // A server without these scopes answers "Unknown scope". Treated as a
+          // failure with a reason rather than a silent success - otherwise the
+          // folder is abandoned and nobody finds out.
+          if (!resp.ok || !result.success) {
+            return { ok: false, error: result.error || 'The Drive folder was not removed.', folderUrl: result.folderUrl };
+          }
+          return { ok: true, removed: result.removed || 0, permanent: !!result.permanent };
+        } catch (e) {
+          console.warn('_removeDriveFolder failed:', e);
+          return { ok: false, error: e.message };
+        }
+      }
+
+      // Tells the user a folder outlived its class or assignment, with the link
+      // so it can be dealt with by hand instead of being lost track of.
+      warnFolderLeftBehind(result) {
+        const where = result.folderUrl ? ` It is still at: ${result.folderUrl}` : '';
+        this.showNotification(
+          `${result.error || 'The Drive folder was not removed.'}${where}`, 'error');
+      }
+
+      // Moves an assignment's submissions folder to the Drive trash. Trashed
+      // rather than deleted because it holds student work - recoverable for 30
+      // days is the difference between undoing a mistake and losing a term of
+      // submissions.
+      //
+      // Never throws: the caller decides what to do about a failure, and a
+      // Drive outage should not make assignments undeletable.
+      async trashAssignmentFolder(assignmentId, permanent = false) {
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/ensure-drive-folder',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ scope: 'trash_assignment_folder', assignmentId, permanent })
             }
           );
           const result = await resp.json().catch(() => ({}));
@@ -21414,7 +21494,10 @@
           // left to look the folder up from, or to authorise the removal
           // against - which is why deleting an assignment used to leave its
           // submissions folder sitting in the class folder forever.
-          const folderResult = await this.trashAssignmentFolder(assignmentId);
+          const permanent = assignment.drive_folder_id
+            ? this.askPermanentDelete('this assignment\'s submissions folder')
+            : false;
+          const folderResult = await this.trashAssignmentFolder(assignmentId, permanent);
           if (!folderResult.ok) {
             const stillThere = folderResult.folderUrl
               ? `\n\nThe folder is still in Drive:\n${folderResult.folderUrl}`
