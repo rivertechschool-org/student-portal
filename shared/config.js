@@ -552,6 +552,33 @@ class PortalUI {
         });
     }
 
+    // Auth errors are written for developers. Two of them reach people who can
+    // do nothing about them and are told nothing useful.
+    //
+    // "email rate limit exceeded" is the big one: it is the SCHOOL's Supabase
+    // email quota, not anything the person did, and it appears when several
+    // students register at once. Left raw, a student reads it as their own
+    // fault and tries again, which uses more of the quota.
+    static friendlyAuthError(err) {
+        const raw = String(err?.message || err?.error_description || err || '');
+        const code = String(err?.code || '');
+
+        if (/email rate limit exceeded|over_email_send_rate_limit/i.test(raw + code)) {
+            return 'The school has sent too many sign-up emails in the last hour, so this one could not go out. '
+                 + 'Nothing is wrong with your details. Wait an hour and try again, or ask your teacher to set the account up for you.';
+        }
+        if (/rate limit|too many requests/i.test(raw + code)) {
+            return 'Too many attempts in a short time. Wait a few minutes and try again.';
+        }
+        if (/already\s*(registered|exists)|user_already_exists/i.test(raw + code)) {
+            return 'An account with this email already exists. Try logging in, or use "Forgot password".';
+        }
+        if (/confirmation email|error sending/i.test(raw)) {
+            return 'The account was created but the confirmation email could not be sent. Ask an admin to confirm your account.';
+        }
+        return raw || 'Something went wrong. Please try again.';
+    }
+
     static showNotification(message, type = 'info', duration = 3000) {
         const notification = document.createElement('div');
         notification.className = `portal-notification portal-notification--${type}`;
