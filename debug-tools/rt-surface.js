@@ -300,7 +300,8 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   t('a blocked batch writes nothing and never asks to confirm', WRITES.length === 0 && !app._pending, WRITES.length);
 
   const help = await rt('');
-  t('help lists ops and states it never writes', help.writes === 'NONE. /rt is read-and-plan only.', help.writes);
+  t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);
+  t('help documents apply and its extra ops', !!help.apply && help.apply.extra_ops.includes('create_class'), help.apply);
 
   console.log(`\nrt-surface: ${pass} pass, ${fail} fail`);
   process.exit(fail ? 1 : 0);
