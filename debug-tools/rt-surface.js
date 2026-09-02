@@ -63,22 +63,44 @@ const DB = {
     { student_id: 's2', class_id: 'c1', date: '2026-09-01', status: 'absent' },
   ],
 };
+let SEQ = 0;
+const WRITES = [];
 function qb(table) {
   let rows = (DB[table] || []).slice();
+  let pending = null, filters = [];
   const api = {
     select() { return api; },
-    eq(k, v) { rows = rows.filter(r => r[k] === v); return api; },
+    eq(k, v) { filters.push([k, v]); rows = rows.filter(r => r[k] === v); return api; },
     in(k, vs) { rows = rows.filter(r => vs.includes(r[k])); return api; },
-    order() { return api; },
+    order() { return api; }, gte() { return api; },
     limit(n) { rows = rows.slice(0, n); return api; },
-    gte() { return api; },
-    then(res) { return Promise.resolve({ data: rows, error: null }).then(res); },
+    insert(payload) {
+      const arr = Array.isArray(payload) ? payload : [payload];
+      const made = arr.map(o => ({ id: 'new' + (++SEQ), ...o }));
+      DB[table] = (DB[table] || []).concat(made);
+      WRITES.push({ table, op: 'insert', rows: made });
+      pending = made; return api;
+    },
+    update(patch) {
+      const hit = (DB[table] || []).filter(r => filters.every(([k, v]) => r[k] === v));
+      hit.forEach(r => Object.assign(r, patch));
+      WRITES.push({ table, op: 'update', patch, n: hit.length });
+      pending = hit; return api;
+    },
+    delete() {
+      const keep = (DB[table] || []).filter(r => !filters.every(([k, v]) => r[k] === v));
+      WRITES.push({ table, op: 'delete', n: (DB[table] || []).length - keep.length });
+      DB[table] = keep; pending = []; return api;
+    },
+    single() { return { then: (res) => Promise.resolve({ data: (pending || rows)[0] || null, error: null }).then(res) }; },
+    maybeSingle() { return api.single(); },
+    then(res) { return Promise.resolve({ data: pending || rows, error: null }).then(res); },
   };
   return api;
 }
 // ---- app stub ---------------------------------------------------------------
 const app = {
-  auth: { supabase: { from: qb } },
+  auth: { supabase: { from: qb, rpc: async (name, args) => { WRITES.push({ rpc: name, args }); return { data: null, error: null }; } } },
   userInfo: { user: { id: 't1' }, profile: { id: 'p1', user_type: 'teacher' } },
   _terminalAllStudents: [
     { id: 's1', first_name: 'Jordan', last_name: 'Games', full_name: 'Jordan Games', rtc_balance: 100 },
@@ -101,8 +123,24 @@ const app = {
     { student_id: 's3', class_id: 'c1', note: 'Noisy', sentiment: 'negative', category: 'behavior', visibility: 'staff', created_at: '2026-09-01T11:00:00Z' },
   ] }),
   _showRivenMessage(html) { app._lastHtml = html; },
+  terminalPrint() {}, terminalPrintError(m) { app._lastErr = m; },
+  _rtcTxn: async ({ userId, amount, description }) => { WRITES.push({ rtc: userId, amount, description }); },
+  _insertNote: async (o) => { WRITES.push({ note: o }); return { id: 'note' + (++SEQ) }; },
+  _pushUndo(desc, fn) { app._undo = { desc, fn }; },
+  _rivenFindEnrollment: async (classId, studentId) =>
+    (DB.class_enrollments || []).find(e => e.class_id === classId && e.student_id === studentId) || null,
+  _loadTerminalStudents: async () => {},
+  _loadTerminalClasses: async () => {
+    (DB.classes || []).forEach(c => {
+      if (!app._terminalAllClasses.find(x => x.id === c.id)) {
+        app._terminalAllClasses.push({ ...c, is_active: true, status: c.status || 'open', teacher_name: 'Luke H' });
+      }
+    });
+  },
+  _requestConfirmation(summary, execute) { app._pending = { summary, execute }; },
 };
-for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtNotes','_rtAttendance','_rtPlan','_rtDispatch','_rtBundle','terminalRtCommand']) {
+DB.classes = [];
+for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -229,6 +267,37 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   t('closed class excluded from class_with candidates', closed.class?.name === 'Filmmaking', closed);
   const amb2 = await rt('{"op":"roster","class":"Film"}');
   t('ambiguity message pluralises "classes" correctly', /matches \d+ classes /.test(amb2.message), amb2.message);
+
+  // ---- apply: writes, then reads back, in one paste
+  WRITES.length = 0; app._pending = null;
+  const ap = await rt(JSON.stringify({ op: 'apply',
+    ops: [
+      { op: 'create_class', name: 'Film Club', subject: 'Art' },
+      { op: 'enroll', class: 'Film Club', from_class: 'Filmmaking Advanced' },
+      { op: 'award', student: 'Jordan Games', amount: 5, reason: 'gold' }
+    ],
+    reads: [{ op: 'classes', as: 'after' }] }));
+  t('apply asks for ONE confirmation, not one per op', ap.awaiting_confirmation === true && !!app._pending, ap);
+  t('apply writes nothing before confirmation', WRITES.length === 0 && ap.executed === false, WRITES.length);
+  t('apply previews a class it will create', ap.steps.some(s => s.op === 'create_class' && s.name === 'Film Club'), ap.steps);
+
+  await app._pending.execute();
+  const out = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
+  t('apply reports executed after confirming', out.executed === true && out.failed === 0, out.failures);
+  t('create_class actually inserted', WRITES.some(w => w.table === 'classes' && w.op === 'insert'), null);
+  t('enroll copied the source roster', out.results.find(r => r.op === 'enroll')?.enrolled === 1, out.results);
+  t('award hit the RTC ledger', WRITES.some(w => w.rtc && w.amount === 5), null);
+  t('a later op used the class created earlier in the same batch',
+    out.results.find(r => r.op === 'enroll')?.class === 'Film Club', out.results);
+  t('read-back runs after the writes', !!out.verification?.after?.classes, out.verification);
+  t('the whole batch gets ONE undo entry', /rt batch/.test(app._undo?.desc || ''), app._undo?.desc);
+
+  // a plan error must block every write
+  WRITES.length = 0; app._pending = null;
+  const blocked = await rt(JSON.stringify({ op: 'apply',
+    ops: [{ op: 'award', student: 'Jordan Games', amount: 5 }, { op: 'award', student: 'Ghost Person', amount: 5 }] }));
+  t('one bad op blocks the entire batch', blocked.blocked === true && blocked.executed === false, blocked);
+  t('a blocked batch writes nothing and never asks to confirm', WRITES.length === 0 && !app._pending, WRITES.length);
 
   const help = await rt('');
   t('help lists ops and states it never writes', help.writes === 'NONE. /rt is read-and-plan only.', help.writes);

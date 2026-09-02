@@ -45056,6 +45056,10 @@
 
       const quarter = await this._rivenCurrentQuarter();
       const steps = [], errors = [], sensitive = [];
+      // A batch may create a class and then use it. The class does not exist
+      // yet at plan time, so remember the names this batch would create and
+      // treat a later reference to one as valid rather than "not found".
+      const pendingClasses = new Set();
 
       // Current participation/academic grades, fetched once, so a grade op can
       // show the value it would replace instead of just the value it sets.
@@ -45084,6 +45088,9 @@
         // async: class_with hits the enrolment table to identify the section
         const klass = async (o2) => {
           const ref = o2.class || o2.class_with;
+          if (typeof o2.class === 'string' && pendingClasses.has(o2.class.trim().toLowerCase())) {
+            return { id: null, name: o2.class.trim(), pending: true };
+          }
           const r = await this._rtResolveClassSpec({ class: o2.class, class_with: o2.class_with, scope: spec.scope });
           if (r.error) { fail(this._rtErrFor('class', ref, r)); return null; }
           return r.row;
@@ -45109,7 +45116,7 @@
           const c = await klass(o); if (!c) continue;
           const amt = Number(o.amount);
           if (!Number.isFinite(amt) || amt === 0) { fail(this._rtErr('bad_amount', `Step ${idx}: "amount" must be a non-zero number.`)); continue; }
-          const { data } = await this.auth.supabase
+          const { data } = c.pending ? { data: [] } : await this.auth.supabase
             .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
           const n = (data || []).length;
           steps.push({ step: idx, op: 'group_award', class: c.name, amount: amt, students: n, total_rtc: amt * n, reason: o.reason || null });
@@ -45141,8 +45148,8 @@
           if (typeof value === 'string' && /^[abcdf][+-]?$/i.test(value.trim())) value = this._letterToPct(value.trim().toLowerCase());
           value = Number(value);
           if (!Number.isFinite(value) || value < 0 || value > 100) { fail(this._rtErr('bad_value', `Step ${idx}: "value" must be 0-100 or a letter grade.`)); continue; }
-          const cached = gradeCache[`${s.id}|${c.id}`];
-          if (!cached) { fail(this._rtErr('not_enrolled', `Step ${idx}: ${s.full_name} is not actively enrolled in ${c.name}.`)); continue; }
+          const cached = c.pending ? null : gradeCache[`${s.id}|${c.id}`];
+          if (!cached && !c.pending) { fail(this._rtErr('not_enrolled', `Step ${idx}: ${s.full_name} is not actively enrolled in ${c.name}.`)); continue; }
           const snap = cached.snap || {};
           const prev = comp === 'participation' ? snap.participation_grade
             : comp === 'academic' ? snap.academic_grade : snap.class_grade;
@@ -45160,6 +45167,7 @@
           const date = o.date || new Date().toISOString().slice(0, 10);
           let ids = [];
           if (o.student) { const s = student(o.student); if (!s) continue; ids = [s.id]; }
+          else if (c.pending) { ids = []; }
           else {
             const { data } = await this.auth.supabase
               .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
@@ -45169,7 +45177,44 @@
           continue;
         }
 
-        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance.`));
+        if (o.op === 'create_class') {
+          const name = (o.name || '').trim();
+          if (!name) { fail(this._rtErr('missing_field', `Step ${idx}: create_class needs "name".`)); continue; }
+          const clash = (this._terminalAllClasses || []).find(c => c.is_active !== false && c.status !== 'closed'
+            && (c.name || '').toLowerCase() === name.toLowerCase());
+          if (clash) { fail(this._rtErr('already_exists', `Step ${idx}: a class named "${name}" already exists.`, { id: clash.id })); continue; }
+          pendingClasses.add(name.toLowerCase());
+          steps.push({ step: idx, op: 'create_class', name, subject: o.subject || 'Other', teacher: 'you' });
+          continue;
+        }
+
+        if (o.op === 'enroll') {
+          const c = await klass(o); if (!c) continue;
+          let names = [];
+          if (o.from_class) {
+            const src = await this._rtResolveClassSpec({ class: o.from_class, scope: spec.scope });
+            if (src.error) { fail(this._rtErrFor('class', o.from_class, src)); continue; }
+            const { data } = await this.auth.supabase
+              .from('class_enrollments').select('student_id').eq('class_id', src.row.id).eq('status', 'active');
+            const byId = {}; (this._terminalAllStudents || []).forEach(st => { byId[st.id] = st.full_name; });
+            names = (data || []).map(e => byId[e.student_id]).filter(Boolean);
+            if (!names.length) { fail(this._rtErr('empty_source', `Step ${idx}: ${src.row.name} has no active students to copy.`)); continue; }
+          } else if (Array.isArray(o.students) && o.students.length) {
+            let bad = false;
+            for (const ref of o.students) {
+              const r = this._rtResolveStudent(ref);
+              if (r.error) { fail(this._rtErrFor('student', ref, r)); bad = true; break; }
+              names.push(r.student.full_name);
+            }
+            if (bad) continue;
+          } else {
+            fail(this._rtErr('missing_field', `Step ${idx}: enroll needs "students" or "from_class".`)); continue;
+          }
+          steps.push({ step: idx, op: 'enroll', class: c.name, from_class: o.from_class || null, students: names.length, names });
+          continue;
+        }
+
+        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll.`));
       }
 
       return {
@@ -45185,6 +45230,201 @@
       };
     }
 
+    // ---- apply: execute, then read back, in one paste -----------------------
+    // Luke's standing rule: a command that writes must also return the new
+    // values, so a single paste both changes something and proves it changed.
+    // Shape: {"op":"apply","ops":[...],"reads":[...]}
+    //
+    // Everything is planned first and a single confirmation covers the batch,
+    // because _requestConfirmation holds only one pending action — asking per
+    // op would silently drop all but the last. If ANY op fails to resolve, the
+    // plan is returned and NOTHING runs: a batch is never half-applied on a
+    // guess. Classes are re-resolved at execution time, not taken from the
+    // plan, so an op can use a class an earlier op in the same batch created.
+    async _rtApply(spec) {
+      const plan = await this._rtPlan({ ops: spec.ops, scope: spec.scope });
+      if (!plan.ok) {
+        return { executed: false, blocked: true,
+          note: 'Nothing was written. Fix these and re-send.', ...plan };
+      }
+      const line = (s) => {
+        if (s.op === 'create_class') return `Create class <b>${this.escapeHtml(s.name)}</b> (${this.escapeHtml(s.subject)})`;
+        if (s.op === 'enroll') return `Enroll <b>${s.students}</b> students in <b>${this.escapeHtml(s.class)}</b>${s.from_class ? ' (from ' + this.escapeHtml(s.from_class) + ')' : ''}`;
+        if (s.op === 'group_award') return `${s.amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(s.amount)} RTC</b> ${s.amount > 0 ? 'to' : 'from'} each of <b>${s.students}</b> in ${this.escapeHtml(s.class)}`;
+        if (s.op === 'award' || s.op === 'deduct') return `<b>${this.escapeHtml(s.student)}</b> ${s.amount > 0 ? '+' : ''}${s.amount} RTC (${s.balance_before} → ${s.balance_after})`;
+        if (s.op === 'note') return `Note on <b>${this.escapeHtml(s.student || s.class)}</b> (${s.sentiment})`;
+        if (s.op === 'grade') return `<b>${this.escapeHtml(s.student)}</b> ${s.component}: ${s.before || '—'} → ${s.after}`;
+        if (s.op === 'attendance') return `Attendance for <b>${this.escapeHtml(s.class)}</b> ${s.date}: ${s.students} students ${s.status}`;
+        return s.op;
+      };
+      const review = plan.needs_review.length
+        ? `<div style="margin-top:8px;"><b>Needs review</b><br>${plan.needs_review.map(r => '• ' + this.escapeHtml(r.detail)).join('<br>')}</div>`
+        : '';
+      this._requestConfirmation(
+        `Run <b>${plan.steps.length}</b> change${plan.steps.length === 1 ? '' : 's'}:<br>` +
+        plan.steps.map(s => '• ' + line(s)).join('<br>') + review,
+        async () => { await this._rtRunOps(spec, plan); }
+      );
+      return { executed: false, awaiting_confirmation: true,
+        note: 'Confirm in the terminal to run these. Results and the read-back print after.',
+        steps: plan.steps, needs_review: plan.needs_review };
+    }
+
+    async _rtRunOps(spec, plan) {
+      const sb = this.auth.supabase;
+      const results = [], failures = [];
+      const undos = [];
+      const klass = async (o) => {
+        const r = await this._rtResolveClassSpec({ class: o.class, class_with: o.class_with, scope: spec.scope });
+        if (r.error) throw new Error(`class "${o.class || o.class_with}" did not resolve at execution time`);
+        return r.row;
+      };
+      const student = (ref) => {
+        const r = this._rtResolveStudent(ref);
+        if (r.error) throw new Error(`student "${ref}" did not resolve at execution time`);
+        return r.student;
+      };
+      const quarter = await this._rivenCurrentQuarter();
+
+      for (let i = 0; i < spec.ops.length; i++) {
+        const o = spec.ops[i] || {}; const idx = i + 1;
+        try {
+          if (o.op === 'create_class') {
+            const { data, error } = await sb.from('classes').insert([{
+              name: (o.name || '').trim(), subject: o.subject || 'Other',
+              teacher_id: this.userInfo.user.id, max_students: o.max_students || 30,
+              grading_weight: o.grading_weight || 'even'
+            }]).select().single();
+            if (error) throw error;
+            await this._loadTerminalClasses();
+            undos.push(async () => { await sb.from('classes').update({ is_active: false }).eq('id', data.id); });
+            results.push({ step: idx, op: o.op, ok: true, created: { id: data.id, name: data.name } });
+
+          } else if (o.op === 'enroll') {
+            const c = await klass(o);
+            let ids = [];
+            if (o.from_class) {
+              const src = await this._rtResolveClassSpec({ class: o.from_class, scope: spec.scope });
+              if (src.error) throw new Error(`source class "${o.from_class}" did not resolve`);
+              const { data } = await sb.from('class_enrollments')
+                .select('student_id').eq('class_id', src.row.id).eq('status', 'active');
+              ids = (data || []).map(e => e.student_id);
+            } else {
+              ids = (o.students || []).map(ref => student(ref).id);
+            }
+            let added = 0, already = 0;
+            for (const sid of ids) {
+              const existing = await this._rivenFindEnrollment(c.id, sid);
+              const now = new Date().toISOString();
+              if (existing && existing.status === 'active') { already++; continue; }
+              if (existing) {
+                const { error } = await sb.from('class_enrollments')
+                  .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', existing.id);
+                if (error) throw error;
+                undos.push(async () => { await sb.from('class_enrollments').update({ status: existing.status }).eq('id', existing.id); });
+              } else {
+                const { data: ins, error } = await sb.from('class_enrollments')
+                  .insert({ class_id: c.id, student_id: sid, status: 'active', enrolled_at: now }).select().single();
+                if (error) throw error;
+                undos.push(async () => { await sb.from('class_enrollments').update({ status: 'removed' }).eq('id', ins.id); });
+              }
+              added++;
+            }
+            results.push({ step: idx, op: o.op, ok: true, class: c.name, enrolled: added, already_enrolled: already });
+
+          } else if (o.op === 'award' || o.op === 'deduct') {
+            const s = student(o.student);
+            const amt = (o.op === 'award' ? 1 : -1) * Math.abs(Number(o.amount));
+            await this._rtcTxn({ userId: s.id, amount: amt, description: o.reason || 'Riven /rt' });
+            undos.push(async () => { await this._rtcTxn({ userId: s.id, amount: -amt, type: 'admin_adjustment', description: 'Undo /rt', refType: 'undo' }); });
+            results.push({ step: idx, op: o.op, ok: true, student: s.full_name, amount: amt });
+
+          } else if (o.op === 'group_award') {
+            const c = await klass(o);
+            const { data } = await sb.from('class_enrollments')
+              .select('student_id').eq('class_id', c.id).eq('status', 'active');
+            const amt = Number(o.amount);
+            let n = 0;
+            for (const e of (data || [])) {
+              await this._rtcTxn({ userId: e.student_id, amount: amt, description: o.reason || `Group award — ${c.name}` });
+              undos.push(async () => { await this._rtcTxn({ userId: e.student_id, amount: -amt, type: 'admin_adjustment', description: 'Undo /rt group', refType: 'undo' }); });
+              n++;
+            }
+            results.push({ step: idx, op: o.op, ok: true, class: c.name, students: n, each: amt });
+
+          } else if (o.op === 'note') {
+            const s = o.student ? student(o.student) : null;
+            const c = (o.class || o.class_with) ? await klass(o) : null;
+            const saved = await this._insertNote({
+              studentId: s ? s.id : null, classId: c ? c.id : null,
+              category: o.category || 'general', sentiment: o.sentiment || 'neutral',
+              visibility: o.visibility === 'private' ? 'private' : 'staff', note: String(o.text).trim()
+            });
+            undos.push(async () => { await sb.from('notes').delete().eq('id', saved.id); });
+            results.push({ step: idx, op: o.op, ok: true, student: s ? s.full_name : null, class: c ? c.name : null });
+
+          } else if (o.op === 'grade') {
+            const s = student(o.student); const c = await klass(o);
+            const enr = await this._rivenFindEnrollment(c.id, s.id);
+            if (!enr) throw new Error(`${s.full_name} is not enrolled in ${c.name}`);
+            let value = o.value;
+            if (typeof value === 'string') value = this._letterToPct(value.trim().toLowerCase());
+            value = Number(value);
+            if (o.component === 'final') {
+              const { error } = await sb.rpc('set_class_grade_override', { p_enrollment_id: enr.id, p_quarter_id: quarter.id, p_class_grade: value, p_override: true });
+              if (error) throw error;
+            } else if (o.component === 'academic') {
+              const { error } = await sb.rpc('set_academic_grade_override', { p_enrollment_id: enr.id, p_quarter_id: quarter.id, p_academic_grade: value, p_override: true });
+              if (error) throw error;
+            } else {
+              const { error } = await sb.rpc('upsert_quarter_grade', { p_enrollment_id: enr.id, p_quarter_id: quarter.id, p_participation_grade: value, p_teacher_notes: null });
+              if (error) throw error;
+              await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enr.id, p_quarter_id: quarter.id });
+            }
+            results.push({ step: idx, op: o.op, ok: true, student: s.full_name, class: c.name, component: o.component, value });
+
+          } else if (o.op === 'attendance') {
+            const c = await klass(o);
+            const date = o.date || new Date().toISOString().slice(0, 10);
+            let ids = [];
+            if (o.student) ids = [student(o.student).id];
+            else {
+              const { data } = await sb.from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
+              ids = (data || []).map(e => e.student_id);
+            }
+            for (const sid of ids) {
+              await sb.from('class_attendance').delete().eq('class_id', c.id).eq('student_id', sid).eq('date', date);
+              const { error } = await sb.from('class_attendance').insert({ class_id: c.id, student_id: sid, date, status: o.status });
+              if (error) throw error;
+            }
+            results.push({ step: idx, op: o.op, ok: true, class: c.name, date, status: o.status, students: ids.length });
+          }
+        } catch (err) {
+          failures.push({ step: idx, op: o.op, error: err.message || String(err) });
+        }
+      }
+
+      if (undos.length) {
+        this._pushUndo(`the /rt batch (${results.length} change${results.length === 1 ? '' : 's'})`, async () => {
+          for (const u of undos.reverse()) { try { await u(); } catch (e) { /* keep unwinding */ } }
+        });
+      }
+      await this._loadTerminalStudents();
+      await this._loadTerminalClasses();
+
+      // The read-back: same paste proves what landed.
+      const reads = {};
+      for (let i = 0; i < (spec.reads || []).length; i++) {
+        const r = spec.reads[i] || {};
+        const key = r.as || r.op || `read_${i + 1}`;
+        try { reads[key] = await this._rtDispatch(r); }
+        catch (err) { reads[key] = this._rtErr('failed', err.message || String(err)); }
+      }
+      this._rtOut({ op: 'apply', executed: true,
+        applied: results.length, failed: failures.length,
+        results, failures, verification: reads });
+    }
+
     async _rtDispatch(spec) {
       switch (spec.op) {
         case 'classes':    return { classes: await this._rtClassList(spec) };
@@ -45195,6 +45435,7 @@
         case 'attendance': return await this._rtAttendance(spec);
         case 'plan':       return await this._rtPlan(spec);
         case 'bundle':     return await this._rtBundle(spec);
+        case 'apply':      return await this._rtApply(spec);
         default:           return this._rtErr('unknown_op', `Unknown op "${spec.op}". Try /rt help.`);
       }
     }
@@ -45254,7 +45495,13 @@
             note: 'Works anywhere "class" does, reads and plan ops alike. Must match exactly one class.'
           },
           resolution: 'Names must resolve to exactly ONE row. Ambiguous or unknown fails and lists candidates; nothing is guessed.',
-          writes: 'NONE. /rt is read-and-plan only.'
+          apply: {
+            what: 'Executes ops, then runs "reads" and returns the new values in the SAME output.',
+            shape: '{"op":"apply","ops":[...],"reads":[{"op":"roster","class":"X","as":"after"}]}',
+            rules: 'One confirmation for the whole batch. If ANY op fails to resolve, NOTHING runs. One grouped undo.',
+            extra_ops: ['create_class', 'enroll (students[] or from_class)']
+          },
+          writes: 'apply writes. Every other op is read-only.'
         });
         return;
       }
