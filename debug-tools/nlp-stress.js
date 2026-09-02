@@ -1240,3 +1240,38 @@ t31(`segments >= 3 (got ${segs.length})`, segs.length >= 3);
 
 app._terminalAllStudents = _savedRoster;
 console.log(`round 31: ${p31} pass, ${f31} fail`);
+
+// ── round 32: a last initial survives trailing punctuation ────────────────
+// "note for eli d: making noise" tokenized the initial as "d:", which failed
+// the /^[a-z]$/ initial test — so the disambiguating initial was dropped and
+// the note filed itself on whichever Eli scored higher. Silent, and wrong on
+// exactly the commands (notes, grades) where being wrong matters most.
+console.log('\n== round 32: last initial survives trailing punctuation ==');
+let p32 = 0, f32 = 0;
+const t32 = (label, ok) => { ok ? p32++ : f32++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _roster32 = app._terminalAllStudents;
+app._terminalAllStudents = [
+  { full_name: 'Elijah Douglas', first_name: 'Elijah', last_name: 'Douglas', rtc_balance: 10, status: 'active', id: 'ed1' },
+  { full_name: 'Eli Morris', first_name: 'Eli', last_name: 'Morris', rtc_balance: 10, status: 'active', id: 'em1' },
+];
+const who32 = (text) => {
+  const ff = app._fuzzyFindStudent(app._normalizeInput(text), text);
+  return ff && ff.student ? ff.student.full_name : (ff && ff.ambiguous ? 'AMBIGUOUS' : 'null');
+};
+[
+  ['note for eli d: making noise during class', 'Elijah Douglas'],
+  ['add behavior note for eli d, negative: making noise', 'Elijah Douglas'],
+  ['note for eli d. making noise', 'Elijah Douglas'],
+  ['set eli d’s participation grade to b', 'Elijah Douglas'],
+  // the plain forms that already worked must keep working
+  ['give eli d 5 gold', 'Elijah Douglas'],
+  ['eli d', 'Elijah Douglas'],
+  // and a bare "eli" with no initial must still reach Eli Morris exactly
+  ['give eli morris 5 gold', 'Eli Morris'],
+].forEach(([text, want]) => {
+  const got = who32(text);
+  t32(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+app._terminalAllStudents = _roster32;
+console.log(`round 32: ${p32} pass, ${f32} fail`);
