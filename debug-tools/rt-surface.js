@@ -51,6 +51,8 @@ const DB = {
     { id: 'e2', class_id: 'c1', student_id: 's2', status: 'active' },
     { id: 'e3', class_id: 'c1', student_id: 's3', status: 'active' },
     { id: 'e4', class_id: 'c5', student_id: 's1', status: 'active' },
+    { id: 'e5', class_id: 'c7', student_id: 's1', status: 'active' },
+    { id: 'e6', class_id: 'c7', student_id: 's3', status: 'active' },
   ],
   quarter_grade_snapshots: [
     { id: 'q1', enrollment_id: 'e1', quarter_id: 'Q1', participation_grade: 92, academic_grade: 88, class_grade: 90, class_grade_override: false, academic_grade_override: false },
@@ -88,6 +90,7 @@ const app = {
     { id: 'c1', name: 'Filmmaking', subject: 'Art', teacher_id: 't1', secondary_teacher_id: null, is_active: true, status: 'open', teacher_name: 'Luke H' },
     { id: 'c5', name: 'Filmmaking Advanced', subject: 'Art', teacher_id: 't1', secondary_teacher_id: null, is_active: true, status: 'open', teacher_name: 'Luke H' },
     { id: 'c9', name: 'World History', subject: 'History', teacher_id: 't2', secondary_teacher_id: null, is_active: true, status: 'open', teacher_name: 'Someone Else' },
+    { id: 'c7', name: 'Filmmaking Last Year', subject: 'Art', teacher_id: 't1', secondary_teacher_id: null, is_active: true, status: 'closed', teacher_name: 'Luke H' },
   ],
   escapeHtml: (s) => String(s),
   _pctToLetter: (v) => (v >= 90 ? 'A' : v >= 80 ? 'B' : v >= 70 ? 'C' : 'F'),
@@ -219,6 +222,13 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   t('bundle still writes nothing', bun.plan.executed === false, bun.plan);
   const badnest = await rt('{"op":"bundle","reads":[{"op":"bundle"}]}');
   t('bundle cannot nest', badnest.reads.bundle.error === 'bad_op', badnest);
+
+  // regression: a class closed for the year polluted class_with candidates and
+  // made a live lookup ambiguous, even though it cannot appear in "classes"
+  const closed = await rt('{"op":"roster","class_with":["Jordan Games","Eli Morris"]}');
+  t('closed class excluded from class_with candidates', closed.class?.name === 'Filmmaking', closed);
+  const amb2 = await rt('{"op":"roster","class":"Film"}');
+  t('ambiguity message pluralises "classes" correctly', /matches \d+ classes /.test(amb2.message), amb2.message);
 
   const help = await rt('');
   t('help lists ops and states it never writes', help.writes === 'NONE. /rt is read-and-plan only.', help.writes);
