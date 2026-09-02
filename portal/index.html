@@ -44736,6 +44736,464 @@
       output.scrollTop = output.scrollHeight;
     }
 
+    // ==================== /rt — structured command surface ====================
+    // Riven's conversational parser is built for a teacher talking out loud: it
+    // fuzzy-matches names, opens a picker when one is ambiguous, and carries the
+    // last student and class forward as context. Every one of those is wrong for
+    // a batch. Context carry-over in particular means command N can inherit a
+    // target from command N-1 and write to the wrong student without saying so,
+    // and `_pendingAction` holds exactly ONE pending confirmation, so replaying
+    // a list of conversational writes would silently drop all but the last.
+    //
+    // /rt is the deterministic surface instead: explicit fields, no fuzzy
+    // matching, no context carry-over, and an abort (never a best guess) when a
+    // reference does not resolve to exactly one row. It takes JSON on one line
+    // because the terminal is an <input type="text"> and collapses newlines.
+    //
+    // READS AND DRY-RUN PLANNING ONLY. /rt never writes. The execution path is
+    // deliberately not wired up; `plan` resolves and prices a batch so it can be
+    // reviewed against real data first.
+
+    _rtOut(payload) {
+      const json = JSON.stringify(payload, null, 2);
+      this._showRivenMessage(
+        `<div style="font-weight:600;margin-bottom:6px;">🔌 /rt ${this.escapeHtml(payload.op || '')}</div>` +
+        `<pre style="white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,0.25);padding:10px;border-radius:6px;font-size:11px;line-height:1.45;max-height:420px;overflow:auto;margin:0;">${this.escapeHtml(json)}</pre>`,
+        true);
+    }
+
+    // Strict student resolution. Accepts an id, an exact full name, a "First L"
+    // last-initial form, or a name part that is unique in the roster. Zero or
+    // 2+ matches is an error carrying the candidates — the conversational path
+    // would score and pick one, which is exactly what filed a note on the wrong
+    // Eli. Deliberately no Levenshtein: a typo must fail loudly here.
+    _rtResolveStudent(ref) {
+      const all = this._terminalAllStudents || [];
+      if (typeof ref !== 'string' || !ref.trim()) return { error: 'bad_ref' };
+      const raw = ref.trim();
+      const q = raw.toLowerCase();
+      const hit = (list) => list.length === 1
+        ? { student: list[0] }
+        : { error: 'ambiguous', candidates: list.map(s => ({ id: s.id, name: s.full_name })) };
+
+      const byId = all.find(s => s.id === raw);
+      if (byId) return { student: byId };
+
+      const exact = all.filter(s => (s.full_name || '').toLowerCase() === q);
+      if (exact.length) return hit(exact);
+
+      const m = q.match(/^(.+?)\s+([a-z])\.?$/);
+      if (m) {
+        const init = all.filter(s => (s.first_name || '').toLowerCase() === m[1]
+          && (s.last_name || '').toLowerCase().startsWith(m[2]));
+        if (init.length) return hit(init);
+      }
+
+      const byFirst = all.filter(s => (s.first_name || '').toLowerCase() === q);
+      if (byFirst.length) return hit(byFirst);
+
+      const byLast = all.filter(s => (s.last_name || '').toLowerCase() === q);
+      if (byLast.length) return hit(byLast);
+
+      return { error: 'not_found' };
+    }
+
+    // Same contract for classes. Defaults to the caller's own classes, since a
+    // teacher naming "Filmmaking" means theirs; scope:"all" widens it.
+    _rtResolveClass(ref, { scope = 'mine' } = {}) {
+      const me = this.userInfo?.user?.id;
+      let all = (this._terminalAllClasses || []).filter(c => c.is_active !== false);
+      if (scope !== 'all' && me) {
+        const mine = all.filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
+        if (mine.length) all = mine;
+      }
+      if (typeof ref !== 'string' || !ref.trim()) return { error: 'bad_ref' };
+      const raw = ref.trim();
+      const q = raw.toLowerCase();
+      const hit = (list) => list.length === 1
+        ? { row: list[0] }
+        : { error: 'ambiguous', candidates: list.map(c => ({ id: c.id, name: c.name })) };
+
+      const byId = all.find(c => c.id === raw);
+      if (byId) return { row: byId };
+
+      const exact = all.filter(c => (c.name || '').toLowerCase() === q);
+      if (exact.length) return hit(exact);
+
+      const part = all.filter(c => (c.name || '').toLowerCase().includes(q));
+      if (part.length) return hit(part);
+
+      return { error: 'not_found' };
+    }
+
+    async _rtClassList(spec) {
+      const sb = this.auth.supabase;
+      const me = this.userInfo?.user?.id;
+      let rows = (this._terminalAllClasses || [])
+        .filter(c => c.is_active !== false && c.status !== 'closed');
+      if (spec.scope !== 'all' && me) {
+        rows = rows.filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
+      }
+      const ids = rows.map(c => c.id);
+      const [sched, enr] = await Promise.all([
+        ids.length ? sb.from('class_schedule').select('class_id, day_of_week, period').in('class_id', ids)
+          : Promise.resolve({ data: [] }),
+        ids.length ? sb.from('class_enrollments').select('class_id, student_id').in('class_id', ids).eq('status', 'active')
+          : Promise.resolve({ data: [] })
+      ]);
+      // day_of_week is 1..5 and `period` is a period INDEX, not a clock time —
+      // the schedule table stores no times, so "Tue:P3" is as precise as Riven
+      // can be about which section a class is.
+      const DAY = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri' };
+      const slots = {}, counts = {};
+      (sched.data || []).forEach(s => {
+        (slots[s.class_id] = slots[s.class_id] || []).push(`${DAY[s.day_of_week] || s.day_of_week}:P${s.period}`);
+      });
+      (enr.data || []).forEach(e => { counts[e.class_id] = (counts[e.class_id] || 0) + 1; });
+      return rows.map(c => ({
+        id: c.id, name: c.name, subject: c.subject || null,
+        teacher: c.teacher_name || null,
+        schedule: (slots[c.id] || []).sort(),
+        students: counts[c.id] || 0
+      }));
+    }
+
+    async _rtRoster(spec) {
+      const res = this._rtResolveClass(spec.class, { scope: spec.scope });
+      if (res.error) return this._rtErrFor('class', spec.class, res);
+      const { data, error } = await this.auth.supabase
+        .from('class_enrollments').select('student_id')
+        .eq('class_id', res.row.id).eq('status', 'active');
+      if (error) throw error;
+      const names = {};
+      (this._terminalAllStudents || []).forEach(s => { names[s.id] = s; });
+      const students = (data || [])
+        .map(e => names[e.student_id])
+        .filter(Boolean)
+        .map(s => ({ id: s.id, name: s.full_name, rtc: s.rtc_balance ?? null }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return { class: { id: res.row.id, name: res.row.name }, count: students.length, students };
+    }
+
+    _rtStudentSearch(spec) {
+      const q = (spec.match || '').trim().toLowerCase();
+      let list = this._terminalAllStudents || [];
+      if (q) list = list.filter(s => (s.full_name || '').toLowerCase().includes(q));
+      return {
+        count: list.length,
+        students: list.map(s => ({ id: s.id, name: s.full_name, rtc: s.rtc_balance ?? null }))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      };
+    }
+
+    async _rtGrades(spec) {
+      const sb = this.auth.supabase;
+      const quarter = await this._rivenCurrentQuarter();
+      if (!quarter) return this._rtErr('no_quarter', 'No active quarter is configured.');
+      let classRow = null;
+      if (spec.class) {
+        const res = this._rtResolveClass(spec.class, { scope: spec.scope });
+        if (res.error) return this._rtErrFor('class', spec.class, res);
+        classRow = res.row;
+      }
+      let studentRow = null;
+      if (spec.student) {
+        const res = this._rtResolveStudent(spec.student);
+        if (res.error) return this._rtErrFor('student', spec.student, res);
+        studentRow = res.student;
+      }
+      if (!classRow && !studentRow) {
+        return this._rtErr('missing_field', 'grades needs "class" or "student".');
+      }
+      let enrQ = sb.from('class_enrollments').select('id, class_id, student_id').eq('status', 'active');
+      if (classRow) enrQ = enrQ.eq('class_id', classRow.id);
+      if (studentRow) enrQ = enrQ.eq('student_id', studentRow.id);
+      const { data: enr, error: enrErr } = await enrQ;
+      if (enrErr) throw enrErr;
+      if (!(enr || []).length) return { quarter: quarter.name || null, count: 0, grades: [] };
+      const { data: snaps, error: snapErr } = await sb.from('quarter_grade_snapshots')
+        .select('*').eq('quarter_id', quarter.id).in('enrollment_id', enr.map(e => e.id));
+      if (snapErr) throw snapErr;
+      const byEnr = {};
+      (snaps || []).forEach(s => { byEnr[s.enrollment_id] = s; });
+      const names = {}; (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const cls = {}; (this._terminalAllClasses || []).forEach(c => { cls[c.id] = c.name; });
+      const g = (v) => (v == null || v === 0) ? null : { pct: v, letter: this._pctToLetter(v) };
+      return {
+        quarter: quarter.name || null,
+        count: enr.length,
+        grades: enr.map(e => {
+          const s = byEnr[e.id] || {};
+          return {
+            student: names[e.student_id] || e.student_id,
+            class: cls[e.class_id] || e.class_id,
+            participation: g(s.participation_grade),
+            academic: g(s.academic_grade),
+            final: g(s.class_grade),
+            overridden: !!(s.class_grade_override || s.academic_grade_override)
+          };
+        }).sort((a, b) => a.student.localeCompare(b.student))
+      };
+    }
+
+    async _rtNotes(spec) {
+      let studentRow = null, classRow = null;
+      if (spec.student) {
+        const res = this._rtResolveStudent(spec.student);
+        if (res.error) return this._rtErrFor('student', spec.student, res);
+        studentRow = res.student;
+      }
+      if (spec.class) {
+        const res = this._rtResolveClass(spec.class, { scope: spec.scope });
+        if (res.error) return this._rtErrFor('class', spec.class, res);
+        classRow = res.row;
+      }
+      const { rows } = await this._fetchAllNotes();
+      const names = {}; (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      let list = rows || [];
+      if (studentRow) list = list.filter(n => n.student_id === studentRow.id);
+      if (classRow) list = list.filter(n => n.class_id === classRow.id);
+      const limit = Math.min(Number(spec.limit) || 25, 100);
+      return {
+        count: list.length,
+        notes: list.slice(0, limit).map(n => ({
+          date: n.note_date || (n.created_at || '').slice(0, 10),
+          student: n.student_id ? (names[n.student_id] || n.student_id) : null,
+          category: n.custom_category || n.category || null,
+          sentiment: n.sentiment || null,
+          visibility: n.visibility || null,
+          note: n.note || ''
+        }))
+      };
+    }
+
+    async _rtAttendance(spec) {
+      const res = this._rtResolveClass(spec.class, { scope: spec.scope });
+      if (res.error) return this._rtErrFor('class', spec.class, res);
+      const sb = this.auth.supabase;
+      let q = sb.from('class_attendance')
+        .select('student_id, date, status').eq('class_id', res.row.id)
+        .order('date', { ascending: false });
+      if (spec.date) q = q.eq('date', spec.date);
+      else q = q.limit(200);
+      const { data, error } = await q;
+      if (error) throw error;
+      const names = {}; (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const byDate = {};
+      (data || []).forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r); });
+      return {
+        class: { id: res.row.id, name: res.row.name },
+        dates_recorded: Object.keys(byDate).sort().reverse(),
+        records: (data || []).map(r => ({
+          date: r.date, student: names[r.student_id] || r.student_id, status: r.status
+        }))
+      };
+    }
+
+    _rtErr(code, message, extra = {}) { return { ok: false, error: code, message, ...extra }; }
+
+    _rtErrFor(field, ref, res) {
+      if (res.error === 'ambiguous') {
+        return this._rtErr('ambiguous', `"${ref}" matches ${res.candidates.length} ${field}s — name one exactly.`,
+          { field, ref, candidates: res.candidates });
+      }
+      if (res.error === 'bad_ref') return this._rtErr('bad_ref', `Missing or invalid "${field}".`, { field, ref });
+      return this._rtErr('not_found', `No ${field} matches "${ref}".`, { field, ref });
+    }
+
+    // ---- Dry-run planner -------------------------------------------------
+    // Resolves every op against real data and reports exactly what WOULD
+    // happen. Nothing is written. Any unresolved reference fails the whole
+    // plan rather than the single op, so a batch is never half-applied on the
+    // strength of a guess.
+    async _rtPlan(spec) {
+      const ops = Array.isArray(spec.ops) ? spec.ops : null;
+      if (!ops || !ops.length) return this._rtErr('missing_field', 'plan needs a non-empty "ops" array.');
+      if (ops.length > 100) return this._rtErr('too_many', `plan is capped at 100 ops (got ${ops.length}).`);
+
+      const quarter = await this._rivenCurrentQuarter();
+      const steps = [], errors = [], sensitive = [];
+
+      // Current participation/academic grades, fetched once, so a grade op can
+      // show the value it would replace instead of just the value it sets.
+      const gradeCache = {};
+      const needGrades = ops.some(o => o && o.op === 'grade');
+      if (needGrades && quarter) {
+        const { data: enr } = await this.auth.supabase
+          .from('class_enrollments').select('id, class_id, student_id').eq('status', 'active');
+        const { data: snaps } = await this.auth.supabase
+          .from('quarter_grade_snapshots').select('*').eq('quarter_id', quarter.id);
+        const snapByEnr = {};
+        (snaps || []).forEach(s => { snapByEnr[s.enrollment_id] = s; });
+        (enr || []).forEach(e => { gradeCache[`${e.student_id}|${e.class_id}`] = { enrollment: e, snap: snapByEnr[e.id] || null }; });
+      }
+
+      for (let i = 0; i < ops.length; i++) {
+        const o = ops[i] || {};
+        const idx = i + 1;
+        const fail = (e) => { errors.push({ step: idx, op: o.op || null, ...e }); };
+
+        const student = (ref) => {
+          const r = this._rtResolveStudent(ref);
+          if (r.error) { fail(this._rtErrFor('student', ref, r)); return null; }
+          return r.student;
+        };
+        const klass = (ref) => {
+          const r = this._rtResolveClass(ref, { scope: spec.scope });
+          if (r.error) { fail(this._rtErrFor('class', ref, r)); return null; }
+          return r.row;
+        };
+
+        if (o.op === 'award' || o.op === 'deduct') {
+          const s = student(o.student); if (!s) continue;
+          const amt = Number(o.amount);
+          if (!Number.isFinite(amt) || amt <= 0) { fail(this._rtErr('bad_amount', `Step ${idx}: "amount" must be a positive number.`)); continue; }
+          const delta = o.op === 'award' ? amt : -amt;
+          const step = {
+            step: idx, op: o.op, student: s.full_name,
+            amount: delta, balance_before: s.rtc_balance ?? null,
+            balance_after: (s.rtc_balance ?? 0) + delta,
+            reason: o.reason || null
+          };
+          steps.push(step);
+          if (delta < 0) sensitive.push({ step: idx, kind: 'rtc_deduction', detail: `${s.full_name}: ${s.rtc_balance ?? '?'} → ${step.balance_after} (${delta})` });
+          continue;
+        }
+
+        if (o.op === 'group_award') {
+          const c = klass(o.class); if (!c) continue;
+          const amt = Number(o.amount);
+          if (!Number.isFinite(amt) || amt === 0) { fail(this._rtErr('bad_amount', `Step ${idx}: "amount" must be a non-zero number.`)); continue; }
+          const { data } = await this.auth.supabase
+            .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
+          const n = (data || []).length;
+          steps.push({ step: idx, op: 'group_award', class: c.name, amount: amt, students: n, total_rtc: amt * n, reason: o.reason || null });
+          if (amt < 0) sensitive.push({ step: idx, kind: 'rtc_deduction', detail: `${c.name}: ${amt} each across ${n} students (${amt * n} total)` });
+          continue;
+        }
+
+        if (o.op === 'note') {
+          const s = o.student ? student(o.student) : null;
+          if (o.student && !s) continue;
+          const c = o.class ? klass(o.class) : null;
+          if (o.class && !c) continue;
+          if (!s && !c) { fail(this._rtErr('missing_field', `Step ${idx}: note needs "student" or "class".`)); continue; }
+          if (!o.text || !String(o.text).trim()) { fail(this._rtErr('missing_field', `Step ${idx}: note needs "text".`)); continue; }
+          const sentiment = ['positive', 'negative', 'neutral'].includes(o.sentiment) ? o.sentiment : 'neutral';
+          const category = ['academic', 'behavior', 'responsibility', 'attendance', 'communication', 'general'].includes(o.category) ? o.category : 'general';
+          const visibility = o.visibility === 'private' ? 'private' : 'staff';
+          steps.push({ step: idx, op: 'note', student: s ? s.full_name : null, class: c ? c.name : null, sentiment, category, visibility, text: String(o.text).trim() });
+          continue;
+        }
+
+        if (o.op === 'grade') {
+          const s = student(o.student); if (!s) continue;
+          const c = klass(o.class); if (!c) continue;
+          if (!quarter) { fail(this._rtErr('no_quarter', `Step ${idx}: no active quarter configured.`)); continue; }
+          const comp = ['participation', 'academic', 'final'].includes(o.component) ? o.component : null;
+          if (!comp) { fail(this._rtErr('bad_component', `Step ${idx}: "component" must be participation, academic or final.`)); continue; }
+          let value = o.value;
+          if (typeof value === 'string' && /^[abcdf][+-]?$/i.test(value.trim())) value = this._letterToPct(value.trim().toLowerCase());
+          value = Number(value);
+          if (!Number.isFinite(value) || value < 0 || value > 100) { fail(this._rtErr('bad_value', `Step ${idx}: "value" must be 0-100 or a letter grade.`)); continue; }
+          const cached = gradeCache[`${s.id}|${c.id}`];
+          if (!cached) { fail(this._rtErr('not_enrolled', `Step ${idx}: ${s.full_name} is not actively enrolled in ${c.name}.`)); continue; }
+          const snap = cached.snap || {};
+          const prev = comp === 'participation' ? snap.participation_grade
+            : comp === 'academic' ? snap.academic_grade : snap.class_grade;
+          const before = (prev == null || prev === 0) ? null : `${prev} (${this._pctToLetter(prev)})`;
+          const after = `${value} (${this._pctToLetter(value)})`;
+          steps.push({ step: idx, op: 'grade', student: s.full_name, class: c.name, component: comp, before, after, overrides_calculated: comp !== 'participation' });
+          sensitive.push({ step: idx, kind: 'grade_change', detail: `${s.full_name} · ${c.name} · ${comp}: ${before || '—'} → ${after}` });
+          continue;
+        }
+
+        if (o.op === 'attendance') {
+          const c = klass(o.class); if (!c) continue;
+          const status = ['present', 'absent', 'late', 'left_early'].includes(o.status) ? o.status : null;
+          if (!status) { fail(this._rtErr('bad_status', `Step ${idx}: "status" must be present, absent, late or left_early.`)); continue; }
+          const date = o.date || new Date().toISOString().slice(0, 10);
+          let ids = [];
+          if (o.student) { const s = student(o.student); if (!s) continue; ids = [s.id]; }
+          else {
+            const { data } = await this.auth.supabase
+              .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
+            ids = (data || []).map(e => e.student_id);
+          }
+          steps.push({ step: idx, op: 'attendance', class: c.name, date, status, students: ids.length, replaces_existing: true });
+          continue;
+        }
+
+        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance.`));
+      }
+
+      return {
+        dry_run: true,
+        executed: false,
+        note: 'Planning only — /rt does not write. Review, then run the equivalent conversational commands.',
+        quarter: quarter ? (quarter.name || null) : null,
+        ok: errors.length === 0,
+        steps_planned: steps.length,
+        errors,
+        needs_review: sensitive,
+        steps
+      };
+    }
+
+    async terminalRtCommand(raw) {
+      const text = (raw || '').trim();
+      if (!text || text === 'help') {
+        this._rtOut({
+          op: 'help',
+          usage: '/rt <json>  (one line; the terminal input strips newlines)',
+          reads: {
+            classes: '{"op":"classes"}  — add "scope":"all" for every class, not just yours',
+            roster: '{"op":"roster","class":"Filmmaking"}',
+            students: '{"op":"students","match":"eli"}',
+            grades: '{"op":"grades","class":"Filmmaking"}  or  {"op":"grades","student":"Jordan Games"}',
+            notes: '{"op":"notes","student":"Jordan Games","limit":10}',
+            attendance: '{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}'
+          },
+          dry_run: {
+            plan: '{"op":"plan","ops":[{"op":"award","student":"Jordan Games","amount":5,"reason":"..."}]}',
+            write_ops: ['award', 'deduct', 'group_award', 'note', 'grade', 'attendance']
+          },
+          resolution: 'Names must resolve to exactly ONE row. Ambiguous or unknown fails and lists candidates; nothing is guessed.',
+          writes: 'NONE. /rt is read-and-plan only.'
+        });
+        return;
+      }
+      let spec;
+      try {
+        spec = JSON.parse(text);
+      } catch (err) {
+        this._rtOut(this._rtErr('bad_json', 'Could not parse that as JSON: ' + err.message, { received: text.slice(0, 200) }));
+        return;
+      }
+      if (Array.isArray(spec)) spec = { op: 'plan', ops: spec };
+      if (!spec || typeof spec !== 'object' || !spec.op) {
+        this._rtOut(this._rtErr('missing_field', 'Needs an object with an "op" field. Try /rt help.'));
+        return;
+      }
+      try {
+        let result;
+        switch (spec.op) {
+          case 'classes':    result = { classes: await this._rtClassList(spec) }; break;
+          case 'roster':     result = await this._rtRoster(spec); break;
+          case 'students':   result = this._rtStudentSearch(spec); break;
+          case 'grades':     result = await this._rtGrades(spec); break;
+          case 'notes':      result = await this._rtNotes(spec); break;
+          case 'attendance': result = await this._rtAttendance(spec); break;
+          case 'plan':       result = await this._rtPlan(spec); break;
+          default:
+            result = this._rtErr('unknown_op', `Unknown op "${spec.op}". Try /rt help.`);
+        }
+        this._rtOut({ op: spec.op, ...result });
+      } catch (err) {
+        this._rtOut(this._rtErr('failed', err.message || String(err), { op: spec.op }));
+      }
+    }
+
     async _executeSlashCommand(command) {
       const parts = command.trim().split(/\s+/);
       const cmd = parts[0].toLowerCase();
@@ -44787,6 +45245,9 @@
         await this.terminalViewPrivilegeCatalog();
 
       // Utility commands
+      // Structured surface for batch/tooling callers (reads + dry-run only)
+      } else if (cmd === '/rt') {
+        await this.terminalRtCommand(args.join(' '));
       } else if (cmd === '/coverage') {
         await this.terminalCoverageReport();
       } else if (cmd === '/help') {
@@ -47878,6 +48339,14 @@
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/attendance</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/undo</code>,
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/coverage</code>, etc.
+  </div>
+  <div style="font-size: 11px; color: #6b5236; line-height: 1.6; margin-top: 6px;">
+    <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/rt</code>
+    is the structured surface for tooling: it takes JSON on one line, resolves names
+    strictly (an ambiguous name fails and lists the candidates instead of guessing),
+    and returns copyable JSON. Reads and dry-run planning only, it never writes.
+    Type <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/rt help</code>
+    for the ops.
   </div>
   <div style="font-size: 11px; color: #6b5236; line-height: 1.6; margin-top: 6px;">
     <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/coverage</code>
