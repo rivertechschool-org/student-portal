@@ -8273,7 +8273,8 @@
             { data: parentLinks },
             { data: emergencyContacts },
             { data: medicalInfo },
-            { data: studentNotes }
+            { data: studentNotes },
+            { data: unifiedNotes }
           ] = await Promise.all([
             this.auth.supabase
               .from('user_profiles')
@@ -8298,7 +8299,23 @@
               .from('student_notes')
               .select('*, classes(name)')
               .eq('student_id', studentId)
-              .order('created_at', { ascending: false })
+              .order('created_at', { ascending: false }),
+            // Riven and the Notes tab write to the UNIFIED `notes` table, but
+            // this panel only ever read the legacy `student_notes`, so notes
+            // logged through Riven were invisible here — the one place a
+            // teacher looks for a whole view of a student.
+            // Tolerated separately: on a deployment where the unified_notes
+            // migration has not run, this table is absent, and letting that
+            // reject would take the whole details panel down with it.
+            (async () => {
+              try {
+                return await this.auth.supabase
+                  .from('notes')
+                  .select('*')
+                  .eq('student_id', studentId)
+                  .order('created_at', { ascending: false });
+              } catch (e) { return { data: [] }; }
+            })()
           ]);
 
           // Load parent profiles if there are linked parents
@@ -8312,14 +8329,38 @@
             parents = parentProfiles || [];
           }
 
-          // Attach teacher profiles to notes (FK points to profiles, not user_profiles)
-          if (studentNotes && studentNotes.length > 0) {
-            const teacherIds = [...new Set(studentNotes.map(n => n.teacher_id).filter(Boolean))];
+          // Normalise unified notes into the legacy row shape this panel
+          // renders, so one list covers both stores. A private note stays with
+          // its author; everything else is staff-visible by design.
+          const me = this.userInfo?.profile?.id;
+          const mappedUnified = (unifiedNotes || [])
+            .filter(n => n.visibility !== 'private' || n.author_id === me)
+            .map(n => ({
+              id: n.id, student_id: n.student_id, class_id: n.class_id,
+              teacher_id: n.author_id, note: n.note,
+              category: n.custom_category || n.category || 'general',
+              sentiment: n.sentiment || 'neutral',
+              created_at: n.created_at, classes: null, _unified: true
+            }));
+          let allNotes = (studentNotes || []).concat(mappedUnified)
+            .sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+
+          // Attach teacher profiles (FK points to profiles, not user_profiles)
+          if (allNotes.length > 0) {
+            const teacherIds = [...new Set(allNotes.map(n => n.teacher_id).filter(Boolean))];
             if (teacherIds.length > 0) {
               const { data: teacherProfiles } = await this.auth.supabase
                 .from('user_profiles').select('id, first_name, last_name').in('id', teacherIds);
               const tMap = Object.fromEntries((teacherProfiles || []).map(p => [p.id, p]));
-              studentNotes.forEach(n => { n.user_profiles = tMap[n.teacher_id] || null; });
+              allNotes.forEach(n => { if (!n.user_profiles) n.user_profiles = tMap[n.teacher_id] || null; });
+            }
+            // `notes` has no embedded join here, so resolve class names by id
+            const classIds = [...new Set(allNotes.filter(n => !n.classes && n.class_id).map(n => n.class_id))];
+            if (classIds.length > 0) {
+              const { data: classRows } = await this.auth.supabase
+                .from('classes').select('id, name').in('id', classIds);
+              const cMap = Object.fromEntries((classRows || []).map(c => [c.id, c]));
+              allNotes.forEach(n => { if (!n.classes && n.class_id) n.classes = cMap[n.class_id] || null; });
             }
           }
 
@@ -8330,7 +8371,7 @@
           this._currentStudentDetailsId = studentId;
 
           // Render the details
-          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo, studentNotes || [], strikesData);
+          content.innerHTML = this.renderStudentDetailsContent(student, parents, emergencyContacts || [], medicalInfo, allNotes, strikesData);
 
         } catch (error) {
           console.error('Error loading student details:', error);
