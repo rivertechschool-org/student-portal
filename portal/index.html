@@ -45425,12 +45425,83 @@
         results, failures, verification: reads });
     }
 
+    // Quarter-end grading review. Luke's behaviour notes are deliberately NOT
+    // wired to grades — a note must never move a number on its own. This pulls
+    // the two together for a human decision instead: every student on the
+    // roster, their current participation/academic/final, and the notes filed
+    // against them in this class, so the notes can inform the grade he sets.
+    // Notes are stored visibility 'staff', so any teacher sees the same view.
+    // Sorted by concerns first (most negative, then most positive), because the
+    // students needing a judgement call should not be buried alphabetically.
+    async _rtGradeReview(spec) {
+      const res = await this._rtResolveClassSpec(spec);
+      if (res.error) return this._rtErrFor('class', spec.class || spec.class_with, res);
+      const sb = this.auth.supabase;
+      const quarter = await this._rivenCurrentQuarter();
+      const { data: enr, error } = await sb.from('class_enrollments')
+        .select('id, student_id').eq('class_id', res.row.id).eq('status', 'active');
+      if (error) throw error;
+      if (!(enr || []).length) return { class: { id: res.row.id, name: res.row.name }, count: 0, students: [] };
+
+      const snapByEnr = {};
+      if (quarter) {
+        const { data: snaps } = await sb.from('quarter_grade_snapshots')
+          .select('*').eq('quarter_id', quarter.id).in('enrollment_id', enr.map(e => e.id));
+        (snaps || []).forEach(s => { snapByEnr[s.enrollment_id] = s; });
+      }
+      const { rows } = await this._fetchAllNotes();
+      const classNotes = (rows || []).filter(n => n.class_id === res.row.id);
+      const byStudent = {};
+      classNotes.forEach(n => { if (n.student_id) (byStudent[n.student_id] = byStudent[n.student_id] || []).push(n); });
+
+      const names = {}; (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const g = (v) => (v == null || v === 0) ? null : { pct: v, letter: this._pctToLetter(v) };
+      const limit = Math.min(Number(spec.notes_per_student) || 10, 50);
+
+      const out = enr.map(e => {
+        const s = snapByEnr[e.id] || {};
+        const mine = (byStudent[e.student_id] || [])
+          .sort((a, b) => String(b.note_date || b.created_at || '').localeCompare(String(a.note_date || a.created_at || '')));
+        const tally = { positive: 0, negative: 0, neutral: 0 };
+        mine.forEach(n => { tally[n.sentiment === 'positive' ? 'positive' : n.sentiment === 'negative' ? 'negative' : 'neutral']++; });
+        return {
+          student: names[e.student_id] || e.student_id,
+          participation: g(s.participation_grade),
+          academic: g(s.academic_grade),
+          final: g(s.class_grade),
+          overridden: !!(s.class_grade_override || s.academic_grade_override),
+          note_counts: { ...tally, total: mine.length },
+          notes: mine.slice(0, limit).map(n => ({
+            date: n.note_date || String(n.created_at || '').slice(0, 10),
+            sentiment: n.sentiment || 'neutral',
+            category: n.custom_category || n.category || null,
+            visibility: n.visibility || null,
+            note: n.note || ''
+          }))
+        };
+      }).sort((a, b) =>
+        b.note_counts.negative - a.note_counts.negative ||
+        b.note_counts.positive - a.note_counts.positive ||
+        a.student.localeCompare(b.student));
+
+      return {
+        class: { id: res.row.id, name: res.row.name },
+        quarter: quarter ? (quarter.name || null) : null,
+        count: out.length,
+        with_notes: out.filter(x => x.note_counts.total > 0).length,
+        sorted_by: 'most negative notes first, then most positive, then name',
+        reminder: 'Notes never change a grade on their own. Set grades explicitly with an apply "grade" op.',
+        students: out
+      };
+    }
+
     async _rtDispatch(spec) {
       switch (spec.op) {
         case 'classes':    return { classes: await this._rtClassList(spec) };
         case 'roster':     return await this._rtRoster(spec);
         case 'students':   return this._rtStudentSearch(spec);
         case 'grades':     return await this._rtGrades(spec);
+        case 'grade_review': return await this._rtGradeReview(spec);
         case 'notes':      return await this._rtNotes(spec);
         case 'attendance': return await this._rtAttendance(spec);
         case 'plan':       return await this._rtPlan(spec);
@@ -45478,7 +45549,8 @@
             students: '{"op":"students","match":"eli"}',
             grades: '{"op":"grades","class":"Filmmaking"}  or  {"op":"grades","student":"Jordan Games"}',
             notes: '{"op":"notes","student":"Jordan Games","limit":10}',
-            attendance: '{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}'
+            attendance: '{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}',
+            grade_review: '{"op":"grade_review","class":"Filmmaking"} — every student on the roster with their current grades AND the notes filed on them in that class, for quarter-end grading. Notes never move a grade by themselves.'
           },
           dry_run: {
             plan: '{"op":"plan","ops":[{"op":"award","student":"Jordan Games","amount":5,"reason":"..."}]}',

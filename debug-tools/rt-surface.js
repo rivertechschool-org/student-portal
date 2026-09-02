@@ -121,6 +121,8 @@ const app = {
   _fetchAllNotes: async () => ({ rows: [
     { student_id: 's1', class_id: 'c1', note: 'Great work', sentiment: 'positive', category: 'behavior', visibility: 'staff', created_at: '2026-09-01T10:00:00Z' },
     { student_id: 's3', class_id: 'c1', note: 'Noisy', sentiment: 'negative', category: 'behavior', visibility: 'staff', created_at: '2026-09-01T11:00:00Z' },
+    { student_id: 's3', class_id: 'c1', note: 'Noisy again', sentiment: 'negative', category: 'behavior', visibility: 'staff', created_at: '2026-09-02T11:00:00Z' },
+    { student_id: 's3', class_id: 'c5', note: 'Other class', sentiment: 'negative', category: 'behavior', visibility: 'staff', created_at: '2026-09-02T12:00:00Z' },
   ] }),
   _showRivenMessage(html) { app._lastHtml = html; },
   terminalPrint() {}, terminalPrintError(m) { app._lastErr = m; },
@@ -140,7 +142,7 @@ const app = {
   _requestConfirmation(summary, execute) { app._pending = { summary, execute }; },
 };
 DB.classes = [];
-for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
+for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -183,7 +185,7 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   const gr = await rt('{"op":"grades","class":"Filmmaking"}');
   t('grades reports participation + nulls', gr.count === 3 && gr.grades.find(g => g.student === 'Jordan Games').participation.pct === 92, gr);
   const nt = await rt('{"op":"notes","class":"Filmmaking"}');
-  t('notes filtered by class', nt.count === 2, nt);
+  t('notes filtered by class', nt.count === 3, nt);
   const att = await rt('{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}');
   t('attendance returns records', att.records.length === 2, att);
 
@@ -298,6 +300,18 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
     ops: [{ op: 'award', student: 'Jordan Games', amount: 5 }, { op: 'award', student: 'Ghost Person', amount: 5 }] }));
   t('one bad op blocks the entire batch', blocked.blocked === true && blocked.executed === false, blocked);
   t('a blocked batch writes nothing and never asks to confirm', WRITES.length === 0 && !app._pending, WRITES.length);
+
+  // ---- grade_review: notes and grades side by side, without linking them
+  const gv = await rt('{"op":"grade_review","class":"Filmmaking"}');
+  t('grade_review covers the whole roster', gv.count === 3 && gv.with_notes === 2, gv);
+  t('concerns sort to the top', gv.students[0].student === 'Eli Morris' && gv.students[0].note_counts.negative === 2, gv.students.map(x => x.student));
+  t('grade_review shows current grades beside the notes',
+    gv.students.find(x => x.student === 'Jordan Games').participation.pct === 92, gv.students);
+  t('notes from another class are not counted',
+    gv.students[0].note_counts.total === 2, gv.students[0].note_counts);
+  t('a student with no notes still appears',
+    gv.students.some(x => x.note_counts.total === 0), gv.students);
+  t('grade_review writes nothing and says so', /never change a grade/.test(gv.reminder), gv.reminder);
 
   const help = await rt('');
   t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);
