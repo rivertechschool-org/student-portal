@@ -1454,6 +1454,90 @@ const AnswerInterpreter = {
     // Roman numeral mappings for quadrants
     romanNumerals: { 'i': 1, 'ii': 2, 'iii': 3, 'iv': 4, '1': 1, '2': 2, '3': 3, '4': 4 },
 
+    // Superscript digits to ^n, so x² and x^2 are the same answer.
+    // Applied to the expected answer as well as the typed one, so nothing has
+    // to be written twice - and it makes "3.5 × 10⁴" detect as scientific
+    // notation, which it previously did not.
+    unifyNotation(str) {
+        const sup = { '\u2070': 0, '\u00b9': 1, '\u00b2': 2, '\u00b3': 3, '\u2074': 4,
+                      '\u2075': 5, '\u2076': 6, '\u2077': 7, '\u2078': 8, '\u2079': 9 };
+        return String(str).replace(/[\u2070\u00b9\u00b2\u00b3\u2074-\u2079]+/g,
+            m => '^' + [...m].map(c => sup[c]).join(''));
+    },
+
+    // Evaluate arithmetic typed as an answer: "1000 * 1.05^3", and the forms
+    // people actually write - "1000 × 1.05", "1000 x 1.05". The worked
+    // examples show ×, so a student copying that style was marked wrong
+    // because parseFloat stops at the first number and quietly returns 1000.
+    //
+    // A parser rather than eval/Function: no arbitrary code from an input box,
+    // and it works under a strict CSP.
+    parseArithmetic(str) {
+        let src = String(str).toLowerCase().replace(/[\s,$]/g, '');
+        src = src.replace(/[\u00d7\u00b7\u22c5]/g, '*');
+        // A lone x between numbers means multiply. Only reached when a NUMBER is
+        // expected, so it can never be an algebra variable here.
+        src = src.replace(/(\d)x(?=[\d(])/g, '$1*');
+        if (!src || !/^[-+*/^().\d%]+$/.test(src)) return null;
+
+        let i = 0;
+        const expr = () => {
+            let v = term();
+            if (v === null) return null;
+            while (src[i] === '+' || src[i] === '-') {
+                const op = src[i++];
+                const r = term();
+                if (r === null) return null;
+                v = op === '+' ? v + r : v - r;
+            }
+            return v;
+        };
+        const term = () => {
+            let v = power();
+            if (v === null) return null;
+            while (src[i] === '*' || src[i] === '/') {
+                const op = src[i++];
+                const r = power();
+                if (r === null) return null;
+                if (op === '/' && r === 0) return null;
+                v = op === '*' ? v * r : v / r;
+            }
+            return v;
+        };
+        // Right-associative, so 2^3^2 is 2^(3^2) as it is in maths.
+        const power = () => {
+            const base = unary();
+            if (base === null) return null;
+            if (src[i] === '^') { i++; const e = power(); return e === null ? null : Math.pow(base, e); }
+            return base;
+        };
+        const unary = () => {
+            if (src[i] === '-') { i++; const v = unary(); return v === null ? null : -v; }
+            if (src[i] === '+') { i++; return unary(); }
+            return primary();
+        };
+        const primary = () => {
+            if (src[i] === '(') {
+                i++;
+                const v = expr();
+                if (v === null || src[i] !== ')') return null;
+                i++;
+                return pct(v);
+            }
+            const start = i;
+            while (i < src.length && /[\d.]/.test(src[i])) i++;
+            if (i === start) return null;
+            const n = parseFloat(src.slice(start, i));
+            return isNaN(n) ? null : pct(n);
+        };
+        const pct = (v) => { if (src[i] === '%') { i++; return v / 100; } return v; };
+
+        const value = expr();
+        // A trailing remainder means it was not arithmetic after all - better to
+        // hand it back to the other parsers than to accept half an answer.
+        return (value === null || i !== src.length || !isFinite(value)) ? null : value;
+    },
+
     // Detect the type of answer expected
     detectType(expectedAnswer) {
         const ans = String(expectedAnswer).toLowerCase().trim();
@@ -2076,8 +2160,8 @@ const AnswerInterpreter = {
     // ========== NORMALIZE METHOD ==========
     normalize(input, type = null) {
         if (input === null || input === undefined) return null;
-        const s = String(input).toLowerCase().trim();
-        const original = String(input).trim();
+        const s = this.unifyNotation(String(input).toLowerCase().trim());
+        const original = this.unifyNotation(String(input).trim());
         const answerType = type || this.detectType(original);
 
         switch (answerType) {
@@ -2265,6 +2349,16 @@ const AnswerInterpreter = {
             }
             case 'number': {
                 const cleaned = s.replace(/,/g, '').replace(/\s/g, '');
+                // A bare number first, so nothing about the common case changes.
+                if (/^-?\d*\.?\d+$/.test(cleaned)) {
+                    return { type: 'number', value: parseFloat(cleaned), original: s };
+                }
+                // Then arithmetic. parseFloat would take "1000 \u00d7 1.157625" as
+                // 1000 and mark a correct answer wrong, so this has to come
+                // before the parseFloat fallback rather than after it.
+                const evaluated = this.parseArithmetic(cleaned);
+                if (evaluated !== null) return { type: 'number', value: evaluated, original: s };
+
                 let num = parseFloat(cleaned);
                 if (isNaN(num)) num = this.parseWordNumber(s);
                 if (num !== null && !isNaN(num)) return { type: 'number', value: num, original: s };
@@ -2459,6 +2553,21 @@ const AnswerInterpreter = {
         }
 
         if (acceptEquivalent) {
+            // A number is expected but the typed answer did not read as one.
+            //
+            // detectType looks at the STUDENT's text, and "1000 x 1.157625"
+            // looks algebraic while "1000 * 1.157625" looks like plain text, so
+            // neither ever reached the number branch. Here the expected answer
+            // is known to be a number, which makes it safe to try reading the
+            // input as arithmetic - and this is the only place that is true.
+            if (expectedNorm && expectedNorm.type === 'number' && (!userNorm || userNorm.type !== 'number')) {
+                let candidate = this.parseArithmetic(userInput);
+                if (candidate === null) candidate = this.parseWordNumber(String(userInput).toLowerCase().trim());
+                if (candidate !== null && !isNaN(candidate)
+                    && Math.abs(candidate - expectedNorm.value) < tolerance) {
+                    return { correct: true, matchType: 'equivalent' };
+                }
+            }
             // Number with trailing units/labels (e.g., "14 units²", "14 sq units", "14 square units")
             if (expectedNorm.type === 'number' && userNorm.type === 'text') {
                 const leading = String(userInput).trim().match(/^-?\d+\.?\d*/);
@@ -12462,10 +12571,14 @@ const generators = {
                 const n = pick([2, 4, 12]); // semi-annual, quarterly, monthly
                 const t = pick([3, 5, 10]);
                 const A = Math.round(P * Math.pow(1 + (rPct / 100) / n, n * t));
+                // The compounding word was doing too much work: the question needs n and
+                // never said what n was, so a student who did not already know what
+                // "semi-annually" means had no way to begin.
                 const labels = { 2: "semi-annually", 4: "quarterly", 12: "monthly" };
-                return { subType: type, question: `Invest $${P} at ${rPct}% compounded ${labels[n]} for ${t} years. Future value (nearest dollar)?`,
+                const perYear = { 2: "twice a year", 4: "4 times a year", 12: "12 times a year" };
+                return { subType: type, question: `Invest $${P} at ${rPct}% compounded ${labels[n]} (${perYear[n]}, so n = ${n}) for ${t} years. Future value (nearest dollar)?`,
                     answer: A, type: "procedural",
-                    explanation: `A = P(1 + r/n)^(nt) = ${P}(1 + ${rPct / 100}/${n})^(${n}×${t}) ≈ $${A}.` };
+                    explanation: `Compounded ${labels[n]} means the interest is added ${perYear[n]}, so n = ${n}. A = P(1 + r/n)^(nt) = ${P}(1 + ${rPct / 100}/${n})^(${n}×${t}) ≈ $${A}.` };
             }
             // rule_of_72 — conceptual
             const concept = pick([
