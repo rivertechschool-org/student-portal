@@ -313,6 +313,17 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
     gv.students.some(x => x.note_counts.total === 0), gv.students);
   t('grade_review writes nothing and says so', /never change a grade/.test(gv.reminder), gv.reminder);
 
+  // regression: a group op on a class created in the SAME batch previewed as
+  // "0 students, 0 RTC" and then moved real RTC on confirm
+  const newcls = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'create_class', name: 'Brand New', subject: 'Art' },
+    { op: 'enroll', class: 'Brand New', from_class: 'Filmmaking' },
+    { op: 'group_award', class: 'Brand New', amount: 5 },
+  ] }));
+  const ga = newcls.steps.find(x => x.op === 'group_award');
+  t('group op on a batch-created class previews the real size', ga.students === 3 && ga.total_rtc === 15, ga);
+  t('an estimated preview says it is estimated', ga.estimated_from_batch === true, ga);
+
   const help = await rt('');
   t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);
   t('help documents apply and its extra ops', !!help.apply && help.apply.extra_ops.includes('create_class'), help.apply);

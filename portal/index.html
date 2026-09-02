@@ -45060,6 +45060,11 @@
       // yet at plan time, so remember the names this batch would create and
       // treat a later reference to one as valid rather than "not found".
       const pendingClasses = new Set();
+      // ...and how many students a pending class is about to have, taken from an
+      // enroll op earlier in the same batch. Without this a group op on a
+      // brand-new class previewed as "0 students, 0 RTC" and then moved real
+      // money on confirm — the confirmation must never understate the write.
+      const pendingClassSize = {};
 
       // Current participation/academic grades, fetched once, so a grade op can
       // show the value it would replace instead of just the value it sets.
@@ -45116,11 +45121,18 @@
           const c = await klass(o); if (!c) continue;
           const amt = Number(o.amount);
           if (!Number.isFinite(amt) || amt === 0) { fail(this._rtErr('bad_amount', `Step ${idx}: "amount" must be a non-zero number.`)); continue; }
-          const { data } = c.pending ? { data: [] } : await this.auth.supabase
-            .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
-          const n = (data || []).length;
-          steps.push({ step: idx, op: 'group_award', class: c.name, amount: amt, students: n, total_rtc: amt * n, reason: o.reason || null });
-          if (amt < 0) sensitive.push({ step: idx, kind: 'rtc_deduction', detail: `${c.name}: ${amt} each across ${n} students (${amt * n} total)` });
+          let n, estimated = false;
+          if (c.pending) {
+            n = pendingClassSize[c.name.toLowerCase()] || 0;
+            estimated = true;
+          } else {
+            const { data } = await this.auth.supabase
+              .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
+            n = (data || []).length;
+          }
+          steps.push({ step: idx, op: 'group_award', class: c.name, amount: amt, students: n,
+            total_rtc: amt * n, estimated_from_batch: estimated || undefined, reason: o.reason || null });
+          if (amt < 0) sensitive.push({ step: idx, kind: 'rtc_deduction', detail: `${c.name}: ${amt} each across ${n} students (${amt * n} total)${estimated ? ', estimated from this batch' : ''}` });
           continue;
         }
 
@@ -45167,7 +45179,7 @@
           const date = o.date || new Date().toISOString().slice(0, 10);
           let ids = [];
           if (o.student) { const s = student(o.student); if (!s) continue; ids = [s.id]; }
-          else if (c.pending) { ids = []; }
+          else if (c.pending) { ids = new Array(pendingClassSize[c.name.toLowerCase()] || 0).fill(null); }
           else {
             const { data } = await this.auth.supabase
               .from('class_enrollments').select('student_id').eq('class_id', c.id).eq('status', 'active');
@@ -45210,6 +45222,7 @@
           } else {
             fail(this._rtErr('missing_field', `Step ${idx}: enroll needs "students" or "from_class".`)); continue;
           }
+          if (c.pending) pendingClassSize[c.name.toLowerCase()] = names.length;
           steps.push({ step: idx, op: 'enroll', class: c.name, from_class: o.from_class || null, students: names.length, names });
           continue;
         }
