@@ -99,7 +99,7 @@ const app = {
   ] }),
   _showRivenMessage(html) { app._lastHtml = html; },
 };
-for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtNotes','_rtAttendance','_rtPlan','terminalRtCommand']) {
+for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtNotes','_rtAttendance','_rtPlan','_rtDispatch','_rtBundle','terminalRtCommand']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -182,6 +182,43 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
 
   const plan3 = await rt(JSON.stringify({ op: 'plan', ops: [{ op: 'award', student: 'eli', amount: -5 }] }));
   t('negative award amount rejected', plan3.errors.some(e => e.error === 'bad_amount'), plan3.errors);
+
+  // ---- class_with: name a class by who sits in it
+  const cw = await rt('{"op":"roster","class_with":["Jordan Games","Eli Morris"]}');
+  t('class_with identifies the section from its roster', cw.class?.name === 'Filmmaking' && cw.count === 3, cw);
+  const cw2 = await rt('{"op":"roster","class_with":["Jordan Games"]}');
+  t('class_with spanning 2 classes is ambiguous, not a guess', cw2.error === 'ambiguous' && cw2.candidates.length === 2, cw2);
+  const cw3 = await rt('{"op":"roster","class_with":["Hegelund Gamer"]}');
+  t('class_with matching no class errors', cw3.error === 'not_found', cw3);
+  const cw4 = await rt('{"op":"roster","class_with":["Nobody At All"]}');
+  t('unresolvable student inside class_with errors', cw4.error === 'not_found', cw4);
+
+  const cwPlan = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'group_award', class_with: ['Jordan Games', 'Eli Morris'], amount: 5 },
+    { op: 'note', student: 'Eli Morris', class_with: ['Jordan Games', 'Eli Morris'], text: 'Noisy', sentiment: 'negative' },
+  ] }));
+  t('class_with works inside plan ops', cwPlan.ok === true && cwPlan.steps[0].class === 'Filmmaking' && cwPlan.steps[1].class === 'Filmmaking', cwPlan);
+
+  // ---- bundle: every read plus the plan in ONE call
+  const bun = await rt(JSON.stringify({ op: 'bundle',
+    reads: [
+      { op: 'classes', as: 'classes' },
+      { op: 'students', match: 'eli', as: 'elis' },
+      { op: 'roster', class_with: ['Jordan Games', 'Eli Morris'], as: 'roster' },
+      { op: 'grades', class_with: ['Jordan Games', 'Eli Morris'], as: 'grades' },
+      { op: 'attendance', class_with: ['Jordan Games', 'Eli Morris'], as: 'attendance' },
+      { op: 'roster', class: 'Film', as: 'broken' },
+    ],
+    plan: { ops: [{ op: 'award', student: 'Jordan Games', amount: 5 }] }
+  }));
+  t('bundle returns every read under its key',
+    Object.keys(bun.reads).length === 6 && bun.reads.classes.classes.length === 2 && bun.reads.elis.count === 2, Object.keys(bun.reads || {}));
+  t('bundle resolves class_with reads', bun.reads.roster.count === 3 && bun.reads.grades.count === 3, bun.reads.roster);
+  t('a failing read does not abort the bundle', bun.reads.broken.error === 'ambiguous' && bun.reads.classes.classes.length === 2, bun.reads.broken);
+  t('bundle carries the dry-run plan', bun.plan.dry_run === true && bun.plan.steps_planned === 1, bun.plan);
+  t('bundle still writes nothing', bun.plan.executed === false, bun.plan);
+  const badnest = await rt('{"op":"bundle","reads":[{"op":"bundle"}]}');
+  t('bundle cannot nest', badnest.reads.bundle.error === 'bad_op', badnest);
 
   const help = await rt('');
   t('help lists ops and states it never writes', help.writes === 'NONE. /rt is read-and-plan only.', help.writes);

@@ -44826,6 +44826,43 @@
       return { error: 'not_found' };
     }
 
+    // Resolve a class the caller can describe but cannot name. A batch often
+    // knows exactly who sits in a section ("the Filmmaking with Evan, Estelle
+    // and Daenerys in it") while not knowing which of several same-subject
+    // classes that is — and the schedule table stores period indexes, not clock
+    // times, so the roster is the sharpest selector available. Requires the ONE
+    // class whose active roster contains ALL the named students; several or
+    // none is an error, same contract as every other reference here.
+    async _rtResolveClassSpec(spec) {
+      const refs = spec.class_with;
+      if (!Array.isArray(refs) || !refs.length) {
+        return this._rtResolveClass(spec.class, { scope: spec.scope });
+      }
+      const ids = [];
+      for (const ref of refs) {
+        const r = this._rtResolveStudent(ref);
+        if (r.error) return { error: 'class_with_student', ref, inner: r };
+        ids.push(r.student.id);
+      }
+      const { data, error } = await this.auth.supabase
+        .from('class_enrollments').select('class_id, student_id')
+        .in('student_id', ids).eq('status', 'active');
+      if (error) throw error;
+      const members = {};
+      (data || []).forEach(e => { (members[e.class_id] = members[e.class_id] || new Set()).add(e.student_id); });
+      const want = new Set(ids).size;
+      let cands = (this._terminalAllClasses || [])
+        .filter(c => c.is_active !== false && members[c.id] && members[c.id].size === want);
+      const me = this.userInfo?.user?.id;
+      if (spec.scope !== 'all' && me) {
+        const mine = cands.filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
+        if (mine.length) cands = mine;
+      }
+      if (cands.length === 1) return { row: cands[0], matched_by: 'class_with' };
+      if (cands.length > 1) return { error: 'ambiguous', candidates: cands.map(c => ({ id: c.id, name: c.name })) };
+      return { error: 'not_found' };
+    }
+
     async _rtClassList(spec) {
       const sb = this.auth.supabase;
       const me = this.userInfo?.user?.id;
@@ -44859,8 +44896,8 @@
     }
 
     async _rtRoster(spec) {
-      const res = this._rtResolveClass(spec.class, { scope: spec.scope });
-      if (res.error) return this._rtErrFor('class', spec.class, res);
+      const res = await this._rtResolveClassSpec(spec);
+      if (res.error) return this._rtErrFor('class', spec.class || spec.class_with, res);
       const { data, error } = await this.auth.supabase
         .from('class_enrollments').select('student_id')
         .eq('class_id', res.row.id).eq('status', 'active');
@@ -44891,9 +44928,9 @@
       const quarter = await this._rivenCurrentQuarter();
       if (!quarter) return this._rtErr('no_quarter', 'No active quarter is configured.');
       let classRow = null;
-      if (spec.class) {
-        const res = this._rtResolveClass(spec.class, { scope: spec.scope });
-        if (res.error) return this._rtErrFor('class', spec.class, res);
+      if (spec.class || spec.class_with) {
+        const res = await this._rtResolveClassSpec(spec);
+        if (res.error) return this._rtErrFor('class', spec.class || spec.class_with, res);
         classRow = res.row;
       }
       let studentRow = null;
@@ -44943,9 +44980,9 @@
         if (res.error) return this._rtErrFor('student', spec.student, res);
         studentRow = res.student;
       }
-      if (spec.class) {
-        const res = this._rtResolveClass(spec.class, { scope: spec.scope });
-        if (res.error) return this._rtErrFor('class', spec.class, res);
+      if (spec.class || spec.class_with) {
+        const res = await this._rtResolveClassSpec(spec);
+        if (res.error) return this._rtErrFor('class', spec.class || spec.class_with, res);
         classRow = res.row;
       }
       const { rows } = await this._fetchAllNotes();
@@ -44968,8 +45005,8 @@
     }
 
     async _rtAttendance(spec) {
-      const res = this._rtResolveClass(spec.class, { scope: spec.scope });
-      if (res.error) return this._rtErrFor('class', spec.class, res);
+      const res = await this._rtResolveClassSpec(spec);
+      if (res.error) return this._rtErrFor('class', spec.class || spec.class_with, res);
       const sb = this.auth.supabase;
       let q = sb.from('class_attendance')
         .select('student_id, date, status').eq('class_id', res.row.id)
@@ -45038,8 +45075,10 @@
           if (r.error) { fail(this._rtErrFor('student', ref, r)); return null; }
           return r.student;
         };
-        const klass = (ref) => {
-          const r = this._rtResolveClass(ref, { scope: spec.scope });
+        // async: class_with hits the enrolment table to identify the section
+        const klass = async (o2) => {
+          const ref = o2.class || o2.class_with;
+          const r = await this._rtResolveClassSpec({ class: o2.class, class_with: o2.class_with, scope: spec.scope });
           if (r.error) { fail(this._rtErrFor('class', ref, r)); return null; }
           return r.row;
         };
@@ -45061,7 +45100,7 @@
         }
 
         if (o.op === 'group_award') {
-          const c = klass(o.class); if (!c) continue;
+          const c = await klass(o); if (!c) continue;
           const amt = Number(o.amount);
           if (!Number.isFinite(amt) || amt === 0) { fail(this._rtErr('bad_amount', `Step ${idx}: "amount" must be a non-zero number.`)); continue; }
           const { data } = await this.auth.supabase
@@ -45075,8 +45114,8 @@
         if (o.op === 'note') {
           const s = o.student ? student(o.student) : null;
           if (o.student && !s) continue;
-          const c = o.class ? klass(o.class) : null;
-          if (o.class && !c) continue;
+          const c = (o.class || o.class_with) ? await klass(o) : null;
+          if ((o.class || o.class_with) && !c) continue;
           if (!s && !c) { fail(this._rtErr('missing_field', `Step ${idx}: note needs "student" or "class".`)); continue; }
           if (!o.text || !String(o.text).trim()) { fail(this._rtErr('missing_field', `Step ${idx}: note needs "text".`)); continue; }
           const sentiment = ['positive', 'negative', 'neutral'].includes(o.sentiment) ? o.sentiment : 'neutral';
@@ -45088,7 +45127,7 @@
 
         if (o.op === 'grade') {
           const s = student(o.student); if (!s) continue;
-          const c = klass(o.class); if (!c) continue;
+          const c = await klass(o); if (!c) continue;
           if (!quarter) { fail(this._rtErr('no_quarter', `Step ${idx}: no active quarter configured.`)); continue; }
           const comp = ['participation', 'academic', 'final'].includes(o.component) ? o.component : null;
           if (!comp) { fail(this._rtErr('bad_component', `Step ${idx}: "component" must be participation, academic or final.`)); continue; }
@@ -45109,7 +45148,7 @@
         }
 
         if (o.op === 'attendance') {
-          const c = klass(o.class); if (!c) continue;
+          const c = await klass(o); if (!c) continue;
           const status = ['present', 'absent', 'late', 'left_early'].includes(o.status) ? o.status : null;
           if (!status) { fail(this._rtErr('bad_status', `Step ${idx}: "status" must be present, absent, late or left_early.`)); continue; }
           const date = o.date || new Date().toISOString().slice(0, 10);
@@ -45140,6 +45179,46 @@
       };
     }
 
+    async _rtDispatch(spec) {
+      switch (spec.op) {
+        case 'classes':    return { classes: await this._rtClassList(spec) };
+        case 'roster':     return await this._rtRoster(spec);
+        case 'students':   return this._rtStudentSearch(spec);
+        case 'grades':     return await this._rtGrades(spec);
+        case 'notes':      return await this._rtNotes(spec);
+        case 'attendance': return await this._rtAttendance(spec);
+        case 'plan':       return await this._rtPlan(spec);
+        case 'bundle':     return await this._rtBundle(spec);
+        default:           return this._rtErr('unknown_op', `Unknown op "${spec.op}". Try /rt help.`);
+      }
+    }
+
+    // One request, one document back. Copying results between a person and a
+    // tool is the slow part of this loop, so a bundle runs every read AND the
+    // dry-run plan in a single paste rather than one exchange per question.
+    // A failing read is recorded against its own key and never aborts the rest
+    // — a bundle is a diagnostic, so partial answers still beat no answer.
+    async _rtBundle(spec) {
+      const reads = Array.isArray(spec.reads) ? spec.reads : [];
+      if (reads.length > 25) return this._rtErr('too_many', `bundle is capped at 25 reads (got ${reads.length}).`);
+      const out = { reads: {} };
+      for (let i = 0; i < reads.length; i++) {
+        const r = reads[i] || {};
+        const key = r.as || r.op || `read_${i + 1}`;
+        if (r.op === 'bundle' || r.op === 'plan') {
+          out.reads[key] = this._rtErr('bad_op', `"${r.op}" is not allowed inside bundle.reads.`);
+          continue;
+        }
+        try { out.reads[key] = await this._rtDispatch(r); }
+        catch (err) { out.reads[key] = this._rtErr('failed', err.message || String(err)); }
+      }
+      if (spec.plan) {
+        try { out.plan = await this._rtPlan(spec.plan); }
+        catch (err) { out.plan = this._rtErr('failed', err.message || String(err)); }
+      }
+      return out;
+    }
+
     async terminalRtCommand(raw) {
       const text = (raw || '').trim();
       if (!text || text === 'help') {
@@ -45157,6 +45236,16 @@
           dry_run: {
             plan: '{"op":"plan","ops":[{"op":"award","student":"Jordan Games","amount":5,"reason":"..."}]}',
             write_ops: ['award', 'deduct', 'group_award', 'note', 'grade', 'attendance']
+          },
+          bundle: {
+            what: 'Runs many reads AND a dry-run plan in ONE call, returning one document.',
+            shape: '{"op":"bundle","reads":[{"op":"classes","as":"classes"}],"plan":{"ops":[...]}}',
+            note: 'A failing read is reported under its own key and does not abort the others.'
+          },
+          class_with: {
+            what: 'Identify a class you cannot name by who is on its roster.',
+            shape: '{"op":"roster","class_with":["Evan","Estelle","Daenerys"]}',
+            note: 'Works anywhere "class" does, reads and plan ops alike. Must match exactly one class.'
           },
           resolution: 'Names must resolve to exactly ONE row. Ambiguous or unknown fails and lists candidates; nothing is guessed.',
           writes: 'NONE. /rt is read-and-plan only.'
@@ -45176,19 +45265,7 @@
         return;
       }
       try {
-        let result;
-        switch (spec.op) {
-          case 'classes':    result = { classes: await this._rtClassList(spec) }; break;
-          case 'roster':     result = await this._rtRoster(spec); break;
-          case 'students':   result = this._rtStudentSearch(spec); break;
-          case 'grades':     result = await this._rtGrades(spec); break;
-          case 'notes':      result = await this._rtNotes(spec); break;
-          case 'attendance': result = await this._rtAttendance(spec); break;
-          case 'plan':       result = await this._rtPlan(spec); break;
-          default:
-            result = this._rtErr('unknown_op', `Unknown op "${spec.op}". Try /rt help.`);
-        }
-        this._rtOut({ op: spec.op, ...result });
+        this._rtOut({ op: spec.op, ...(await this._rtDispatch(spec)) });
       } catch (err) {
         this._rtOut(this._rtErr('failed', err.message || String(err), { op: spec.op }));
       }
