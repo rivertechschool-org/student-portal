@@ -58,6 +58,14 @@ const DB = {
     { id: 'q1', enrollment_id: 'e1', quarter_id: 'Q1', participation_grade: 92, academic_grade: 88, class_grade: 90, class_grade_override: false, academic_grade_override: false },
     { id: 'q2', enrollment_id: 'e2', quarter_id: 'Q1', participation_grade: null, academic_grade: null, class_grade: null },
   ],
+  quarters: [
+    { id: 'Q1', name: 'Quarter 1', start_date: '2026-08-25', end_date: '2026-10-30', is_current: true, is_archived: false },
+    { id: 'Q2', name: 'Quarter 2', start_date: '2026-11-01', end_date: '2027-01-15', is_current: false, is_archived: false },
+  ],
+  assignments: [
+    { id: '11111111-1111-1111-1111-111111111111', class_id: 'c1', title: 'Storyboard', due_date: '2026-09-15T23:59:00.000Z', max_points: 100, grading_type: 'points', assignment_type: 'regular', is_published: true, graded_offline: false, assigned_to_all: true, rtc_reward: 0 },
+  ],
+  assignment_students: [],
   class_attendance: [
     { student_id: 's1', class_id: 'c1', date: '2026-09-01', status: 'present' },
     { student_id: 's2', class_id: 'c1', date: '2026-09-01', status: 'absent' },
@@ -142,7 +150,7 @@ const app = {
   _requestConfirmation(summary, execute) { app._pending = { summary, execute }; },
 };
 DB.classes = [];
-for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
+for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtQuarters','_rtQuarterFor','_rtDueDate','_rtAssignmentFields','_rtResolveAssignment','_rtAssignments','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -323,6 +331,54 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   const ga = newcls.steps.find(x => x.op === 'group_award');
   t('group op on a batch-created class previews the real size', ga.students === 3 && ga.total_rtc === 15, ga);
   t('an estimated preview says it is estimated', ga.estimated_from_batch === true, ga);
+
+  // ---- assignments
+  const due = app._rtDueDate('2026-09-18');
+  t('a bare date means END of that day', /T\d{2}:\d{2}/.test(due.iso) && due.end_of_day === true, due);
+  t('a nonsense date is rejected', !!app._rtDueDate('not-a-date').error, app._rtDueDate('not-a-date'));
+  const qs = await app._rtQuarters();
+  t('due date maps to the right quarter', app._rtQuarterFor('2026-09-18', qs) === 'Quarter 1', app._rtQuarterFor('2026-09-18', qs));
+  t('a date in no quarter maps to null', app._rtQuarterFor('2027-07-04', qs) === null, app._rtQuarterFor('2027-07-04', qs));
+
+  const alist = await rt('{"op":"assignments","class":"Filmmaking"}');
+  t('assignments read reports the derived quarter', alist.assignments[0].quarter === 'Quarter 1', alist.assignments[0]);
+
+  const ap2 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'create_assignment', class: 'Filmmaking', title: 'Shot List', due: '2026-09-20', points: 50, description: '<p>Ten shots</p>' },
+    { op: 'create_assignment', class: 'Filmmaking', title: 'Summer Thing', due: '2027-07-04' },
+    { op: 'create_assignment', class: 'Filmmaking', title: 'Syllabus', type: 'info' },
+    { op: 'edit_assignment', assignment: 'Storyboard', class: 'Filmmaking', set: { due: '2026-09-25', points: 75 } },
+  ] }));
+  t('create_assignment plans with quarter + defaults',
+    ap2.steps[0].quarter === 'Quarter 1' && ap2.steps[0].points === 50 && ap2.steps[0].published === true, ap2.steps[0]);
+  t('a due date outside every quarter is flagged',
+    !!ap2.steps[1].warnings && ap2.needs_review.some(r => r.kind === 'due_date'), ap2.steps[1]);
+  t('type info needs no due date', ap2.steps[2].type === 'info' && ap2.ok === true, ap2.errors);
+  t('edit_assignment shows before and after for only the named fields',
+    ap2.steps[3].changing.join(',') === 'max_points,due_date' || ap2.steps[3].changing.includes('max_points'), ap2.steps[3]);
+  t('edit_assignment does not touch unnamed fields',
+    !ap2.steps[3].changing.includes('title'), ap2.steps[3].changing);
+
+  const badf = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'create_assignment', class: 'Filmmaking', title: 'X', due: '2026-09-20', grading_type: 'bogus' } ] }));
+  t('an invalid grading_type is rejected', badf.errors.some(e => e.error === 'bad_field'), badf.errors);
+  const nodue = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'create_assignment', class: 'Filmmaking', title: 'X' } ] }));
+  t('a regular assignment with no due date is rejected', nodue.errors.some(e => /due is required/.test(e.message)), nodue.errors);
+  const noedit = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'edit_assignment', assignment: 'Storyboard', class: 'Filmmaking', set: {} } ] }));
+  t('an edit with nothing to change is rejected', noedit.errors.some(e => e.error === 'missing_field'), noedit.errors);
+
+  // execute a create + edit and read back
+  WRITES.length = 0; app._pending = null;
+  const aap = await rt(JSON.stringify({ op: 'apply',
+    ops: [{ op: 'create_assignment', class: 'Filmmaking', title: 'Bulk One', due: '2026-09-22', points: 20 }],
+    reads: [{ op: 'assignments', class: 'Filmmaking', as: 'after' }] }));
+  t('assignment apply waits for confirmation', aap.awaiting_confirmation === true, aap);
+  await app._pending.execute();
+  const aout = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
+  t('assignment created and read back', aout.executed === true && aout.failed === 0
+    && aout.verification.after.assignments.some(a => a.title === 'Bulk One'), aout.failures);
 
   const help = await rt('');
   t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);

@@ -45101,6 +45101,7 @@
       // yet at plan time, so remember the names this batch would create and
       // treat a later reference to one as valid rather than "not found".
       const pendingClasses = new Set();
+      const quarters = (spec.ops || []).some(o => o && /assignment/.test(o.op || '')) ? await this._rtQuarters() : [];
       // ...and how many students a pending class is about to have, taken from an
       // enroll op earlier in the same batch. Without this a group op on a
       // brand-new class previewed as "0 students, 0 RTC" and then moved real
@@ -45230,6 +45231,49 @@
           continue;
         }
 
+        if (o.op === 'create_assignment') {
+          const c = await klass(o); if (!c) continue;
+          const m = this._rtAssignmentFields(o, { quarters, forCreate: true });
+          if (m.error) { fail(this._rtErr('bad_field', `Step ${idx}: ${m.error}`)); continue; }
+          let names = null;
+          if (Array.isArray(o.students) && o.students.length) {
+            names = []; let bad = false;
+            for (const ref of o.students) {
+              const r = this._rtResolveStudent(ref);
+              if (r.error) { fail(this._rtErrFor('student', ref, r)); bad = true; break; }
+              names.push(r.student.full_name);
+            }
+            if (bad) continue;
+          }
+          steps.push({ step: idx, op: 'create_assignment', class: c.name, title: m.fields.title,
+            due_date: m.fields.due_date, quarter: m.quarter, points: m.fields.max_points,
+            grading_type: m.fields.grading_type, type: m.fields.assignment_type,
+            published: m.fields.is_published, assigned_to: names ? names : 'whole class',
+            warnings: m.warnings.length ? m.warnings : undefined });
+          m.warnings.forEach(w => sensitive.push({ step: idx, kind: 'due_date', detail: `${m.fields.title}: ${w}` }));
+          continue;
+        }
+
+        if (o.op === 'edit_assignment') {
+          const found = await this._rtResolveAssignment(o, spec);
+          if (found.error === 'ambiguous') { fail(this._rtErr('ambiguous', `Step ${idx}: "${o.assignment}" matches ${found.candidates.length} assignments — use the id.`, { candidates: found.candidates })); continue; }
+          if (found.error) { fail(this._rtErr('not_found', `Step ${idx}: no assignment matches "${o.assignment}"${o.class ? ' in ' + o.class : ''}.`)); continue; }
+          const patch = o.set && typeof o.set === 'object' ? o.set : o;
+          const m = this._rtAssignmentFields(patch, { quarters, forCreate: false });
+          if (m.error) { fail(this._rtErr('bad_field', `Step ${idx}: ${m.error}`)); continue; }
+          const keys = Object.keys(m.fields);
+          if (!keys.length) { fail(this._rtErr('missing_field', `Step ${idx}: edit_assignment needs at least one field to change.`)); continue; }
+          const before = {}, after = {};
+          keys.forEach(k => { before[k] = found.row[k]; after[k] = m.fields[k]; });
+          steps.push({ step: idx, op: 'edit_assignment', assignment: found.row.title, id: found.row.id,
+            changing: keys, before, after,
+            quarter: m.fields.due_date ? m.quarter : undefined,
+            warnings: m.warnings.length ? m.warnings : undefined });
+          sensitive.push({ step: idx, kind: 'assignment_edit', detail: `${found.row.title}: ${keys.map(k => `${k} ${JSON.stringify(before[k])} -> ${JSON.stringify(after[k])}`).join(', ')}` });
+          m.warnings.forEach(w => sensitive.push({ step: idx, kind: 'due_date', detail: `${found.row.title}: ${w}` }));
+          continue;
+        }
+
         if (o.op === 'create_class') {
           const name = (o.name || '').trim();
           if (!name) { fail(this._rtErr('missing_field', `Step ${idx}: create_class needs "name".`)); continue; }
@@ -45268,7 +45312,7 @@
           continue;
         }
 
-        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll.`));
+        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll, create_assignment, edit_assignment.`));
       }
 
       return {
@@ -45437,6 +45481,43 @@
             }
             results.push({ step: idx, op: o.op, ok: true, student: s.full_name, class: c.name, component: o.component, value });
 
+          } else if (o.op === 'create_assignment') {
+            const c = await klass(o);
+            const quarters = await this._rtQuarters();
+            const m = this._rtAssignmentFields(o, { quarters, forCreate: true });
+            if (m.error) throw new Error(m.error);
+            let studentIds = null;
+            if (Array.isArray(o.students) && o.students.length) studentIds = o.students.map(ref => student(ref).id);
+            const { data, error } = await sb.from('assignments').insert([{
+              class_id: c.id, ...m.fields, assigned_to_all: !studentIds
+            }]).select().single();
+            if (error) throw error;
+            if (studentIds) {
+              const rows = [...new Set(studentIds)].map(sid => ({ assignment_id: data.id, student_id: sid }));
+              const { error: e2 } = await sb.from('assignment_students').insert(rows);
+              if (e2) throw e2;
+            }
+            undos.push(async () => { await sb.from('assignments').delete().eq('id', data.id); });
+            results.push({ step: idx, op: o.op, ok: true, id: data.id, title: data.title,
+              class: c.name, due_date: data.due_date, quarter: m.quarter,
+              assigned_to: studentIds ? studentIds.length + ' students' : 'whole class' });
+
+          } else if (o.op === 'edit_assignment') {
+            const found = await this._rtResolveAssignment(o, spec);
+            if (found.error) throw new Error(`assignment "${o.assignment}" did not resolve at execution time`);
+            const quarters = await this._rtQuarters();
+            const patch = o.set && typeof o.set === 'object' ? o.set : o;
+            const m = this._rtAssignmentFields(patch, { quarters, forCreate: false });
+            if (m.error) throw new Error(m.error);
+            const prev = {};
+            Object.keys(m.fields).forEach(k => { prev[k] = found.row[k]; });
+            const { error } = await sb.from('assignments')
+              .update({ ...m.fields, updated_at: new Date().toISOString() }).eq('id', found.row.id);
+            if (error) throw error;
+            undos.push(async () => { await sb.from('assignments').update(prev).eq('id', found.row.id); });
+            results.push({ step: idx, op: o.op, ok: true, id: found.row.id, title: found.row.title,
+              changed: Object.keys(m.fields), quarter: m.fields.due_date ? m.quarter : undefined });
+
           } else if (o.op === 'attendance') {
             const c = await klass(o);
             const date = o.date || new Date().toISOString().slice(0, 10);
@@ -45549,6 +45630,149 @@
       };
     }
 
+    // ---- assignments --------------------------------------------------------
+    // There is NO quarter_id on assignments: which quarter one belongs to is
+    // derived purely from due_date falling inside a quarter's start/end dates.
+    // So a due date outside every quarter produces an assignment that exists
+    // but never appears in the quarter-filtered views teachers actually use.
+    // Every assignment op therefore resolves and REPORTS the quarter, and flags
+    // a due date that lands in none.
+    async _rtQuarters() {
+      if (this._rtQuartersCache && Date.now() - this._rtQuartersCache.at < 10 * 60 * 1000) return this._rtQuartersCache.rows;
+      const { data, error } = await this.auth.supabase
+        .from('quarters').select('*').eq('is_archived', false).order('start_date');
+      if (error) throw error;
+      const rows = data || [];
+      this._rtQuartersCache = { rows, at: Date.now() };
+      return rows;
+    }
+
+    _rtQuarterFor(iso, quarters) {
+      const d = String(iso).slice(0, 10);
+      const q = (quarters || []).find(x => x.start_date && x.end_date && d >= String(x.start_date).slice(0, 10) && d <= String(x.end_date).slice(0, 10));
+      return q ? (q.name || q.id) : null;
+    }
+
+    // "2026-09-15" means end of that day, which is what a teacher means by
+    // "due Friday". A full timestamp is honoured exactly as given.
+    _rtDueDate(v) {
+      if (v == null || v === '') return { error: 'due date is required' };
+      const s = String(v).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        const d = new Date(`${s}T23:59:00`);
+        if (isNaN(d)) return { error: `"${s}" is not a real date` };
+        return { iso: d.toISOString(), end_of_day: true };
+      }
+      const d = new Date(s);
+      if (isNaN(d)) return { error: `"${s}" is not a date I can read (use YYYY-MM-DD or a full timestamp)` };
+      return { iso: d.toISOString(), end_of_day: false };
+    }
+
+    // Shared field mapping for create and edit. Only keys actually present are
+    // returned, so an edit patches exactly what was named and nothing else.
+    _rtAssignmentFields(o, { quarters, forCreate }) {
+      const out = {}, warnings = [];
+      const has = (k) => Object.prototype.hasOwnProperty.call(o, k);
+      if (has('title')) out.title = String(o.title).trim();
+      if (has('description')) out.description = o.description === null ? null : String(o.description);
+      if (has('points')) out.max_points = Number(o.points);
+      if (has('published')) out.is_published = !!o.published;
+      if (has('graded_offline')) out.graded_offline = !!o.graded_offline;
+      if (has('rtc_reward')) out.rtc_reward = Number(o.rtc_reward);
+      if (has('max_submit_size_mb')) out.max_submit_size_mb = Number(o.max_submit_size_mb);
+      if (has('category_id')) out.category_id = o.category_id || null;
+      if (has('rubric_id')) out.rubric_id = o.rubric_id || null;
+      if (has('grading_type')) {
+        if (!['points', 'rubric', 'none'].includes(o.grading_type)) return { error: `grading_type must be points, rubric or none` };
+        out.grading_type = o.grading_type;
+      }
+      if (has('type')) {
+        if (!['regular', 'info', 'test'].includes(o.type)) return { error: `type must be regular, info or test` };
+        out.assignment_type = o.type;
+      }
+      let quarter = null, dueWarn = null;
+      if (has('due')) {
+        const d = this._rtDueDate(o.due);
+        if (d.error) return { error: d.error };
+        out.due_date = d.iso;
+        quarter = this._rtQuarterFor(d.iso, quarters);
+        if (!quarter && out.assignment_type !== 'info') {
+          dueWarn = `due ${String(o.due)} falls outside every quarter — the assignment will not show in quarter-filtered views`;
+          warnings.push(dueWarn);
+        }
+      }
+      if (forCreate) {
+        if (!out.title) return { error: 'title is required' };
+        if (!has('due') && out.assignment_type !== 'info') return { error: 'due is required (or set type "info")' };
+        if (out.assignment_type === 'info') {
+          out.due_date = out.due_date || new Date('2099-12-31').toISOString();
+          out.max_points = 0; out.grading_type = 'none'; out.graded_offline = true;
+          out.rubric_id = null; out.category_id = null;
+        }
+        if (out.max_points == null) out.max_points = 100;
+        if (out.grading_type == null) out.grading_type = 'points';
+        if (out.is_published == null) out.is_published = true;
+        if (out.graded_offline == null) out.graded_offline = false;
+        if (out.rtc_reward == null) out.rtc_reward = 0;
+        if (out.max_submit_size_mb == null) out.max_submit_size_mb = 1024;
+        if (out.assignment_type == null) out.assignment_type = 'regular';
+      }
+      if (out.max_points != null && (!Number.isFinite(out.max_points) || out.max_points < 0)) return { error: 'points must be a number >= 0' };
+      if (out.rtc_reward != null && (!Number.isFinite(out.rtc_reward) || out.rtc_reward < 0)) return { error: 'rtc_reward must be a number >= 0' };
+      return { fields: out, quarter, warnings };
+    }
+
+    // Resolve one assignment strictly, by id or by exact title within a class.
+    async _rtResolveAssignment(o, spec) {
+      const sb = this.auth.supabase;
+      const ref = String(o.assignment || '').trim();
+      if (!ref) return { error: 'bad_ref' };
+      if (/^[0-9a-f-]{36}$/i.test(ref)) {
+        const { data } = await sb.from('assignments').select('*').eq('id', ref).limit(1);
+        if ((data || []).length) return { row: data[0] };
+        return { error: 'not_found' };
+      }
+      let classId = null;
+      if (o.class || o.class_with) {
+        const c = await this._rtResolveClassSpec({ class: o.class, class_with: o.class_with, scope: spec && spec.scope });
+        if (c.error) return { error: 'class', inner: c };
+        classId = c.row.id;
+      }
+      let q = sb.from('assignments').select('*');
+      if (classId) q = q.eq('class_id', classId);
+      const { data } = await q;
+      const hits = (data || []).filter(a => (a.title || '').toLowerCase() === ref.toLowerCase());
+      if (hits.length === 1) return { row: hits[0] };
+      if (hits.length > 1) return { error: 'ambiguous', candidates: hits.map(a => ({ id: a.id, title: a.title, due_date: a.due_date })) };
+      return { error: 'not_found' };
+    }
+
+    async _rtAssignments(spec) {
+      const res = await this._rtResolveClassSpec(spec);
+      if (res.error) return this._rtErrFor('class', spec.class || spec.class_with, res);
+      const quarters = await this._rtQuarters();
+      const { data, error } = await this.auth.supabase
+        .from('assignments').select('*').eq('class_id', res.row.id).order('due_date', { ascending: false });
+      if (error) throw error;
+      const limit = Math.min(Number(spec.limit) || 50, 200);
+      const rows = (data || []).slice(0, limit);
+      return {
+        class: { id: res.row.id, name: res.row.name },
+        count: (data || []).length,
+        note: 'Quarter is derived from due_date, not stored on the assignment.',
+        assignments: rows.map(a => ({
+          id: a.id, title: a.title, due_date: a.due_date,
+          quarter: this._rtQuarterFor(a.due_date, quarters),
+          outside_all_quarters: !this._rtQuarterFor(a.due_date, quarters) && a.assignment_type !== 'info' || undefined,
+          points: a.max_points, grading_type: a.grading_type, type: a.assignment_type,
+          published: a.is_published, graded_offline: a.graded_offline,
+          assigned_to_all: a.assigned_to_all, rtc_reward: a.rtc_reward,
+          category_id: a.category_id, rubric_id: a.rubric_id,
+          description: a.description
+        }))
+      };
+    }
+
     async _rtDispatch(spec) {
       switch (spec.op) {
         case 'classes':    return { classes: await this._rtClassList(spec) };
@@ -45556,6 +45780,7 @@
         case 'students':   return this._rtStudentSearch(spec);
         case 'grades':     return await this._rtGrades(spec);
         case 'grade_review': return await this._rtGradeReview(spec);
+        case 'assignments': return await this._rtAssignments(spec);
         case 'notes':      return await this._rtNotes(spec);
         case 'attendance': return await this._rtAttendance(spec);
         case 'plan':       return await this._rtPlan(spec);
@@ -45604,6 +45829,7 @@
             grades: '{"op":"grades","class":"Filmmaking"}  or  {"op":"grades","student":"Jordan Games"}',
             notes: '{"op":"notes","student":"Jordan Games","limit":10}',
             attendance: '{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}',
+            assignments: '{"op":"assignments","class":"Filmmaking"} — every assignment with the quarter its due_date falls in',
             grade_review: '{"op":"grade_review","class":"Filmmaking"} — every student on the roster with their current grades AND the notes filed on them in that class, for quarter-end grading. Notes never move a grade by themselves.'
           },
           dry_run: {
@@ -45625,7 +45851,8 @@
             what: 'Executes ops, then runs "reads" and returns the new values in the SAME output.',
             shape: '{"op":"apply","ops":[...],"reads":[{"op":"roster","class":"X","as":"after"}]}',
             rules: 'One confirmation for the whole batch. If ANY op fails to resolve, NOTHING runs. One grouped undo.',
-            extra_ops: ['create_class', 'enroll (students[] or from_class)']
+            extra_ops: ['create_class', 'enroll (students[] or from_class)', 'create_assignment', 'edit_assignment'],
+            assignments: 'create_assignment: class, title, due (YYYY-MM-DD = end of that day, or a full timestamp), description, points, grading_type (points|rubric|none), type (regular|info|test), published, graded_offline, rtc_reward, max_submit_size_mb, category_id, rubric_id, students[] (omit = whole class). edit_assignment: {"assignment":"<id or exact title>","class":"X","set":{...}} patches ONLY the named fields. QUARTER IS NOT A FIELD: it is derived from due_date, and a date outside every quarter is flagged because the assignment then hides from quarter-filtered views.'
           },
           writes: 'apply writes. Every other op is read-only.'
         });
