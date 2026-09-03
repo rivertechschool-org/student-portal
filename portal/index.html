@@ -31366,6 +31366,18 @@
             ${this.renderSchoolDriveCard()}
 
             <div class="card" style="margin-bottom: 20px;">
+              <h3 style="margin-bottom: 6px;">Student Sign-in</h3>
+              <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
+                An account can be activated and still unreachable - the link was never sent, or it
+                died against the email limit. "Activated" only records that the profile was opened;
+                whether anyone arrived is not something the portal can see from the student list.
+              </p>
+              <button class="btn btn-primary" onclick="app.resendActivationLinks()">
+                Find students who never got in
+              </button>
+            </div>
+
+            <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 6px;">Subjects &amp; Grade Bands</h3>
               <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
                 The school's own vocabulary: the 37 subjects and which of the five Drive groups each
@@ -34461,6 +34473,109 @@
       //
       // So the address on record is shown first, plainly, and nothing is sent
       // until someone has confirmed it is the right one.
+      // ---------------- Re-sending activation links ----------------
+      //
+      // "Activated" only records that the profile was opened. Whether the
+      // student ever received the link and used it is in the auth system, which
+      // the portal cannot see - so an account can sit activated and unreachable
+      // and look entirely normal in the student list.
+      //
+      // Always previews first. Sending is capped per run, because firing a
+      // hundred at once exhausts the hourly email limit and the failures land on
+      // whoever happens to be last in the list - who then look skipped rather
+      // than rate-limited.
+      async resendActivationLinks(confirmed = false) {
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const call = (payload) => fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/admin-resend-activation',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify(payload)
+            }
+          ).then(r => r.json().catch(() => ({})));
+
+          if (!confirmed) {
+            this.showNotification('Checking who never got in...', 'info');
+            const preview = await call({ dryRun: true, limit: 25 });
+            if (!preview.success) throw new Error(preview.error || 'Could not check');
+
+            const unreachable = preview.unreachable || [];
+            const body = `
+              <div>
+                <p style="margin-bottom:12px;">
+                  <strong>${preview.candidates}</strong> activated student(s) have never signed in
+                  and can be sent a fresh set-password link.
+                </p>
+                ${preview.candidates ? `
+                  <div style="max-height:220px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:10px; margin-bottom:12px;">
+                    ${(preview.preview || []).map(c => `
+                      <div style="font-size:13px; padding:3px 0;">
+                        ${this.escapeHtml(c.name)} <span style="color:var(--muted);">${this.escapeHtml(c.email)}</span>
+                      </div>`).join('')}
+                    ${preview.candidates > (preview.preview || []).length
+                      ? `<div style="font-size:12px; color:var(--muted); padding-top:6px;">
+                           ...and ${preview.candidates - preview.preview.length} more. Run this again after
+                           each batch; anyone who signs in drops off the list by themselves.
+                         </div>` : ''}
+                  </div>` : ''}
+
+                ${unreachable.length ? `
+                  <div class="card" style="padding:10px 14px; margin-bottom:12px; border-left:3px solid var(--warning, #e67e22);">
+                    <strong>${unreachable.length} cannot be reached by email.</strong>
+                    <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+                      Re-sending will not help these - they need an address, or a proper activation
+                      to create the login first.
+                    </div>
+                    <div style="max-height:140px; overflow:auto; margin-top:8px;">
+                      ${unreachable.map(u => `
+                        <div style="font-size:12px; padding:2px 0;">
+                          ${this.escapeHtml(u.name)} <span style="color:var(--muted);">- ${this.escapeHtml(u.reason)}</span>
+                        </div>`).join('')}
+                    </div>
+                  </div>` : ''}
+
+                <div style="display:flex; gap:10px; justify-content:flex-end;">
+                  <button class="btn btn-secondary" onclick="app.closeModal('resend-activation')">Close</button>
+                  ${preview.candidates ? `
+                    <button class="btn btn-primary" onclick="app.resendActivationLinks(true)">
+                      Send to ${Math.min(preview.candidates, 25)}
+                    </button>` : ''}
+                </div>
+              </div>`;
+
+            this.showModal('resend-activation', 'Re-send activation links', body);
+            return;
+          }
+
+          this.showNotification('Sending...', 'info');
+          const result = await call({ limit: 25 });
+          if (!result.success) throw new Error(result.error || 'Could not send');
+
+          this.closeModal('resend-activation');
+
+          const hitLimit = (result.results || []).some(r => r.rateLimited);
+          this.showNotification(
+            hitLimit
+              ? `Sent ${result.sent}, then stopped at the hourly email limit. `
+                + `${result.remaining} still to go - run this again later.`
+              : `Sent ${result.sent} link(s).`
+                + (result.remaining ? ` ${result.remaining} remaining - run again to continue.` : ''),
+            hitLimit ? 'warning' : 'success');
+
+        } catch (e) {
+          console.error('resendActivationLinks failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
       async showActivationForm(studentId, firstName, lastName) {
         try {
           const { data: student, error } = await this.supabaseQuery(() => this.auth.supabase
