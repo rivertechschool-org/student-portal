@@ -5,7 +5,12 @@
 // 1. Go to https://console.firebase.google.com/
 // 2. Create a new project (or use existing)
 // 3. Enable Realtime Database (not Firestore)
-// 4. Enable Anonymous Authentication
+// 4. Authentication: nothing to enable. The portal signs students in with a
+//    CUSTOM TOKEN minted by the firebase-token edge function, so auth.uid is
+//    the Supabase user id and the security rules can identify who is writing.
+//    Do NOT turn on Anonymous auth as a fallback - an anonymous session has a
+//    uid unrelated to the student, every identity rule silently stops matching,
+//    and the failure looks like a permissions bug rather than a login one.
 // 5. Copy your config values below
 // 6. Set up security rules (see firebase-rules.json in this folder)
 

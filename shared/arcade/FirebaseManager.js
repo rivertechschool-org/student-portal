@@ -113,16 +113,20 @@ class FirebaseManager {
         this.supabaseUserId = supabaseUser.id;
         this.supabaseUserProfile = supabaseProfile;
 
-        // Sign in to Firebase anonymously
-        // The actual user identity is tracked via supabase_user_id in the database
-        try {
-            const result = await this.auth.signInAnonymously();
-            this.firebaseUser = result.user;
-            console.log('Firebase anonymous auth successful');
-        } catch (error) {
-            console.error('Firebase anonymous auth failed:', error);
-            throw error;
-        }
+        // Sign in to Firebase AS this student.
+        //
+        // This used to be signInAnonymously(), which gave Firebase a throwaway
+        // uid unrelated to the student - while every security rule is written
+        // as `auth.uid == $supabase_uid`. Those can never match, so every
+        // identity-scoped write was refused and the only way to make the arcade
+        // work at all was to delete the checks.
+        //
+        // For a duelling game that is not acceptable: without identity, any
+        // signed-in student can write into someone else's match and award
+        // themselves the win. So the token is minted server-side with
+        // uid = the Supabase user id, and the rules become true instead of
+        // being removed.
+        await this.signInWithPortalIdentity();
 
         // Listen for Supabase auth changes
         window.addEventListener('portalAuthChange', (event) => {
@@ -158,6 +162,53 @@ class FirebaseManager {
     }
 
     /**
+     * Exchange the portal session for a Firebase session with the SAME identity.
+     *
+     * The private key never reaches the browser. The browser sends its Supabase
+     * JWT, the edge function decides who that is, and only then signs a token
+     * naming them - so a student cannot ask for someone else's identity.
+     */
+    async signInWithPortalIdentity() {
+        const session = window.portalAuth?.supabase
+            ? (await window.portalAuth.supabase.auth.getSession())?.data?.session
+            : null;
+        if (!session?.access_token) {
+            throw new Error('No portal session - cannot sign in to the arcade');
+        }
+
+        const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/firebase-token',
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${session.access_token}`
+                }
+            }
+        );
+
+        const result = await resp.json().catch(() => ({}));
+        if (!resp.ok || !result.token) {
+            // Said plainly, because the usual cause is configuration rather
+            // than anything the student did.
+            throw new Error(result.error || 'The arcade could not verify who you are.');
+        }
+
+        const cred = await this.auth.signInWithCustomToken(result.token);
+        this.firebaseUser = cred.user;
+
+        // The identity Firebase now reports must be the one the paths are keyed
+        // by. If these ever disagree, every rule silently stops matching and
+        // the arcade fails in ways that look like anything but this.
+        if (this.firebaseUser.uid !== this.supabaseUserId) {
+            throw new Error('Arcade identity mismatch - refusing to continue.');
+        }
+
+        console.log('Firebase signed in as portal user', this.firebaseUser.uid);
+        return this.firebaseUser;
+    }
+
+    /**
      * Handle Supabase sign in - re-initialize Firebase
      */
     async _handleSupabaseSignIn() {
@@ -169,10 +220,10 @@ class FirebaseManager {
                 this.supabaseUserId = supabaseUser.id;
                 this.supabaseUserProfile = supabaseProfile;
 
-                // Re-auth with Firebase if needed
-                if (!this.firebaseUser) {
-                    const result = await this.auth.signInAnonymously();
-                    this.firebaseUser = result.user;
+                // Re-auth with Firebase if needed. Same identity as above -
+                // signing back in anonymously here would quietly undo it.
+                if (!this.firebaseUser || this.firebaseUser.uid !== this.supabaseUserId) {
+                    await this.signInWithPortalIdentity();
                 }
 
                 // Update presence
