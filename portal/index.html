@@ -34420,6 +34420,37 @@
         }
       }
 
+      // Moves the address a student signs in with, and sends them a link to it.
+      // Admin only, and enforced on the server - the browser cannot change who
+      // owns an account.
+      async moveStudentLoginEmail(studentId, newEmail) {
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/admin-set-student-email',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ studentId, newEmail })
+            }
+          );
+          const result = await resp.json().catch(() => ({}));
+          if (!resp.ok || !result.success) {
+            return { ok: false, error: result.error || 'The login email was not changed.' };
+          }
+          return { ok: true, emailSent: !!result.emailSent, warning: result.warning };
+        } catch (e) {
+          console.error('moveStudentLoginEmail failed:', e);
+          return { ok: false, error: e.message };
+        }
+      }
+
       async saveStudentHubProfile() {
         const studentId = this._studentHubId;
         const firstName = document.getElementById('hub-first-name').value.trim();
@@ -34431,6 +34462,28 @@
         if (!firstName || !lastName) {
           this.showNotification('First and last name are required', 'error');
           return;
+        }
+
+        // Changing this field only ever updated the RECORD. auth.users holds
+        // the address the student actually signs in with, and nothing here
+        // touched it - so the student kept logging in with the old address,
+        // password resets kept going to the old inbox, and no mail was sent
+        // because nothing had been asked to send any.
+        //
+        // The split is deliberate (see the pin_profile_email_to_auth migration:
+        // it stops a student redirecting their own notifications). What was
+        // missing is the admin half, which needs the service role.
+        const previousEmail = (this._studentHubData?.student?.email || '').trim();
+        const emailChanged = (email || '').toLowerCase() !== previousEmail.toLowerCase();
+        const isAdmin = this.userInfo.profile?.user_type === 'admin';
+        let moveLogin = false;
+
+        if (emailChanged && email && isAdmin) {
+          moveLogin = confirm(
+            `Also change the address ${firstName} signs in with?\n\n`
+            + `OK  -  move the login to ${email} and send them a link to set their password.\n\n`
+            + `Cancel  -  update the record only. They keep signing in with `
+            + `${previousEmail || 'their current address'}.`);
         }
 
         try {
@@ -34446,6 +34499,25 @@
             .eq('id', studentId));
 
           if (error) throw error;
+
+          if (moveLogin) {
+            const moved = await this.moveStudentLoginEmail(studentId, email);
+            if (!moved.ok) {
+              // The record saved; the login did not. Said plainly, because the
+              // two are now out of step and only one of them is the truth.
+              this.showNotification(
+                `Record updated, but the login was NOT moved: ${moved.error}`, 'error');
+              this.viewStudentDetails(studentId);
+              return;
+            }
+            this.showNotification(
+              moved.emailSent
+                ? `Login moved to ${email} and a set-password link sent.`
+                : `Login moved to ${email}. ${moved.warning || 'No email was sent.'}`,
+              moved.emailSent ? 'success' : 'warning');
+            this.viewStudentDetails(studentId);
+            return;
+          }
 
           this.showNotification('Profile updated!', 'success');
           this.viewStudentDetails(studentId);
