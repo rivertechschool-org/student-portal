@@ -41,7 +41,8 @@ function extract(name) {
 const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_fuzzyFindStudent','_calculateSimilarity',
   '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
-  '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape'];
+  '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
+  '_rivenQuantifiesClasses','_rivenFindExcluded'];
 const app = { _nlpContext: {} };
 for (const name of methods) app[name] = extract(name).bind ? extract(name) : extract(name);
 // rebind so `this` works
@@ -570,8 +571,8 @@ app._terminalPinnedClass = null;
 // teacher-name narrowing without "with" (possessive)
 app._terminalAllClasses.push(
   { id: 'c5', name: 'English', subject: 'English', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Caitlin Relvas' },
-  { id: 'c6', name: 'English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Luke Hegelund' },
-  { id: 'c7', name: 'English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Luke Hegelund' }
+  { id: 'c6', name: 'English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' },
+  { id: 'c7', name: 'English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' }
 );
 const caitlin = app._rivenMatchClass('pull up caitlins english class');
 t10('"caitlins english" narrows to Caitlin Relvas', !!(caitlin && !caitlin.ambiguous && caitlin.id === 'c5'));
@@ -1275,3 +1276,101 @@ const who32 = (text) => {
 });
 app._terminalAllStudents = _roster32;
 console.log(`round 32: ${p32} pass, ${f32} fail`);
+
+// ── round 33: group commands that name the group instead of one class ─────
+// Three messages a teacher actually typed, and three wrong answers:
+//   "5 gold to all lower middle school"  -> "Which student should get 5 RTC?"
+//   "All lower middle school students"   -> a pick-one-class dialog
+//   "Mark all lower MS classes present   -> the same pick-one dialog
+//    for today, except <name> wasn't here"
+// All three quantify over the CLASSES ("all lower ms ...") and mean every
+// match at once. The picker was answering a question he had not asked.
+console.log('\n== round 33: "all <group>" spans every matching class ==');
+let p33 = 0, f33 = 0;
+const t33 = (label, ok) => { ok ? p33++ : f33++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _roster33 = app._terminalAllStudents;
+const _classes33 = app._terminalAllClasses;
+app._terminalAllClasses = [
+  { id: 'lme', name: 'Lower MS English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' },
+  { id: 'lmm', name: 'Lower MS Math', subject: 'Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' },
+  { id: 'ume', name: 'Upper MS English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' },
+];
+app._terminalAllStudents = [
+  { full_name: 'Marigold Vance', first_name: 'Marigold', last_name: 'Vance', rtc_balance: 10, status: 'active', id: 'mm1' },
+  { full_name: 'Rowan Petrie', first_name: 'Rowan', last_name: 'Petrie', rtc_balance: 10, status: 'active', id: 'ef1' },
+  { full_name: 'Baxter Hollis', first_name: 'Baxter', last_name: 'Hollis', rtc_balance: 10, status: 'active', id: 'tb1' },
+];
+
+// the class matcher still finds BOTH lower MS classes (that part always worked)
+const cm33 = app._rivenMatchClass('all lower middle school students');
+t33(`"all lower middle school students" matches 2 classes (got ${cm33 && cm33.candidates ? cm33.candidates.length : 'none'})`,
+  !!(cm33 && cm33.ambiguous && cm33.candidates.length === 2));
+
+// ...and the quantifier test now says "use them all" instead of asking
+const q = (text) => {
+  const cm = app._rivenMatchClass(app._normalizeInput(text));
+  return app._rivenQuantifiesClasses(app._normalizeInput(text), cm ? cm.consumed : []);
+};
+[
+  ['all lower middle school students', true],
+  ['5 gold to all lower middle school', true],
+  ['mark all lower ms classes present for today', true],
+  ['give everyone in lower ms 2 rtc', true],
+  ['mark all my classes present', true],
+  ['both lower ms classes', true],
+  // "all" bound to the STUDENTS of one class is not a fan-out — still asks
+  ['list all students in lower ms english', false],
+  ['who is in lower ms math', false],
+].forEach(([text, want]) => {
+  const got = q(text);
+  t33(`quantifiesClasses("${text}") == ${want} (got ${got})`, got === want);
+});
+
+// the award now routes to the group executor rather than asking for a name
+[
+  ['5 gold to all lower middle school', 'GROUP_RTC'],
+  ['give 5 rtc to all lower ms', 'GROUP_RTC'],
+  ['take 2 from every lower ms class', 'GROUP_RTC'],
+  // a single named student is untouched by any of this
+  ['give marigold 5 gold', 'ADD_RTC'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t33(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// An "all" inside a REASON is not a group target. "give charlotte 5 rtc for
+// all her hard work" must stay a plain award — the first cut of this fix
+// turned it (and "set her grade to 5 for all assignments") into a clarify
+// prompt, which is worse than the bug it was fixing.
+[
+  ['give marigold 5 rtc for all her hard work', 'ADD_RTC'],
+  ['give marigold 5 for all the help', 'ADD_RTC'],
+  ['give marigold 5 rtc for all of her hard work', 'ADD_RTC'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t33(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// "except Marigold wasn't here" — the name heads the phrase, a clause trails
+// it. The old parser fuzzy-matched the whole string and found nobody, so
+// Marigold was quietly marked present with everyone else.
+const ex = (piece) => { const st = app._rivenFindExcluded(piece); return st ? st.full_name : 'null'; };
+[
+  ["marigold wasnt here", 'Marigold Vance'],
+  ["marigold", 'Marigold Vance'],
+  ["marigold mays was absent", 'Marigold Vance'],
+  ["rowan petrie", 'Rowan Petrie'],
+].forEach(([piece, want]) => {
+  const got = ex(piece);
+  t33(`findExcluded("${piece}") -> ${want} (got ${got})`, got === want);
+});
+t33('findExcluded("the") -> null', app._rivenFindExcluded('the') === null);
+
+// the whole sentence still reads as a group attendance write
+const att = run("mark all lower ms classes present for today, except marigold wasnt here");
+t33(`full sentence -> MARK_ATTENDANCE_GROUP (got ${att.intent})`, att.intent === 'MARK_ATTENDANCE_GROUP');
+
+app._terminalAllStudents = _roster33;
+app._terminalAllClasses = _classes33;
+console.log(`round 33: ${p33} pass, ${f33} fail`);

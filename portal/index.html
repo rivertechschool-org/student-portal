@@ -44262,7 +44262,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-08-21·a';
+      const RIVEN_BUILD = '2026-09-03·a';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -47850,6 +47850,22 @@
           requiresAmount: true,
           requiresGroupContext: false
         },
+        // GROUP_RTC (group named by its classes) — "5 gold to all lower
+        // middle school", "10 to every ms class". The target is spelled out
+        // as a group of classes rather than the literal words "the class".
+        // requiresClass is what keeps a REASON out: "give jordan 5 for all
+        // her hard work" has an "all" too, and no class to go with it. The
+        // possessive guard covers the rest ("for all the help").
+        {
+          intent: 'GROUP_RTC',
+          w: 6, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
+          patterns: [
+            /\d+\s*(rtc\s+)?(to|for)\s+(all|every|each|both)\s+(?!(her|his|their|my|your|our|its|the|that|this)\b)/,
+            /\b(give|award|add|remove|subtract|deduct|take)\b.*\b(all|every|both)\b.*\bclass(es)\b.*\d/
+          ],
+          requiresAmount: true,
+          requiresClass: true
+        },
         // GROUP_BALANCES — "how much rtc does everyone in chess have?",
         // "how much gold do each of them have?"
         {
@@ -48813,6 +48829,13 @@
       if (entities.amount && !blockMutation && !isQuestion && !blockSpeculativeWrite) {
         const subAction = /(^|\s)-\d|\b(remove|subtract|deduct|minus|take)\b/.test(normalized);
         const addAction = /(^|\s)\+\d|\b(add|plus)\b|\d+ (rtc )?(to|for)\b/.test(normalized);
+        // The missing piece is only "which student?" when the target was
+        // meant to be one. "5 gold to all lower middle school" names a GROUP,
+        // so asking for a single name is the wrong question.
+        if ((subAction || addAction) && entities.classMatch
+            && /\b(all|every|each|both|everyone|everybody|whole|entire)\b/.test(normalized)) {
+          return { intent: 'GROUP_RTC', confidence: 0.75 };
+        }
         if (subAction) return { intent: 'SUBTRACT_RTC', confidence: 0.7 };
         if (addAction) return { intent: 'ADD_RTC', confidence: 0.7 };
       }
@@ -53343,27 +53366,61 @@
 
     async terminalShowRoster(entities) {
       // "who is in jordan's math class" — the student narrows which same-named
-      // class we mean; otherwise ambiguity asks via the class picker
-      const res = await this._rivenRequireClass(entities, { studentId: this._rivenReferringStudentId(entities) });
-      if (res.asked) return;
-      const row = res.row;
-      if (!row) { this.terminalPrintError('Which class?'); return; }
-      const { data: enr, error } = await this.auth.supabase
-        .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
-      if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return; }
+      // class we mean. "all lower ms students" quantifies over the classes
+      // themselves and means every match at once. Anything else still asks
+      // via the class picker.
+      const referring = this._rivenReferringStudentId(entities);
+      let rows = [];
+      if (referring) {
+        const res = await this._rivenRequireClass(entities, { studentId: referring });
+        if (res.asked) return;
+        if (res.row) rows = [res.row];
+      } else {
+        const res = await this._rivenRequireClasses(entities);
+        if (res.asked) return;
+        rows = res.rows;
+      }
+      if (!rows.length) { this.terminalPrintError('Which class?'); return; }
       const names = {};
       (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
-      const ids = (enr || []).map(e => e.student_id);
-      const list = ids.map(id => names[id] || 'Unknown').sort();
-      if (!list.length) { this._showRivenMessage(`${this.escapeHtml(row.name)} has no active students.`, true); return; }
+      const seen = new Set();
+      const unionIds = [];
+      const blocks = [];
+      for (const row of rows) {
+        const { data: enr, error } = await this.auth.supabase
+          .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
+        if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return; }
+        const ids = (enr || []).map(e => e.student_id);
+        // Two rosters can hold the same student; the total counts them once
+        ids.forEach(id => { if (!seen.has(id)) { seen.add(id); unionIds.push(id); } });
+        blocks.push({ row, ids, list: ids.map(id => names[id] || 'Unknown').sort() });
+      }
+      const label = rows.map(r => r.name).join(' + ');
+      if (!unionIds.length) {
+        this._showRivenMessage(`${this.escapeHtml(label)} ${rows.length > 1 ? 'have' : 'has'} no active students.`, true);
+        return;
+      }
       // Remember this group so "give each of them 2 rtc" / "how much do they
       // all have" works as a follow-up
       this._nlpContext = this._nlpContext || {};
-      this._nlpContext.lastGroup = { label: row.name, classId: row.id, studentIds: ids, timestamp: Date.now() };
-      const teach = row.teacher_name ? ` <span style="font-size: 12px; color: var(--muted);">· ${this.escapeHtml(row.teacher_name)}</span>` : '';
-      this._showRivenMessage(
-        `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(row.name)}${teach} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
-        list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join(''), true);
+      this._nlpContext.lastGroup = { label, classId: rows[0].id, classIds: rows.map(r => r.id),
+        byClass: blocks.map(b => ({ row: b.row, studentIds: b.ids })),
+        studentIds: unionIds, timestamp: Date.now() };
+      if (rows.length === 1) {
+        const row = rows[0], list = blocks[0].list;
+        const teach = row.teacher_name ? ` <span style="font-size: 12px; color: var(--muted);">· ${this.escapeHtml(row.teacher_name)}</span>` : '';
+        this._showRivenMessage(
+          `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(row.name)}${teach} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
+          list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join(''), true);
+        return;
+      }
+      let html = `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(label)} — ${unionIds.length} student${unionIds.length === 1 ? '' : 's'} in total</div>`;
+      blocks.forEach(b => {
+        const teach = b.row.teacher_name ? ` · ${this.escapeHtml(b.row.teacher_name)}` : '';
+        html += `<div style="margin-top: 8px; font-size: 12px; color: var(--muted);">${this.escapeHtml(b.row.name)}${teach} — ${b.list.length}</div>`;
+        html += b.list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join('');
+      });
+      this._showRivenMessage(html, true);
     }
 
     async terminalMarkAttendanceGroup(entities) {
@@ -53377,52 +53434,88 @@
         : (lower.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1] || this._isoDaysAgo(0));
       const grp = await this._rivenResolveGroup(entities);
       if (grp.asked) return;
-      if (!grp.studentIds.length || !this._nlpContext?.lastGroup?.classId) {
+      // byClass keeps the FULL roster per class — exclusions still need a row
+      // written for them, just with the opposite status.
+      const last = this._nlpContext?.lastGroup;
+      let byClass = grp.byClass || last?.byClass || null;
+      if (!byClass && last?.classId) {
+        byClass = [{ row: (this._terminalAllClasses || []).find(c => c.id === last.classId),
+                     studentIds: last.studentIds || [] }];
+      }
+      const targets = (byClass || []).filter(b => b && b.row && b.studentIds?.length);
+      if (!targets.length) {
         this.terminalPrintError('Which class? Say it like "mark everyone in Chess present".');
         return;
       }
-      const classId = this._nlpContext.lastGroup.classId;
-      const row = (this._terminalAllClasses || []).find(c => c.id === classId);
-      if (!row || !this._rivenCanManageClass(row, { attendance: true })) {
-        this.terminalPrintError(`Only the primary teacher of ${row ? row.name : 'that class'} (or an admin) can mark its attendance.`);
+      const allowed = targets.filter(b => this._rivenCanManageClass(b.row, { attendance: true }));
+      const blocked = targets.filter(b => !this._rivenCanManageClass(b.row, { attendance: true }));
+      if (!allowed.length) {
+        this.terminalPrintError(`Only the primary teacher of ${targets.map(b => b.row.name).join(' and ')} (or an admin) can mark attendance.`);
         return;
       }
+      // "mark everyone present except Sam" means Sam was ABSENT. Leaving
+      // them off the sheet is a different answer, and the wrong one.
+      const opposite = { present: 'absent', absent: 'present', late: 'present', left_early: 'present' }[status] || 'absent';
+      const exIds = new Set(grp.excludedIds || []);
       const sb = this.auth.supabase;
-      const ids = grp.studentIds;
+      const names = {};
+      (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
+      const mainSet = new Set(), exSet = new Set();
+      allowed.forEach(b => b.studentIds.forEach(id => (exIds.has(id) ? exSet : mainSet).add(id)));
+      const label = allowed.map(b => b.row.name).join(' and ');
+      const exNames = [...exSet].map(id => names[id] || 'that student').join(' and ');
+      const exNote = exSet.size
+        ? ` <b>${this.escapeHtml(exNames)}</b> ${exSet.size === 1 ? 'gets' : 'get'} <b>${opposite}</b> instead.`
+        : '';
+      const skipNote = blocked.length
+        ? ` Skipping <b>${this.escapeHtml(blocked.map(b => b.row.name).join(' and '))}</b> — not yours to mark.`
+        : '';
       this._requestConfirmation(
-        `Mark <b>all ${ids.length} students</b> in <b>${this.escapeHtml(row.name)}</b> as <b>${status.replace(/_/g, ' ')}</b> for <b>${date}</b>? This replaces anything already recorded for that day.`,
+        `Mark <b>${mainSet.size} student${mainSet.size === 1 ? '' : 's'}</b> in <b>${this.escapeHtml(label)}</b> as <b>${status.replace(/_/g, ' ')}</b> for <b>${date}</b>?${exNote}${skipNote} This replaces anything already recorded for that day.`,
         async () => {
-          // Mirror saveClassAttendance: snapshot prior rows + session, then
-          // delete-and-insert the whole class for that date
-          const { data: prevRows } = await sb.from('class_attendance').select('*')
-            .eq('class_id', classId).eq('date', date).is('period', null);
-          const { data: prevSession } = await sb.from('class_attendance_sessions').select('*')
-            .eq('class_id', classId).eq('date', date).is('period', null);
-          await sb.from('class_attendance').delete().eq('class_id', classId).eq('date', date).is('period', null);
-          const { error: insErr } = await sb.from('class_attendance').insert(ids.map(sid => ({
-            class_id: classId, student_id: sid, date, period: null,
-            status, notes: null, marked_by: this.userInfo.user.id
-          })));
-          if (insErr) throw insErr;
-          await sb.from('class_attendance_sessions').delete().eq('class_id', classId).eq('date', date).is('period', null);
-          await sb.from('class_attendance_sessions').insert({
-            class_id: classId, date, period: null, status: 'completed',
-            taken_by: this.userInfo.user.id, taken_at: new Date().toISOString()
-          });
-          this._pushUndo(`marking all of ${row.name} ${status.replace(/_/g, ' ')} on ${date}`, async () => {
+          // Mirror saveClassAttendance per class: snapshot prior rows +
+          // session, then delete-and-insert that class for that date
+          const undoSteps = [];
+          let wrote = 0;
+          for (const b of allowed) {
+            const classId = b.row.id;
+            const rowsFor = b.studentIds.map(sid => ({
+              class_id: classId, student_id: sid, date, period: null,
+              status: exIds.has(sid) ? opposite : status, notes: null, marked_by: this.userInfo.user.id
+            }));
+            if (!rowsFor.length) continue;
+            const { data: prevRows } = await sb.from('class_attendance').select('*')
+              .eq('class_id', classId).eq('date', date).is('period', null);
+            const { data: prevSession } = await sb.from('class_attendance_sessions').select('*')
+              .eq('class_id', classId).eq('date', date).is('period', null);
             await sb.from('class_attendance').delete().eq('class_id', classId).eq('date', date).is('period', null);
-            if (prevRows && prevRows.length) {
-              await sb.from('class_attendance').insert(prevRows.map(({ id, ...rest }) => rest));
-            }
+            const { error: insErr } = await sb.from('class_attendance').insert(rowsFor);
+            if (insErr) throw insErr;
             await sb.from('class_attendance_sessions').delete().eq('class_id', classId).eq('date', date).is('period', null);
-            if (prevSession && prevSession.length) {
-              const { id, ...rest } = prevSession[0];
-              await sb.from('class_attendance_sessions').insert(rest);
+            await sb.from('class_attendance_sessions').insert({
+              class_id: classId, date, period: null, status: 'completed',
+              taken_by: this.userInfo.user.id, taken_at: new Date().toISOString()
+            });
+            wrote += rowsFor.length;
+            undoSteps.push({ classId, prevRows, prevSession });
+          }
+          this._pushUndo(`marking ${label} ${status.replace(/_/g, ' ')} on ${date}`, async () => {
+            for (const step of undoSteps) {
+              await sb.from('class_attendance').delete().eq('class_id', step.classId).eq('date', date).is('period', null);
+              if (step.prevRows && step.prevRows.length) {
+                await sb.from('class_attendance').insert(step.prevRows.map(({ id, ...rest }) => rest));
+              }
+              await sb.from('class_attendance_sessions').delete().eq('class_id', step.classId).eq('date', date).is('period', null);
+              if (step.prevSession && step.prevSession.length) {
+                const { id, ...rest } = step.prevSession[0];
+                await sb.from('class_attendance_sessions').insert(rest);
+              }
             }
           });
+          const tail = exSet.size ? ` ${exNames} marked ${opposite}.` : '';
           this._naturalSuccess([
-            `Attendance taken — all ${ids.length} students in ${row.name} marked ${status.replace(/_/g, ' ')} for ${date}.`,
-            `Done. ${row.name}: ${ids.length} × ${status.replace(/_/g, ' ')} recorded for ${date}.`
+            `Attendance taken — ${wrote} record${wrote === 1 ? '' : 's'} saved across ${label} for ${date}.${tail}`,
+            `Done. ${label}: ${wrote} attendance record${wrote === 1 ? '' : 's'} for ${date}.${tail}`
           ]);
         }
       );
@@ -53949,15 +54042,31 @@
 
     // Resolve "everyone / each of them": a class mentioned now, or the group
     // from the last roster/group answer
+    // "except sam wasnt here" — the name heads the phrase and a clause
+    // trails it. Peel the trailing words off one at a time rather than
+    // failing the whole exclusion, which would silently include them.
+    _rivenFindExcluded(piece) {
+      const STOP = new Set(['the', 'and', 'was', 'wasnt', 'is', 'isnt', 'not', 'her', 'him', 'them',
+        'who', 'she', 'he', 'they', 'here', 'there', 'today', 'class', 'kids', 'students', 'one', 'ones']);
+      const toks = String(piece || '').trim().split(/\s+/).filter(Boolean);
+      for (let n = Math.min(3, toks.length); n >= 1; n--) {
+        const probe = toks.slice(0, n).join(' ');
+        if (n === 1 && (probe.length < 3 || STOP.has(probe))) continue;
+        const res = this._fuzzyFindStudent(probe, probe);
+        const st = res?.student || (res?.ambiguous ? res.matches[0] : null);
+        if (st) return st;
+      }
+      return null;
+    }
+
     async _rivenResolveGroup(entities) {
       // "everyone in chess EXCEPT matthew" — collect exclusions up front
       const exclusions = [];
       const exM = (entities.normalized || '').match(/\b(?:except|besides|excluding|but not|minus|other than)\s+(.+?)(?:\s+\d|$)/);
       if (exM) {
         for (const piece of exM[1].split(/\s+(?:and|,|&)\s+|,\s*/)) {
-          const res = this._fuzzyFindStudent(piece.trim(), piece.trim());
-          const st = res?.student || (res?.ambiguous ? res.matches[0] : null);
-          if (st) exclusions.push(st);
+          const st = this._rivenFindExcluded(piece);
+          if (st && !exclusions.find(e => e.id === st.id)) exclusions.push(st);
         }
       }
       const applyExclusions = (grp) => {
@@ -53965,23 +54074,38 @@
         const exIds = new Set(exclusions.map(e => e.id));
         return { ...grp,
           studentIds: grp.studentIds.filter(id => !exIds.has(id)),
+          excludedIds: exclusions.map(e => e.id),
           excludedNames: exclusions.map(e => e.full_name) };
       };
       if (entities.classMatch) {
-        const res = await this._rivenRequireClass(entities);
+        // "all lower middle school" names TWO classes and means both of them
+        const res = await this._rivenRequireClasses(entities);
         if (res.asked) return { asked: true };
-        if (res.row) {
-          const { data: enr, error } = await this.auth.supabase
-            .from('class_enrollments').select('student_id').eq('class_id', res.row.id).eq('status', 'active');
-          if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return { asked: true }; }
-          const ids = (enr || []).map(e => e.student_id);
+        if (res.rows.length) {
+          const seen = new Set();
+          const ids = [];
+          const byClass = [];
+          for (const row of res.rows) {
+            const { data: enr, error } = await this.auth.supabase
+              .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
+            if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return { asked: true }; }
+            const rowIds = (enr || []).map(e => e.student_id);
+            byClass.push({ row, studentIds: rowIds });
+            // A student on two of these rosters is still ONE person. Without
+            // this dedupe a group award pays the overlap twice.
+            rowIds.forEach(id => { if (!seen.has(id)) { seen.add(id); ids.push(id); } });
+          }
+          const label = res.rows.map(r => r.name).join(' + ');
           this._nlpContext = this._nlpContext || {};
-          this._nlpContext.lastGroup = { label: res.row.name, classId: res.row.id, studentIds: ids, timestamp: Date.now() };
-          return applyExclusions({ label: res.row.name, studentIds: ids });
+          this._nlpContext.lastGroup = { label, classId: res.rows[0].id,
+            classIds: res.rows.map(r => r.id), byClass, studentIds: ids, timestamp: Date.now() };
+          return applyExclusions({ label, studentIds: ids, classRows: res.rows, byClass });
         }
       }
       const grp = this._nlpContext?.lastGroup;
-      if (grp && grp.studentIds?.length) return applyExclusions({ label: grp.label, studentIds: grp.studentIds });
+      if (grp && grp.studentIds?.length) {
+        return applyExclusions({ label: grp.label, studentIds: grp.studentIds, byClass: grp.byClass });
+      }
       return { label: null, studentIds: [] };
     }
 
@@ -54738,6 +54862,50 @@
       if (primary.length) return primary;
       const owned = rows.filter(c => c.secondary_teacher_id === myId);
       return owned.length ? owned : rows;
+    }
+
+    // Does the phrase quantify over the CLASSES themselves ("all lower ms
+    // classes", "5 to all lower middle school", "everyone in lower ms") or
+    // just over the students inside one of them ("list all students in
+    // math")? Only the first kind may fan out across every matching class;
+    // the second still has to ask which class. The test is adjacency: the
+    // quantifier must run into class-name evidence with nothing but
+    // determiners in between, so "all" attached to "students" never counts.
+    _rivenQuantifiesClasses(text, consumed) {
+      const t = (text || '').toLowerCase();
+      // "all my classes", "both classes", "every class" — the plural noun IS
+      // the target, so no name evidence is needed
+      if (/\b(all|both|every|each)\s+(of\s+)?(my\s+|the\s+|those\s+|these\s+|his\s+|her\s+|their\s+)?class(es)?\b/.test(t)) return true;
+      const evidence = new Set((consumed || []).filter(Boolean));
+      if (!evidence.size) return false;
+      const FILLER = new Set(['of', 'the', 'my', 'our', 'those', 'these', 'both', 'in', 'for', 'to', 'from', 'a', 'an']);
+      const toks = t.split(/\s+/).map(w => w.replace(/[^a-z0-9&°:-]/g, '')).filter(Boolean);
+      for (let i = 0; i < toks.length; i++) {
+        if (!/^(all|both|every|each|everyone|everybody)$/.test(toks[i])) continue;
+        for (let j = i + 1; j < toks.length; j++) {
+          if (evidence.has(toks[j])) return true;
+          if (!FILLER.has(toks[j])) break;
+        }
+      }
+      return false;
+    }
+
+    // Multi-class sibling of _rivenRequireClass. When the phrase quantifies
+    // over the classes, every match is a target and the picker is the wrong
+    // question — "all lower MS classes" must not become one of them. Anything
+    // else falls straight through to the single-class path, picker included.
+    async _rivenRequireClasses(entities) {
+      const cm = entities.classMatch;
+      if (!cm) return { rows: [], asked: false };
+      const one = async () => {
+        const res = await this._rivenRequireClass(entities);
+        return { rows: res.row ? [res.row] : [], asked: !!res.asked };
+      };
+      if (!cm.ambiguous || cm.pinned) return one();
+      if (!this._rivenQuantifiesClasses(entities.normalized || entities.original || '', cm.consumed)) return one();
+      const rows = this._preferOwnedClasses([...cm.candidates], cm);
+      if (rows.length === 1) this._rememberClass(rows[0]);
+      return { rows, asked: false };
     }
 
     _rememberClass(row) {
