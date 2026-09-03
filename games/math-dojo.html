@@ -1459,6 +1459,7 @@ const AnswerInterpreter = {
     // to be written twice - and it makes "3.5 × 10⁴" detect as scientific
     // notation, which it previously did not.
     unifyNotation(str) {
+        str = String(str).replace(/−/g, '-');
         const sup = { '\u2070': 0, '\u00b9': 1, '\u00b2': 2, '\u00b3': 3, '\u2074': 4,
                       '\u2075': 5, '\u2076': 6, '\u2077': 7, '\u2078': 8, '\u2079': 9 };
         return String(str).replace(/[\u2070\u00b9\u00b2\u00b3\u2074-\u2079]+/g,
@@ -1474,11 +1475,12 @@ const AnswerInterpreter = {
     // and it works under a strict CSP.
     parseArithmetic(str) {
         let src = String(str).toLowerCase().replace(/[\s,$]/g, '');
-        src = src.replace(/[\u00d7\u00b7\u22c5]/g, '*');
+        src = src.replace(/[\u00d7\u00b7\u22c5]/g, '*').replace(/\u00f7/g, '/');
+        src = src.replace(/sqrt/g, '\u221a');
         // A lone x between numbers means multiply. Only reached when a NUMBER is
         // expected, so it can never be an algebra variable here.
         src = src.replace(/(\d)x(?=[\d(])/g, '$1*');
-        if (!src || !/^[-+*/^().\d%]+$/.test(src)) return null;
+        if (!src || !/^[-+*/^().\d%\u221a]+$/.test(src)) return null;
 
         let i = 0;
         const expr = () => {
@@ -1514,6 +1516,12 @@ const AnswerInterpreter = {
         const unary = () => {
             if (src[i] === '-') { i++; const v = unary(); return v === null ? null : -v; }
             if (src[i] === '+') { i++; return unary(); }
+            // Roots bind tighter than the operators around them, so \u221a9+1 is 4.
+            if (src[i] === '\u221a') {
+                i++;
+                const v = unary();
+                return (v === null || v < 0) ? null : Math.sqrt(v);
+            }
             return primary();
         };
         const primary = () => {
@@ -1556,7 +1564,7 @@ const AnswerInterpreter = {
         if (/\d*[√∛]\d+/.test(original) || /sqrt|cbrt/i.test(ans)) return 'radical';
 
         // Pi expressions: "16π", "25π", "πr²"
-        if (/\d+\s*π|π/i.test(original) || /\d+\s*pi\b/i.test(ans)) return 'pi_expression';
+        if (/\d+\s*π|π/i.test(original) || /\d+\s*pi\b/i.test(ans) || /^pi$/i.test(ans)) return 'pi_expression';
 
         // Complex numbers: "3 + 2i", "5 - 4i"
         if (/[+-]?\s*\d*\s*i\b/.test(ans) && /\d/.test(ans)) return 'complex_number';
@@ -2561,8 +2569,13 @@ const AnswerInterpreter = {
             // is known to be a number, which makes it safe to try reading the
             // input as arithmetic - and this is the only place that is true.
             if (expectedNorm && expectedNorm.type === 'number' && (!userNorm || userNorm.type !== 'number')) {
-                let candidate = this.parseArithmetic(userInput);
+                let candidate = this.parseArithmetic(this.unifyNotation(userInput));
                 if (candidate === null) candidate = this.parseWordNumber(String(userInput).toLowerCase().trim());
+                // Students restate the variable: "x = 5" for an answer of 5.
+                if (candidate === null) {
+                    const restated = String(userInput).match(/^[a-z]\s*=\s*(.+)$/i);
+                    if (restated) candidate = this.parseArithmetic(this.unifyNotation(restated[1]));
+                }
                 if (candidate !== null && !isNaN(candidate)
                     && Math.abs(candidate - expectedNorm.value) < tolerance) {
                     return { correct: true, matchType: 'equivalent' };
@@ -2574,6 +2587,20 @@ const AnswerInterpreter = {
                 if (leading) {
                     const userNum = parseFloat(leading[0]);
                     if (!isNaN(userNum) && Math.abs(userNum - expectedNorm.value) < tolerance) {
+                        return { correct: true, matchType: 'equivalent' };
+                    }
+                }
+            }
+            if (expectedNorm.type === 'scientific_notation') {
+                let val = (userNorm && userNorm.type === 'number') ? userNorm.value : null;
+                if (val === null) {
+                    // "3.5 x 10^4" and "3.5*10^4" never detect as scientific
+                    // notation, so evaluate them instead of refusing them.
+                    val = this.parseArithmetic(this.unifyNotation(userInput));
+                }
+                if (val !== null && !isNaN(val)) {
+                    const scale = Math.max(1, Math.abs(expectedNorm.value));
+                    if (Math.abs(val - expectedNorm.value) / scale < 1e-6) {
                         return { correct: true, matchType: 'equivalent' };
                     }
                 }
