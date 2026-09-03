@@ -34451,6 +34451,160 @@
         }
       }
 
+      // ---------------- Activating a student account ----------------
+      //
+      // This was called from two places and never existed, so the Activate
+      // button threw. Written now around the thing that actually matters:
+      // the address. Activation creates a login and mails a link to it, and an
+      // address nobody checked is an account the student cannot reach and a
+      // link sitting in a stranger's inbox.
+      //
+      // So the address on record is shown first, plainly, and nothing is sent
+      // until someone has confirmed it is the right one.
+      async showActivationForm(studentId, firstName, lastName) {
+        try {
+          const { data: student, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, first_name, last_name, username, email, account_status, auth_user_id')
+            .eq('id', studentId)
+            .single());
+
+          if (error) throw error;
+
+          const name = `${student.first_name || firstName || ''} ${student.last_name || lastName || ''}`.trim();
+          const onRecord = (student.email || '').trim();
+          const isPlaceholder = /@pin\.rivertech\.me$/i.test(onRecord);
+          const usable = onRecord && !isPlaceholder;
+
+          // Three different situations, and lumping them together is how a
+          // link gets sent to a placeholder inbox nobody reads.
+          const emailNotice = usable ? `
+            <div class="card" style="padding:12px 14px; margin-bottom:14px; border-left:3px solid var(--accent-2);">
+              <div style="font-size:12px; color:var(--muted); margin-bottom:4px;">Address on record</div>
+              <div style="font-size:16px; font-weight:600;">${this.escapeHtml(onRecord)}</div>
+              <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+                The activation link goes here, and this becomes the address ${this.escapeHtml(student.first_name || 'they')} signs in with.
+              </div>
+            </div>
+          ` : isPlaceholder ? `
+            <div class="card" style="padding:12px 14px; margin-bottom:14px; border-left:3px solid var(--warning, #e67e22);">
+              <strong>No usable address yet.</strong>
+              <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+                This student signs in by PIN, and the address on record is an internal placeholder
+                with no inbox. Enter the address they actually read.
+              </div>
+            </div>
+          ` : `
+            <div class="card" style="padding:12px 14px; margin-bottom:14px; border-left:3px solid var(--warning, #e67e22);">
+              <strong>No address on record.</strong>
+              <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+                An account cannot be activated without one - there would be nowhere to send the link.
+              </div>
+            </div>
+          `;
+
+          this.showModal('activate-student', `Activate ${this.escapeHtml(name)}`, `
+            <div>
+              ${student.account_status === 'activated' ? `
+                <div class="card" style="padding:10px 14px; margin-bottom:14px;">
+                  This account is already active. Continuing re-sends the set-password link.
+                </div>
+              ` : ''}
+
+              <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+                Username <strong>${this.escapeHtml(student.username || '-')}</strong>
+              </div>
+
+              ${emailNotice}
+
+              <div class="form-group">
+                <label for="activate-email">Send the activation link to</label>
+                <input type="email" id="activate-email" value="${this.escapeHtml(usable ? onRecord : '')}"
+                  placeholder="name@example.com"
+                  style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text);">
+              </div>
+
+              <label style="display:flex; gap:8px; align-items:flex-start; margin:14px 0; font-size:13px; cursor:pointer;">
+                <input type="checkbox" id="activate-confirm" style="margin-top:3px;">
+                <span>I have checked this address is right for ${this.escapeHtml(student.first_name || 'this student')}.
+                  Activating creates their login and emails them a link to set a password.</span>
+              </label>
+
+              <div id="activate-error" style="display:none; color:var(--danger, #ff6a6a); font-size:13px; margin-bottom:10px;"></div>
+
+              <div style="display:flex; gap:10px; justify-content:flex-end;">
+                <button class="btn btn-secondary" onclick="app.closeModal('activate-student')">Cancel</button>
+                <button class="btn btn-primary" id="activate-go"
+                  onclick="app.confirmActivateStudent('${studentId}')">Activate and send</button>
+              </div>
+            </div>
+          `);
+        } catch (e) {
+          console.error('showActivationForm failed:', e);
+          this.showNotification(`Could not open activation: ${e.message}`, 'error');
+        }
+      }
+
+      async confirmActivateStudent(studentId) {
+        const emailEl = document.getElementById('activate-email');
+        const confirmEl = document.getElementById('activate-confirm');
+        const errEl = document.getElementById('activate-error');
+        const btn = document.getElementById('activate-go');
+        const fail = (msg) => {
+          if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+          if (btn) { btn.disabled = false; btn.textContent = 'Activate and send'; }
+        };
+
+        const email = (emailEl?.value || '').trim();
+        if (!email) return fail('Enter the address to send the link to.');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('That does not look like a valid email address.');
+        if (!confirmEl?.checked) return fail('Confirm the address is right before sending.');
+
+        if (btn) { btn.disabled = true; btn.textContent = 'Activating...'; }
+        if (errEl) errEl.style.display = 'none';
+
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/admin-activate-student',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              // The address is sent twice on purpose: the server refuses if the
+              // two disagree, so a stale screen cannot mail a link somewhere
+              // nobody approved.
+              body: JSON.stringify({ studentId, email, confirmedEmail: email })
+            }
+          );
+          const result = await resp.json().catch(() => ({}));
+          if (!resp.ok || !result.success) {
+            return fail(result.error || 'The account was not activated.');
+          }
+
+          this.closeModal('activate-student');
+          this.showNotification(
+            result.emailSent
+              ? `Activated. A set-password link was sent to ${email}.`
+              : `Activated, but no email went out. ${result.warning || ''}`,
+            result.emailSent ? 'success' : 'warning');
+
+          // The list is filtered on inactive students, so a refresh is what
+          // makes the activated one disappear from it.
+          if (typeof this.showInactiveStudentsList === 'function') {
+            this.showInactiveStudentsList();
+          }
+        } catch (e) {
+          console.error('confirmActivateStudent failed:', e);
+          fail(e.message);
+        }
+      }
+
       async saveStudentHubProfile() {
         const studentId = this._studentHubId;
         const firstName = document.getElementById('hub-first-name').value.trim();
