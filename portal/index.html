@@ -44340,7 +44340,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-04·a';
+      const RIVEN_BUILD = '2026-09-04·b';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -46623,7 +46623,8 @@
       // "give jordan 3 gold" must execute, not detour through the model
       const writeWins = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
         'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
-        'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'RENAME_CLASS', 'UPDATE_CONTACT',
+        'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'RENAME_CLASS', 'UPDATE_CLASS',
+        'ENROLL_GROUP', 'UPDATE_CONTACT',
         'ADD_NOTE', 'DELETE_NOTE', 'MARK_READ'];
       const weakWin = typeof intent.w === 'number' && intent.w <= 3
         && intent.intent !== 'CAPABILITY' && !writeWins.includes(intent.intent);
@@ -47571,6 +47572,7 @@
       const WRITE_INTENTS = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
         'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
+        'UPDATE_CLASS', 'ENROLL_GROUP',
         'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
@@ -47909,6 +47911,33 @@
           notIfAmount: true,
           // "give eli's attendance in math" must stay a read, not an enrollment
           notIfInfoNoun: true
+        },
+        // ENROLL_GROUP — "add the Lower MS group to Lower MS Bible", "put
+        // the HS cohort in Chapel". Above ENROLL_STUDENT, which needs a named
+        // student and so never fires on these.
+        {
+          intent: 'ENROLL_GROUP',
+          w: 6, notIfNoteCommand: true, notIfCurrency: true, notIfAmount: true,
+          patterns: [
+            /\b(add|put|enroll|enrol|register|move)\b.*\b(group|cohort)\b.*\b(to|into|in)\b/,
+            /\b(add|put|enroll|enrol|register)\b.*\b(to|into|in)\b.*\b(group|cohort)\b/,
+            { re: /\b(fill|stock|populate)\b.*\bwith\b.*\b(group|cohort)\b/, w: 7 }
+          ],
+          requiresClass: true
+        },
+        // UPDATE_CLASS — "set Lower MS Bible subject to Bible", "change its
+        // cap to 20", "make Dan co-teacher of Chess". The spec noun is what
+        // separates this from RENAME_CLASS ("change its NAME to ..."), which
+        // is matched on the word "name" and is left alone.
+        {
+          intent: 'UPDATE_CLASS',
+          w: 6, notIfNoteCommand: true, notIfQuestion: true, notIfCurrency: true,
+          patterns: [
+            /\b(set|change|update|make|give|adjust|switch|move)\b[^.?]*\b(subject|grade range|grade band|max students?|maximum students?|capacity|cap|description|co-?teacher|secondary teacher|room|facility|grading|weighted|weighting)\b/,
+            /\b(subject|grade range|grade band|capacity|cap|co-?teacher|room)\b[^.?]*\b(should be|needs to be|to)\b/
+          ],
+          requiresClass: true,
+          notIfAmount: false
         },
         // RENAME_CLASS — "rename the english class to English Test",
         // "call it Chess Club"
@@ -49323,6 +49352,14 @@
 
         case 'CREATE_CLASS':
           await this.terminalCreateClass(entities);
+          break;
+
+        case 'UPDATE_CLASS':
+          await this.terminalUpdateClass(entities);
+          break;
+
+        case 'ENROLL_GROUP':
+          await this.terminalEnrollGroup(entities);
           break;
 
         case 'DELETE_CLASS':
@@ -53066,6 +53103,150 @@
       );
     }
 
+    // Which roster is the class meant to start with? Only an EXPLICIT clause
+    // counts. "Lower MS Bible with the Lower MS group in it" names a cohort;
+    // the class NAME also contains "lower ms", so matching the whole sentence
+    // would enrol a cohort into every similarly-named class whether or not
+    // one was asked for.
+    _rivenParseClassRosterRef(text) {
+      const t = String(text || '');
+      let m = t.match(/\b(?:with|containing|including|holding)\s+(?:all\s+)?(?:the\s+)?(.+?)\s+(?:group|cohort)\b/i);
+      if (m) return { kind: 'group', ref: m[1].trim() };
+      m = t.match(/\b(?:same|copy)\s+(?:the\s+)?(?:students|roster|kids)\s+(?:as|from)\s+(.+?)[.!?]*$/i);
+      if (m) return { kind: 'class', ref: m[1].trim() };
+      m = t.match(/\b(?:with|containing|including|holding)\s+(?:all\s+)?(?:the\s+)?(.+?)(?:'s)?\s+(?:students|kids|roster)\b/i);
+      if (m) return { kind: 'either', ref: m[1].trim() };
+      return null;
+    }
+
+    // Everything a class can be created or edited with, pulled out of one
+    // sentence. Only fields the teacher actually mentioned come back, so the
+    // same parser serves "create" (rest take defaults) and "set" (rest are
+    // left alone).
+    _rivenParseClassSpec(text) {
+      const t = String(text || '');
+      const spec = {};
+      let m;
+      if ((m = t.match(/\bsubject\s+(?:to\s+|is\s+|as\s+)?([A-Za-z][A-Za-z &\/-]*?)(?:\s*[,.]|\s+(?:and|with|for|max|maximum|cap|room|grade|grades|band|description|weighted|weighting|co-?teach)\b|$)/i))) {
+        spec.subject = m[1].trim();
+      }
+      if ((m = t.match(/\b(?:grade\s*(?:range|band)|band|grades)\s+(?:to\s+|is\s+|as\s+)?([A-Za-z0-9][A-Za-z0-9 \-–]*?)(?:\s*[,.]|\s+(?:and|with|for|max|maximum|cap|room|subject|description|weighted|weighting|co-?teach)\b|$)/i))) {
+        spec.gradeBand = m[1].trim();
+      }
+      if ((m = t.match(/\b(?:max|maximum|cap|capacity|limit|room for)\s*(?:students?)?\s*(?:of|at|to|is|=)?\s*(\d{1,3})\b/i))
+       || (m = t.match(/\b(\d{1,3})\s*(?:students?\s*)?(?:max|maximum|cap|seats?)\b/i))) {
+        spec.maxStudents = parseInt(m[1], 10);
+      }
+      if ((m = t.match(/\b(?:description|desc|described as|about)\s+(?:to\s+|is\s+|as\s+)?["“](.+?)["”]/i))
+       || (m = t.match(/\b(?:description|desc|described as)\s+(?:to\s+|is\s+|as\s+)?(.+?)[.!?]*$/i))) {
+        spec.description = m[1].trim();
+      }
+      // "make Dan co-teacher of Chess" names the person BEFORE the role, and
+      // has to be tried first: the role-first pattern would otherwise read
+      // the "of" that follows as the name.
+      if ((m = t.match(/\b(?:make|add|set)\s+([A-Za-z][A-Za-z .'-]*?)\s+(?:as\s+)?(?:the\s+)?(?:co-?teacher|second(?:ary)? teacher)\b/i))
+       || (m = t.match(/\b(?:co-?teacher|co-?taught by|assisted by|helper|second teacher|secondary teacher)\s+(?:is\s+|to\s+)?(?!(?:of|for|on|to|in|and|the)\b)([A-Za-z][A-Za-z .'-]*?)(?:\s*[,.]|\s+(?:and|with|for|max|subject|room|grade|description)\b|$)/i))) {
+        spec.secondaryTeacher = m[1].trim();
+      }
+      if ((m = t.match(/\b(?:weighted|weighting|grading|graded)\s+(?:by\s+|on\s+|to\s+)?(even|evenly|skill|skills|participation)\b/i))
+       || (m = t.match(/\b(even|skill|participation)[\s-]weighted\b/i))) {
+        spec.gradingWeight = { evenly: 'even', skills: 'skill' }[m[1].toLowerCase()] || m[1].toLowerCase();
+      }
+      if ((m = t.match(/\b(?:in\s+)?room\s+(?:to\s+|is\s+)?([A-Za-z0-9][A-Za-z0-9 &\/-]*?)(?:\s*[,.]|\s+(?:and|with|for|max|subject|grade|description|weighted)\b|$)/i))) {
+        spec.room = m[1].trim();
+      }
+      spec.roster = this._rivenParseClassRosterRef(t);
+      return spec;
+    }
+
+    // The class name in a create command: quoted wins, then "called/named",
+    // then whatever sits between "class" and the first spec clause. That last
+    // form is what makes "create a new class Lower MS Bible with the Lower MS
+    // group in it" work without the teacher having to say "called".
+    _rivenParseNewClassName(text) {
+      const t = String(text || '').trim();
+      const STOP = String.raw`(?:with|containing|including|holding|for|subject|room|max|maximum|cap|capacity|limit|description|desc|described|grade|grades|band|weighted|weighting|graded|grading|co-?teacher|co-?taught|assisted|and add|taught by)`;
+      let m = t.match(new RegExp(String.raw`\b(?:called|named|titled)\s+(.+?)(?:\s+` + STOP + String.raw`\b.*)?$`, 'i'));
+      if (!m) m = t.match(new RegExp(String.raw`\b(?:new\s+|another\s+)?class\s+(?!called|named|titled)(.+?)(?:\s+` + STOP + String.raw`\b.*)?$`, 'i'));
+      if (!m) return null;
+      const name = m[1].replace(/["“”']/g, '').replace(/[.!?,]+$/, '').trim();
+      return name || null;
+    }
+
+    // Resolve the roster clause on a create/edit command to real students.
+    // Returns null when no roster was asked for, { error } when one was asked
+    // for and could not be pinned down — never a silent empty roster.
+    async _rivenResolveRosterRef(ref) {
+      if (!ref) return null;
+      if (ref.kind !== 'class') {
+        const g = this._rivenMatchGroup(ref.ref);
+        if (g && !g.ambiguous) {
+          const ids = [...new Set(g.studentIds || [])];
+          if (!ids.length) return { error: `${g.name} has no students in it yet.` };
+          return { label: g.name, studentIds: ids };
+        }
+        if (g && g.ambiguous) {
+          return { error: `"${ref.ref}" could be ${g.candidates.map(c => c.name).join(' or ')} — name which one.` };
+        }
+        if (ref.kind === 'group') return { error: `I don't know a group called "${ref.ref}".` };
+      }
+      const cm = this._rivenMatchClass(String(ref.ref || '').toLowerCase());
+      if (!cm) return { error: `I couldn't find a class or group called "${ref.ref}".` };
+      const rows = cm.ambiguous ? cm.candidates : [this._rivenResolveClassRow(cm)].filter(Boolean);
+      if (rows.length !== 1) {
+        return { error: `"${ref.ref}" matches ${rows.length} classes — name one.` };
+      }
+      const { data: enr, error } = await this.auth.supabase
+        .from('class_enrollments').select('student_id').eq('class_id', rows[0].id).eq('status', 'active');
+      if (error) return { error: 'Could not read that roster: ' + error.message };
+      const ids = [...new Set((enr || []).map(e => e.student_id))];
+      if (!ids.length) return { error: `${rows[0].name} has no active students to copy.` };
+      return { label: rows[0].name, studentIds: ids };
+    }
+
+    // Snap a spoken subject / grade band / room onto what the school actually
+    // has, so a class does not land with a subject the Drive folders and
+    // report cards have never heard of. An unrecognised value is reported,
+    // not quietly substituted.
+    async _rivenResolveSubject(said) {
+      if (!said) return { value: null };
+      const rows = await this.loadSubjectOptions().catch(() => []);
+      const names = [...new Set((rows || []).map(r => r.subject).filter(Boolean))];
+      if (!names.length) return { value: said };               // table unreadable: free text, as the form does
+      const norm = x => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const want = norm(said);
+      const exact = names.find(n => norm(n) === want);
+      if (exact) return { value: exact };
+      const partial = names.filter(n => norm(n).startsWith(want) || want.startsWith(norm(n)));
+      if (partial.length === 1) return { value: partial[0] };
+      if (partial.length > 1) return { value: null, error: `"${said}" could be ${partial.slice(0, 4).join(', ')} — say which.` };
+      return { value: null, error: `"${said}" isn't one of the school's subjects. Pick from the Classes tab, or leave the subject off and set it there.` };
+    }
+
+    async _rivenResolveGradeBand(said) {
+      if (!said) return { value: null };
+      const rows = await this.loadGradeBands().catch(() => []);
+      if (!rows || !rows.length) return { value: null };
+      const norm = x => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const want = norm(said);
+      const hit = rows.find(b => norm(b.code) === want || norm(b.label) === want)
+               || rows.find(b => norm(b.label).includes(want) || want.includes(norm(b.code)));
+      if (hit) return { value: hit.code, label: hit.label };
+      return { value: null, error: `"${said}" isn't one of the grade ranges. Try one of: ${rows.map(b => b.label).slice(0, 6).join(', ')}.` };
+    }
+
+    async _rivenResolveFacility(said) {
+      if (!said) return { value: null };
+      const rows = await this._loadFacilitiesForSelect().catch(() => []);
+      if (!rows || !rows.length) return { value: null };
+      const norm = x => String(x).toLowerCase().replace(/[^a-z0-9]/g, '');
+      const want = norm(said);
+      const hit = rows.find(f => norm(f.name) === want) || rows.filter(f => norm(f.name).includes(want));
+      if (hit && !Array.isArray(hit)) return { value: hit.id, label: hit.name };
+      if (Array.isArray(hit) && hit.length === 1) return { value: hit[0].id, label: hit[0].name };
+      return { value: null, error: `"${said}" isn't a room I can find.` };
+    }
+
     async terminalCreateClass(entities) {
       const userType = this.userInfo.profile.user_type;
       if (userType !== 'teacher' && userType !== 'admin') {
@@ -53073,23 +53254,95 @@
         return;
       }
       const original = entities.original || '';
-      let name = entities.quoted || original.match(/\b(?:called|named|titled)\s+(.+?)(?:\s+(?:for|with|subject)\b.*)?$/i)?.[1]?.trim() || null;
-      if (name) name = name.replace(/[.!?]+$/, '').trim();
+      const name = entities.quoted || this._rivenParseNewClassName(original);
       if (!name) {
-        this._showRivenMessage(`What should the class be called? Say it like: create a class called <b>Robotics 101</b> (you can add: subject Science).`, true);
+        this._showRivenMessage(
+          `What should the class be called? Say it like: create a class <b>Lower MS Bible</b>.<br>` +
+          `<span style="color: var(--muted);">You can add any of: subject Bible, grade range Middle School, max 20, room Chapel, ` +
+          `co-teacher Dan, weighted by participation, description "…", and "with the Lower MS group in it" to fill the roster.</span>`, true);
         return;
       }
-      const subject = original.match(/\bsubject\s+([A-Za-z][A-Za-z &/-]*)/i)?.[1]?.trim()
-        || original.match(/\bfor\s+([A-Za-z][A-Za-z]+)\s*$/i)?.[1]?.trim() || 'Other';
+      // A class that already exists by that name is nearly always a repeated
+      // command, not a request for a duplicate.
+      const clash = (this._terminalAllClasses || []).find(c =>
+        (c.name || '').trim().toLowerCase() === name.toLowerCase());
+      if (clash) {
+        this._showRivenMessage(
+          `<b>${this.escapeHtml(clash.name)}</b> already exists${clash.teacher_name ? ' (' + this.escapeHtml(clash.teacher_name) + ')' : ''}. ` +
+          `Say "add the … group to ${this.escapeHtml(clash.name)}" to fill its roster, or pick a different name.`, true);
+        return;
+      }
+
+      const spec = this._rivenParseClassSpec(original);
+      if (spec.secondaryTeacher) await this._loadNotesPeople();
+      const problems = [];
+
+      const subj = await this._rivenResolveSubject(spec.subject);
+      if (subj.error) problems.push(subj.error);
+      const band = await this._rivenResolveGradeBand(spec.gradeBand);
+      if (band.error) problems.push(band.error);
+      const room = await this._rivenResolveFacility(spec.room);
+      if (room.error) problems.push(room.error);
+
+      let secondary = null;
+      if (spec.secondaryTeacher) {
+        const t = this._rivenMatchTeacher(spec.secondaryTeacher.toLowerCase());
+        if (!t) problems.push(`I don't know a teacher called "${spec.secondaryTeacher}".`);
+        else if (t.id === this.userInfo.user.id) problems.push(`You're already the teacher — a co-teacher has to be someone else.`);
+        else secondary = t;
+      }
+
+      let roster = null;
+      if (spec.roster) {
+        roster = await this._rivenResolveRosterRef(spec.roster);
+        if (roster && roster.error) problems.push(roster.error);
+      }
+      if (spec.maxStudents !== undefined && (spec.maxStudents < 1 || spec.maxStudents > 100)) {
+        problems.push(`Maximum students has to be between 1 and 100.`);
+      }
+      // Nothing is created while any part of the request is unresolved —
+      // half a class is worse than none, and the fix is one more sentence.
+      if (problems.length) {
+        this.terminalPrintError(problems.join(' '));
+        return;
+      }
+
+      const rosterIds = roster && roster.studentIds ? roster.studentIds : [];
+      const maxStudents = spec.maxStudents !== undefined ? spec.maxStudents : 30;
+      if (rosterIds.length > maxStudents) {
+        this.terminalPrintError(`${roster.label} has ${rosterIds.length} students but the cap is ${maxStudents}. Raise the cap or drop the roster.`);
+        return;
+      }
+      const payload = {
+        name, subject: subj.value || 'Other', teacher_id: this.userInfo.user.id,
+        max_students: maxStudents, grading_weight: spec.gradingWeight || 'even'
+      };
+      if (band.value) payload.grade_band = band.value;
+      if (room.value) payload.facility_id = room.value;
+      if (secondary) payload.secondary_teacher_id = secondary.id;
+      if (spec.description) payload.description = spec.description;
+
+      const bits = [`subject: ${this.escapeHtml(payload.subject)}`, `max ${maxStudents}`];
+      if (band.value) bits.push(`grades: ${this.escapeHtml(band.label || band.value)}`);
+      if (room.value) bits.push(`room: ${this.escapeHtml(room.label)}`);
+      if (secondary) bits.push(`co-teacher: ${this.escapeHtml(secondary.name)}`);
+      if (payload.grading_weight !== 'even') bits.push(`${this.escapeHtml(payload.grading_weight)}-weighted`);
+      if (spec.description) bits.push('with a description');
+      const rosterBit = rosterIds.length
+        ? `<br>Enrolling <b>${rosterIds.length} student${rosterIds.length === 1 ? '' : 's'}</b> from <b>${this.escapeHtml(roster.label)}</b>.` : '';
+
       const sb = this.auth.supabase;
       this._requestConfirmation(
-        `Create a new class <b>${this.escapeHtml(name)}</b> (subject: ${this.escapeHtml(subject)}, max 30 students) with you as the teacher?`,
+        `Create <b>${this.escapeHtml(name)}</b> (${bits.join(', ')}) with you as the teacher?${rosterBit}`,
         async () => {
-          const { data, error } = await sb.from('classes').insert([{
-            name, subject, teacher_id: this.userInfo.user.id,
-            max_students: 30, grading_weight: 'even'
-          }]).select().single();
+          const { data, error } = await sb.from('classes').insert([payload]).select().single();
           if (error) throw error;
+          let enrolled = 0, refused = 0;
+          for (const sid of rosterIds) {
+            const { error: e } = await sb.from('class_enrollments')
+              .insert({ class_id: data.id, student_id: sid, status: 'active', enrolled_at: new Date().toISOString() });
+            if (e) refused++; else enrolled++;
+          }
           await this._loadTerminalClasses();
           this._rememberClass(data);
           this._pushUndo(`creating the class ${name}`, async () => {
@@ -53097,15 +53350,196 @@
             if (e) throw e;
             await this._loadTerminalClasses();
           });
+          // A roster that was asked for and did not land has to be said out
+          // loud: the class exists either way, and an empty one looks the
+          // same as a full one from the success line.
+          const tail = rosterIds.length
+            ? ` ${enrolled} student${enrolled === 1 ? '' : 's'} enrolled from ${roster.label}.` +
+              (refused ? ` ⚠️ ${refused} could not be added — brand-new enrolments may need an admin.` : '')
+            : '';
           this._naturalSuccess([
-            `Created ${name} (${subject}) — it's live and you're the teacher. Set its schedule from the Classes tab when ready.`,
-            `Done! ${name} exists now. Say "add [student] to ${name}" to start enrolling.`
+            `Created ${name} (${payload.subject}) — you're the teacher.${tail}`,
+            `Done, ${name} exists now.${tail || ' Say "add [student] to ' + name + '" to start enrolling.'}`
+          ]);
+        }
+      );
+    }
+
+    async terminalUpdateClass(entities) {
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class? Say it like "set Lower MS Bible subject to Bible".'); return; }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`Only ${row.name}'s teacher or an admin can change its settings.`);
+        return;
+      }
+      // Strip the class name before parsing, or a class called "Lower MS Bible"
+      // donates the word "bible" to whatever field is being set.
+      let text = entities.original || '';
+      const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      (row.name || '').split(/\s+/).filter(w => w.length >= 3).forEach(w => {
+        text = text.replace(new RegExp('\\b' + esc(w) + '\\b', 'ig'), ' ');
+      });
+      const spec = this._rivenParseClassSpec(text);
+      if (spec.secondaryTeacher) await this._loadNotesPeople();
+
+      const patch = {}, bits = [], problems = [];
+      if (spec.subject) {
+        const r = await this._rivenResolveSubject(spec.subject);
+        if (r.error) problems.push(r.error); else { patch.subject = r.value; bits.push(`subject → <b>${this.escapeHtml(r.value)}</b>`); }
+      }
+      if (spec.gradeBand) {
+        const r = await this._rivenResolveGradeBand(spec.gradeBand);
+        if (r.error) problems.push(r.error); else if (r.value) { patch.grade_band = r.value; bits.push(`grades → <b>${this.escapeHtml(r.label || r.value)}</b>`); }
+      }
+      if (spec.room) {
+        const r = await this._rivenResolveFacility(spec.room);
+        if (r.error) problems.push(r.error); else if (r.value) { patch.facility_id = r.value; bits.push(`room → <b>${this.escapeHtml(r.label)}</b>`); }
+      }
+      if (spec.maxStudents !== undefined) {
+        if (spec.maxStudents < 1 || spec.maxStudents > 100) problems.push('Maximum students has to be between 1 and 100.');
+        else { patch.max_students = spec.maxStudents; bits.push(`cap → <b>${spec.maxStudents}</b>`); }
+      }
+      if (spec.gradingWeight) { patch.grading_weight = spec.gradingWeight; bits.push(`grading → <b>${this.escapeHtml(spec.gradingWeight)}</b>`); }
+      if (spec.description) { patch.description = spec.description; bits.push('a new description'); }
+      if (spec.secondaryTeacher) {
+        if (/^(none|nobody|no one|no-one)$/i.test(spec.secondaryTeacher)) { patch.secondary_teacher_id = null; bits.push('co-teacher → <b>none</b>'); }
+        else {
+          const t = this._rivenMatchTeacher(spec.secondaryTeacher.toLowerCase());
+          if (!t) problems.push(`I don't know a teacher called "${spec.secondaryTeacher}".`);
+          else if (t.id === this.userInfo.user.id) problems.push('A co-teacher has to be someone other than you.');
+          else { patch.secondary_teacher_id = t.id; bits.push(`co-teacher → <b>${this.escapeHtml(t.name)}</b>`); }
+        }
+      }
+      if (problems.length) { this.terminalPrintError(problems.join(' ')); return; }
+      if (!bits.length) {
+        this._showRivenMessage(
+          `I didn't catch what to change on <b>${this.escapeHtml(row.name)}</b>. I can set: subject, grade range, ` +
+          `max students, room, co-teacher, grading weight, description.`, true);
+        return;
+      }
+      // A cap below the current roster would be accepted by the column and
+      // then quietly contradict the enrolment screen.
+      if (patch.max_students !== undefined) {
+        const { data: enr } = await this.auth.supabase
+          .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
+        const n = (enr || []).length;
+        if (n > patch.max_students) {
+          this.terminalPrintError(`${row.name} already has ${n} students, so the cap can't go to ${patch.max_students}.`);
+          return;
+        }
+      }
+      const before = {};
+      Object.keys(patch).forEach(k => { before[k] = row[k] === undefined ? null : row[k]; });
+      const sb = this.auth.supabase;
+      this._requestConfirmation(
+        `Update <b>${this.escapeHtml(row.name)}</b> — ${bits.join(', ')}?`,
+        async () => {
+          const { error } = await sb.from('classes').update(patch).eq('id', row.id);
+          if (error) throw error;
+          await this._loadTerminalClasses();
+          this._pushUndo(`changing ${row.name}`, async () => {
+            const { error: e } = await sb.from('classes').update(before).eq('id', row.id);
+            if (e) throw e;
+            await this._loadTerminalClasses();
+          });
+          this._naturalSuccess([
+            `${row.name} updated.`,
+            `Done — ${row.name} is set.`
+          ]);
+        }
+      );
+    }
+
+    async terminalEnrollGroup(entities) {
+      const res = await this._rivenRequireClass(entities);
+      if (res.asked) return;
+      const row = res.row;
+      if (!row) { this.terminalPrintError('Which class? Say it like "add the Lower MS group to Lower MS Bible".'); return; }
+      if (!this._rivenCanManageClass(row)) {
+        this.terminalPrintError(`Only ${row.name}'s teacher or an admin can change its roster.`);
+        return;
+      }
+      // Same trap as editing: the class name can contain the group's words.
+      let text = entities.original || '';
+      const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      (row.name || '').split(/\s+/).filter(w => w.length >= 3).forEach(w => {
+        text = text.replace(new RegExp('\\b' + esc(w) + '\\b', 'ig'), ' ');
+      });
+      const ref = this._rivenParseClassRosterRef(text)
+        || this._rivenParseClassRosterRef(text.replace(/\b(to|into|in)\b/i, 'with'))
+        || { kind: 'group', ref: text };
+      const roster = await this._rivenResolveRosterRef(ref);
+      if (!roster || roster.error) {
+        this.terminalPrintError(roster ? roster.error : 'Which group should I add?');
+        return;
+      }
+      const sb = this.auth.supabase;
+      const plans = [];
+      let already = 0;
+      for (const sid of roster.studentIds) {
+        const existing = await this._rivenFindEnrollment(row.id, sid);
+        if (existing && existing.status === 'active') { already++; continue; }
+        plans.push({ sid, existing });
+      }
+      if (!plans.length) {
+        this._showRivenMessage(`Every student in ${this.escapeHtml(roster.label)} is already in ${this.escapeHtml(row.name)} — nothing to do.`, true);
+        return;
+      }
+      const cap = row.max_students || 30;
+      if (already + plans.length > cap) {
+        this.terminalPrintError(`That would put ${already + plans.length} students in ${row.name}, over its cap of ${cap}. Say "set ${row.name} max ${already + plans.length}" first.`);
+        return;
+      }
+      const names = {};
+      (this._terminalAllStudents || []).forEach(st => { names[st.id] = st.full_name; });
+      this._requestConfirmation(
+        `Add <b>${plans.length} student${plans.length === 1 ? '' : 's'}</b> from <b>${this.escapeHtml(roster.label)}</b> to <b>${this.escapeHtml(row.name)}</b>` +
+        `${already ? ` <span style="color: var(--muted);">(${already} already in it)</span>` : ''}?`,
+        async () => {
+          const undos = []; let done = 0, refused = 0;
+          for (const { sid, existing } of plans) {
+            const now = new Date().toISOString();
+            if (existing) {
+              const prev = existing.status;
+              const { error } = await sb.from('class_enrollments')
+                .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', existing.id);
+              if (error) { refused++; continue; }
+              undos.push(async () => { await sb.from('class_enrollments').update({ status: prev, updated_at: new Date().toISOString() }).eq('id', existing.id); });
+            } else {
+              const { data: ins, error } = await sb.from('class_enrollments')
+                .insert({ class_id: row.id, student_id: sid, status: 'active', enrolled_at: now }).select().single();
+              if (error) { refused++; continue; }
+              undos.push(async () => { await sb.from('class_enrollments').update({ status: 'removed', updated_at: new Date().toISOString() }).eq('id', ins.id); });
+            }
+            done++;
+          }
+          if (done) {
+            this._pushUndo(`adding ${roster.label} to ${row.name}`, async () => { for (const u of undos) await u(); });
+          }
+          this._naturalSuccess([
+            `${done} student${done === 1 ? '' : 's'} from ${roster.label} added to ${row.name}.` +
+              (refused ? ` ⚠️ ${refused} were refused — brand-new enrolments may need an admin.` : ''),
+            `Done — ${row.name} now holds ${roster.label}.` +
+              (refused ? ` ⚠️ ${refused} refused.` : '')
           ]);
         }
       );
     }
 
     async terminalDeleteClass(entities) {
+      // Deliberately not wired up. Deleting a class takes its enrolments,
+      // grades and attendance out of every list at once, and a misheard class
+      // name is the one mistake here that cannot be walked back from a chat
+      // box. Creating and editing are safe to drive from Riven; removing is
+      // not, until asked for.
+      this._showRivenMessage(
+        `I can create and edit classes, but I don't delete them. Use the <b>Classes</b> tab for that — ` +
+        `it shows the roster and grades you would be taking down before you confirm.<br>` +
+        `<span style="color: var(--muted);">To archive one for the year instead, say "close [class name]" — that keeps everything and is reversible.</span>`, true);
+      return;
+      // eslint-disable-next-line no-unreachable
       const res = await this._rivenRequireClass(entities);
       if (res.asked) return;
       const row = res.row;
@@ -54964,6 +55398,7 @@
         MARK_ATTENDANCE_GROUP: '📅 Mark attendance for the class', ENROLL_STUDENT: '➕ Add to a class',
         UNENROLL_STUDENT: '➖ Remove from a class', MOVE_STUDENT: '🔀 Move between classes',
         CREATE_CLASS: '🆕 Create a class', DELETE_CLASS: '🗑️ Archive a class', UPDATE_CONTACT: '📇 Update contact info',
+        UPDATE_CLASS: '⚙️ Change a class setting', ENROLL_GROUP: '👥 Add a whole group to a class',
         ADD_NOTE: '🗒️ Save a note', DELETE_NOTE: '🗑️ Delete a note'
       };
       this._intentClarify = { options, entities };

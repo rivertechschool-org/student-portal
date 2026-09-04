@@ -42,7 +42,8 @@ const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_fuzzyFindStudent','_calculateSimilarity',
   '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
-  '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance'];
+  '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance',
+  '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef'];
 const app = { _nlpContext: {} };
 for (const name of methods) app[name] = extract(name).bind ? extract(name) : extract(name);
 // rebind so `this` works
@@ -1555,3 +1556,70 @@ app._terminalAllClasses = [
 });
 app._terminalAllClasses = _c36;
 console.log(`round 36: ${p36} pass, ${f36} fail`);
+
+// ── round 37: creating and editing classes with specs ─────────────────────
+// "Create a new class Lower MS Bible with the Lower MS group in it." — a name
+// with no "called", plus a cohort to fill the roster. Editing a class from
+// Riven did not exist at all: every "set X ..." landed on UNKNOWN_ACTION.
+console.log('\n== round 37: class creation and editing ==');
+let p37 = 0, f37 = 0;
+const t37 = (label, ok) => { ok ? p37++ : f37++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _c37 = app._terminalAllClasses, _g37 = app._terminalAllGroups;
+app._terminalAllClasses = [
+  { id:'c1', name:'Chess', subject:'Games', teacher_id:'t1', secondary_teacher_id:null, is_active:true, max_students:30 },
+  { id:'lme', name:'Lower MS English', subject:'English', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+];
+app._terminalAllGroups = [
+  { id:'g-ym', name:'Full Young Middle', studentIds:['s6','s7'] },
+  { id:'g-hs', name:'Full High', studentIds:['s1'] },
+];
+[
+  ['Create a new class Lower MS Bible with the Lower MS group in it.', 'CREATE_CLASS'],
+  ['create a class called Robotics 101 subject Science', 'CREATE_CLASS'],
+  ['create a class Chapel Choir max 15 room Sanctuary', 'CREATE_CLASS'],
+  ['set Chess subject to Bible', 'UPDATE_CLASS'],
+  ['change Chess max students to 12', 'UPDATE_CLASS'],
+  ['set Chess grade range to middle school', 'UPDATE_CLASS'],
+  ['make Dan co-teacher of Chess', 'UPDATE_CLASS'],
+  ['move Chess to room Chapel', 'UPDATE_CLASS'],
+  ['add the Lower MS group to Chess', 'ENROLL_GROUP'],
+  ['put the HS group in Chess', 'ENROLL_GROUP'],
+  // renaming is a different command and must not be swallowed by UPDATE_CLASS
+  ['rename Chess to Chess Club', 'RENAME_CLASS'],
+  // delete still routes here; the executor is what refuses (see class-admin.js)
+  ['delete the Chess class', 'DELETE_CLASS'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t37(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// the name comes out of the sentence without needing "called"
+[
+  ['Create a new class Lower MS Bible with the Lower MS group in it.', 'Lower MS Bible'],
+  ['create a class called Robotics 101 subject Science', 'Robotics 101'],
+  ['create a class Chapel Choir max 15 room Sanctuary', 'Chapel Choir'],
+  ['make a new class Art History co-teacher Dan', 'Art History'],
+  ['create a new class Bible', 'Bible'],
+].forEach(([text, want]) => {
+  const got = app._rivenParseNewClassName(text);
+  t37(`name("${text}") -> ${want} (got ${got})`, got === want);
+});
+
+// the specs themselves
+const spec = t => app._rivenParseClassSpec(t);
+t37('subject parses', spec('create a class X subject Science').subject === 'Science');
+t37('max students parses either way',
+  spec('set X max students to 12').maxStudents === 12 && spec('create a class X max 15').maxStudents === 15);
+t37('grade range parses', spec('create a class X grade range Middle School').gradeBand === 'Middle School');
+t37('room parses', spec('create a class X room Chapel').room === 'Chapel');
+t37('co-teacher parses role-first and name-first',
+  spec('create a class X co-teacher Dan').secondaryTeacher === 'Dan' &&
+  spec('make Dan co-teacher of X').secondaryTeacher === 'Dan');
+t37('grading weight parses', spec('create a class X weighted by participation').gradingWeight === 'participation');
+t37('a roster clause is only read when it says so',
+  spec('create a class Lower MS Bible with the Lower MS group in it').roster?.ref === 'Lower MS' &&
+  spec('create a class Lower MS Bible').roster === null);
+
+app._terminalAllClasses = _c37; app._terminalAllGroups = _g37;
+console.log(`round 37: ${p37} pass, ${f37} fail`);
