@@ -113,6 +113,7 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
   '_levenshteinDistance', '_matchIntent', '_matchSmalltalk', '_isAggregateQuery',
   '_rivenMatchClass', '_rivenCanManageClass', '_preferOwnedClasses', '_isoDaysAgo',
   '_rivenMatchGroup', '_rivenGroupCanon',
+  '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo', '_commonWords',
   '_segmentClauses', '_classifyClauseShape'];
 

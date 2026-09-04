@@ -44340,7 +44340,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-04·b';
+      const RIVEN_BUILD = '2026-09-04·c';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -46972,13 +46972,32 @@
         entities.count = null;
       }
       let studentText = normalized;
-      if (entities.classMatch) {
-        for (const w of (entities.classMatch.consumed || [])) {
-          if (w.length >= 3) {
-            studentText = studentText.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), ' ');
-          }
-        }
+      const stripWord = (w) => {
+        w = String(w || '');
+        if (w.length < 3) return;
+        studentText = studentText.replace(new RegExp('\\b' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'g'), ' ');
+      };
+      if (entities.classMatch) (entities.classMatch.consumed || []).forEach(stripWord);
+      // A cohort's own words are not student names either — without this,
+      // "give lower middle 5 rtc" can fuzzy-match a student out of "lower".
+      if (entities.groupMatch) {
+        const gs = entities.groupMatch.ambiguous ? entities.groupMatch.candidates : [entities.groupMatch];
+        gs.forEach(g => String(g.name || '').toLowerCase().split(/\s+/).forEach(stripWord));
       }
+      // A class being CREATED has no row yet, so nothing consumes its name or
+      // its roster clause and both get read as student names. "Create a new
+      // class Lower MS Bible with the Lower MS group in it" offered a choice
+      // between two students, because "group" is one edit from the surname
+      // "Troup". Take the name and the clause out before looking for a person.
+      if (/\b(create|make|start|set up|open)\b[^.?]*\bclass\b/.test(normalized) || /\bnew class\b/.test(normalized)) {
+        const newName = this._rivenParseNewClassName(original || normalized);
+        if (newName) newName.toLowerCase().split(/\s+/).forEach(stripWord);
+      }
+      const rosterRef = this._rivenParseClassRosterRef(original || normalized);
+      if (rosterRef) String(rosterRef.ref || '').toLowerCase().split(/\s+/).forEach(stripWord);
+      // Words that name a KIND of thing are never a person, however close the
+      // spelling lands to somebody's surname.
+      ['group', 'groups', 'cohort', 'cohorts', 'class', 'classes', 'roster'].forEach(stripWord);
 
       // Extract student name using fuzzy matching
       entities.student = this._fuzzyFindStudent(studentText, original);
@@ -48017,10 +48036,17 @@
           w: 6, notIfNoteCommand: true, notIfBank: true, notIfQuestion: true,
           patterns: [
             /\d+\s*(rtc\s+)?(to|for)\s+(all|every|each|both)\s+(?!(her|his|their|my|your|our|its|the|that|this)\b)/,
-            /\b(give|award|add|remove|subtract|deduct|take)\b.*\b(all|every|both)\b.*\bclass(es)\b.*\d/
+            /\b(give|award|add|remove|subtract|deduct|take)\b.*\b(all|every|both)\b.*\bclass(es)\b.*\d/,
+            // "give lower middle 5 rtc" / "take 2 gold from the chess class" —
+            // a cohort or class named outright, an amount, and nobody
+            // individual. Without this the give-verb pattern wants a student,
+            // and the command falls through to an award with no recipient.
+            { re: /\b(give|award|add|grant|hand)\b[^.?]*\d+\s*(rtc|gold|coin|coins|point|points)\b/, w: 6 },
+            { re: /\b(take|remove|subtract|deduct|dock)\b[^.?]*\d+\s*(rtc|gold|coin|coins|point|points)\b/, w: 6 }
           ],
           requiresAmount: true,
-          requiresClassOrGroup: true
+          requiresClassOrGroup: true,
+          notIfStudent: true
         },
         // GROUP_BALANCES — "how much rtc does everyone in chess have?",
         // "how much gold do each of them have?"

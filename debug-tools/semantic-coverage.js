@@ -47,6 +47,7 @@ const METHODS = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand', '_
   '_parseTimeframe', '_fuzzyFindStudent', '_calculateSimilarity', '_levenshteinDistance',
   '_matchIntent', '_matchSmalltalk', '_isAggregateQuery', '_rivenMatchClass', '_rivenCanManageClass',
   '_rivenMatchGroup', '_rivenGroupCanon',
+  '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_semanticExampleBank'];
 const app = { _nlpContext: {} };

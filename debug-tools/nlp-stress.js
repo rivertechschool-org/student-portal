@@ -1623,3 +1623,48 @@ t37('a roster clause is only read when it says so',
 
 app._terminalAllClasses = _c37; app._terminalAllGroups = _g37;
 console.log(`round 37: ${p37} pass, ${f37} fail`);
+
+// ── round 38: a class name is not a person ────────────────────────────────
+// "Create a new class Lower MS Bible with the Lower MS group in it" opened a
+// pick-a-student dialog offering Logan Troup and Meadow Lawler. "group" is
+// one edit from the surname "Troup". A class being CREATED has no row yet, so
+// nothing consumed its name or its roster clause before the fuzzy student
+// matcher ran over the whole sentence.
+console.log('\n== round 38: class and cohort words are not student names ==');
+let p38 = 0, f38 = 0;
+const t38 = (label, ok) => { ok ? p38++ : f38++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _s38 = app._terminalAllStudents, _c38 = app._terminalAllClasses, _g38 = app._terminalAllGroups;
+app._terminalAllStudents = [
+  { full_name:'Logan Troup', first_name:'Logan', last_name:'Troup', rtc_balance:0, status:'active', id:'lt' },
+  { full_name:'Meadow Lawler', first_name:'Meadow', last_name:'Lawler', rtc_balance:5, status:'active', id:'ml' },
+  { full_name:'Jordan Ellis', first_name:'Jordan', last_name:'Ellis', rtc_balance:5, status:'active', id:'je' },
+];
+app._terminalAllClasses = [
+  {id:'lme',name:'Lower MS English',subject:'English',teacher_id:'t1',secondary_teacher_id:null,is_active:true,max_students:30},
+];
+app._terminalAllGroups = [{ id:'g-ym', name:'Full Young Middle', studentIds:['lt','ml'] }];
+
+const seen = (text) => {
+  const r = run(text);
+  const st = r.student ? (r.student.full_name || String(r.student)) : (r.ambiguous ? 'AMBIGUOUS' : 'none');
+  return r.intent + '/' + st;
+};
+[
+  // the reported sentence: no student, and the class command runs
+  ['Create a new class Lower MS Bible with the Lower MS group in it', 'CREATE_CLASS/none'],
+  ['create a class Lower MS Bible', 'CREATE_CLASS/none'],
+  ['add the Lower MS group to Lower MS English', 'ENROLL_GROUP/none'],
+  // a cohort named with an amount is a group award, not an award with no one in it
+  ['give lower middle 5 rtc', 'GROUP_RTC/none'],
+  // and a real person is still found, including the one whose surname started this
+  ['give jordan 5 rtc', 'ADD_RTC/Jordan Ellis'],
+  ['add jordan to Lower MS English', 'ENROLL_STUDENT/Jordan Ellis'],
+  ['mark meadow present', 'MARK_ATTENDANCE/Meadow Lawler'],
+  ['give logan troup 3 gold', 'ADD_RTC/Logan Troup'],
+].forEach(([text, want]) => {
+  const got = seen(text);
+  t38(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+app._terminalAllStudents = _s38; app._terminalAllClasses = _c38; app._terminalAllGroups = _g38;
+console.log(`round 38: ${p38} pass, ${f38} fail`);
