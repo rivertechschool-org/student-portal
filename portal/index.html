@@ -44340,7 +44340,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-04·c';
+      const RIVEN_BUILD = '2026-09-04·d';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -46758,7 +46758,7 @@
         'BALANCE_AT', 'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'MARK_ATTENDANCE', 'ENROLL_STUDENT',
         'UNENROLL_STUDENT', 'SET_GRADE', 'VIEW_GRADES', 'UPDATE_CONTACT', 'VIEW_CONTACT',
         'ADD_NOTE', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'RELAY_ACTION'];
-      const student = entities.student?.student || entities.student;
+      const student = this._rivenResolvedStudent(entities);
       if (student && student.full_name && !entities.student?.fromContext && studentCentric.includes(intent.intent)) {
         this._nlpContext.lastStudent = student;
         this._nlpContext.lastIntent = intent.intent;
@@ -47787,6 +47787,10 @@
             /take attendance\b/,
             // "all present today", "everyone here today" — bulk status statements
             { re: /\b(everyone|everybody|all (students?|my kids))\b.*(present|here|absent)\b/, w: 6 },
+            // "all here except …", "everyone here today" — the teacher's
+            // shortest way to say a full register. Needs a class or cohort so
+            // a bare "all here" is not read as a command.
+            { re: /\b(all|everyone|everybody)\s+(here|present)\b/, w: 6 },
             // "mark full attendance" / "take full attendance for lower ms" —
             // a teacher's shorthand for everyone present. The word
             // "attendance" alone reads as the VIEW_ATTENDANCE query, so
@@ -49065,7 +49069,7 @@
 
     async _executeIntent(intent, entities) {
       // Phase 2: Extract student from wrapper object if needed
-      const student = entities.student?.student || entities.student;
+      const student = this._rivenResolvedStudent(entities);
 
       switch (intent.intent) {
         case 'CLARIFY_INTENT':
@@ -50188,7 +50192,7 @@
     // the teacher to guess why nothing happened.
     _respondSpeculativeWrite(intent, entities) {
       const esc = (s) => this._escapeHtml ? this._escapeHtml(s) : s;
-      const who = (entities.student?.student || entities.student)?.full_name
+      const who = this._rivenResolvedStudent(entities)?.full_name
         || entities.classMatch?.name || null;
       const ACTION = {
         ADD_RTC: 'award RTC', SUBTRACT_RTC: 'take RTC away', TRANSFER_RTC: 'move RTC',
@@ -52587,7 +52591,7 @@
 
     async terminalActivityEnroll(entities, remove = false) {
       const raw = entities._rawInput || entities.original || '';
-      const student = entities.student?.student || entities.student;
+      const student = this._rivenResolvedStudent(entities);
       if (!student) {
         this.terminalPrintError(`Who should I ${remove ? 'remove' : 'add'}? Try "add Eli to chess club".`);
         return;
@@ -54213,7 +54217,7 @@
     // assignments under a wall of fine-everything is no better than the card
     // it replaced. Empty sections are omitted rather than rendered as "none".
     async terminalStudentBriefing(entities) {
-      const student = entities.student?.student || entities.student;
+      const student = this._rivenResolvedStudent(entities);
       if (!student?.id) {
         this.terminalPrintError('Which student? Try "how is Charlotte doing".');
         return;
@@ -54673,7 +54677,7 @@
     _rivenFindExcluded(piece) {
       const STOP = new Set(['the', 'and', 'was', 'wasnt', 'is', 'isnt', 'not', 'her', 'him', 'them',
         'who', 'she', 'he', 'they', 'here', 'there', 'today', 'class', 'kids', 'students', 'one', 'ones']);
-      const toks = String(piece || '').trim().split(/\s+/).filter(Boolean);
+      const toks = String(piece || '').trim().replace(/[.,;:!?]+$/, '').split(/\s+/).filter(Boolean);
       for (let n = Math.min(3, toks.length); n >= 1; n--) {
         const probe = toks.slice(0, n).join(' ');
         if (n === 1 && (probe.length < 3 || STOP.has(probe))) continue;
@@ -55059,7 +55063,7 @@
         .trim();
 
       // Suppress student entity when a title was present (e.g. "Mr. Jordan" → don't open student Jordan)
-      const student = hasTitle ? null : (entities.student?.student || entities.student);
+      const student = hasTitle ? null : this._rivenResolvedStudent(entities);
 
       let recipientId = null, recipientName = null;
 
@@ -55688,6 +55692,26 @@
       return false;
     }
 
+    // Did the teacher name several classes outright — "attendance for English
+    // and math" — rather than describing one? Every candidate has to be named
+    // IN FULL, and a conjunction has to join them, so "the math class" still
+    // asks which one while a genuine list is acted on as a list.
+    _rivenNamesEachClass(text, candidates) {
+      const t = String(text || '').toLowerCase();
+      if (!candidates || candidates.length < 2) return false;
+      if (!/\band\b|,|&|\+/.test(t)) return false;
+      const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const nameNums = { one: '1', two: '2', three: '3', four: '4', five: '5' };
+      const generic = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with']);
+      const fullyNamed = c => {
+        const words = String(c.name || '').toLowerCase().split(/\s+/)
+          .map(w => w.replace(/[^a-z0-9&:-]/g, '')).map(w => nameNums[w] || w)
+          .filter(w => (w.length >= 3 || /^\d+$/.test(w)) && !generic.has(w));
+        return words.length > 0 && words.every(w => new RegExp('\\b' + esc(w) + '\\b').test(t));
+      };
+      return candidates.every(fullyNamed);
+    }
+
     // Multi-class sibling of _rivenRequireClass. When the phrase quantifies
     // over the classes, every match is a target and the picker is the wrong
     // question — "all lower MS classes" must not become one of them. Anything
@@ -55700,10 +55724,29 @@
         return { rows: res.row ? [res.row] : [], asked: !!res.asked };
       };
       if (!cm.ambiguous || cm.pinned) return one();
-      if (!this._rivenQuantifiesClasses(entities.normalized || entities.original || '', cm.consumed)) return one();
+      const said = entities.normalized || entities.original || '';
+      // Either form counts: quantified ("all lower ms classes") or listed
+      // outright ("English and math").
+      if (!this._rivenQuantifiesClasses(said, cm.consumed)
+          && !this._rivenNamesEachClass(said, cm.candidates)) return one();
       const rows = this._preferOwnedClasses([...cm.candidates], cm);
       if (rows.length === 1) this._rememberClass(rows[0]);
       return { rows, asked: false };
+    }
+
+    // _fuzzyFindStudent answers in two shapes: { student } when it pinned one
+    // person down, { ambiguous, matches } when it did not. Only the first is a
+    // student. Handing the ambiguous wrapper on as though it were a person is
+    // how "attendance for english and math: all here except malakai and
+    // magnolia" died on `undefined.toLowerCase()` — the picker usually
+    // intercepts an ambiguous match, but a sentence naming two people takes
+    // the pair path and leaves the wrapper in entities.student.
+    _rivenResolvedStudent(entities) {
+      const st = entities && entities.student;
+      if (!st) return null;
+      if (st.student) return st.student;
+      if (st.ambiguous || !st.full_name) return null;
+      return st;
     }
 
     _rememberClass(row) {

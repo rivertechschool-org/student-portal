@@ -101,7 +101,7 @@ for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput'
                  '_hasCommandSignal', '_hasCommandVerb', '_isCommonWordTypo', '_commonWords',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
                  '_rememberClass', '_showClassPicker', '_showGroupPicker',
-                 '_rivenResolveClassRow', '_rivenFindEnrollment', 'terminalGroupAddRTC',
+                 '_rivenResolveClassRow', '_rivenFindEnrollment', '_rivenNamesEachClass', '_rivenResolvedStudent', 'terminalGroupAddRTC',
                  'terminalMarkAttendanceGroup', '_rivenCanManageClass']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
@@ -225,6 +225,63 @@ async function award(text, attendance) {
     !DB.class_attendance.some(r => r.class_id === 'other'), written);
   t('a session row is closed per class',
     DB.class_attendance_sessions.length === 2, DB.class_attendance_sessions);
+
+  // ---- two classes named outright, two names excluded ---------------------
+  // "Attendance for English and math: all here except malakai and magnolia."
+  // This one crashed: two student names put entities.student into its
+  // UNRESOLVED ambiguous shape, which was handed on as if it were a person,
+  // and the executor read .full_name off it. It also has to reach the write
+  // at all ("all here", no "mark"), and cover BOTH classes it names.
+  console.log('\n== two classes named outright, two exclusions ==');
+  app._terminalAllClasses = [
+    { id: 'e1', name: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+    { id: 'm1', name: 'Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+    { id: 'b1', name: 'Bible', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+  ];
+  app._terminalAllStudents = [
+    { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
+    { id: 'mk', full_name: 'Malakai Kaufman', first_name: 'Malakai', last_name: 'Kaufman', status: 'active', rtc_balance: 0 },
+    { id: 'mg', full_name: 'Magnolia Mays', first_name: 'Magnolia', last_name: 'Mays', status: 'active', rtc_balance: 0 },
+  ];
+  DB = {
+    class_enrollments: [
+      { class_id: 'e1', student_id: 'a', status: 'active' },
+      { class_id: 'e1', student_id: 'mk', status: 'active' },
+      { class_id: 'e1', student_id: 'mg', status: 'active' },
+      { class_id: 'm1', student_id: 'a', status: 'active' },
+      { class_id: 'm1', student_id: 'mk', status: 'active' },
+      { class_id: 'b1', student_id: 'a', status: 'active' },
+    ],
+    class_attendance: [], class_attendance_sessions: [],
+  };
+  WRITES.length = 0;
+  app._errors = []; app._confirm = null; app._nlpContext = {}; app._pickedFrom = null;
+  app._showClassPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+  app._showGroupPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+  const T2 = 'Attendance for English and math: all here except malakai and magnolia.';
+  const n2 = app._normalizeInput(T2);
+  let crashed = null;
+  try {
+    await app.terminalMarkAttendanceGroup({
+      normalized: n2, original: T2, amount: null, students: [], student: null,
+      classMatch: app._rivenMatchClass(n2), groupMatch: app._rivenMatchGroup(n2),
+    });
+  } catch (e) { crashed = e.message; }
+  t('it does not crash', !crashed, crashed);
+  t('no class picker — both classes were named', !app._pickedFrom, app._pickedFrom);
+  t('it asks for confirmation', !!app._confirm, app._errors);
+  if (app._confirm) {
+    t('both named classes appear', /English and Math/.test(app._confirm.summary), app._confirm.summary);
+    t('both exclusions are called out',
+      /Malakai Kaufman and Magnolia Mays<\/b> get <b>absent<\/b>/.test(app._confirm.summary), app._confirm.summary);
+    await app._confirm.execute();
+  }
+  const w2 = DB.class_attendance.map(r => `${r.class_id}:${r.student_id}:${r.status}`).sort();
+  t('both classes written, both exclusions absent, Bible untouched',
+    JSON.stringify(w2) === JSON.stringify([
+      'e1:a:present', 'e1:mg:absent', 'e1:mk:absent',
+      'm1:a:present', 'm1:mk:absent',
+    ]), w2);
 
   console.log(`\n${pass} pass, ${fail} fail`);
   process.exit(fail ? 1 : 0);

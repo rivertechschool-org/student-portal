@@ -43,7 +43,8 @@ const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
   '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance',
-  '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef'];
+  '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef',
+  '_rivenResolvedStudent','_rivenNamesEachClass'];
 const app = { _nlpContext: {} };
 for (const name of methods) app[name] = extract(name).bind ? extract(name) : extract(name);
 // rebind so `this` works
@@ -1668,3 +1669,60 @@ const seen = (text) => {
 });
 app._terminalAllStudents = _s38; app._terminalAllClasses = _c38; app._terminalAllGroups = _g38;
 console.log(`round 38: ${p38} pass, ${f38} fail`);
+
+// ── round 39: an unresolved name is not a person ──────────────────────────
+// "Attendance for English and math: all here except malakai and magnolia."
+// died on `undefined.toLowerCase()`. _fuzzyFindStudent answers in two shapes:
+// { student } when it pinned somebody down, { ambiguous, matches } when it
+// did not. The executors unwrapped it as `entities.student?.student ||
+// entities.student`, so the UNRESOLVED wrapper was passed on as a person and
+// the next line read .full_name off it. The picker normally intercepts an
+// ambiguous match, but a sentence naming two people takes the pair path and
+// leaves the wrapper in place.
+console.log('\n== round 39: unresolved match, and classes named in a list ==');
+let p39 = 0, f39 = 0;
+const t39 = (label, ok) => { ok ? p39++ : f39++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _s39 = app._terminalAllStudents, _c39 = app._terminalAllClasses, _g39 = app._terminalAllGroups;
+
+t39('a resolved match unwraps to the student',
+  app._rivenResolvedStudent({ student: { student: { full_name: 'Ada Reyes' } } })?.full_name === 'Ada Reyes');
+t39('an ambiguous match is nobody',
+  app._rivenResolvedStudent({ student: { ambiguous: true, matches: [{}, {}] } }) === null);
+t39('a wrapper with no name is nobody',
+  app._rivenResolvedStudent({ student: { score: 0.4 } }) === null);
+t39('no match at all is nobody', app._rivenResolvedStudent({}) === null);
+t39('a bare student object still works',
+  app._rivenResolvedStudent({ student: { full_name: 'Ada Reyes' } })?.full_name === 'Ada Reyes');
+
+app._terminalAllStudents = [
+  { full_name:'Malakai Kaufman', first_name:'Malakai', last_name:'Kaufman', rtc_balance:0, status:'active', id:'mk' },
+  { full_name:'Magnolia Mays', first_name:'Magnolia', last_name:'Mays', rtc_balance:0, status:'active', id:'mg' },
+  { full_name:'Ada Reyes', first_name:'Ada', last_name:'Reyes', rtc_balance:0, status:'active', id:'ad' },
+];
+app._terminalAllClasses = [
+  { id:'e1', name:'English', subject:'English', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+  { id:'m1', name:'Math', subject:'Math', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+  { id:'b1', name:'Bible', subject:'Bible', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+];
+app._terminalAllGroups = [];
+
+// the sentence has to reach the WRITE — "all here" with no "mark" verb
+t39('"all here except …" is a full-register write',
+  run('Attendance for English and math: all here except malakai and magnolia.').intent === 'MARK_ATTENDANCE_GROUP');
+t39('"everyone here today" too',
+  run('English: everyone here today').intent === 'MARK_ATTENDANCE_GROUP');
+
+// naming two classes in a list means both of them, not a pick-one
+const cm39 = app._rivenMatchClass(app._normalizeInput('attendance for english and math'));
+t39('two named classes come back as candidates', !!(cm39 && cm39.ambiguous && cm39.candidates.length === 2));
+t39('and count as an explicit list',
+  app._rivenNamesEachClass('attendance for english and math', cm39.candidates) === true);
+// a described class, or one not fully named, still asks
+t39('a single described class is not a list',
+  app._rivenNamesEachClass('attendance for the math class', [{ name:'Math' }, { name:'Lower MS Math' }]) === false);
+t39('a list needs every name in full',
+  app._rivenNamesEachClass('attendance for english and history', [{ name:'English' }, { name:'Math' }]) === false);
+
+app._terminalAllStudents = _s39; app._terminalAllClasses = _c39; app._terminalAllGroups = _g39;
+console.log(`round 39: ${p39} pass, ${f39} fail`);
