@@ -579,26 +579,139 @@ class PortalUI {
         return raw || 'Something went wrong. Please try again.';
     }
 
-    static showNotification(message, type = 'info', duration = 3000) {
-        const notification = document.createElement('div');
-        notification.className = `portal-notification portal-notification--${type}`;
-        notification.textContent = message;
-        
+    // Every notification is kept, whether or not anyone saw it.
+    //
+    // Errors and warnings were being shown for three seconds and then thrown
+    // away, so anything that appeared while you were looking elsewhere - or
+    // that arrived two at a time - was simply lost. That is the wrong trade for
+    // the messages that matter: an error is the one thing you need to be able
+    // to read after the fact.
+    static _noteLog = [];
+    static _noteSeen = 0;
+
+    static _recordNote(type, message) {
+        PortalUI._noteLog.unshift({ at: new Date(), type, message: String(message ?? '') });
+        // A rolling window, so a long session cannot grow this without limit.
+        if (PortalUI._noteLog.length > 100) PortalUI._noteLog.length = 100;
+        if (type === 'error' || type === 'warning') PortalUI._updateIssueBadge();
+    }
+
+    static _unseenIssues() {
+        return PortalUI._noteLog
+            .slice(0, Math.max(0, PortalUI._noteLog.length - PortalUI._noteSeen))
+            .filter(n => n.type === 'error' || n.type === 'warning').length;
+    }
+
+    // A small marker that stays put after the toast has gone. Without it a
+    // missed error leaves no trace at all.
+    static _updateIssueBadge() {
+        const count = PortalUI._noteLog.filter(n => n.type === 'error' || n.type === 'warning').length;
+        let badge = document.getElementById('portal-issue-badge');
+
+        if (!count) { if (badge) badge.remove(); return; }
+
+        if (!badge) {
+            badge = document.createElement('button');
+            badge.id = 'portal-issue-badge';
+            badge.type = 'button';
+            badge.title = 'Recent errors and warnings';
+            badge.onclick = () => PortalUI.showNotificationHistory();
+            badge.style.cssText = `
+                position: fixed; bottom: 18px; right: 18px; z-index: 9998;
+                border: 1px solid rgba(0,0,0,0.2); border-radius: 999px;
+                padding: 8px 14px; cursor: pointer; font: inherit; font-size: 13px;
+                background: #ff9800; color: #000; font-weight: 600;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            `;
+            document.body.appendChild(badge);
+        }
+        const errors = PortalUI._noteLog.filter(n => n.type === 'error').length;
+        badge.style.background = errors ? '#f44336' : '#ff9800';
+        badge.style.color = errors ? '#fff' : '#000';
+        badge.textContent = `${count} message${count === 1 ? '' : 's'}`;
+    }
+
+    static showNotificationHistory() {
+        document.getElementById('portal-note-history')?.remove();
+        PortalUI._noteSeen = PortalUI._noteLog.length;
+
+        const esc = s => String(s ?? '').replace(/[&<>"']/g,
+            c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+        const colour = { error: '#f44336', warning: '#ff9800', success: '#4caf50', info: '#2196f3' };
+
+        const rows = PortalUI._noteLog.length ? PortalUI._noteLog.map(n => `
+            <div style="display:flex; gap:10px; padding:8px 0; border-bottom:1px solid rgba(128,128,128,0.2);">
+              <span style="flex:0 0 8px; height:8px; margin-top:6px; border-radius:50%; background:${colour[n.type] || '#888'};"></span>
+              <div style="flex:1; min-width:0;">
+                <div style="font-size:13px; word-break:break-word;">${esc(n.message)}</div>
+                <div style="font-size:11px; opacity:0.6; margin-top:2px;">
+                  ${n.type} &middot; ${n.at.toLocaleTimeString()}
+                </div>
+              </div>
+            </div>`).join('')
+          : '<div style="opacity:0.6; font-size:13px; padding:12px 0;">Nothing yet.</div>';
+
+        const overlay = document.createElement('div');
+        overlay.id = 'portal-note-history';
+        overlay.style.cssText = `
+            position: fixed; inset: 0; z-index: 10001; background: rgba(0,0,0,0.6);
+            display: flex; align-items: center; justify-content: center; padding: 20px;
+        `;
+        overlay.innerHTML = `
+            <div style="background:#151a21; color:#e6edf3; border:1px solid #2a3140; border-radius:12px;
+                        max-width:560px; width:100%; max-height:80vh; display:flex; flex-direction:column; padding:18px;">
+              <h3 style="margin:0 0 4px 0; font-size:17px;">Recent messages</h3>
+              <div style="font-size:12px; opacity:0.6; margin-bottom:12px;">
+                Newest first. Kept for this session so a message that flashed past can still be read.
+              </div>
+              <div style="flex:1; overflow:auto; min-height:0;">${rows}</div>
+              <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
+                <button type="button" id="portal-note-clear"
+                  style="padding:8px 14px; border-radius:8px; cursor:pointer; border:1px solid #2a3140; background:transparent; color:inherit; font:inherit;">Clear</button>
+                <button type="button" id="portal-note-close"
+                  style="padding:8px 14px; border-radius:8px; cursor:pointer; border:1px solid #2a3140; background:#6aa9ff; color:#0b1017; font:inherit; font-weight:600;">Close</button>
+              </div>
+            </div>`;
+        document.body.appendChild(overlay);
+
+        const close = () => overlay.remove();
+        overlay.querySelector('#portal-note-close').onclick = close;
+        overlay.querySelector('#portal-note-clear').onclick = () => {
+            PortalUI._noteLog = [];
+            PortalUI._noteSeen = 0;
+            PortalUI._updateIssueBadge();
+            close();
+        };
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    }
+
+    // duration = 0 means it stays until dismissed. Errors default to that:
+    // three seconds is not long enough to read a message you were not
+    // expecting, and it is the one people most need to act on.
+    static showNotification(message, type = 'info', duration = null) {
+        PortalUI._recordNote(type, message);
+
+        if (duration === null) {
+            duration = type === 'error' ? 0 : type === 'warning' ? 12000 : 3000;
+        }
+
         const styles = {
             info: { bg: '#2196f3', color: '#fff' },
             success: { bg: '#4caf50', color: '#fff' },
             error: { bg: '#f44336', color: '#fff' },
             warning: { bg: '#ff9800', color: '#fff' }
         };
-        
+        const style = styles[type] || styles.info;
+
+        const notification = document.createElement('div');
+        notification.className = `portal-notification portal-notification--${type}`;
         notification.style.cssText = `
             position: fixed;
-            top: 20px;
             right: 20px;
-            padding: 16px 24px;
+            padding: 14px 18px;
             border-radius: 8px;
-            color: ${styles[type].color};
-            background: ${styles[type].bg};
+            color: ${style.color};
+            background: ${style.bg};
             box-shadow: 0 4px 12px rgba(0,0,0,0.3);
             z-index: 10000;
             max-width: 400px;
@@ -606,13 +719,32 @@ class PortalUI {
             font-family: inherit;
             font-size: 14px;
             line-height: 1.4;
+            display: flex;
+            gap: 12px;
+            align-items: flex-start;
         `;
-        
-        // Add animation styles if not already present
+
+        const text = document.createElement('div');
+        text.style.cssText = 'flex:1; min-width:0; word-break:break-word;';
+        text.textContent = message;
+        notification.appendChild(text);
+
+        // Anything that stays needs a way out.
+        if (!duration) {
+            const x = document.createElement('button');
+            x.type = 'button';
+            x.textContent = '×';
+            x.setAttribute('aria-label', 'Dismiss');
+            x.style.cssText = `background:none; border:none; color:inherit; font-size:20px;
+                               line-height:1; cursor:pointer; padding:0 2px; opacity:0.85;`;
+            x.onclick = () => PortalUI._dismissNotification(notification);
+            notification.appendChild(x);
+        }
+
         if (!document.getElementById('portal-notification-styles')) {
-            const style = document.createElement('style');
-            style.id = 'portal-notification-styles';
-            style.textContent = `
+            const st = document.createElement('style');
+            st.id = 'portal-notification-styles';
+            st.textContent = `
                 @keyframes slideInRight {
                     from { transform: translateX(100%); opacity: 0; }
                     to { transform: translateX(0); opacity: 1; }
@@ -622,19 +754,36 @@ class PortalUI {
                     to { transform: translateX(100%); opacity: 0; }
                 }
             `;
-            document.head.appendChild(style);
+            document.head.appendChild(st);
         }
-        
+
         document.body.appendChild(notification);
-        
+        PortalUI._restackNotifications();
+
+        if (duration) {
+            setTimeout(() => PortalUI._dismissNotification(notification), duration);
+        }
+        return notification;
+    }
+
+    static _dismissNotification(el) {
+        if (!el || !el.parentNode) return;
+        el.style.animation = 'slideOutRight 0.3s ease-out';
         setTimeout(() => {
-            notification.style.animation = 'slideOutRight 0.3s ease-out';
-            setTimeout(() => {
-                if (notification.parentNode) {
-                    notification.remove();
-                }
-            }, 300);
-        }, duration);
+            if (el.parentNode) el.remove();
+            PortalUI._restackNotifications();
+        }, 300);
+    }
+
+    // Every notification used to sit at top:20px, so a second one landed on top
+    // of the first and the earlier message was unreadable - which is part of
+    // why things "flashed past".
+    static _restackNotifications() {
+        let top = 20;
+        document.querySelectorAll('.portal-notification').forEach(el => {
+            el.style.top = `${top}px`;
+            top += el.offsetHeight + 10;
+        });
     }
 
     static createUnifiedNavigation(currentApp = 'main', currentSection = '') {
