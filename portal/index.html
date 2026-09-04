@@ -34386,6 +34386,28 @@
               </div>
             </div>
 
+            <!-- Sign-in link. Activation is only offered while a student is
+                 INACTIVE, so after activating there was nothing that could send
+                 the link again - which is exactly when it is needed: the first
+                 one never arrived, or expired, or went to the wrong address. -->
+            <div style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 15px; background: rgba(106, 169, 255, 0.06); border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 180px;">
+                <div style="font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">\u2709 Sign-in link</div>
+                ${(student.email || '').trim() && !/@pin\.rivertech\.me$/i.test(student.email || '')
+                  ? `<div style="font-size: 14px;">Sends a set-password link to <strong>${this.escapeHtml(student.email)}</strong></div>
+                     <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Use when the first one never arrived, expired, or went to an old address.</div>`
+                  : `<div style="font-size: 14px; color: var(--muted);">No usable email on record \u2014 add one above and save first.</div>`
+                }
+              </div>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-secondary"
+                  onclick="app.resendStudentInvite('${studentId}')"
+                  ${(student.email || '').trim() && !/@pin\.rivertech\.me$/i.test(student.email || '') ? '' : 'disabled'}>
+                  Resend invite
+                </button>
+              </div>
+            </div>
+
             <div style="display: flex; gap: 10px; flex-wrap: wrap;">
               ${student.account_status === 'inactive' ? `
                 <button class="btn btn-primary" onclick="app.activateStudent('${studentId}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')">
@@ -34717,6 +34739,61 @@
         } catch (e) {
           console.error('confirmActivateStudent failed:', e);
           fail(e.message);
+        }
+      }
+
+      // Sends one student their set-password link again.
+      //
+      // Naming the student explicitly is treated by the server as a deliberate
+      // request rather than a sweep, so it sends even to someone who HAS signed
+      // in before - which is most of the reasons an admin is standing here.
+      async resendStudentInvite(studentId) {
+        const student = this._studentHubData?.student;
+        const to = (student?.email || '').trim();
+        if (!to) {
+          this.showNotification('No email on record for this student', 'error');
+          return;
+        }
+        if (!confirm(`Send a set-password link to ${to}?\n\nThe student uses it to choose a password and sign in. Any link sent earlier stops working.`)) {
+          return;
+        }
+
+        try {
+          this.showNotification('Sending...', 'info');
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) throw new Error('No active session');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/admin-resend-activation',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              body: JSON.stringify({ studentIds: [studentId], limit: 1 })
+            }
+          );
+          const result = await resp.json().catch(() => ({}));
+          if (!resp.ok || !result.success) {
+            throw new Error(result.error || 'The link was not sent.');
+          }
+
+          if (result.sent) {
+            this.showNotification(`Sign-in link sent to ${to}.`, 'success');
+            return;
+          }
+
+          // Not sent, and the server already knows why - an unreachable address
+          // or no login behind the account. Saying which beats "failed".
+          const why = (result.unreachable || [])[0]?.reason
+            || (result.results || [])[0]?.error
+            || 'nothing was sent';
+          this.showNotification(`Not sent: ${why}`, 'error');
+        } catch (e) {
+          console.error('resendStudentInvite failed:', e);
+          this.showNotification(e.message, 'error');
         }
       }
 
