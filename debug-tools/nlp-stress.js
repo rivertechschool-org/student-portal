@@ -1510,3 +1510,48 @@ const target = (text) => {
 
 app._terminalAllClasses = _cls35; app._terminalAllGroups = _grp35; app._terminalAllStudents = _stu35;
 console.log(`round 35: ${p35} pass, ${f35} fail`);
+
+// ── round 36: "mark full attendance" is a write, not a report ─────────────
+// "for all lower ms classes today, mark full attendance except <name> wasn't
+// there." came back as the pick-one-class dialog. The class fan-out was fine;
+// the sentence never reached it. "attendance" on its own is the VIEW query,
+// and "full attendance" carried no present/absent word, so the day's most
+// common command scored as a read. The mark/take verb is what separates them.
+console.log('\n== round 36: "full attendance" ==');
+let p36 = 0, f36 = 0;
+const t36 = (label, ok) => { ok ? p36++ : f36++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _c36 = app._terminalAllClasses;
+app._terminalAllClasses = [
+  { id:'lme', name:'Lower MS English', subject:'English', teacher_id:'t1', secondary_teacher_id:null, is_active:true, teacher_name:'MS Teacher' },
+  { id:'lmm', name:'Lower MS Math', subject:'Math', teacher_id:'t1', secondary_teacher_id:null, is_active:true, teacher_name:'MS Teacher' },
+  { id:'c1', name:'Chess', subject:'Games', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+];
+[
+  // the sentence that failed, and the shapes around it
+  ["for all lower ms classes today, mark full attendance except marigold wasn't there.", 'MARK_ATTENDANCE_GROUP'],
+  ['for all lower ms classes today, mark full attendance', 'MARK_ATTENDANCE_GROUP'],
+  ['mark full attendance', 'MARK_ATTENDANCE_GROUP'],
+  ['take full attendance for chess', 'MARK_ATTENDANCE_GROUP'],
+  ['full attendance today', 'MARK_ATTENDANCE_GROUP'],
+  // reads that mention attendance must STAY reads
+  ['show attendance for lower ms english', 'VIEW_ATTENDANCE'],
+  ['attendance report for chess', 'VIEW_ATTENDANCE'],
+  ['was jordan absent yesterday', 'VIEW_ATTENDANCE'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t36(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// These three ask Riven to clarify rather than resolving to a read. That is
+// how they behaved before "full attendance" became a write phrase, and the
+// point of pinning them is only that they must never become a WRITE: nobody's
+// register should be filled in because they asked a question about it.
+['show me full attendance records', 'who has full attendance', 'what is the attendance today',
+ 'how many kids had full attendance this quarter'].forEach(text => {
+  const got = run(text).intent;
+  t36(`"${text}" is not a write (got ${got})`,
+    !['MARK_ATTENDANCE_GROUP', 'MARK_ATTENDANCE'].includes(got));
+});
+app._terminalAllClasses = _c36;
+console.log(`round 36: ${p36} pass, ${f36} fail`);

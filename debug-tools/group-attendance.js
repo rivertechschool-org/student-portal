@@ -35,14 +35,41 @@ function extract(name) {
 
 const TODAY = '2026-09-04';
 let DB = {};
+const WRITES = [];
+// Deferred, like the real client: .delete()/.insert() do nothing until the
+// builder is awaited, so the filters chained AFTER them still apply. An
+// eager stub deletes the whole table on `.delete().eq(...)` and hides the
+// very bug this file exists to catch.
 function qb(table) {
-  let rows = (DB[table] || []).slice();
+  const filters = [];
+  let op = 'select', payload = null;
+  const matches = r => filters.every(([k, v]) => (r[k] === undefined ? null : r[k]) === v);
   const api = {
     select() { return api; },
-    eq(k, v) { rows = rows.filter(r => r[k] === v); return api; },
-    in(k, vs) { rows = rows.filter(r => vs.includes(r[k])); return api; },
-    order() { return api; }, is() { return api; },
-    then(res) { return Promise.resolve({ data: rows, error: null }).then(res); },
+    eq(k, v) { filters.push([k, v]); return api; },
+    is(k, v) { filters.push([k, v]); return api; },
+    in(k, vs) { filters.push([k, vs, true]); return api; },
+    order() { return api; },
+    insert(p) { op = 'insert'; payload = p; return api; },
+    delete() { op = 'delete'; return api; },
+    run() {
+      const all = DB[table] || [];
+      const hit = r => filters.every(([k, v, isIn]) => isIn ? v.includes(r[k]) : (r[k] === undefined ? null : r[k]) === v);
+      if (op === 'insert') {
+        const made = (Array.isArray(payload) ? payload : [payload]).map(o => ({ ...o }));
+        DB[table] = all.concat(made);
+        WRITES.push({ table, op: 'insert', rows: made });
+        return { data: made, error: null };
+      }
+      if (op === 'delete') {
+        const keep = all.filter(r => !hit(r));
+        WRITES.push({ table, op: 'delete', n: all.length - keep.length });
+        DB[table] = keep;
+        return { data: [], error: null };
+      }
+      return { data: all.filter(hit), error: null };
+    },
+    then(res) { return Promise.resolve(api.run()).then(res); },
   };
   return api;
 }
@@ -52,8 +79,10 @@ const app = {
   userInfo: { user: { id: 't1' }, profile: { id: 't1', user_type: 'teacher' } },
   _nlpContext: {},
   _terminalAllStudents: [
-    { id: 'a', full_name: 'Ada Reyes' }, { id: 'b', full_name: 'Ben Okafor' },
-    { id: 'c', full_name: 'Cleo Marsh' }, { id: 'd', full_name: 'Dov Lantz' },
+    { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
+    { id: 'b', full_name: 'Ben Okafor', first_name: 'Ben', last_name: 'Okafor', status: 'active', rtc_balance: 0 },
+    { id: 'c', full_name: 'Cleo Marsh', first_name: 'Cleo', last_name: 'Marsh', status: 'active', rtc_balance: 0 },
+    { id: 'd', full_name: 'Dov Lantz', first_name: 'Dov', last_name: 'Lantz', status: 'active', rtc_balance: 0 },
   ],
   _terminalAllClasses: [],
   _terminalAllGroups: [{ id: 'g1', name: 'Full Young Middle', studentIds: ['a', 'b', 'c', 'd'] }],
@@ -69,9 +98,11 @@ for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput'
                  '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass',
                  '_rivenFindExcluded', '_fuzzyFindStudent', '_calculateSimilarity',
                  '_levenshteinDistance', '_rivenResolveGroup', '_rivenRequireClasses',
+                 '_hasCommandSignal', '_hasCommandVerb', '_isCommonWordTypo', '_commonWords',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
                  '_rememberClass', '_showClassPicker', '_showGroupPicker',
-                 '_rivenResolveClassRow', '_rivenFindEnrollment', 'terminalGroupAddRTC']) {
+                 '_rivenResolveClassRow', '_rivenFindEnrollment', 'terminalGroupAddRTC',
+                 'terminalMarkAttendanceGroup', '_rivenCanManageClass']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -137,6 +168,63 @@ async function award(text, attendance) {
     { student_id: 'a', date: '2026-09-03', status: 'present' },
   ]);
   t('a stale register reads as untaken', /No attendance has been taken/.test(r.summary), r.summary);
+
+  // ---- the sentence from a real session, end to end -----------------------
+  // "for all lower ms classes today, mark full attendance except magnolia
+  // wasn't there." Two classes, one shared roster, one named exception.
+  console.log('\n== group attendance: the whole sentence ==');
+  app._terminalAllClasses = [
+    { id: 'lme', name: 'Lower MS English', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+    { id: 'lmm', name: 'Lower MS Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+    { id: 'other', name: 'Upper MS Math', teacher_id: 't9', secondary_teacher_id: null, is_active: true },
+  ];
+  app._terminalAllStudents = [
+    { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
+    { id: 'b', full_name: 'Ben Okafor', first_name: 'Ben', last_name: 'Okafor', status: 'active', rtc_balance: 0 },
+    { id: 'm', full_name: 'Marigold Vance', first_name: 'Marigold', last_name: 'Vance', status: 'active', rtc_balance: 0 },
+  ];
+  DB = {
+    class_enrollments: [
+      { class_id: 'lme', student_id: 'a', status: 'active' },
+      { class_id: 'lme', student_id: 'b', status: 'active' },
+      { class_id: 'lme', student_id: 'm', status: 'active' },
+      { class_id: 'lmm', student_id: 'a', status: 'active' },
+      { class_id: 'lmm', student_id: 'm', status: 'active' },
+      { class_id: 'other', student_id: 'a', status: 'active' },
+    ],
+    class_attendance: [], class_attendance_sessions: [],
+  };
+  WRITES.length = 0;
+  app._errors = []; app._confirm = null; app._nlpContext = {}; app._pickedFrom = null;
+  // If resolution ever falls back to "which class did you mean?", record it:
+  // that dialog is the exact bug this sentence was reported for.
+  app._showClassPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+  app._showGroupPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+  // the shape of a message from a real session, with a fixture name
+  const text = "for all lower ms classes today, mark full attendance except marigold wasn't there.";
+  const nz = app._normalizeInput(text);
+  await app.terminalMarkAttendanceGroup({
+    normalized: nz, original: text, amount: null, students: [], student: null,
+    classMatch: app._rivenMatchClass(nz), groupMatch: app._rivenMatchGroup(nz),
+  });
+  t('no class picker — "all lower ms classes" means all of them', !app._pickedFrom, app._pickedFrom);
+  t('it asks for confirmation rather than erroring', !!app._confirm, app._errors);
+  if (app._confirm) {
+    t('both lower MS classes are named', /Lower MS English and Lower MS Math/.test(app._confirm.summary), app._confirm.summary);
+    t('the exception is called out as absent',
+      /Marigold Vance<\/b> gets <b>absent<\/b>/.test(app._confirm.summary), app._confirm.summary);
+    await app._confirm.execute();
+  }
+  const written = DB.class_attendance.map(r => `${r.class_id}:${r.student_id}:${r.status}`).sort();
+  t('rows written for both classes, exception marked absent',
+    JSON.stringify(written) === JSON.stringify([
+      'lme:a:present', 'lme:b:present', 'lme:m:absent',
+      'lmm:a:present', 'lmm:m:absent',
+    ]), written);
+  t('a class this teacher does not own is untouched',
+    !DB.class_attendance.some(r => r.class_id === 'other'), written);
+  t('a session row is closed per class',
+    DB.class_attendance_sessions.length === 2, DB.class_attendance_sessions);
 
   console.log(`\n${pass} pass, ${fail} fail`);
   process.exit(fail ? 1 : 0);
