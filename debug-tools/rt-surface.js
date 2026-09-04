@@ -140,6 +140,7 @@ const app = {
   _rivenFindEnrollment: async (classId, studentId) =>
     (DB.class_enrollments || []).find(e => e.class_id === classId && e.student_id === studentId) || null,
   _loadTerminalStudents: async () => {},
+  _loadTerminalGroups: async () => { app._terminalAllGroups = app._terminalAllGroups || []; },
   _loadTerminalClasses: async () => {
     (DB.classes || []).forEach(c => {
       if (!app._terminalAllClasses.find(x => x.id === c.id)) {

@@ -44257,12 +44257,13 @@
       await Promise.all([
         this._loadTerminalStudents(),
         this._loadTerminalClasses(),
+        this._loadTerminalGroups(),
         this._loadTerminalStoreItems(),
         this._loadTerminalPrivileges()
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-03·a';
+      const RIVEN_BUILD = '2026-09-04·a';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -44775,6 +44776,26 @@
       }
     }
 
+    // Student groups are the school's own cohorts ("Full Young Middle",
+    // "Full Junior High", ...), maintained on the admin Student Groups screen.
+    // A failure here must not break the terminal — degrade to no groups, the
+    // same way the enrolment modal does.
+    async _loadTerminalGroups() {
+      try {
+        const [{ data: groupRows, error }, { data: memberRows }] = await Promise.all([
+          this.auth.supabase.from('student_groups').select('id, name, color').order('name'),
+          this.auth.supabase.from('student_group_members').select('group_id, student_id')
+        ]);
+        if (error) throw error;
+        const byGroup = {};
+        (memberRows || []).forEach(m => { (byGroup[m.group_id] = byGroup[m.group_id] || []).push(m.student_id); });
+        this._terminalAllGroups = (groupRows || []).map(g => ({ ...g, studentIds: byGroup[g.id] || [] }));
+      } catch (err) {
+        console.warn('Student groups unavailable, continuing without them:', err);
+        this._terminalAllGroups = [];
+      }
+    }
+
     // Permission mirror of the portal UI / RLS: admin can manage any class;
     // a teacher can manage classes where they are teacher_id (or, except for
     // attendance writes which RLS limits to the primary teacher,
@@ -45077,6 +45098,7 @@
           await Promise.all([
             !this._terminalAllStudents?.length ? this._loadTerminalStudents() : Promise.resolve(),
             !this._terminalAllClasses?.length ? this._loadTerminalClasses() : Promise.resolve(),
+            !this._terminalAllGroups?.length ? this._loadTerminalGroups() : Promise.resolve(),
             !this._terminalStoreItems ? this._loadTerminalStoreItems() : Promise.resolve(),
             !this._terminalPrivileges ? this._loadTerminalPrivileges() : Promise.resolve()
           ]);
@@ -45887,6 +45909,7 @@
       }
       await this._loadTerminalStudents();
       await this._loadTerminalClasses();
+      await this._loadTerminalGroups();
 
       // The read-back: same paste proves what landed.
       const reads = {};
@@ -46844,6 +46867,11 @@
       // "AI Game Design" can't fuzzy-match a student ("Jordan Games") out of
       // its own name and "english with dan" doesn't match a student "Dan".
       entities.classMatch = this._rivenMatchClass(normalized);
+      // A school cohort ("lower middle", "HS", "upper elementary") is a
+      // different kind of target from a class. Both are recorded; which one
+      // wins is decided at resolution time, where the class match's strength
+      // and the word "class" itself are known.
+      entities.groupMatch = this._rivenMatchGroup(normalized);
       // "add jordan to that class" / "add jordan to it" / "who is in it" —
       // an unnamed class reference resolves to the class we were just
       // talking about (created, listed, graded…)
@@ -47664,6 +47692,21 @@
           ],
           requiresGroupContext: false
         },
+        // MARK_ATTENDANCE_GROUP (cohort named outright) — "mark lower middle
+        // present", "upper elementary here today". There is no "everyone" to
+        // key off, so the target itself is the evidence: a class or a cohort
+        // and NO individual student, which leaves "mark jordan present" to
+        // the single-student intent below.
+        {
+          intent: 'MARK_ATTENDANCE_GROUP',
+          w: 6, notIfNoteCommand: true, notIfQuestion: true, classMatchBoost: true,
+          patterns: [
+            /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
+            /\b(present|absent|here)\b.*\btoday\b/
+          ],
+          requiresClassOrGroup: true,
+          notIfStudent: true
+        },
         // MARK_ATTENDANCE — real write: "mark jordan present in math today"
         {
           intent: 'MARK_ATTENDANCE',
@@ -47864,7 +47907,7 @@
             /\b(give|award|add|remove|subtract|deduct|take)\b.*\b(all|every|both)\b.*\bclass(es)\b.*\d/
           ],
           requiresAmount: true,
-          requiresClass: true
+          requiresClassOrGroup: true
         },
         // GROUP_BALANCES — "how much rtc does everyone in chess have?",
         // "how much gold do each of them have?"
@@ -48716,7 +48759,9 @@
         if (pattern.requiresSince && !entities.sinceDate) continue;
         if (pattern.requiresClass && !entities.classMatch) continue;
         if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
-        if (pattern.requiresGroupContext && !entities.classMatch && !this._nlpContext?.lastGroup) continue;
+        if (pattern.requiresClassOrGroup && !entities.classMatch && !entities.groupMatch) continue;
+        if (pattern.notIfStudent && entities.student) continue;
+        if (pattern.requiresGroupContext && !entities.classMatch && !entities.groupMatch && !this._nlpContext?.lastGroup) continue;
 
         // The most specific pattern that matches decides the weight
         let w = 0, hit = false;
@@ -48753,7 +48798,7 @@
         if (pattern.requiresSince) score += 2;
         if (pattern.requiresStudentOrClass) score += 2;
         if (pattern.requiresGroupContext) score += entities.classMatch ? 3 : 2;
-        if (pattern.classMatchBoost && entities.classMatch) score += 8;
+        if (pattern.classMatchBoost && (entities.classMatch || entities.groupMatch)) score += 8;
         // An explicit note command wins outright. `notIfNoteCommand` already
         // knocks competing WRITES out, but a READ could still edge ADD_NOTE out
         // by a point when the note's BODY mentions RTC or grades — e.g.
@@ -53369,6 +53414,25 @@
       // class we mean. "all lower ms students" quantifies over the classes
       // themselves and means every match at once. Anything else still asks
       // via the class picker.
+      // "all lower middle school students" is a cohort, not a class
+      const gmR = entities.groupMatch;
+      const cmR = entities.classMatch;
+      const saidClassR = /\bclass(es)?\b/.test(entities.normalized || '');
+      if (gmR && !this._rivenReferringStudentId(entities) && !(cmR && (!cmR.ambiguous || saidClassR))) {
+        if (gmR.ambiguous) { this._showGroupPicker(gmR.candidates, entities.original || ''); return; }
+        const ids = [...new Set(gmR.studentIds || [])];
+        if (!ids.length) { this._showRivenMessage(`${this.escapeHtml(gmR.name)} has no students in it yet.`, true); return; }
+        const nm = {};
+        (this._terminalAllStudents || []).forEach(st => { nm[st.id] = st.full_name; });
+        const list = ids.map(id => nm[id] || 'Unknown').sort();
+        this._nlpContext = this._nlpContext || {};
+        this._nlpContext.lastGroup = { label: gmR.name, groupId: gmR.id, classId: null,
+          byClass: null, studentIds: ids, timestamp: Date.now() };
+        this._showRivenMessage(
+          `<div style="font-weight: 600; margin-bottom: 6px;">👥 ${this.escapeHtml(gmR.name)} — ${list.length} student${list.length === 1 ? '' : 's'}</div>` +
+          list.map(n => `<div style="padding: 3px 8px;">• ${this.escapeHtml(n)}</div>`).join(''), true);
+        return;
+      }
       const referring = this._rivenReferringStudentId(entities);
       let rows = [];
       if (referring) {
@@ -53441,6 +53505,23 @@
       if (!byClass && last?.classId) {
         byClass = [{ row: (this._terminalAllClasses || []).find(c => c.id === last.classId),
                      studentIds: last.studentIds || [] }];
+      }
+      // A cohort has no class of its own, but attendance rows need one.
+      // Spread the group's students across the classes this teacher can mark.
+      if (!byClass && (grp.groupId || last?.groupId) && grp.studentIds.length) {
+        const { data: enr, error: enrErr } = await this.auth.supabase
+          .from('class_enrollments').select('class_id, student_id')
+          .in('student_id', grp.studentIds).eq('status', 'active');
+        if (enrErr) { this.terminalPrintError('Could not read the rosters: ' + enrErr.message); return; }
+        const mine = {};
+        (enr || []).forEach(e => { (mine[e.class_id] = mine[e.class_id] || []).push(e.student_id); });
+        byClass = Object.entries(mine).map(([cid, sids]) => ({
+          row: (this._terminalAllClasses || []).find(c => c.id === cid), studentIds: sids
+        })).filter(b => b.row && this._rivenCanManageClass(b.row, { attendance: true }));
+        if (!byClass.length) {
+          this.terminalPrintError(`None of your classes hold students from ${grp.label || 'that group'}, so there is nowhere to record it.`);
+          return;
+        }
       }
       const targets = (byClass || []).filter(b => b && b.row && b.studentIds?.length);
       if (!targets.length) {
@@ -54059,6 +54140,32 @@
       return null;
     }
 
+    // A group command is about the kids who are actually in the room. Anyone
+    // with no attendance record for the day, or one that says they were not
+    // here, is left out unless the teacher overrides it. A student on two
+    // rosters counts as here if ANY of the day's records says so.
+    async _rivenPresentOn(studentIds, date) {
+      const ids = [...new Set(studentIds || [])];
+      if (!ids.length) return { ids: [], anyTaken: false, absent: [] };
+      const { data, error } = await this.auth.supabase
+        .from('class_attendance').select('student_id, status')
+        .eq('date', date).in('student_id', ids);
+      if (error) return { ids, anyTaken: false, absent: [], failed: true };
+      const HERE = new Set(['present', 'late', 'left_early']);
+      const here = new Set(), seen = new Set();
+      (data || []).forEach(r => { seen.add(r.student_id); if (HERE.has(r.status)) here.add(r.student_id); });
+      return {
+        ids: ids.filter(id => here.has(id)),
+        absent: ids.filter(id => !here.has(id)),
+        anyTaken: seen.size > 0
+      };
+    }
+
+    // "give lower middle 5 rtc including absent" / "...everyone on the roster"
+    _rivenIgnoresAttendance(text) {
+      return /\b(includ(e|ing)\s+(the\s+)?absent|even\s+(if|the\s+ones)\s+absent|absent\s+(ones\s+)?too|regardless\s+of\s+attendance|present\s+or\s+not|whether\s+or\s+not\s+they|(everyone|all|those)\s+(on\s+the\s+roster|enrolled)|on\s+the\s+roster)\b/.test(text || '');
+    }
+
     async _rivenResolveGroup(entities) {
       // "everyone in chess EXCEPT matthew" — collect exclusions up front
       const exclusions = [];
@@ -54077,8 +54184,28 @@
           excludedIds: exclusions.map(e => e.id),
           excludedNames: exclusions.map(e => e.full_name) };
       };
+      // A cohort beats a class UNLESS the class reading is the strong one:
+      // an unambiguous full class-name match ("lower ms english"), or the word
+      // "class"/"classes" said outright. Otherwise "all lower middle school"
+      // means the school's Lower Middle group, which is what it sounds like.
+      const gm = entities.groupMatch;
+      const cm = entities.classMatch;
+      const saidClass = /\bclass(es)?\b/.test(entities.normalized || '');
+      const strongClass = cm && (!cm.ambiguous || saidClass);
+      if (gm && !strongClass) {
+        if (gm.ambiguous) { this._showGroupPicker(gm.candidates, entities.original || ''); return { asked: true }; }
+        const ids = [...new Set(gm.studentIds || [])];
+        if (!ids.length) {
+          this.terminalPrintError(`${gm.name} has no students in it yet. Add them under Admin \u2192 Student Groups.`);
+          return { asked: true };
+        }
+        this._nlpContext = this._nlpContext || {};
+        this._nlpContext.lastGroup = { label: gm.name, groupId: gm.id, classId: null,
+          byClass: null, studentIds: ids, timestamp: Date.now() };
+        return applyExclusions({ label: gm.name, groupId: gm.id, studentIds: ids });
+      }
       if (entities.classMatch) {
-        // "all lower middle school" names TWO classes and means both of them
+        // "all lower ms classes" names TWO classes and means both of them
         const res = await this._rivenRequireClasses(entities);
         if (res.asked) return { asked: true };
         if (res.rows.length) {
@@ -54142,23 +54269,44 @@
       if (entities.students?.length >= 2 && entities.amount) {
         return this.terminalMultiAward(entities);
       }
-      const grp = await this._rivenResolveGroup(entities);
+      let grp = await this._rivenResolveGroup(entities);
       if (grp.asked) return;
       if (!grp.studentIds.length) {
-        this.terminalPrintError('Which group? Mention a class, like "give everyone in Chess 2 rtc".');
+        this.terminalPrintError('Which group? Name a class or a cohort, like "give everyone in Chess 2 rtc" or "give lower middle 2 rtc".');
         return;
       }
       const lower = entities.normalized || '';
       const negative = /\b(remove|subtract|deduct|take|minus)\b/.test(lower) || /(^|\s)-\d/.test(lower);
       const amount = (negative ? -1 : 1) * Math.abs(entities.amount || 0);
       if (!amount) { this.terminalPrintError('How much RTC for each of them?'); return; }
+      // Default to the students who were actually here today. Paying a group
+      // is a reward for being in the room, and a kid at home should not
+      // collect it — but neither should Riven quietly award nobody, so an
+      // untaken register stops and says so instead of guessing.
+      const today = this._isoDaysAgo(0);
+      let attNote = '';
+      if (!this._rivenIgnoresAttendance(lower)) {
+        const att = await this._rivenPresentOn(grp.studentIds, today);
+        if (att.failed) {
+          attNote = ' <span style="color: var(--muted);">(attendance unreadable — covering the whole roster)</span>';
+        } else if (!att.anyTaken) {
+          this.terminalPrintError(`No attendance is recorded for ${today}, so I can't tell who is here. Take attendance first, or say it again ending with "including absent" to cover all ${grp.studentIds.length}.`);
+          return;
+        } else if (!att.ids.length) {
+          this.terminalPrintError(`Nobody in ${grp.label || 'that group'} is marked present for ${today}. Add "including absent" if you meant the whole roster.`);
+          return;
+        } else {
+          if (att.absent.length) attNote = ` <span style="color: var(--muted);">(skipping ${att.absent.length} not here today)</span>`;
+          grp = { ...grp, studentIds: att.ids };
+        }
+      }
       const reason = entities.reason || `Group ${amount > 0 ? 'award' : 'deduction'}${grp.label ? ' — ' + grp.label : ''}`;
       const n = grp.studentIds.length;
       const names = {};
       (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
       const exNote = grp.excludedNames?.length ? ` — excluding ${this.escapeHtml(grp.excludedNames.join(' and '))}` : '';
       this._requestConfirmation(
-        `${amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(amount)} RTC</b> ${amount > 0 ? 'to' : 'from'} <b>each of the ${n} students</b>${grp.label ? ' in <b>' + this.escapeHtml(grp.label) + '</b>' : ''}${exNote} (${Math.abs(amount) * n} RTC total)?`,
+        `${amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(amount)} RTC</b> ${amount > 0 ? 'to' : 'from'} <b>each of the ${n} students</b>${grp.label ? ' in <b>' + this.escapeHtml(grp.label) + '</b>' : ''}${exNote}${attNote} (${Math.abs(amount) * n} RTC total)?`,
         async () => {
           const sb = this.auth.supabase;
           const done = [];
@@ -54758,6 +54906,33 @@
       this._updateContext(picked, pending.entities);
     }
 
+    _showGroupPicker(rowsIn, originalInput) {
+      const rows = [...new Map(rowsIn.map(g => [g.id, g])).values()];
+      this.terminalPrint(`Which group did you mean?`, '#ffd36a');
+      const output = document.getElementById('terminal-output');
+      let html = '<div style="margin-top: 8px; margin-left: 16px;">';
+      rows.slice(0, 8).forEach((g, idx) => {
+        const n = (g.studentIds || []).length;
+        html += `
+          <div onclick="app._resolveGroupAmbiguity('${g.id}', '${this.escapeHtml(originalInput).replace(/'/g, '&#39;')}')"
+               style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer;"
+               onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
+               onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
+            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(g.name)} <span style="font-size: 11px; color: var(--muted);">(${n} student${n === 1 ? '' : 's'})</span></div>
+          </div>`;
+      });
+      html += '</div>';
+      if (output) { output.innerHTML += html; output.scrollTop = output.scrollHeight; }
+    }
+
+    async _resolveGroupAmbiguity(groupId, originalInput) {
+      const g = (this._terminalAllGroups || []).find(x => x.id === groupId);
+      this.terminalPrint(`Selected: ${g ? g.name : 'group'}`, '#8bffb0');
+      this._terminalPinnedGroup = groupId;
+      await this.executeTerminalCommand(originalInput);
+      this._terminalPinnedGroup = null;
+    }
+
     _showClassPicker(rowsIn, originalInput) {
       const rows = [...new Map(rowsIn.map(c => [c.id, c])).values()];
       this.terminalPrint(`I found ${rows.length} classes that could match:`, '#ffd36a');
@@ -54862,6 +55037,81 @@
       if (primary.length) return primary;
       const owned = rows.filter(c => c.secondary_teacher_id === myId);
       return owned.length ? owned : rows;
+    }
+
+    // Riven's group vocabulary is not the database's. The groups are stored as
+    // "Full Young Middle" / "Full Old Elementary" / "Full Junior High";
+    // teachers say "lower middle", "upper elementary", "upper MS", "HS". Both
+    // sides are canonicalised to the same tokens, so either wording finds the
+    // group and renaming one on the admin screen does not break the phrasing.
+    //
+    // "Junior High" canonicalises to the OLD MIDDLE band, which is what it is
+    // at this school — the schedule legend lists it between Middle School and
+    // High School. That also stops "HS" matching "Full Junior High", which
+    // would otherwise share the word "high" with "Full High".
+    _rivenGroupCanon(text) {
+      let t = ' ' + String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ') + ' ';
+      const PHRASES = [
+        [/\b(junior|jr)\s+high\b/g, ' old middle '],
+        [/\b(upper|older|old|senior)\s+(middle|ms)\b/g, ' old middle '],
+        [/\b(lower|younger|young|junior)\s+(middle|ms)\b/g, ' young middle '],
+        [/\b(upper|older|old|senior)\s+(elementary|elementry|elem|es)\b/g, ' old elementary '],
+        [/\b(lower|younger|young)\s+(elementary|elementry|elem|es)\b/g, ' young elementary '],
+        [/\bhigh\s+school\b/g, ' high '],
+        [/\bmiddle\s+school\b/g, ' middle '],
+        [/\bhs\b/g, ' high '],
+        [/\bms\b/g, ' middle '],
+        [/\bes\b/g, ' elementary '],
+      ];
+      for (const [re, rep] of PHRASES) t = t.replace(re, rep);
+      const WORD = { younger: 'young', lower: 'young', older: 'old', upper: 'old',
+                     elementry: 'elementary', elem: 'elementary', homeschooled: 'homeschool' };
+      const DROP = new Set(['full', 'group', 'groups', 'student', 'students', 'kid', 'kids',
+        'class', 'classes', 'school', 'the', 'all', 'my', 'every', 'everyone', 'everybody',
+        'both', 'each', 'of', 'in', 'to', 'for', 'a', 'an', 'and', 'is', 'are', 'was', 'were']);
+      const out = [];
+      for (let w of t.split(/\s+/).filter(Boolean)) {
+        w = WORD[w] || w;
+        if (DROP.has(w)) continue;
+        if (!out.includes(w)) out.push(w);
+      }
+      return out;
+    }
+
+    // Find the student group a command is talking about. A group matches when
+    // EVERY word of its canonical name appears in the message, so a whole
+    // sentence ("5 rtc to all lower middle school") still resolves. Naming
+    // only the band ("elementary", "homeschool") is genuinely ambiguous and
+    // comes back as candidates for the picker rather than a guess.
+    _rivenMatchGroup(text) {
+      const groups = this._terminalAllGroups || [];
+      if (!groups.length) return null;
+      if (this._terminalPinnedGroup) {
+        const p = groups.find(g => g.id === this._terminalPinnedGroup);
+        if (p) return { id: p.id, name: p.name, row: p, pinned: true, studentIds: p.studentIds || [] };
+      }
+      const said = this._rivenGroupCanon(text);
+      const BANDS = ['high', 'middle', 'elementary', 'homeschool'];
+      const saidBands = BANDS.filter(b => said.includes(b));
+      if (!saidBands.length) return null;
+      const scored = groups.map(g => ({ g, toks: this._rivenGroupCanon(g.name) })).filter(s => s.toks.length);
+      let hits = scored.filter(s => s.toks.every(w => said.includes(w)));
+      if (hits.length > 1) {
+        // the most specific name wins: "lower middle" must not also drag in a
+        // group whose whole name is just "middle"
+        const max = Math.max(...hits.map(h => h.toks.length));
+        hits = hits.filter(h => h.toks.length === max);
+      }
+      if (!hits.length) {
+        // band named but not which half — offer the ones in that band
+        hits = scored.filter(s => saidBands.some(b => s.toks.includes(b)));
+        if (!hits.length) return null;
+      }
+      if (hits.length === 1) {
+        const g = hits[0].g;
+        return { id: g.id, name: g.name, row: g, studentIds: g.studentIds || [] };
+      }
+      return { ambiguous: true, candidates: hits.map(h => h.g), name: hits[0].g.name };
     }
 
     // Does the phrase quantify over the CLASSES themselves ("all lower ms

@@ -46,6 +46,7 @@ const mk = (n) => { const b = bodyOf(n); return new Function(...b.args.split(','
 const METHODS = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand', '_extractEntities',
   '_parseTimeframe', '_fuzzyFindStudent', '_calculateSimilarity', '_levenshteinDistance',
   '_matchIntent', '_matchSmalltalk', '_isAggregateQuery', '_rivenMatchClass', '_rivenCanManageClass',
+  '_rivenMatchGroup', '_rivenGroupCanon',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_semanticExampleBank'];
 const app = { _nlpContext: {} };

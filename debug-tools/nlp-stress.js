@@ -42,7 +42,7 @@ const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_fuzzyFindStudent','_calculateSimilarity',
   '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
-  '_rivenQuantifiesClasses','_rivenFindExcluded'];
+  '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance'];
 const app = { _nlpContext: {} };
 for (const name of methods) app[name] = extract(name).bind ? extract(name) : extract(name);
 // rebind so `this` works
@@ -1374,3 +1374,139 @@ t33(`full sentence -> MARK_ATTENDANCE_GROUP (got ${att.intent})`, att.intent ===
 app._terminalAllStudents = _roster33;
 app._terminalAllClasses = _classes33;
 console.log(`round 33: ${p33} pass, ${f33} fail`);
+
+// ── round 34: the school's real student groups ────────────────────────────
+// The portal already keeps cohorts in student_groups / student_group_members,
+// maintained on the admin screen. Their stored names are not what teachers
+// say: the group is "Full Young Middle", the teacher says "lower middle".
+// "Full Junior High" is this school's UPPER middle band — the schedule legend
+// lists Junior High between Middle School and High School — so it has to
+// canonicalise that way, which also stops "HS" matching it on the word "high".
+console.log('\n== round 34: cohort names vs teacher vocabulary ==');
+let p34 = 0, f34 = 0;
+const t34 = (label, ok) => { ok ? p34++ : f34++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+app._terminalAllGroups = [
+  { id: 'g-hs',  name: 'Full High',            studentIds: ['s1', 's2'] },
+  { id: 'g-jh',  name: 'Full Junior High',     studentIds: ['s3'] },
+  { id: 'g-oe',  name: 'Full Old Elementary',  studentIds: ['s4'] },
+  { id: 'g-ye',  name: 'Full Young Elementry', studentIds: ['s5'] },
+  { id: 'g-ym',  name: 'Full Young Middle',    studentIds: ['s6', 's7'] },
+  { id: 'g-ho',  name: 'Homeschool Older',     studentIds: ['s8'] },
+  { id: 'g-hy',  name: 'Homeschool Younger',   studentIds: ['s9'] },
+];
+const grp = (text) => {
+  const m = app._rivenMatchGroup(app._normalizeInput(text));
+  return !m ? 'null' : (m.ambiguous ? 'AMBIGUOUS:' + m.candidates.length : m.name);
+};
+[
+  // Luke's words on the left, the stored group name on the right
+  ['lower middle', 'Full Young Middle'],
+  ['lower middle school', 'Full Young Middle'],
+  ['lower ms', 'Full Young Middle'],
+  ['younger middle', 'Full Young Middle'],
+  ['upper middle', 'Full Junior High'],
+  ['upper ms', 'Full Junior High'],
+  ['junior high', 'Full Junior High'],
+  ['upper elementary', 'Full Old Elementary'],
+  ['older elementary', 'Full Old Elementary'],
+  ['lower elementary', 'Full Young Elementry'],
+  ['younger elementary', 'Full Young Elementry'],
+  ['hs', 'Full High'],
+  ['high school', 'Full High'],
+  ['homeschool older', 'Homeschool Older'],
+  ['homeschool younger', 'Homeschool Younger'],
+  // inside a whole sentence, which is how they actually arrive
+  ['5 gold to all lower middle school', 'Full Young Middle'],
+  ['give upper elementary 3 rtc', 'Full Old Elementary'],
+  ['mark hs present today', 'Full High'],
+  // naming only the band is genuinely ambiguous — ask, never guess
+  ['give elementary 5 rtc', 'AMBIGUOUS:2'],
+  ['mark homeschool present', 'AMBIGUOUS:2'],
+  // and a command with no cohort in it must not invent one
+  ['give charlotte 5 rtc', 'null'],
+  ['take attendance for chess', 'null'],
+].forEach(([text, want]) => {
+  const got = grp(text);
+  t34(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// "HS" must not be pulled into "Full Junior High" by the shared word "high"
+t34('hs does not match Full Junior High', grp('hs') === 'Full High');
+
+// the attendance-override phrases
+[
+  ['give lower middle 5 rtc including absent', true],
+  ['give lower middle 5 rtc to everyone on the roster', true],
+  ['give lower middle 5 rtc present or not', true],
+  ['give lower middle 5 rtc', false],
+  ['give lower middle 5 rtc for good work', false],
+].forEach(([text, want]) => {
+  const got = app._rivenIgnoresAttendance(app._normalizeInput(text));
+  t34(`ignoresAttendance("${text}") == ${want} (got ${got})`, got === want);
+});
+app._terminalAllGroups = [];
+console.log(`round 34: ${p34} pass, ${f34} fail`);
+
+// ── round 35: cohort target vs class target, and the single-student guard ──
+console.log('\n== round 35: cohort vs class, and "mark jordan present" ==');
+let p35 = 0, f35 = 0;
+const t35 = (label, ok) => { ok ? p35++ : f35++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _cls35 = app._terminalAllClasses, _grp35 = app._terminalAllGroups, _stu35 = app._terminalAllStudents;
+app._terminalAllClasses = [
+  { id:'lme', name:'Lower MS English', subject:'English', teacher_id:'t1', secondary_teacher_id:null, is_active:true, teacher_name:'MS Teacher' },
+  { id:'lmm', name:'Lower MS Math', subject:'Math', teacher_id:'t1', secondary_teacher_id:null, is_active:true, teacher_name:'MS Teacher' },
+];
+app._terminalAllGroups = [
+  { id:'g-ym', name:'Full Young Middle', studentIds:['s6','s7'] },
+  { id:'g-jh', name:'Full Junior High', studentIds:['s3'] },
+  { id:'g-oe', name:'Full Old Elementary', studentIds:['s4'] },
+  { id:'g-ye', name:'Full Young Elementry', studentIds:['s5'] },
+];
+app._terminalAllStudents = [
+  { full_name:'Jordan Ellis', first_name:'Jordan', last_name:'Ellis', rtc_balance:5, status:'active', id:'j1' },
+];
+
+// naming a cohort with no "everyone" still reaches the group attendance write
+[
+  ['mark lower middle present', 'MARK_ATTENDANCE_GROUP'],
+  ['mark upper elementary present', 'MARK_ATTENDANCE_GROUP'],
+  ['mark lower ms english present', 'MARK_ATTENDANCE_GROUP'],
+  // ...but naming ONE student is still the single-student write
+  ['mark jordan present', 'MARK_ATTENDANCE'],
+  ['mark jordan present in lower ms math', 'MARK_ATTENDANCE'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t35(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// The resolution rule: a cohort wins UNLESS the class reading is the strong
+// one — an unambiguous full class-name match, or the word "class" said out
+// loud. This mirrors the check inside _rivenResolveGroup / terminalShowRoster.
+const target = (text) => {
+  const n = app._normalizeInput(text);
+  const cm = app._rivenMatchClass(n), gm = app._rivenMatchGroup(n);
+  const saidClass = /\bclass(es)?\b/.test(n);
+  const strongClass = cm && (!cm.ambiguous || saidClass);
+  if (gm && !strongClass) return 'GROUP:' + (gm.ambiguous ? 'ambiguous' : gm.name);
+  if (cm) return 'CLASS';
+  return 'none';
+};
+[
+  // the cohort is what "lower middle school" means on its own
+  ['all lower middle school students', 'GROUP:Full Young Middle'],
+  ['5 gold to all lower middle school', 'GROUP:Full Young Middle'],
+  ['give upper elementary 3 rtc', 'GROUP:Full Old Elementary'],
+  // a full class name is specific and beats the cohort
+  ['who is in lower ms english', 'CLASS'],
+  ['give lower ms math 2 rtc', 'CLASS'],
+  // and saying "classes" out loud means the classes, not the cohort
+  ['mark all lower ms classes present', 'CLASS'],
+].forEach(([text, want]) => {
+  const got = target(text);
+  t35(`target("${text}") -> ${want} (got ${got})`, got === want);
+});
+
+app._terminalAllClasses = _cls35; app._terminalAllGroups = _grp35; app._terminalAllStudents = _stu35;
+console.log(`round 35: ${p35} pass, ${f35} fail`);
