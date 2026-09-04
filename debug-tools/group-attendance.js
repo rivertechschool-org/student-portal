@@ -101,7 +101,7 @@ for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput'
                  '_hasCommandSignal', '_hasCommandVerb', '_isCommonWordTypo', '_commonWords',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
                  '_rememberClass', '_showClassPicker', '_showGroupPicker',
-                 '_rivenResolveClassRow', '_rivenFindEnrollment', '_rivenNamesEachClass', '_rivenResolvedStudent', 'terminalGroupAddRTC',
+                 '_rivenResolveClassRow', '_rivenFindEnrollment', '_rivenNamesEachClass', '_rivenResolvedStudent', '_rivenPeriodsOn', '_rivenClassLabels', 'terminalGroupAddRTC',
                  'terminalMarkAttendanceGroup', '_rivenCanManageClass']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
@@ -282,6 +282,77 @@ async function award(text, attendance) {
       'e1:a:present', 'e1:mg:absent', 'e1:mk:absent',
       'm1:a:present', 'm1:mk:absent',
     ]), w2);
+
+  // ---- the school's real shape: same names, other teachers, periods -------
+  // Luke teaches "Lower MS English" and "Lower MS Math". Other teachers own
+  // classes named exactly "English" and "Math". "attendance for english and
+  // math" marked THEIR registers, and wrote every row with period null, which
+  // the attendance screen filters out — so his own classes showed nothing.
+  console.log('\n== the asker\'s own classes, and the right period ==');
+  app._terminalAllClasses = [
+    { id: 'mine-e', name: 'Lower MS English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
+    { id: 'mine-m', name: 'Lower MS Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
+    { id: 'hers-e', name: 'English', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Caitlin Relvas' },
+    { id: 'his-m', name: 'Math', teacher_id: 't8', secondary_teacher_id: null, is_active: true, teacher_name: 'Jordan Ezell' },
+  ];
+  app._terminalAllStudents = [
+    { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
+    { id: 'mk', full_name: 'Malakai Kaufman', first_name: 'Malakai', last_name: 'Kaufman', status: 'active', rtc_balance: 0 },
+    { id: 'mg', full_name: 'Magnolia Mays', first_name: 'Magnolia', last_name: 'Mays', status: 'active', rtc_balance: 0 },
+  ];
+  DB = {
+    class_enrollments: [
+      { class_id: 'mine-e', student_id: 'a', status: 'active' },
+      { class_id: 'mine-e', student_id: 'mk', status: 'active' },
+      { class_id: 'mine-e', student_id: 'mg', status: 'active' },
+      { class_id: 'mine-m', student_id: 'a', status: 'active' },
+      { class_id: 'mine-m', student_id: 'mg', status: 'active' },
+      { class_id: 'hers-e', student_id: 'a', status: 'active' },
+      { class_id: 'his-m', student_id: 'a', status: 'active' },
+    ],
+    // Lower MS English meets in period 3 that day; Lower MS Math has no slot
+    class_schedule: [{ class_id: 'mine-e', day_of_week: new Date(TODAY + 'T12:00:00').getDay(), period: 3 }],
+    class_attendance: [], class_attendance_sessions: [],
+  };
+  WRITES.length = 0;
+  app._errors = []; app._confirm = null; app._nlpContext = {}; app._pickedFrom = null;
+  app._showClassPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+  app._showGroupPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+  const T3 = 'Attendance for english and math: all here except for malakai and magnolia';
+  const n3 = app._normalizeInput(T3);
+  await app.terminalMarkAttendanceGroup({
+    normalized: n3, original: T3, amount: null, students: [], student: null,
+    classMatch: app._rivenMatchClass(n3), groupMatch: app._rivenMatchGroup(n3),
+  });
+  t('no picker', !app._pickedFrom, app._pickedFrom);
+  t('it asks for confirmation', !!app._confirm, app._errors);
+  if (app._confirm) {
+    t('it targets MY classes, not the identically-named ones',
+      /Lower MS English and Lower MS Math/.test(app._confirm.summary), app._confirm.summary);
+    t('"except FOR x and y" excludes BOTH',
+      /Malakai Kaufman and Magnolia Mays|Magnolia Mays and Malakai Kaufman/.test(app._confirm.summary), app._confirm.summary);
+    t('it warns about the class with no period that day',
+      /Lower MS Math.*no period scheduled/.test(app._confirm.summary), app._confirm.summary);
+    await app._confirm.execute();
+  }
+  const byPeriod = DB.class_attendance.map(r => `${r.class_id}:${r.student_id}:${r.status}:p${r.period}`).sort();
+  t('rows carry the period the screen reads, and null only when unscheduled',
+    JSON.stringify(byPeriod) === JSON.stringify([
+      'mine-e:a:present:p3', 'mine-e:mg:absent:p3', 'mine-e:mk:absent:p3',
+      'mine-m:a:present:pnull', 'mine-m:mg:absent:pnull',
+    ].map(x => x.replace(':pnull', ':pnull'))), byPeriod);
+  t('the session row carries the same period',
+    DB.class_attendance_sessions.some(x => x.class_id === 'mine-e' && x.period === 3), DB.class_attendance_sessions);
+  t('nobody else\'s register was touched',
+    !DB.class_attendance.some(r => r.class_id === 'hers-e' || r.class_id === 'his-m'), byPeriod);
+
+  // same-named classes must be told apart in the dialog, not read "English and English"
+  t('duplicate names get their teacher appended',
+    JSON.stringify(app._rivenClassLabels([
+      { name: 'English', teacher_name: 'Caitlin Relvas' },
+      { name: 'English', teacher_name: 'Emily Allison' },
+      { name: 'Math', teacher_name: 'Jordan Ezell' },
+    ])) === JSON.stringify(['English (Caitlin Relvas)', 'English (Emily Allison)', 'Math']));
 
   console.log(`\n${pass} pass, ${fail} fail`);
   process.exit(fail ? 1 : 0);

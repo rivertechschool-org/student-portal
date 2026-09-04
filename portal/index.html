@@ -44799,7 +44799,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-04·d';
+      const RIVEN_BUILD = '2026-09-04·e';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -54494,6 +54494,36 @@
       this._showRivenMessage(html, true);
     }
 
+    // The attendance screen reads a class's register for the PERIOD the class
+    // sits in that day (class_schedule -> periods[0], its own default), and
+    // filters rows by it. Riven wrote every row with period null, so on any
+    // day a class actually meets, the marks were saved and then invisible on
+    // the very screen the teacher checks. Match the screen's rule instead.
+    async _rivenPeriodsOn(classIds, date) {
+      const out = {};
+      const ids = [...new Set(classIds || [])];
+      if (!ids.length) return out;
+      const dow = new Date(date + 'T12:00:00').getDay();
+      const { data, error } = await this.auth.supabase
+        .from('class_schedule').select('class_id, period, day_of_week')
+        .in('class_id', ids).eq('day_of_week', dow);
+      if (error) return out;
+      (data || []).forEach(r => { (out[r.class_id] = out[r.class_id] || []).push(r.period); });
+      Object.keys(out).forEach(k => out[k].sort((a, b) => a - b));
+      return out;
+    }
+
+    // Same class name, different classes ("English" and "English") reads as a
+    // stutter in a confirmation. Whose it is, is the thing that tells them apart.
+    _rivenClassLabels(rows) {
+      const counts = {};
+      rows.forEach(r => { const n = (r.name || '').toLowerCase(); counts[n] = (counts[n] || 0) + 1; });
+      return rows.map(r => {
+        const dup = counts[(r.name || '').toLowerCase()] > 1;
+        return r.name + (dup && r.teacher_name ? ` (${r.teacher_name})` : '');
+      });
+    }
+
     async terminalMarkAttendanceGroup(entities) {
       const lower = entities.normalized || '';
       let status = null;
@@ -54550,7 +54580,7 @@
       (this._terminalAllStudents || []).forEach(s => { names[s.id] = s.full_name; });
       const mainSet = new Set(), exSet = new Set();
       allowed.forEach(b => b.studentIds.forEach(id => (exIds.has(id) ? exSet : mainSet).add(id)));
-      const label = allowed.map(b => b.row.name).join(' and ');
+      const label = this._rivenClassLabels(allowed.map(b => b.row)).join(' and ');
       const exNames = [...exSet].map(id => names[id] || 'that student').join(' and ');
       const exNote = exSet.size
         ? ` <b>${this.escapeHtml(exNames)}</b> ${exSet.size === 1 ? 'gets' : 'get'} <b>${opposite}</b> instead.`
@@ -54558,42 +54588,60 @@
       const skipNote = blocked.length
         ? ` Skipping <b>${this.escapeHtml(blocked.map(b => b.row.name).join(' and '))}</b> — not yours to mark.`
         : '';
+      // Where does each class sit that day? A class with no slot that day is
+      // not meeting — worth saying, since the attendance screen hides the
+      // register entirely for a day the class does not meet.
+      const periodsBy = await this._rivenPeriodsOn(allowed.map(b => b.row.id), date);
+      const notMeeting = allowed.filter(b => !(periodsBy[b.row.id] || []).length).map(b => b.row.name);
+      const meetNote = notMeeting.length
+        ? ` <span style="color: var(--warning, #ffd36a);">⚠️ ${this.escapeHtml(notMeeting.join(' and '))} ${notMeeting.length === 1 ? 'has' : 'have'} no period scheduled on ${date}, so the attendance screen will not show this until one is added.</span>`
+        : '';
+      const totalRows = allowed.reduce((n, b) => n + b.studentIds.length, 0);
+      const countBit = allowed.length > 1
+        ? `<b>${totalRows} attendance record${totalRows === 1 ? '' : 's'}</b> across <b>${this.escapeHtml(label)}</b>`
+        : `<b>${mainSet.size} student${mainSet.size === 1 ? '' : 's'}</b> in <b>${this.escapeHtml(label)}</b>`;
       this._requestConfirmation(
-        `Mark <b>${mainSet.size} student${mainSet.size === 1 ? '' : 's'}</b> in <b>${this.escapeHtml(label)}</b> as <b>${status.replace(/_/g, ' ')}</b> for <b>${date}</b>?${exNote}${skipNote} This replaces anything already recorded for that day.`,
+        `Mark ${countBit} as <b>${status.replace(/_/g, ' ')}</b> for <b>${date}</b>?${exNote}${skipNote}${meetNote} This replaces anything already recorded for that day.`,
         async () => {
           // Mirror saveClassAttendance per class: snapshot prior rows +
           // session, then delete-and-insert that class for that date
           const undoSteps = [];
           let wrote = 0;
+          // Mirror saveClassAttendance exactly, including its period rule:
+          // a null period filters with .is(), a real one with .eq().
+          const onPeriod = (q, p) => (p === null ? q.is('period', null) : q.eq('period', p));
           for (const b of allowed) {
             const classId = b.row.id;
+            const period = (periodsBy[classId] || [])[0];
+            const per = period === undefined ? null : period;
             const rowsFor = b.studentIds.map(sid => ({
-              class_id: classId, student_id: sid, date, period: null,
+              class_id: classId, student_id: sid, date, period: per,
               status: exIds.has(sid) ? opposite : status, notes: null, marked_by: this.userInfo.user.id
             }));
             if (!rowsFor.length) continue;
-            const { data: prevRows } = await sb.from('class_attendance').select('*')
-              .eq('class_id', classId).eq('date', date).is('period', null);
-            const { data: prevSession } = await sb.from('class_attendance_sessions').select('*')
-              .eq('class_id', classId).eq('date', date).is('period', null);
-            await sb.from('class_attendance').delete().eq('class_id', classId).eq('date', date).is('period', null);
+            const { data: prevRows } = await onPeriod(sb.from('class_attendance').select('*')
+              .eq('class_id', classId).eq('date', date), per);
+            const { data: prevSession } = await onPeriod(sb.from('class_attendance_sessions').select('*')
+              .eq('class_id', classId).eq('date', date), per);
+            await onPeriod(sb.from('class_attendance').delete().eq('class_id', classId).eq('date', date), per);
             const { error: insErr } = await sb.from('class_attendance').insert(rowsFor);
             if (insErr) throw insErr;
-            await sb.from('class_attendance_sessions').delete().eq('class_id', classId).eq('date', date).is('period', null);
+            await onPeriod(sb.from('class_attendance_sessions').delete().eq('class_id', classId).eq('date', date), per);
             await sb.from('class_attendance_sessions').insert({
-              class_id: classId, date, period: null, status: 'completed',
+              class_id: classId, date, period: per, status: 'completed',
               taken_by: this.userInfo.user.id, taken_at: new Date().toISOString()
             });
             wrote += rowsFor.length;
-            undoSteps.push({ classId, prevRows, prevSession });
+            undoSteps.push({ classId, period: per, prevRows, prevSession });
           }
           this._pushUndo(`marking ${label} ${status.replace(/_/g, ' ')} on ${date}`, async () => {
+            const onP = (q, p) => (p === null ? q.is('period', null) : q.eq('period', p));
             for (const step of undoSteps) {
-              await sb.from('class_attendance').delete().eq('class_id', step.classId).eq('date', date).is('period', null);
+              await onP(sb.from('class_attendance').delete().eq('class_id', step.classId).eq('date', date), step.period);
               if (step.prevRows && step.prevRows.length) {
                 await sb.from('class_attendance').insert(step.prevRows.map(({ id, ...rest }) => rest));
               }
-              await sb.from('class_attendance_sessions').delete().eq('class_id', step.classId).eq('date', date).is('period', null);
+              await onP(sb.from('class_attendance_sessions').delete().eq('class_id', step.classId).eq('date', date), step.period);
               if (step.prevSession && step.prevSession.length) {
                 const { id, ...rest } = step.prevSession[0];
                 await sb.from('class_attendance_sessions').insert(rest);
@@ -55178,7 +55226,7 @@
       const exclusions = [];
       const exM = (entities.normalized || '').match(/\b(?:except|besides|excluding|but not|minus|other than)\s+(.+?)(?:\s+\d|$)/);
       if (exM) {
-        for (const piece of exM[1].split(/\s+(?:and|,|&)\s+|,\s*/)) {
+        for (const piece of exM[1].replace(/^\s*for\s+/i, '').split(/\s+(?:and|,|&)\s+|,\s*/)) {
           const st = this._rivenFindExcluded(piece);
           if (st && !exclusions.find(e => e.id === st.id)) exclusions.push(st);
         }
@@ -55788,6 +55836,17 @@
         if (specific.length) full.length = 0, full.push(...specific);
       }
       let candidates = full.length ? full : partial;
+      // A teacher who says "english" and teaches "Lower MS English" means
+      // THEIRS, not the class another teacher happens to have named exactly
+      // "English". Without this, an exact-name match belonging to someone else
+      // beats the asker's own class every time, and an admin — who can write
+      // to every class — marks a colleague's register instead of their own.
+      const myClassId = this.userInfo?.user?.id;
+      if (full.length && myClassId) {
+        const mine = c => c.teacher_id === myClassId || c.secondary_teacher_id === myClassId;
+        const minePartial = partial.filter(mine);
+        if (!full.some(mine) && minePartial.length) candidates = minePartial;
+      }
       let consumed = [];
 
       if (!candidates.length) {
@@ -56160,15 +56219,20 @@
       if (!candidates || candidates.length < 2) return false;
       if (!/\band\b|,|&|\+/.test(t)) return false;
       const esc = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const nameNums = { one: '1', two: '2', three: '3', four: '4', five: '5' };
-      const generic = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with']);
-      const fullyNamed = c => {
-        const words = String(c.name || '').toLowerCase().split(/\s+/)
-          .map(w => w.replace(/[^a-z0-9&:-]/g, '')).map(w => nameNums[w] || w)
-          .filter(w => (w.length >= 3 || /^\d+$/.test(w)) && !generic.has(w));
-        return words.length > 0 && words.every(w => new RegExp('\\b' + esc(w) + '\\b').test(t));
-      };
-      return candidates.every(fullyNamed);
+      const generic = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with',
+        'lower', 'upper', 'young', 'younger', 'old', 'older', 'junior', 'senior', 'ms', 'hs', 'es']);
+      // Which of THIS class's name words does the sentence actually contain?
+      const evidence = c => new Set(String(c.name || '').toLowerCase().split(/\s+/)
+        .map(w => w.replace(/[^a-z0-9&:-]/g, ''))
+        .filter(w => w.length >= 3 && !generic.has(w))
+        .filter(w => new RegExp('\\b' + esc(w) + '\\b').test(t)));
+      const sets = candidates.map(evidence);
+      // Every candidate has to be pointed at by something, and by something
+      // DIFFERENT — "english and math" picks out two classes, "the math class"
+      // picks out the same word twice and still has to ask which one.
+      if (sets.some(x => x.size === 0)) return false;
+      const keys = sets.map(x => [...x].sort().join('|'));
+      return new Set(keys).size === keys.length;
     }
 
     // Multi-class sibling of _rivenRequireClass. When the phrase quantifies
