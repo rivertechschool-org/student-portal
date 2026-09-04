@@ -34392,6 +34392,13 @@
               </div>
             </div>
 
+            <!-- Pickup family. Shown here because this is where an admin looks
+                 when the question is about ONE student; the Pickup screen is
+                 for working a queue. -->
+            <div id="hub-pickup-family" style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 15px; background: rgba(106, 169, 255, 0.06); border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap;">
+              <div style="flex: 1; min-width: 180px; font-size: 13px; color: var(--muted);">Loading pickup number...</div>
+            </div>
+
             <!-- Sign-in link. Activation is only offered while a student is
                  INACTIVE, so after activating there was nothing that could send
                  the link again - which is exactly when it is needed: the first
@@ -34430,6 +34437,11 @@
             </div>
           </div>
         `;
+
+        // The block above is a placeholder until this fills it in - the
+        // family lives in its own table, so it cannot come from the profile
+        // row the rest of this tab was rendered from.
+        this.loadHubPickupFamily(studentId);
       }
 
       // Regenerate from the Student Hub Profile tab. Reuses the same
@@ -35126,6 +35138,120 @@
           this.showNotification(`Not sent: ${why}`, 'error');
         } catch (e) {
           console.error('resendStudentInvite failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
+      // ---- Pickup family, on the student's own record ----------------
+      //
+      // Assigning was only reachable from the "without a number" list, which
+      // drops a student as soon as they have one - so a number could be set
+      // once and never corrected, and nothing on the student's record showed
+      // which family they were on.
+
+      async loadHubPickupFamily(studentId) {
+        const el = document.getElementById('hub-pickup-family');
+        if (!el) return;
+        const isAdmin = this.userInfo.profile?.user_type === 'admin';
+
+        try {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('pickup_family_members')
+            .select('family_id, pickup_families(id, family_number, label, note)')
+            .eq('student_id', studentId)
+            .maybeSingle());
+          if (error) throw error;
+
+          const fam = data?.pickup_families || null;
+          this._hubPickupFamily = fam;
+
+          el.innerHTML = `
+            <div style="flex: 1; min-width: 180px;">
+              <div style="font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">\u{1F697} Pickup family</div>
+              ${fam ? `
+                <div style="font-size: 26px; font-weight: 800; color: var(--accent); line-height: 1.1;">#${fam.family_number}</div>
+                ${fam.label ? `<div style="font-size: 13px; margin-top: 2px;">${this.escapeHtml(fam.label)}</div>` : ''}
+                ${fam.note ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--warning, #e67e22);">${this.escapeHtml(fam.note)}</div>` : ''}
+              ` : `<div style="font-size: 14px; color: var(--muted);">No number yet \u2014 they cannot be called at pickup.</div>`}
+            </div>
+            ${isAdmin ? `
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-secondary" onclick="app.setStudentPickupFamily('${studentId}')">
+                  ${fam ? 'Change number' : 'Assign number'}
+                </button>
+                ${fam ? `<button class="btn btn-secondary" onclick="app.removeStudentPickupFamily('${studentId}')">Remove</button>` : ''}
+              </div>` : ''}
+          `;
+        } catch (e) {
+          el.innerHTML = `<div style="flex:1; font-size:13px; color: var(--muted);">
+              ${/does not exist|schema cache/i.test(e.message || '')
+                ? 'Pickup is not set up yet \u2014 the pickup families migration has not been run.'
+                : this.escapeHtml(e.message)}
+            </div>`;
+        }
+      }
+
+      // Shared by this and the Pickup screen, so the confirmation and the
+      // create-or-join rule cannot drift apart between the two places an admin
+      // can do this.
+      async setStudentPickupFamily(studentId) {
+        const s = this._studentHubData?.student;
+        const name = `${s?.first_name || ''} ${s?.last_name || ''}`.trim() || 'this student';
+        const current = this._hubPickupFamily;
+
+        const answer = prompt(
+          `Family number for ${name}.\n\n`
+          + (current ? `Currently #${current.family_number}.\n\n` : '')
+          + `Type an existing number to put them on that family, or leave blank to create a new one.`);
+        if (answer === null) return;
+
+        try {
+          let familyId, number;
+
+          if (answer.trim() === '') {
+            const made = await this._pickupRpc('rt_create_pickup_family', {
+              p_number: null, p_label: s?.last_name || null, p_note: null });
+            if (!made.success) return this.showNotification(made.error, 'error');
+            familyId = made.id; number = made.family_number;
+          } else {
+            const found = await this._pickupRpc('rt_pickup_lookup', { p_query: answer.trim() }) || [];
+            if (!found.length) {
+              return this.showNotification(
+                `No family #${answer.trim()}. Leave it blank to create a new one.`, 'error');
+            }
+            const fam = found[0];
+            // Confirm against who is already there. Putting a child on the
+            // wrong household is not visible again until someone collects them.
+            const who = (fam.members || [])
+              .filter(m => m.student_id !== studentId)
+              .map(m => `${m.first_name} ${m.last_name}`).join(', ') || 'nobody yet';
+            if (!confirm(`Put ${name} on #${fam.family_number}?\n\nAlready on it: ${who}`)) return;
+            familyId = fam.id; number = fam.family_number;
+          }
+
+          const r = await this._pickupRpc('rt_assign_pickup_family', {
+            p_student_id: studentId, p_family_id: familyId });
+          if (!r.success) return this.showNotification(r.error, 'error');
+
+          this.showNotification(`${name} is on #${number}.`, 'success');
+          this.loadHubPickupFamily(studentId);
+        } catch (e) {
+          console.error('setStudentPickupFamily failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
+      async removeStudentPickupFamily(studentId) {
+        const s = this._studentHubData?.student;
+        const name = `${s?.first_name || ''} ${s?.last_name || ''}`.trim() || 'this student';
+        if (!confirm(`Take ${name} off their pickup number?\n\nThey will not be callable at pickup until they are given another.`)) return;
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('pickup_family_members').delete().eq('student_id', studentId));
+          if (error) throw error;
+          this.showNotification(`${name} removed from their pickup family.`, 'success');
+          this.loadHubPickupFamily(studentId);
+        } catch (e) {
           this.showNotification(e.message, 'error');
         }
       }
