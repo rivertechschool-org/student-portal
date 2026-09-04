@@ -1,42 +1,46 @@
-const fs = require('fs');
+// Pull the PortalUI class out of shared/config.js so it can be tested in node.
+//
+//     node tests/extract-portalui.js && node tests/notifications.test.js
+//
+// Finding the end of the class by brace-counting looks obvious and does not
+// work: the class contains regex literals with quote characters in them
+// (/[&<>"']/g), and any scanner that treats a quote as the start of a string
+// runs off the end of the file. Rather than write a JS lexer for a test helper,
+// this walks the candidate end lines and keeps the first slice node can parse.
 
-const SRC = 'D:/LLCWork/student-portal/shared/config.js';
-const OUT = './tests/portalui.js';
+const fs = require('fs');
+const cp = require('child_process');
+const path = require('path');
+
+const SRC = path.join(__dirname, '..', 'shared', 'config.js');
+const OUT = path.join(__dirname, 'portalui.js');
+const TMP = path.join(__dirname, '.portalui-candidate.js');
 
 const src = fs.readFileSync(SRC, 'utf8');
 const start = src.indexOf('class PortalUI {');
-if (start < 0) throw new Error('class PortalUI not found');
+if (start < 0) throw new Error('class PortalUI not found in shared/config.js');
 
-const SQ = String.fromCharCode(39);   // '
-const DQ = String.fromCharCode(34);   // "
-const BT = String.fromCharCode(96);   // `
-const BS = String.fromCharCode(92);   // backslash
+const lines = src.slice(start).split('\n');
+let acc = '';
+let found = null;
 
-let i = src.indexOf('{', start);
-let depth = 0;
-let end = -1;
-
-for (; i < src.length; i++) {
-  const c = src[i], n = src[i + 1];
-
-  if (c === '/' && n === '/') { i = src.indexOf('\n', i); if (i < 0) break; continue; }
-  if (c === '/' && n === '*') { i = src.indexOf('*/', i) + 1; continue; }
-
-  if (c === SQ || c === DQ || c === BT) {
-    const quote = c;
-    i++;
-    while (i < src.length && src[i] !== quote) {
-      if (src[i] === BS) i++;
-      i++;
-    }
-    continue;
+for (let i = 0; i < lines.length; i++) {
+  acc += lines[i] + '\n';
+  if (lines[i] !== '}') continue;          // only a column-0 brace can close it
+  fs.writeFileSync(TMP, acc + '\nmodule.exports = PortalUI;\n');
+  try {
+    cp.execSync(`node --check "${TMP}"`, { stdio: 'pipe' });
+    found = i;
+    break;
+  } catch (e) {
+    // Not the end of the class - an earlier column-0 } inside it. Keep going.
   }
-
-  if (c === '{') depth++;
-  else if (c === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
 }
 
-if (end < 0) throw new Error('could not find the end of the class');
-const cls = src.slice(start, end);
-fs.writeFileSync(OUT, cls + '\nmodule.exports = PortalUI;\n');
-console.log('extracted', cls.length, 'chars; tail:', JSON.stringify(cls.slice(-30)));
+if (found === null) {
+  try { fs.unlinkSync(TMP); } catch (e) {}
+  throw new Error('could not find a parseable end to class PortalUI');
+}
+
+fs.renameSync(TMP, OUT);
+console.log(`extracted PortalUI (${acc.length} bytes) -> ${path.relative(process.cwd(), OUT)}`);
