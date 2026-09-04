@@ -1,0 +1,143 @@
+#!/usr/bin/env node
+// Behavioural test for the attendance filter on group RTC awards.
+// Extracts the REAL methods from portal/index.html (same brace-matching as
+// nlp-stress.js / rt-surface.js) and runs them against an in-memory Supabase
+// stub, so what is asserted here is what ships.
+//
+// The rule under test: a group award covers the students who were actually
+// here that day. The interesting cases are the edges — an empty register, a
+// register where nobody is present, and the phrases that opt out.
+const fs = require('fs'), path = require('path');
+// PORTAL_SRC lets this be pointed at another build, which is how the
+// assertions below were checked to actually fail before the change.
+const SRC = [process.env.PORTAL_SRC,
+             path.join(__dirname, '..', 'portal', 'index.html'),
+             path.join(process.cwd(), 'portal', 'index.html')].filter(Boolean).find(fs.existsSync);
+if (!SRC) { console.error('group-attendance: cannot find portal/index.html'); process.exit(2); }
+const src = fs.readFileSync(SRC, 'utf8');
+
+function extract(name) {
+  const re = new RegExp('\\n    (?:async\\s+)?' + name + '\\s*\\(', 'g');
+  const m = re.exec(src);
+  if (!m) throw new Error('method not found: ' + name);
+  let i = m.index + m[0].length - 1, pd = 0;
+  for (; i < src.length; i++) { const c = src[i]; if (c === '(') pd++; else if (c === ')') { pd--; if (pd === 0) { i++; break; } } }
+  const parEnd = i;
+  i = src.indexOf('{', parEnd);
+  let depth = 0, start = i;
+  for (; i < src.length; i++) { const c = src[i]; if (c === '{') depth++; else if (c === '}') { depth--; if (depth === 0) { i++; break; } } }
+  const sig = src.slice(m.index + 1, parEnd).trim();
+  const args = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
+  const isAsync = /^async\b/.test(sig);
+  const Ctor = isAsync ? Object.getPrototypeOf(async function () {}).constructor : Function;
+  return new Ctor(...(args ? args.split(',').map(s => s.trim()).filter(Boolean) : []), src.slice(start + 1, i - 1));
+}
+
+const TODAY = '2026-09-04';
+let DB = {};
+function qb(table) {
+  let rows = (DB[table] || []).slice();
+  const api = {
+    select() { return api; },
+    eq(k, v) { rows = rows.filter(r => r[k] === v); return api; },
+    in(k, vs) { rows = rows.filter(r => vs.includes(r[k])); return api; },
+    order() { return api; }, is() { return api; },
+    then(res) { return Promise.resolve({ data: rows, error: null }).then(res); },
+  };
+  return api;
+}
+
+const app = {
+  auth: { supabase: { from: qb } },
+  userInfo: { user: { id: 't1' }, profile: { id: 't1', user_type: 'teacher' } },
+  _nlpContext: {},
+  _terminalAllStudents: [
+    { id: 'a', full_name: 'Ada Reyes' }, { id: 'b', full_name: 'Ben Okafor' },
+    { id: 'c', full_name: 'Cleo Marsh' }, { id: 'd', full_name: 'Dov Lantz' },
+  ],
+  _terminalAllClasses: [],
+  _terminalAllGroups: [{ id: 'g1', name: 'Full Young Middle', studentIds: ['a', 'b', 'c', 'd'] }],
+  escapeHtml: s => String(s),
+  terminalPrintError(m) { app._errors.push(m); },
+  _requestConfirmation(summary, execute) { app._confirm = { summary, execute }; },
+  _rtcTxn: async ({ userId }) => { app._paid.push(userId); },
+  _pushUndo() {}, _naturalSuccess() {},
+  _isoDaysAgo: () => TODAY,
+  terminalMultiAward: async () => { throw new Error('should not route to multi-award'); },
+};
+for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput',
+                 '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass',
+                 '_rivenFindExcluded', '_fuzzyFindStudent', '_calculateSimilarity',
+                 '_levenshteinDistance', '_rivenResolveGroup', '_rivenRequireClasses',
+                 '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
+                 '_rememberClass', '_showClassPicker', '_showGroupPicker',
+                 '_rivenResolveClassRow', '_rivenFindEnrollment', 'terminalGroupAddRTC']) {
+  const fn = extract(n);
+  app[n] = function (...a) { return fn.apply(app, a); };
+}
+
+let pass = 0, fail = 0;
+const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FAIL', label, got !== undefined ? '\n        got: ' + JSON.stringify(got) : ''); };
+
+// Drive the award the way _executeIntent does, then run the confirmation.
+async function award(text, attendance) {
+  DB = { class_attendance: attendance };
+  app._errors = []; app._paid = []; app._confirm = null; app._nlpContext = {};
+  const normalized = app._normalizeInput(text);
+  const entities = {
+    normalized, original: text, amount: parseInt((normalized.match(/\d+/) || [0])[0], 10),
+    classMatch: app._rivenMatchClass(normalized), groupMatch: app._rivenMatchGroup(normalized),
+    students: [], student: null,
+  };
+  await app.terminalGroupAddRTC(entities);
+  if (app._confirm) await app._confirm.execute();
+  return { paid: app._paid.slice().sort(), errors: app._errors.slice(), summary: app._confirm?.summary || '' };
+}
+
+(async () => {
+  console.log('== group award: who actually gets paid ==');
+
+  // 1. Register taken: only the students marked here collect.
+  let r = await award('give lower middle 5 rtc', [
+    { student_id: 'a', date: TODAY, status: 'present' },
+    { student_id: 'b', date: TODAY, status: 'late' },
+    { student_id: 'c', date: TODAY, status: 'absent' },
+    { student_id: 'd', date: TODAY, status: 'present' },
+  ]);
+  t('present + late are paid, absent is not', JSON.stringify(r.paid) === JSON.stringify(['a', 'b', 'd']), r.paid);
+  t('the skipped student is named in the dialog', /skipping 1 not here today/.test(r.summary), r.summary);
+
+  // 2. Empty register: pay everyone, but SAY the list is unverified.
+  //    Awarding nobody here would look exactly like a successful filtered run.
+  r = await award('give lower middle 5 rtc', []);
+  t('empty register still pays the whole roster', JSON.stringify(r.paid) === JSON.stringify(['a', 'b', 'c', 'd']), r.paid);
+  t('empty register warns in the dialog', /No attendance has been taken/.test(r.summary), r.summary);
+  t('empty register is not an error', r.errors.length === 0, r.errors);
+
+  // 3. Register taken and nobody is in: that is a real answer, so stop.
+  r = await award('give lower middle 5 rtc', [
+    { student_id: 'a', date: TODAY, status: 'absent' },
+    { student_id: 'b', date: TODAY, status: 'absent' },
+  ]);
+  t('nobody present pays nobody', r.paid.length === 0, r.paid);
+  t('nobody present says so', /Nobody in Full Young Middle is marked present/.test(r.errors[0] || ''), r.errors);
+
+  // 4. The opt-out phrases cover the roster with no warning.
+  for (const phrase of ['including absent', 'present or not', 'to everyone on the roster']) {
+    r = await award(`give lower middle 5 rtc ${phrase}`, [
+      { student_id: 'a', date: TODAY, status: 'present' },
+      { student_id: 'b', date: TODAY, status: 'absent' },
+    ]);
+    t(`"${phrase}" covers the whole roster`, JSON.stringify(r.paid) === JSON.stringify(['a', 'b', 'c', 'd']), r.paid);
+    t(`"${phrase}" does not warn`, !/No attendance has been taken/.test(r.summary), r.summary);
+  }
+
+  // 5. Yesterday's register does not count as today's.
+  r = await award('give lower middle 5 rtc', [
+    { student_id: 'a', date: '2026-09-03', status: 'present' },
+  ]);
+  t('a stale register reads as untaken', /No attendance has been taken/.test(r.summary), r.summary);
+
+  console.log(`\n${pass} pass, ${fail} fail`);
+  process.exit(fail ? 1 : 0);
+})();
