@@ -2024,6 +2024,9 @@
         this.showWithdrawnClasses = false;  // Student: toggle withdrawn enrollments
         this.classFilterSubject = 'all';   // All users: filter classes view by subject
         this.classFilterGrade = 'all';     // All users: filter classes view by grade level
+        this.classFilterDay = 'all';       // All users: filter classes view by day of the week
+        this._classDays = null;            // class_id -> [day_of_week], loaded on demand
+        this._classDaysFor = null;         // which set of class ids _classDays was built for
 
         // Quarter weights for GPA calculation
         this.quarterWeights = {
@@ -16076,7 +16079,7 @@
           `;
         }
 
-        // Inject the filter bar (subject + grade) above the class grid.
+        // Inject the filter bar (subject + grade + day) above the class grid.
         const filterBarHtml = this.renderClassFilterBar();
 
         // Determine which classes to show
@@ -16087,7 +16090,7 @@
         // Render classes
         const totalUnfiltered = (this.classes || []).length;
         const totalMatched = matched.length;
-        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all' || this.classFilterDay !== 'all';
 
         if (totalUnfiltered === 0) {
           const emptyMessage = userType === 'teacher'
@@ -16218,7 +16221,7 @@
         }
       }
 
-      // -- Class filter bar (subject/grade) ----------------------------------
+      // -- Class filter bar (subject/grade/day) ------------------------------
       // Distinct subject + grade values are derived from the live this.classes
       // collection so the dropdowns always match what the user owns / is
       // enrolled in. Hidden when there's nothing to filter (single subject and
@@ -16228,7 +16231,45 @@
         if (!cls) return false;
         const subjectOk = this.classFilterSubject === 'all' || (cls.subject || '') === this.classFilterSubject;
         const gradeOk = this.classFilterGrade === 'all' || String(cls.grade_band ?? '') === this.classFilterGrade;
-        return subjectOk && gradeOk;
+        let dayOk = true;
+        if (this.classFilterDay !== 'all') {
+          const days = (this._classDays || {})[cls.id] || [];
+          // "none" finds the classes with no timetable at all — the ones whose
+          // register never appears on the attendance screen, which is worth
+          // being able to list.
+          dayOk = this.classFilterDay === 'none' ? days.length === 0
+                                                 : days.includes(Number(this.classFilterDay));
+        }
+        return subjectOk && gradeOk && dayOk;
+      }
+
+      // class_schedule is a separate table, so the days are fetched once per
+      // set of classes on view and cached. renderClasses() is synchronous;
+      // this fills the cache and re-renders when it lands.
+      async loadClassDays() {
+        const ids = (this.classes || []).map(c => c.id).filter(Boolean);
+        const key = ids.slice().sort().join(',');
+        if (!ids.length) { this._classDays = {}; this._classDaysFor = key; return; }
+        if (this._classDaysFor === key) return;
+        this._classDaysFor = key;                     // claim it before awaiting
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('class_schedule').select('class_id, day_of_week').in('class_id', ids);
+          if (error) throw error;
+          const map = {};
+          (data || []).forEach(r => {
+            const d = Number(r.day_of_week);
+            (map[r.class_id] = map[r.class_id] || []);
+            if (!map[r.class_id].includes(d)) map[r.class_id].push(d);
+          });
+          this._classDays = map;
+        } catch (e) {
+          // A failure here must not break the classes view — degrade to no day
+          // filter rather than an empty page.
+          console.warn('Could not load class days, day filter unavailable:', e);
+          this._classDays = {};
+        }
+        if (this.currentSection === 'classes') this.renderClasses();
       }
 
       renderClassFilterBar() {
@@ -16243,20 +16284,32 @@
             if (ia !== -1 && ib !== -1) return ia - ib;
             return String(a).localeCompare(String(b));
           });
-        if (subjects.length <= 1 && grades.length <= 1) return '';   // nothing to filter
+        // Days come from class_schedule; kick the fetch off the first time the
+        // bar is drawn and let it re-render when it arrives.
+        const idKey = all.map(c => c.id).filter(Boolean).slice().sort().join(',');
+        if (this._classDays === null || this._classDaysFor !== idKey) this.loadClassDays();
+        const dayMap = this._classDays || {};
+        const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const daysPresent = Array.from(new Set(all.flatMap(c => dayMap[c.id] || []))).sort((a, b) => a - b);
+        const anyUnscheduled = all.some(c => !(dayMap[c.id] || []).length);
+        if (subjects.length <= 1 && grades.length <= 1 && !daysPresent.length) return '';   // nothing to filter
 
         const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
         const subjectOptions = ['<option value="all">All subjects</option>',
           ...subjects.map(s => `<option value="${escape(s)}"${s === this.classFilterSubject ? ' selected' : ''}>${escape(s)}</option>`)].join('');
+        const dayOptions = ['<option value="all">All days</option>',
+          ...daysPresent.map(d => `<option value="${d}"${String(d) === String(this.classFilterDay) ? ' selected' : ''}>${DAY_NAMES[d]}</option>`),
+          ...(anyUnscheduled ? [`<option value="none"${this.classFilterDay === 'none' ? ' selected' : ''}>No day set</option>`] : [])].join('');
         const gradeOptions = ['<option value="all">All grades</option>',
           ...grades.map(g => `<option value="${escape(g)}"${g === this.classFilterGrade ? ' selected' : ''}>${escape(this.gradeBandLabel(g) || g)}</option>`)].join('');
 
-        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all' || this.classFilterDay !== 'all';
         return `
           <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px;">
             <span style="font-size:12px; color:var(--muted); font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">Filter</span>
             <select onchange="app.setClassFilterSubject(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${subjectOptions}</select>
             <select onchange="app.setClassFilterGrade(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${gradeOptions}</select>
+            ${(daysPresent.length || anyUnscheduled) ? `<select onchange="app.setClassFilterDay(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${dayOptions}</select>` : ''}
             ${filtersActive ? `<button class="btn btn-secondary" onclick="app.clearClassFilters()" style="padding:6px 12px; font-size:12px;">Clear</button>` : ''}
           </div>
         `;
@@ -16272,9 +16325,15 @@
         this.renderClasses();
       }
 
+      setClassFilterDay(value) {
+        this.classFilterDay = value || 'all';
+        this.renderClasses();
+      }
+
       clearClassFilters() {
         this.classFilterSubject = 'all';
         this.classFilterGrade = 'all';
+        this.classFilterDay = 'all';
         this.renderClasses();
       }
 
