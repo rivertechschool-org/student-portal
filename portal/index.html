@@ -9628,6 +9628,30 @@
 
           this._adminStudentsData = students || [];
 
+          // Pickup numbers, in one query rather than one per row.
+          // Membership lives in its own table so it cannot come from the
+          // select above, and a lookup per student would be a query per
+          // row of the roster.
+          //
+          // A failure here must not take the roster down with it: if the
+          // pickup migration has not been run, the column just reads N/A.
+          const pickupByStudent = {};
+          // On `this` because renderAdminStudentRecordsTable() builds the rows
+          // and the filter path calls it again without re-fetching. A local
+          // here is out of scope there, and a parameter would go stale the
+          // moment someone filters.
+          this._pickupByStudent = pickupByStudent;
+          try {
+            const { data: fams } = await this.supabaseQuery(() => this.auth.supabase
+              .from('pickup_family_members')
+              .select('student_id, pickup_families(family_number, note)'));
+            (fams || []).forEach(r => {
+              if (r.pickup_families) pickupByStudent[r.student_id] = r.pickup_families;
+            });
+          } catch (e) {
+            console.warn('Pickup numbers unavailable:', e);
+          }
+
           // Count active vs past students
           const activeCount = (students || []).filter(s => s.student_status !== 'past').length;
           const pastCount = (students || []).filter(s => s.student_status === 'past').length;
@@ -9697,6 +9721,7 @@
                   <th style="padding: 12px; text-align: left;">Email</th>
                   <th style="padding: 12px; text-align: left;">Status</th>
                   <th style="padding: 12px; text-align: center;">Games PIN</th>
+                  <th style="padding: 12px; text-align: center;">Pickup</th>
                   <th style="padding: 12px; text-align: center;">Actions</th>
                 </tr>
               </thead>
@@ -9707,6 +9732,12 @@
                     ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Past</span>
                        ${student.left_date ? `<br><small style="color: var(--muted);">Left: ${new Date(student.left_date).toLocaleDateString()}</small>` : ''}`
                     : `<span style="background: var(--success); color: white; padding: 2px 8px; border-radius: 10px; font-size: 11px;">Active</span>`;
+                  // N/A is not a formatting choice: a student with no number
+                  // cannot be called at pickup, so the gap is the point.
+                  const fam = (this._pickupByStudent || {})[student.id];
+                  const pickupDisplay = fam
+                    ? `<span style="font-weight: 700; color: var(--accent);" title="${fam.note ? this.jsAttr(fam.note) : 'Pickup family number'}">#${fam.family_number}</span>${fam.note ? '<span style="color: var(--muted); font-size: 11px;" title="This family has a standing note"> \u{1F4CC}</span>' : ''}`
+                    : '<span style="color: var(--muted); font-size: 11px;">N/A</span>';
                   const pinDisplay = student.games_pin
                     ? `<span style="font-family: monospace; font-weight: 600; color: var(--accent); letter-spacing: 1px;" title="Games sign-in PIN">${student.games_pin}</span>`
                     : '<span style="color: var(--muted); font-size: 11px;">—</span>';
@@ -9723,6 +9754,7 @@
                         <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminRegenerateStudentPin('${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="${student.games_pin ? 'Generate new PIN' : 'Generate PIN'}">${student.games_pin ? '↻' : 'Generate'}</button>
                       </div>
                     </td>
+                    <td style="padding: 12px; text-align: center;">${pickupDisplay}</td>
                     <td style="padding: 12px; text-align: center;">
                       <div style="display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;">
                         <button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
