@@ -76,35 +76,52 @@ const DB = {
 let SEQ = 0;
 const WRITES = [];
 function qb(table) {
-  let rows = (DB[table] || []).slice();
-  let pending = null, filters = [];
+  // DEFERRED, like the real client: .delete()/.update() do nothing until the
+  // builder is awaited, so the filters chained AFTER them still apply. The
+  // eager version wiped the whole table on `.delete().eq(...)` — it silently
+  // dropped rows written moments earlier and made a correct multi-row write
+  // look broken.
+  let op = 'select', payload = null, filters = [], lim = null;
+  const hit = r => filters.every(([k, v, kind]) =>
+    kind === 'in' ? v.includes(r[k]) : kind === 'gte' ? r[k] >= v : r[k] === v);
+  const run = () => {
+    const all = DB[table] || [];
+    if (op === 'insert') {
+      const made = (Array.isArray(payload) ? payload : [payload]).map(o => ({ id: 'new' + (++SEQ), ...o }));
+      DB[table] = all.concat(made);
+      WRITES.push({ table, op: 'insert', rows: made });
+      return made;
+    }
+    if (op === 'update') {
+      const found = all.filter(hit);
+      found.forEach(r => Object.assign(r, payload));
+      WRITES.push({ table, op: 'update', patch: payload, n: found.length });
+      return found;
+    }
+    if (op === 'delete') {
+      const found = all.filter(hit);
+      DB[table] = all.filter(r => !hit(r));
+      WRITES.push({ table, op: 'delete', n: found.length });
+      return [];
+    }
+    let out = all.filter(hit);
+    if (lim !== null) out = out.slice(0, lim);
+    return out;
+  };
   const api = {
     select() { return api; },
-    eq(k, v) { filters.push([k, v]); rows = rows.filter(r => r[k] === v); return api; },
-    in(k, vs) { rows = rows.filter(r => vs.includes(r[k])); return api; },
-    order() { return api; }, gte() { return api; },
-    limit(n) { rows = rows.slice(0, n); return api; },
-    insert(payload) {
-      const arr = Array.isArray(payload) ? payload : [payload];
-      const made = arr.map(o => ({ id: 'new' + (++SEQ), ...o }));
-      DB[table] = (DB[table] || []).concat(made);
-      WRITES.push({ table, op: 'insert', rows: made });
-      pending = made; return api;
-    },
-    update(patch) {
-      const hit = (DB[table] || []).filter(r => filters.every(([k, v]) => r[k] === v));
-      hit.forEach(r => Object.assign(r, patch));
-      WRITES.push({ table, op: 'update', patch, n: hit.length });
-      pending = hit; return api;
-    },
-    delete() {
-      const keep = (DB[table] || []).filter(r => !filters.every(([k, v]) => r[k] === v));
-      WRITES.push({ table, op: 'delete', n: (DB[table] || []).length - keep.length });
-      DB[table] = keep; pending = []; return api;
-    },
-    single() { return { then: (res) => Promise.resolve({ data: (pending || rows)[0] || null, error: null }).then(res) }; },
+    eq(k, v) { filters.push([k, v]); return api; },
+    is(k, v) { filters.push([k, v]); return api; },
+    in(k, vs) { filters.push([k, vs, 'in']); return api; },
+    gte(k, v) { if (v !== undefined) filters.push([k, v, 'gte']); return api; },
+    order() { return api; },
+    limit(n) { lim = n; return api; },
+    insert(p) { op = 'insert'; payload = p; return api; },
+    update(p) { op = 'update'; payload = p; return api; },
+    delete() { op = 'delete'; return api; },
+    single() { return { then: res => Promise.resolve({ data: run()[0] || null, error: null }).then(res) }; },
     maybeSingle() { return api.single(); },
-    then(res) { return Promise.resolve({ data: pending || rows, error: null }).then(res); },
+    then(res) { return Promise.resolve({ data: run(), error: null }).then(res); },
   };
   return api;
 }
