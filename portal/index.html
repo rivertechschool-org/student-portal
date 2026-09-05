@@ -44799,7 +44799,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-04·e';
+      const RIVEN_BUILD = '2026-09-05·a';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -46184,6 +46184,18 @@
           continue;
         }
 
+        if (o.op === 'schedule') {
+          const parsed = this._rtParseSlots(o.slots);
+          if (parsed.error) { fail(this._rtErr('bad_slots', `Step ${idx}: ${parsed.error}`)); continue; }
+          // A class created earlier in this same plan has no row to resolve yet
+          const pending = typeof o.class === 'string' && pendingClasses.has(o.class.trim().toLowerCase());
+          let cname = pending ? o.class.trim() : null;
+          if (!pending) { const c = await klass(o); if (!c) continue; cname = c.name; }
+          steps.push({ step: idx, op: 'schedule', class: cname,
+            slots: parsed.slots, label: this._rtSlotLabel(parsed.slots) });
+          continue;
+        }
+
         if (o.op === 'enroll') {
           const c = await klass(o); if (!c) continue;
           let names = [];
@@ -46211,7 +46223,7 @@
           continue;
         }
 
-        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll, create_assignment, edit_assignment.`));
+        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll, schedule, create_assignment, edit_assignment.`));
       }
 
       return {
@@ -46245,7 +46257,8 @@
           note: 'Nothing was written. Fix these and re-send.', ...plan };
       }
       const line = (s) => {
-        if (s.op === 'create_class') return `Create class <b>${this.escapeHtml(s.name)}</b> (${this.escapeHtml(s.subject)})`;
+        if (s.op === 'create_class') return `Create class <b>${this.escapeHtml(s.name)}</b> (${this.escapeHtml(s.subject)})${s.slots ? ' &middot; ' + this.escapeHtml(this._rtSlotLabel(s.slots)) : ''}`;
+        if (s.op === 'schedule') return `Timetable for <b>${this.escapeHtml(s.class)}</b> &rarr; ${this.escapeHtml(s.label)} <span style="color: var(--muted);">(replaces its current slots)</span>`;
         if (s.op === 'enroll') return `Enroll <b>${s.students}</b> students in <b>${this.escapeHtml(s.class)}</b>${s.from_class ? ' (from ' + this.escapeHtml(s.from_class) + ')' : ''}`;
         if (s.op === 'group_award') return `${s.amount > 0 ? 'Give' : 'Take'} <b>${Math.abs(s.amount)} RTC</b> ${s.amount > 0 ? 'to' : 'from'} each of <b>${s.students}</b> in ${this.escapeHtml(s.class)}`;
         if (s.op === 'award' || s.op === 'deduct') return `<b>${this.escapeHtml(s.student)}</b> ${s.amount > 0 ? '+' : ''}${s.amount} RTC (${s.balance_before} → ${s.balance_after})`;
@@ -46265,6 +46278,33 @@
       return { executed: false, awaiting_confirmation: true,
         note: 'Confirm in the terminal to run these. Results and the read-back print after.',
         steps: plan.steps, needs_review: plan.needs_review };
+    }
+
+    // A class's timetable slots. The attendance screen reads a register for
+    // the period the class sits in that day, so a class with no slots is a
+    // class whose register never shows — which is what "there isn't a period
+    // on Fridays" turned out to mean.
+    _rtParseSlots(slots) {
+      const DAY = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2,
+        wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4,
+        fri: 5, friday: 5, sat: 6, saturday: 6 };
+      if (!Array.isArray(slots)) return { error: '"slots" must be a list of {day, period}.' };
+      const out = [];
+      for (const raw of slots) {
+        if (!raw || typeof raw !== 'object') return { error: 'each slot must be {day, period}.' };
+        const dRaw = raw.day;
+        const d = typeof dRaw === 'number' ? dRaw : DAY[String(dRaw || '').trim().toLowerCase()];
+        if (d === undefined || d === null || d < 0 || d > 6) return { error: `"${dRaw}" is not a day.` };
+        const p = Number(raw.period);
+        if (!Number.isInteger(p) || p < 1 || p > 8) return { error: `period must be 1-8, got ${JSON.stringify(raw.period)}.` };
+        if (!out.some(x => x.day_of_week === d && x.period === p)) out.push({ day_of_week: d, period: p });
+      }
+      return { slots: out };
+    }
+
+    _rtSlotLabel(slots) {
+      const N = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      return slots.map(x => `${N[x.day_of_week]} P${x.period}`).join(', ');
     }
 
     async _rtRunOps(spec, plan) {
@@ -46293,9 +46333,23 @@
               grading_weight: o.grading_weight || 'even'
             }]).select().single();
             if (error) throw error;
+            let slotsMade = null;
+            if (o.slots) {
+              const parsed = this._rtParseSlots(o.slots);
+              if (parsed.error) throw new Error(`create_class slots: ${parsed.error}`);
+              if (parsed.slots.length) {
+                const { error: sErr } = await sb.from('class_schedule')
+                  .insert(parsed.slots.map(x => ({ class_id: data.id, ...x })));
+                if (sErr) throw sErr;
+                slotsMade = this._rtSlotLabel(parsed.slots);
+              }
+            }
             await this._loadTerminalClasses();
-            undos.push(async () => { await sb.from('classes').update({ is_active: false }).eq('id', data.id); });
-            results.push({ step: idx, op: o.op, ok: true, created: { id: data.id, name: data.name } });
+            undos.push(async () => {
+              await sb.from('class_schedule').delete().eq('class_id', data.id);
+              await sb.from('classes').update({ is_active: false }).eq('id', data.id);
+            });
+            results.push({ step: idx, op: o.op, ok: true, created: { id: data.id, name: data.name }, schedule: slotsMade });
 
           } else if (o.op === 'enroll') {
             const c = await klass(o);
@@ -46328,6 +46382,30 @@
               added++;
             }
             results.push({ step: idx, op: o.op, ok: true, class: c.name, enrolled: added, already_enrolled: already });
+
+          } else if (o.op === 'schedule') {
+            const c = await klass(o);
+            const parsed = this._rtParseSlots(o.slots);
+            if (parsed.error) throw new Error(`schedule: ${parsed.error}`);
+            // Replace, not append: running the same command twice has to leave
+            // one timetable, not two overlapping ones.
+            const { data: prev } = await sb.from('class_schedule')
+              .select('day_of_week, period').eq('class_id', c.id);
+            await sb.from('class_schedule').delete().eq('class_id', c.id);
+            if (parsed.slots.length) {
+              const { error: sErr } = await sb.from('class_schedule')
+                .insert(parsed.slots.map(x => ({ class_id: c.id, ...x })));
+              if (sErr) throw sErr;
+            }
+            undos.push(async () => {
+              await sb.from('class_schedule').delete().eq('class_id', c.id);
+              if (prev && prev.length) {
+                await sb.from('class_schedule').insert(prev.map(x => ({ class_id: c.id, day_of_week: x.day_of_week, period: x.period })));
+              }
+            });
+            results.push({ step: idx, op: o.op, ok: true, class: c.name,
+              schedule: this._rtSlotLabel(parsed.slots),
+              replaced: prev && prev.length ? this._rtSlotLabel(prev) : null });
 
           } else if (o.op === 'award' || o.op === 'deduct') {
             const s = student(o.student);
@@ -46751,7 +46829,9 @@
             what: 'Executes ops, then runs "reads" and returns the new values in the SAME output.',
             shape: '{"op":"apply","ops":[...],"reads":[{"op":"roster","class":"X","as":"after"}]}',
             rules: 'One confirmation for the whole batch. If ANY op fails to resolve, NOTHING runs. One grouped undo.',
-            extra_ops: ['create_class', 'enroll (students[] or from_class)', 'create_assignment', 'edit_assignment'],
+            extra_ops: ['create_class', 'enroll (students[] or from_class)', 'schedule',
+              'create_assignment', 'edit_assignment'],
+            timetable: 'schedule: {"op":"schedule","class":"X","slots":[{"day":"tue","period":1}]} REPLACES that class\'s slots, so re-running leaves one timetable rather than two. create_class takes the same "slots" so a new class lands with its periods. day is mon-fri or 0-6, period is 1-8. A class with no slot on a given day does not meet that day, and its register will not show on the attendance screen.',
             assignments: 'create_assignment: class, title, due (YYYY-MM-DD = end of that day, or a full timestamp), description, points, grading_type (points|rubric|none), type (regular|info|test), published, graded_offline, rtc_reward, max_submit_size_mb, category_id, rubric_id, students[] (omit = whole class). edit_assignment: {"assignment":"<id or exact title>","class":"X","set":{...}} patches ONLY the named fields. QUARTER IS NOT A FIELD: it is derived from due_date, and a date outside every quarter is flagged because the assignment then hides from quarter-filtered views.'
           },
           writes: 'apply writes. Every other op is read-only.'

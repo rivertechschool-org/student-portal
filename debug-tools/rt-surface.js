@@ -4,7 +4,9 @@
 // them against an in-memory Supabase stub, so there is no drift between this
 // harness and shipped code.
 const fs = require('fs'), path = require('path');
-const SRC = [path.join(__dirname,'..','portal','index.html'), path.join(process.cwd(),'portal','index.html')].find(fs.existsSync);
+// PORTAL_SRC points this at another build, which is how the assertions
+// below were checked to actually fail before the change.
+const SRC = [process.env.PORTAL_SRC, path.join(__dirname,'..','portal','index.html'), path.join(process.cwd(),'portal','index.html')].filter(Boolean).find(fs.existsSync);
 if (!SRC) { console.error('rt-surface: cannot find portal/index.html'); process.exit(2); }
 const src = fs.readFileSync(SRC, 'utf8');
 
@@ -151,7 +153,7 @@ const app = {
   _requestConfirmation(summary, execute) { app._pending = { summary, execute }; },
 };
 DB.classes = [];
-for (const n of ['_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtQuarters','_rtQuarterFor','_rtDueDate','_rtAssignmentFields','_rtResolveAssignment','_rtAssignments','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
+for (const n of ['_rtParseSlots','_rtSlotLabel','_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtQuarters','_rtQuarterFor','_rtDueDate','_rtAssignmentFields','_rtResolveAssignment','_rtAssignments','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -380,6 +382,49 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   const aout = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
   t('assignment created and read back', aout.executed === true && aout.failed === 0
     && aout.verification.after.assignments.some(a => a.title === 'Bulk One'), aout.failures);
+
+  // ---- schedule: the class timetable the attendance screen reads ----------
+  // A class with no slot on a day does not meet that day, and its register
+  // never shows on the attendance screen — which is what "there isn't a
+  // period on Fridays" turned out to mean.
+  const badday = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'schedule', class: 'Filmmaking', slots: [{ day: 'funday', period: 1 }] } ] }));
+  t('an unknown day is rejected', badday.errors.some(e => e.error === 'bad_slots'), badday.errors);
+  const badper = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'schedule', class: 'Filmmaking', slots: [{ day: 'mon', period: 99 }] } ] }));
+  t('a period outside 1-8 is rejected', badper.errors.some(e => e.error === 'bad_slots'), badper.errors);
+  const shplan = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'schedule', class: 'Filmmaking', slots: [{ day: 'tue', period: 1 }, { day: 'thursday', period: 1 }] } ] }));
+  t('the plan spells the slots back', /Tue P1, Thu P1/.test(JSON.stringify(shplan.summary || shplan)), shplan);
+
+  WRITES.length = 0; app._pending = null;
+  const shap = await rt(JSON.stringify({ op: 'apply',
+    ops: [{ op: 'schedule', class: 'Filmmaking', slots: [{ day: 'tue', period: 1 }, { day: 'fri', period: 2 }] }],
+    reads: [{ op: 'classes', as: 'after' }] }));
+  t('schedule apply waits for confirmation', shap.awaiting_confirmation === true, shap);
+  await app._pending.execute();
+  const shout = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
+  t('schedule executed', shout.executed === true && shout.failed === 0, shout.failures);
+  const sched = (DB.class_schedule || []).filter(x => x.class_id === 'c1')
+    .map(x => `${x.day_of_week}:${x.period}`).sort();
+  t('slots REPLACE the old ones rather than stacking',
+    JSON.stringify(sched) === JSON.stringify(['2:1', '5:2']), sched);
+  const fm = shout.verification.after.classes.find(c => c.name === 'Filmmaking');
+  t('the read-back shows the new timetable',
+    fm && JSON.stringify(fm.schedule) === JSON.stringify(['Fri:P2', 'Tue:P1']), fm);
+
+  // a class created and timetabled in the SAME batch
+  WRITES.length = 0; app._pending = null;
+  const ccs = await rt(JSON.stringify({ op: 'apply',
+    ops: [{ op: 'create_class', name: 'Lower MS Ukulele', subject: 'Music',
+            slots: [{ day: 'wed', period: 6 }] }],
+    reads: [{ op: 'classes', as: 'after' }] }));
+  t('create+schedule waits for one confirmation', ccs.awaiting_confirmation === true, ccs);
+  await app._pending.execute();
+  const ccout = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
+  const uke = ccout.verification.after.classes.find(c => c.name === 'Lower MS Ukulele');
+  t('a new class lands with its periods',
+    uke && JSON.stringify(uke.schedule) === JSON.stringify(['Wed:P6']), uke);
 
   const help = await rt('');
   t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);
