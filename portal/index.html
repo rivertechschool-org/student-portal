@@ -44831,7 +44831,7 @@
       ]);
       this._initPhi3State();
 
-      const RIVEN_BUILD = '2026-09-05·a';
+      const RIVEN_BUILD = '2026-09-05·b';
       section.innerHTML = `
         <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <!-- Header -->
@@ -54625,6 +54625,29 @@
       return out;
     }
 
+    // Did the sentence point at a class with a word of its own, or only with
+    // the cohort's vocabulary? "lower ms" matches "Lower MS Math" on the words
+    // that name the COHORT; "math" is the class's own.
+    _rivenClassNamedBeyondCohort(cm) {
+      const COHORT = new Set(['lower', 'upper', 'young', 'younger', 'old', 'older', 'junior',
+        'senior', 'middle', 'elementary', 'elementry', 'high', 'homeschool', 'ms', 'hs', 'es', 'school']);
+      return (cm && cm.consumed || []).some(w => w && !COHORT.has(String(w).toLowerCase()));
+    }
+
+    // Do I actually TEACH this class? Distinct from _rivenCanManageClass,
+    // which answers "am I allowed to write to it" and is true of every class
+    // in the school for an admin. Ownership is what a bare command should
+    // default to; the wider reach has to be asked for.
+    _rivenOwnsClass(row) {
+      const me = this.userInfo?.user?.id;
+      if (!row || !me) return false;
+      return row.teacher_id === me || row.secondary_teacher_id === me;
+    }
+
+    _rivenSaidEveryTeacher(text) {
+      return /\b(every teacher|all teachers|whole school|school[- ]wide|every class in the school|other teachers|everyone'?s classes)\b/i.test(text || '');
+    }
+
     // Same class name, different classes ("English" and "English") reads as a
     // stutter in a confirmation. Whose it is, is the thing that tells them apart.
     _rivenClassLabels(rows) {
@@ -54662,13 +54685,24 @@
           .from('class_enrollments').select('class_id, student_id')
           .in('student_id', grp.studentIds).eq('status', 'active');
         if (enrErr) { this.terminalPrintError('Could not read the rosters: ' + enrErr.message); return; }
-        const mine = {};
-        (enr || []).forEach(e => { (mine[e.class_id] = mine[e.class_id] || []).push(e.student_id); });
-        byClass = Object.entries(mine).map(([cid, sids]) => ({
+        const holds = {};
+        (enr || []).forEach(e => { (holds[e.class_id] = holds[e.class_id] || []).push(e.student_id); });
+        const all = Object.entries(holds).map(([cid, sids]) => ({
           row: (this._terminalAllClasses || []).find(c => c.id === cid), studentIds: sids
-        })).filter(b => b.row && this._rivenCanManageClass(b.row, { attendance: true }));
+        })).filter(b => b.row);
+        // MINE, not "every class I am allowed to write to". An admin can write
+        // to the whole school, so permission is the wrong filter here: "mark
+        // attendance for lower ms" reached 16 classes across 8 teachers.
+        // Teaching the class is the test; the school-wide reading has to be
+        // asked for out loud.
+        byClass = this._rivenSaidEveryTeacher(entities.normalized || '')
+          ? all.filter(b => this._rivenCanManageClass(b.row, { attendance: true }))
+          : all.filter(b => this._rivenOwnsClass(b.row));
         if (!byClass.length) {
-          this.terminalPrintError(`None of your classes hold students from ${grp.label || 'that group'}, so there is nowhere to record it.`);
+          const otherN = all.length;
+          this.terminalPrintError(
+            `You don't teach any class holding ${grp.label || 'that group'}.` +
+            (otherN ? ` ${otherN} other teacher${otherN === 1 ? "'s class does" : "s' classes do"} — add "every teacher" if you really mean all of them.` : ''));
           return;
         }
       }
@@ -55359,7 +55393,17 @@
       const cm = entities.classMatch;
       const saidClass = /\bclass(es)?\b/.test(entities.normalized || '');
       const strongClass = cm && (!cm.ambiguous || saidClass);
-      if (gm && !strongClass) {
+      // Naming BOTH a cohort and classes narrows: "math and english today for
+      // lower ms" is those classes' lower-middle students, not every class the
+      // cohort touches. But a cohort's OWN words partially match class names
+      // here ("lower ms" against "Lower MS Math"), so a class only counts as
+      // named when the sentence points at it with a word the cohort did not
+      // supply. Otherwise "mark lower middle present" would read as a class
+      // command and land in the pick-one dialog.
+      const named = cm && this._rivenClassNamedBeyondCohort(cm);
+      const narrowTo = (gm && !gm.ambiguous && named) ? new Set(gm.studentIds || []) : null;
+      const narrowLabel = narrowTo ? gm.name : null;
+      if (gm && !strongClass && !named) {
         if (gm.ambiguous) { this._showGroupPicker(gm.candidates, entities.original || ''); return { asked: true }; }
         const ids = [...new Set(gm.studentIds || [])];
         if (!ids.length) {
@@ -55383,13 +55427,19 @@
             const { data: enr, error } = await this.auth.supabase
               .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active');
             if (error) { this.terminalPrintError('Could not read the roster: ' + error.message); return { asked: true }; }
-            const rowIds = (enr || []).map(e => e.student_id);
+            let rowIds = (enr || []).map(e => e.student_id);
+            if (narrowTo) rowIds = rowIds.filter(id => narrowTo.has(id));
             byClass.push({ row, studentIds: rowIds });
             // A student on two of these rosters is still ONE person. Without
             // this dedupe a group award pays the overlap twice.
             rowIds.forEach(id => { if (!seen.has(id)) { seen.add(id); ids.push(id); } });
           }
-          const label = res.rows.map(r => r.name).join(' + ');
+          const base = res.rows.map(r => r.name).join(' + ');
+          const label = narrowLabel ? `${base} (${narrowLabel})` : base;
+          if (narrowTo && !ids.length) {
+            this.terminalPrintError(`No ${narrowLabel} students are enrolled in ${base}.`);
+            return { asked: true };
+          }
           this._nlpContext = this._nlpContext || {};
           this._nlpContext.lastGroup = { label, classId: res.rows[0].id,
             classIds: res.rows.map(r => r.id), byClass, studentIds: ids, timestamp: Date.now() };

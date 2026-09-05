@@ -101,7 +101,7 @@ for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput'
                  '_hasCommandSignal', '_hasCommandVerb', '_isCommonWordTypo', '_commonWords',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
                  '_rememberClass', '_showClassPicker', '_showGroupPicker',
-                 '_rivenResolveClassRow', '_rivenFindEnrollment', '_rivenNamesEachClass', '_rivenResolvedStudent', '_rivenPeriodsOn', '_rivenClassLabels', 'terminalGroupAddRTC',
+                 '_rivenResolveClassRow', '_rivenFindEnrollment', '_rivenNamesEachClass', '_rivenResolvedStudent', '_rivenPeriodsOn', '_rivenClassLabels', '_rivenOwnsClass', '_rivenSaidEveryTeacher', '_rivenClassNamedBeyondCohort', 'terminalGroupAddRTC',
                  'terminalMarkAttendanceGroup', '_rivenCanManageClass']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
@@ -353,6 +353,77 @@ async function award(text, attendance) {
       { name: 'English', teacher_name: 'Emily Allison' },
       { name: 'Math', teacher_name: 'Jordan Ezell' },
     ])) === JSON.stringify(['English (Caitlin Relvas)', 'English (Emily Allison)', 'Math']));
+
+  // ---- an admin's reach is not the default ---------------------------------
+  // "Mark attendance for math and english today for lower ms: all were present
+  // except malakai and magnolia." offered 92 records across 16 classes owned by
+  // eight teachers. The cohort fan-out filtered by _rivenCanManageClass, which
+  // for an admin is every class in the school.
+  console.log('\n== a cohort command stays on the asker\'s own classes ==');
+  const SCHOOL = [
+    { id: 'my-m', name: 'Lower MS Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
+    { id: 'my-e', name: 'Lower MS English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
+    { id: 'her-lit', name: 'Literature', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Caitlin' },
+    { id: 'his-sci', name: 'Science', teacher_id: 't8', secondary_teacher_id: null, is_active: true, teacher_name: 'Jordan' },
+    { id: 'her-dance', name: 'Dance', teacher_id: 't7', secondary_teacher_id: null, is_active: true, teacher_name: 'Mary' },
+  ];
+  const ENROL = [];
+  ['my-m', 'my-e', 'her-lit', 'his-sci', 'her-dance'].forEach(cid => {
+    ['a', 'mk', 'mg'].forEach(sid => ENROL.push({ class_id: cid, student_id: sid, status: 'active' }));
+  });
+  app._terminalAllStudents = [
+    { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
+    { id: 'mk', full_name: 'Malakai Kaufman', first_name: 'Malakai', last_name: 'Kaufman', status: 'active', rtc_balance: 0 },
+    { id: 'mg', full_name: 'Magnolia Mays', first_name: 'Magnolia', last_name: 'Mays', status: 'active', rtc_balance: 0 },
+    { id: 'out', full_name: 'Otto Older', first_name: 'Otto', last_name: 'Older', status: 'active', rtc_balance: 0 },
+  ];
+  app._terminalAllGroups = [{ id: 'g-ym', name: 'Full Young Middle', studentIds: ['a', 'mk', 'mg'] }];
+  // the asker is an ADMIN — allowed to write to every class in the school
+  app.userInfo = { user: { id: 't1' }, profile: { id: 't1', user_type: 'admin' } };
+
+  async function cohort(text) {
+    DB = { class_enrollments: ENROL.map(e => ({ ...e })), class_schedule: [],
+           class_attendance: [], class_attendance_sessions: [] };
+    app._terminalAllClasses = SCHOOL.map(c => ({ ...c }));
+    app._errors = []; app._confirm = null; app._nlpContext = {}; app._pickedFrom = null;
+    app._showClassPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+    app._showGroupPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
+    const nz = app._normalizeInput(text);
+    await app.terminalMarkAttendanceGroup({
+      normalized: nz, original: text, amount: null, students: [], student: null,
+      classMatch: app._rivenMatchClass(nz), groupMatch: app._rivenMatchGroup(nz),
+    });
+    if (app._confirm) await app._confirm.execute();
+    return [...new Set(DB.class_attendance.map(r => r.class_id))].sort();
+  }
+
+  // the reported sentence: classes named AND a cohort named -> the intersection
+  let touched = await cohort('Mark attendance for math and english today for lower ms: all were present except malakai and magnolia.');
+  t('only my two named classes are written',
+    JSON.stringify(touched) === JSON.stringify(['my-e', 'my-m']), touched);
+  t('the confirmation says whose cohort it narrowed to',
+    /Lower MS English|Lower MS Math/.test(app._confirm?.summary || ''), app._confirm?.summary);
+
+  // a bare cohort, no class named: my classes only, not the whole school
+  touched = await cohort('mark lower middle present');
+  t('a bare cohort stays on classes I teach',
+    JSON.stringify(touched) === JSON.stringify(['my-e', 'my-m']), touched);
+
+  // ...and the school-wide reach is still reachable, but has to be asked for
+  touched = await cohort('mark lower middle present for every teacher');
+  t('"every teacher" opens it up again',
+    JSON.stringify(touched) === JSON.stringify(['her-dance', 'her-lit', 'his-sci', 'my-e', 'my-m']), touched);
+
+  // a teacher who owns nothing holding the cohort is told, not silently widened
+  app.userInfo = { user: { id: 't5' }, profile: { id: 't5', user_type: 'admin' } };
+  touched = await cohort('mark lower middle present');
+  t('owning no such class writes nothing', touched.length === 0, touched);
+  t('and says other teachers do', /other teachers' classes do/.test(app._errors[0] || ''), app._errors);
+  app.userInfo = { user: { id: 't1' }, profile: { id: 't1', user_type: 'admin' } };
+
+  t('ownership is not the same question as permission',
+    app._rivenOwnsClass(SCHOOL[0]) === true && app._rivenOwnsClass(SCHOOL[2]) === false &&
+    app._rivenCanManageClass(SCHOOL[2], { attendance: true }) === true);
 
   console.log(`\n${pass} pass, ${fail} fail`);
   process.exit(fail ? 1 : 0);
