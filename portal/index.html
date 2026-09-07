@@ -4720,6 +4720,57 @@
         return s === 'activated' || s === 'active';
       }
 
+      // account_status means opposite things depending on who you are.
+      //
+      //   teacher/admin  inactive -> gone. deactivateTeacher sets this when
+      //                              someone leaves; it removes their login and
+      //                              keeps their class history.
+      //   student        inactive -> NORMAL. 114 of 137 students are inactive
+      //                              and currently enrolled - they sign in to
+      //                              games with a PIN and are graded as usual.
+      //
+      // Rendering one word for both made an ordinary pupil look like a departed
+      // member of staff. Same column, same check, different sentence.
+      accountStatusLabel(profile) {
+        const activated = this.isActivated(profile);
+        const isStaff = profile?.user_type === 'teacher' || profile?.user_type === 'admin';
+
+        if (isStaff) {
+          return activated
+            ? { text: 'Active', icon: '✅', tone: 'ok',
+                title: 'Can sign in to the portal' }
+            : { text: 'Former', icon: '⊘', tone: 'muted',
+                title: 'No longer has access. Class history is kept and access can be restored.' };
+        }
+        if (profile?.user_type === 'parent') {
+          return activated
+            ? { text: 'Active', icon: '✅', tone: 'ok',
+                title: 'Can sign in to the parent portal' }
+            : { text: 'No login', icon: '⊘', tone: 'muted',
+                title: 'Has not set up access yet' };
+        }
+
+        // Students, and anything without a user_type. The rows that reach this
+        // helper without one come from queries already filtered to students, so
+        // the student wording is the safe default rather than an assumption.
+        return activated
+          ? { text: 'Has login', icon: '✅', tone: 'ok',
+              title: 'Signs in with an email address and password' }
+          : { text: 'PIN only', icon: '🔑', tone: 'muted',
+              title: 'No email login. Signs in to games with a 4-character PIN, and is graded as normal.' };
+      }
+
+      // Pill markup for the label above. `plain` drops the background for
+      // places that sit on a coloured header already.
+      accountStatusBadge(profile, plain = false) {
+        const b = this.accountStatusLabel(profile);
+        const colour = b.tone === 'ok' ? 'var(--accent-2)' : 'var(--muted)';
+        if (plain) {
+          return `<span title="${this.jsAttr(b.title)}">${b.icon} ${b.text}</span>`;
+        }
+        return `<span title="${this.jsAttr(b.title)}" style="background: ${colour}; color: var(--bg); padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap;">${b.text}</span>`;
+      }
+
       // Format a date-only value ("2026-09-01") for display.
       //
       // new Date('2026-09-01') parses as UTC midnight, and toLocaleDateString()
@@ -17598,9 +17649,7 @@
                           <tbody>
                               ${availableStudents.map(student => {
                                   const memberOf = groupsByStudent[student.id] || [];
-                                  const statusBadge = this.isActivated(student) 
-                                      ? '<span style="color: var(--accent-2);">✓ Active</span>'
-                                      : '<span style="color: var(--warning);">⊘ Inactive</span>';
+                                  const statusBadge = this.accountStatusBadge(student);
                                   
                                   return `
                                       <tr class="add-student-row"
@@ -33405,7 +33454,7 @@
 
               <!-- Inactive Teachers -->
               <div class="card" style="margin-bottom: 20px;">
-                <h3 style="margin-bottom: 15px;">⊘ Inactive Teachers (${inactiveTeachers.length})</h3>
+                <h3 style="margin-bottom: 15px;">⊘ Former Teachers (${inactiveTeachers.length})</h3>
                 ${inactiveTeachers.length > 0 ? `
                   <table style="width: 100%;">
                     <thead>
@@ -34135,9 +34184,7 @@
                             <td>${student.grade_level || '-'}</td>
                             <td>${student.left_date ? this._formatDateOnly(student.left_date) : '-'}</td>
                             <td>
-                              ${this.isActivated(student)
-                                ? '<span style="background: var(--accent-2); color: var(--bg); padding: 2px 8px; border-radius: 4px; font-size: 11px;">Activated</span>'
-                                : '<span style="background: var(--muted); color: var(--bg); padding: 2px 8px; border-radius: 4px; font-size: 11px;">Inactive</span>'}
+                              ${this.accountStatusBadge(student)}
                             </td>
                             <td>
                               <button class="btn btn-secondary small" onclick="app.viewStudentDetails('${student.id}')">View Details</button>
@@ -34533,7 +34580,7 @@
                   <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 10px;">
                     <h2 style="margin: 0; color: white;">${student.first_name} ${student.last_name}</h2>
                     <span style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 12px;">
-                      ${this.isActivated(student) ? '✅ Activated' : '⊘ Inactive'}
+                      ${this.accountStatusBadge(student, true)}
                     </span>
                   </div>
                   <div style="display: flex; gap: 20px; flex-wrap: wrap; font-size: 14px; opacity: 0.9;">
@@ -36008,6 +36055,10 @@
 
           const stu = s || student;
           const activated = this.isActivated(stu);
+          // Not-activated is not an error state for a student - it is how most
+          // of the school signs in. Colour follows the label's tone so the pill
+          // cannot say "PIN only" in red.
+          const acct = this.accountStatusLabel(stu);
           const name = `${stu.first_name || ''} ${stu.last_name || ''}`.trim();
 
           const box = (title, body) => `
@@ -36024,8 +36075,8 @@
             <div style="max-width: 620px;">
               ${box('Sign-in', `
                 <div class="keep-row" style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
-                  <span style="padding: 4px 10px; border-radius: 12px; font-size: 12px; background: ${activated ? 'rgba(39,174,96,.15)' : 'rgba(231,76,60,.15)'}; color: ${activated ? '#27ae60' : '#e74c3c'};">
-                    ${activated ? '✅ Activated' : '⊘ Inactive'}
+                  <span style="padding: 4px 10px; border-radius: 12px; font-size: 12px; background: ${acct.tone === 'ok' ? 'rgba(39,174,96,.15)' : 'rgba(127,140,141,.18)'}; color: ${acct.tone === 'ok' ? '#27ae60' : 'var(--muted)'};">
+                    ${acct.icon} ${acct.text}
                   </span>
                   <span style="color: var(--muted); font-size: 13px;">${stu.email || 'No email on file'}</span>
                 </div>
