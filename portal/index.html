@@ -7565,32 +7565,99 @@
       }
 
       showLinkChildModal() {
-        // Asks for a code, not the child's email. The email version could never
-        // work: RLS lets a parent read only children they are ALREADY linked
-        // to, so the lookup that creates the first link was blocked by the
-        // absence of that link. It also assumed the student had an email, and
-        // most sign in with a PIN instead.
+        // Two paths. Requesting is the default because it needs nothing the
+        // parent does not already have; the code is a shortcut for families
+        // who were handed one at pickup.
+        //
+        // The name field is FREE TEXT with no autocomplete on purpose. A search
+        // or dropdown would confirm whether a given name is enrolled here,
+        // turning this form into a roster oracle for anyone who can make an
+        // account.
         const modalContent = `
-          <form id="link-child-form" onsubmit="app.linkChildByCode(event)">
-            <div style="margin-bottom: 15px;">
-              <label style="display: block; margin-bottom: 5px; color: var(--muted);">Student Link Code</label>
-              <input type="text" id="child-code-input" class="form-control" placeholder="ABCD2345" required
-                maxlength="11" autocomplete="off" autocapitalize="characters" spellcheck="false"
-                style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: monospace; font-size: 18px; letter-spacing: 2px; text-transform: uppercase;">
-              <small style="color: var(--muted);">
-                The 8-character code the school gave you for your child. Ask the
-                office if you do not have one. Linking more than one child? Add
-                them one code at a time.
-              </small>
+          <form id="link-child-form" onsubmit="app.requestChildLink(event)">
+            <div style="margin-bottom: 14px;">
+              <label style="display: block; margin-bottom: 5px; color: var(--muted);">Your child's full name</label>
+              <input type="text" id="link-student-name" class="form-control" required
+                placeholder="First and last name" autocomplete="off"
+                style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
             </div>
+            <div style="display: flex; gap: 10px; margin-bottom: 14px;">
+              <div style="flex: 1;">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Grade <span style="opacity:.6">(optional)</span></label>
+                <input type="text" id="link-student-grade" class="form-control" placeholder="e.g. 9"
+                  style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+              </div>
+              <div style="flex: 1;">
+                <label style="display: block; margin-bottom: 5px; color: var(--muted);">You are their <span style="opacity:.6">(optional)</span></label>
+                <input type="text" id="link-relationship" class="form-control" placeholder="Mother, Father, Guardian"
+                  style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+              </div>
+            </div>
+            <p style="color: var(--muted); font-size: 12px; margin: 0 0 14px;">
+              The school checks each request by hand before connecting an account,
+              so nobody can attach themselves to a child who isn't theirs. We'll
+              email you when it's done.
+            </p>
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
               <button type="button" class="btn btn-secondary" onclick="app.closeModal('link-child')">Cancel</button>
-              <button type="submit" class="btn btn-primary">Link Child</button>
+              <button type="submit" class="btn btn-primary">Send Request</button>
             </div>
           </form>
+
+          <hr style="border: none; border-top: 1px solid var(--border); margin: 18px 0;">
+
+          <details>
+            <summary style="cursor: pointer; color: var(--muted); font-size: 13px;">Have a link code from the school?</summary>
+            <form id="link-child-code-form" onsubmit="app.linkChildByCode(event)" style="margin-top: 12px;">
+              <input type="text" id="child-code-input" class="form-control" placeholder="ABCD2345"
+                maxlength="11" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: monospace; font-size: 18px; letter-spacing: 2px; text-transform: uppercase;">
+              <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+                <button type="submit" class="btn btn-secondary">Link with code</button>
+              </div>
+            </form>
+          </details>
         `;
 
         this.showModal('link-child', '➕ Link a Child', modalContent);
+      }
+
+      async requestChildLink(event) {
+        event.preventDefault();
+
+        const name = (document.getElementById('link-student-name')?.value || '').trim();
+        const grade = (document.getElementById('link-student-grade')?.value || '').trim();
+        const rel = (document.getElementById('link-relationship')?.value || '').trim();
+
+        if (name.length < 3) {
+          window.PortalUI?.showNotification("Please enter your child's full name", 'error');
+          return;
+        }
+
+        try {
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('parent_request_link', {
+              p_student_name: name, p_grade: grade || null, p_relationship: rel || null
+            }));
+
+          if (error) {
+            console.error('parent_request_link failed:', error);
+            window.PortalUI?.showNotification('Could not send the request: ' + error.message, 'error');
+            return;
+          }
+          if (!data?.success) {
+            window.PortalUI?.showNotification(data?.error || 'Could not send the request', 'error');
+            return;
+          }
+
+          // Says nothing about whether that student exists - same reason the
+          // field has no autocomplete.
+          window.PortalUI?.showNotification(data.message || 'Request sent.', 'success', 12000);
+          this.closeModal('link-child');
+        } catch (e) {
+          console.error('requestChildLink failed:', e);
+          window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
+        }
       }
 
       async linkChildByCode(event) {
@@ -31098,6 +31165,18 @@
                   </div>
                 </div>
 
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #3498db; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(52, 152, 219, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showParentLinkRequests()">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">\u{1F46A}</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Parent Link Requests</div>
+                      <div style="color: var(--muted); font-size: 11px;">Connect parents to their children</div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #e74c3c; transition: background 0.2s;"
                      onmouseover="this.style.background='rgba(231, 76, 60, 0.1)'" onmouseout="this.style.background='var(--card)'"
                      onclick="app.showAdminSection('strikes')">
@@ -31614,6 +31693,94 @@
         } finally {
           btn.disabled = false;
           btn.textContent = 'Save Changes';
+        }
+      }
+
+      async showParentLinkRequests() {
+        try {
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('rt_pending_link_requests'));
+
+          if (error) {
+            window.PortalUI?.showNotification('Could not load requests: ' + error.message, 'error');
+            return;
+          }
+
+          const reqs = data || [];
+          this._linkRequests = reqs;
+
+          const body = reqs.length === 0
+            ? `<p style="color: var(--muted); text-align: center; padding: 30px 0;">No pending requests.</p>`
+            : reqs.map(r => {
+                // Candidates are computed server-side and only ever reach a
+                // staff account. The parent saw no list at all.
+                const cands = (r.candidates || []).map(c => `
+                  <button class="btn btn-primary" style="padding: 6px 10px; font-size: 12px; margin: 3px;"
+                    onclick="app.resolveLinkRequest('${r.id}', true, '${c.id}')">
+                    ${c.first_name} ${c.last_name}${c.grade_level ? ' \u00b7 Gr ' + c.grade_level : ''}${c.already_linked ? ' \u26a0\ufe0f' : ''}
+                  </button>`).join('');
+
+                return `
+                  <div class="card" style="padding: 14px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+                      <div>
+                        <div style="font-weight: 600;">${this.escapeHtml(r.parent_name || 'Unknown parent')}</div>
+                        <div style="color: var(--muted); font-size: 12px;">${this.escapeHtml(r.parent_email || '')}</div>
+                      </div>
+                      <div style="color: var(--muted); font-size: 12px;">${new Date(r.created_at).toLocaleDateString()}</div>
+                    </div>
+                    <div style="margin: 10px 0; padding: 10px; background: var(--bg); border-radius: 8px;">
+                      Asking to link: <strong>${this.escapeHtml(r.student_name_given)}</strong>
+                      ${r.student_grade_given ? ` \u00b7 grade ${this.escapeHtml(r.student_grade_given)}` : ''}
+                      ${r.relationship ? ` \u00b7 as ${this.escapeHtml(r.relationship)}` : ''}
+                      ${r.note ? `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">${this.escapeHtml(r.note)}</div>` : ''}
+                    </div>
+                    <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">
+                      ${cands ? 'Possible matches \u2014 pick one to approve:' : 'No name match found. Deny, or link by hand from Student Records.'}
+                    </div>
+                    <div>${cands}</div>
+                    <div style="margin-top: 8px;">
+                      <button class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;"
+                        onclick="app.resolveLinkRequest('${r.id}', false)">Deny</button>
+                    </div>
+                  </div>`;
+              }).join('');
+
+          this.showModal('parent-link-requests',
+            `\u{1F46A} Parent Link Requests (${reqs.length})`,
+            body + `<div style="display:flex;justify-content:flex-end;margin-top:10px;">
+                      <button class="btn btn-secondary" onclick="app.closeModal('parent-link-requests')">Close</button>
+                    </div>`);
+        } catch (e) {
+          console.error('showParentLinkRequests failed:', e);
+          window.PortalUI?.showNotification('An error occurred loading requests.', 'error');
+        }
+      }
+
+      async resolveLinkRequest(requestId, approve, studentId) {
+        if (!approve && !confirm('Deny this request? The parent is not told why.')) return;
+
+        try {
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('rt_resolve_link_request', {
+              p_request_id: requestId, p_approve: approve, p_student_id: studentId || null
+            }));
+
+          if (error || !data?.success) {
+            window.PortalUI?.showNotification(
+              'Could not resolve: ' + (error?.message || data?.error || 'unknown error'), 'error');
+            return;
+          }
+
+          window.PortalUI?.showNotification(
+            approve ? `Linked ${data.student_name}. The parent has been emailed.` : 'Request denied.',
+            'success');
+
+          this.closeModal('parent-link-requests');
+          await this.showParentLinkRequests();
+        } catch (e) {
+          console.error('resolveLinkRequest failed:', e);
+          window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
         }
       }
 
