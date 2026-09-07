@@ -31739,7 +31739,21 @@
                       ${cands ? 'Possible matches \u2014 pick one to approve:' : 'No name match found. Deny, or link by hand from Student Records.'}
                     </div>
                     <div>${cands}</div>
-                    <div style="margin-top: 8px;">
+                    <div style="margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border);">
+                      <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">
+                        Not in the list? Search the roster \u2014 name, username or email.
+                      </div>
+                      <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                        <input type="text" id="stusearch-${r.id}" placeholder="e.g. Smith"
+                          autocomplete="off"
+                          onkeydown="if(event.key==='Enter'){event.preventDefault();app.searchStudentsForRequest('${r.id}');}"
+                          style="flex: 1; min-width: 160px; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
+                        <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;"
+                          onclick="app.searchStudentsForRequest('${r.id}')">Search</button>
+                      </div>
+                      <div id="stusearch-results-${r.id}" style="margin-top: 8px;"></div>
+                    </div>
+                    <div style="margin-top: 10px;">
                       <button class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;"
                         onclick="app.resolveLinkRequest('${r.id}', false)">Deny</button>
                     </div>
@@ -31754,6 +31768,51 @@
         } catch (e) {
           console.error('showParentLinkRequests failed:', e);
           window.PortalUI?.showNotification('An error occurred loading requests.', 'error');
+        }
+      }
+
+      async searchStudentsForRequest(requestId) {
+        const input = document.getElementById(`stusearch-${requestId}`);
+        const out = document.getElementById(`stusearch-results-${requestId}`);
+        if (!input || !out) return;
+
+        const q = (input.value || '').trim();
+        if (q.length < 2) {
+          out.innerHTML = `<div style="color: var(--muted); font-size: 12px;">Type at least two characters.</div>`;
+          return;
+        }
+
+        out.innerHTML = `<div style="color: var(--muted); font-size: 12px;">Searching\u2026</div>`;
+
+        try {
+          // Staff-only RPC. The already_linked flag is computed server-side
+          // because reading parent_child_links is admin-gated - a teacher doing
+          // this join in the browser would see every student as unlinked, which
+          // is exactly how a duplicate link gets made.
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('rt_search_students', { p_query: q }));
+
+          if (error) {
+            out.innerHTML = `<div style="color: var(--danger, #e74c3c); font-size: 12px;">${this.escapeHtml(error.message)}</div>`;
+            return;
+          }
+
+          const rows = data || [];
+          if (rows.length === 0) {
+            out.innerHTML = `<div style="color: var(--muted); font-size: 12px;">No students match \u201c${this.escapeHtml(q)}\u201d.</div>`;
+            return;
+          }
+
+          out.innerHTML = rows.map(s => `
+            <button class="btn ${s.already_linked ? 'btn-secondary' : 'btn-primary'}"
+              style="padding: 6px 10px; font-size: 12px; margin: 3px;"
+              title="${s.already_linked ? `Already linked to ${s.parent_count} parent account(s)` : 'Link this student to the parent'}"
+              onclick="app.resolveLinkRequest('${requestId}', true, '${s.id}')">
+              ${this.escapeHtml(s.first_name + ' ' + s.last_name)}${s.grade_level ? ' \u00b7 Gr ' + this.escapeHtml(String(s.grade_level)) : ''}${s.already_linked ? ' \u26a0\ufe0f' : ''}
+            </button>`).join('');
+        } catch (e) {
+          console.error('searchStudentsForRequest failed:', e);
+          out.innerHTML = `<div style="color: var(--muted); font-size: 12px;">Search failed. Try again.</div>`;
         }
       }
 
