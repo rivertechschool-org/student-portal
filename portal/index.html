@@ -7565,13 +7565,23 @@
       }
 
       showLinkChildModal() {
+        // Asks for a code, not the child's email. The email version could never
+        // work: RLS lets a parent read only children they are ALREADY linked
+        // to, so the lookup that creates the first link was blocked by the
+        // absence of that link. It also assumed the student had an email, and
+        // most sign in with a PIN instead.
         const modalContent = `
-          <form id="link-child-form" onsubmit="app.linkChildByEmail(event)">
+          <form id="link-child-form" onsubmit="app.linkChildByCode(event)">
             <div style="margin-bottom: 15px;">
-              <label style="display: block; margin-bottom: 5px; color: var(--muted);">Child's Email Address</label>
-              <input type="email" id="child-email-input" class="form-control" placeholder="child@example.com" required
-                style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);">
-              <small style="color: var(--muted);">Enter the email address your child uses to sign in.</small>
+              <label style="display: block; margin-bottom: 5px; color: var(--muted);">Student Link Code</label>
+              <input type="text" id="child-code-input" class="form-control" placeholder="ABCD2345" required
+                maxlength="11" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-family: monospace; font-size: 18px; letter-spacing: 2px; text-transform: uppercase;">
+              <small style="color: var(--muted);">
+                The 8-character code the school gave you for your child. Ask the
+                office if you do not have one. Linking more than one child? Add
+                them one code at a time.
+              </small>
             </div>
             <div style="display: flex; gap: 10px; justify-content: flex-end;">
               <button type="button" class="btn btn-secondary" onclick="app.closeModal('link-child')">Cancel</button>
@@ -7583,97 +7593,47 @@
         this.showModal('link-child', '➕ Link a Child', modalContent);
       }
 
-      async linkChildByEmail(event) {
+      async linkChildByCode(event) {
         event.preventDefault();
 
-        const emailInput = document.getElementById('child-email-input');
-        const childEmail = emailInput?.value?.trim().toLowerCase();
+        const input = document.getElementById('child-code-input');
+        const raw = (input?.value || '').trim();
 
-        if (!childEmail) {
-          window.PortalUI?.showNotification('Please enter an email address', 'error');
+        if (!raw) {
+          window.PortalUI?.showNotification('Please enter the code from the school', 'error');
           return;
         }
 
         try {
-          // Find the child's profile by email
-          // Note: This query may be restricted by RLS policies
-          const { data: childProfile, error: findError } = await this.supabaseQuery(() =>
-            this.auth.supabase
-              .from('user_profiles')
-              .select('id, first_name, last_name, email, user_type')
-              .eq('email', childEmail)
-              .eq('user_type', 'student')
-              .single());
+          // parent_claim_student is SECURITY DEFINER: it does the lookup with
+          // RLS bypassed and returns only the one child the code belongs to.
+          // That is why no policy on user_profiles had to be loosened - doing
+          // so would have exposed the whole roster to every parent account.
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('parent_claim_student', { p_code: raw }));
 
-          console.log('Link child lookup result:', { childProfile, findError, searchedEmail: childEmail });
-
-          if (findError) {
-            console.error('Error finding child profile:', findError);
-            // Check if it's an RLS/permission issue vs not found
-            if (findError.code === 'PGRST116') {
-              // No rows returned - could be RLS blocking or genuinely not found
-              window.PortalUI?.showNotification('No student found with that email address. Make sure the student has registered first.', 'error');
-            } else {
-              window.PortalUI?.showNotification('Error looking up student: ' + findError.message, 'error');
-            }
+          if (error) {
+            console.error('parent_claim_student failed:', error);
+            window.PortalUI?.showNotification('Could not link that student: ' + error.message, 'error');
             return;
           }
 
-          if (!childProfile) {
-            window.PortalUI?.showNotification('No student found with that email address', 'error');
+          if (!data?.success) {
+            // The message comes from the function so the wording stays in one
+            // place - wrong code, wrong account type and rate limiting all read
+            // the same way to the caller.
+            window.PortalUI?.showNotification(data?.error || 'That code did not work', 'error');
             return;
           }
 
-          if (childProfile.user_type !== 'student') {
-            window.PortalUI?.showNotification('That account is not a student account', 'error');
-            return;
-          }
-
-          // Check if already linked to this parent
-          const existingChild = this.children?.find(c => c.id === childProfile.id);
-          if (existingChild) {
-            window.PortalUI?.showNotification('This child is already linked to your account', 'warning');
-            this.closeModal('link-child');
-            return;
-          }
-
-          // Check if already linked to another parent
-          const { data: existingLink, error: linkCheckError } = await this.supabaseQuery(() =>
-            this.auth.supabase
-              .from('parent_child_links')
-              .select('parent_id')
-              .eq('child_id', childProfile.id)
-              .maybeSingle());
-
-          if (existingLink && existingLink.parent_id !== this.userInfo.user.id) {
-            window.PortalUI?.showNotification('This student is already linked to another parent account. Please contact the school administrator if you believe this is an error.', 'warning');
-            this.closeModal('link-child');
-            return;
-          }
-
-          // Create the link
-          const { error: linkError } = await this.supabaseQuery(() =>
-            this.auth.supabase
-              .from('parent_child_links')
-              .upsert({
-                parent_id: this.userInfo.user.id,
-                child_id: childProfile.id
-              }, { onConflict: 'parent_id,child_id' }));
-
-          if (linkError) {
-            console.error('Error linking child:', linkError);
-            window.PortalUI?.showNotification('Failed to link child: ' + linkError.message, 'error');
-            return;
-          }
-
-          window.PortalUI?.showNotification(`Successfully linked ${childProfile.first_name} to your account!`, 'success');
+          window.PortalUI?.showNotification(
+            `${data.student_name} is now linked to your account.`, 'success');
           this.closeModal('link-child');
 
-          // Reload parent data
           await this.loadParentData();
 
         } catch (error) {
-          console.error('Error in linkChildByEmail:', error);
+          console.error('Error in linkChildByCode:', error);
           window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
         }
       }
@@ -9623,7 +9583,7 @@
           // Load all students (including past students)
           const { data: students, error } = await this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state, student_status, left_date, left_reason, games_pin')
+            .select('id, first_name, last_name, email, grade_level, phone, address_line1, city, state, student_status, left_date, left_reason, games_pin, parent_link_code')
             .eq('user_type', 'student')
             .order('last_name', { ascending: true });
 
@@ -9725,6 +9685,7 @@
                   <th style="padding: 12px; text-align: left;">Status</th>
                   <th style="padding: 12px; text-align: center;">Games PIN</th>
                   <th style="padding: 12px; text-align: center;">Pickup</th>
+                    <th style="padding: 12px; text-align: center;">Parent Code</th>
                   <th style="padding: 12px; text-align: center;">Actions</th>
                 </tr>
               </thead>
@@ -9741,6 +9702,14 @@
                   const pickupDisplay = fam
                     ? `<span style="font-weight: 700; color: var(--accent);" title="${fam.note ? this.jsAttr(fam.note) : 'Pickup family number'}">#${fam.family_number}</span>${fam.note ? '<span style="color: var(--muted); font-size: 11px;" title="This family has a standing note"> \u{1F4CC}</span>' : ''}`
                     : '<span style="color: var(--muted); font-size: 11px;">N/A</span>';
+                  // The code a parent types to link themselves to this student.
+                  // Staff read it out or print it; it is the only route, since a
+                  // parent cannot look their own child up - RLS shows them only
+                  // children they are already linked to.
+                  const linkCode = student.parent_link_code;
+                  const linkDisplay = linkCode
+                    ? `<span style="font-family: monospace; font-weight: 600; letter-spacing: 1px; cursor: pointer;" title="Parent link code - click to copy" onclick="app.copyParentLinkCode('${linkCode}')">${linkCode}</span>`
+                    : '<span style="color: var(--muted); font-size: 11px;">\u2014</span>';
                   const pinDisplay = student.games_pin
                     ? `<span style="font-family: monospace; font-weight: 600; color: var(--accent); letter-spacing: 1px;" title="Games sign-in PIN">${student.games_pin}</span>`
                     : '<span style="color: var(--muted); font-size: 11px;">—</span>';
@@ -9758,6 +9727,12 @@
                       </div>
                     </td>
                     <td style="padding: 12px; text-align: center;">${pickupDisplay}</td>
+                    <td style="padding: 12px; text-align: center;">
+                      <div style="display: flex; gap: 6px; align-items: center; justify-content: center;">
+                        ${linkDisplay}
+                        <button class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px;" onclick="app.adminReissueParentLinkCode('${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="Issue a new code. Existing parent links are kept.">\u21bb</button>
+                      </div>
+                    </td>
                     <td style="padding: 12px; text-align: center;">
                       <div style="display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;">
                         <button class="btn btn-primary" style="padding: 6px 12px; font-size: 13px;"
@@ -9891,6 +9866,37 @@
         } catch (error) {
           console.error('Error marking student as past:', error);
           this.showNotification(`Failed to mark student as past: ${error.message}`, 'error');
+        }
+      }
+
+      copyParentLinkCode(code) {
+        navigator.clipboard?.writeText(code).then(
+          () => window.PortalUI?.showNotification(`Copied ${code}`, 'success'),
+          () => window.PortalUI?.showNotification(`Code is ${code}`, 'info'));
+      }
+
+      async adminReissueParentLinkCode(studentId, studentName) {
+        // Reissuing does NOT unlink anyone already connected. The code proves a
+        // claim once; it is not what holds the relationship together. Worth
+        // saying out loud because "regenerate" on the PIN button beside it does
+        // invalidate the old value.
+        if (!confirm(`Issue a new parent link code for ${studentName}?\n\nThe old code stops working. Parents already linked stay linked.`)) return;
+
+        try {
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('rt_reissue_parent_link_code', { p_student_id: studentId }));
+
+          if (error || !data?.success) {
+            window.PortalUI?.showNotification(
+              'Could not issue a code: ' + (error?.message || data?.error || 'unknown error'), 'error');
+            return;
+          }
+
+          window.PortalUI?.showNotification(`New code for ${studentName}: ${data.code}`, 'success');
+          await this.renderAdminStudentRecords();
+        } catch (e) {
+          console.error('adminReissueParentLinkCode failed:', e);
+          window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
         }
       }
 
