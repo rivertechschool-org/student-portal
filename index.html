@@ -709,11 +709,10 @@
                                         <option value="homeschool">Homeschool Student</option>
                                     </select>
                                 </div>
-                                <div class="form-group" id="child-email-group" style="display:none;">
-                                    <label for="child-emails">Children's Email Addresses</label>
-                                    <textarea id="child-emails" rows="4" placeholder="Enter each child's email address on a separate line:&#10;child1@yourschool.edu&#10;child2@yourschool.edu&#10;child3@yourschool.edu" style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 10px; font-size: 16px; font-family: inherit; resize: vertical; background: var(--input-bg); color: var(--text);"></textarea>
-                                    <small style="color: var(--muted); font-size: 12px;">Enter one email address per line for each child's student account</small>
-                                </div>
+                                <!-- Children are linked after sign-up, not here. A parent asks
+                                     from "Link a Child" in the portal and staff approve it, or
+                                     they redeem a code the school issued. Both go through a
+                                     human; typing an address here did not. -->
                                 <button type="submit" class="btn btn-primary" id="register-submit-btn">Register</button>
                                 <button type="button" class="btn btn-secondary" id="back-to-login-btn">Back to Login</button>
                             </form>
@@ -1225,53 +1224,11 @@
                 // Apply site theme from profile
                 PortalUI.loadThemeFromProfile(userInfo.profile);
 
-                // Check for pending child links
-                const pendingLinks = localStorage.getItem('pending_child_links');
-                console.log('Pending links found:', pendingLinks);
-                console.log('User type:', userInfo.profile?.user_type);
-
-                if (pendingLinks && userInfo.profile?.user_type === 'parent') {
-                    const childEmails = JSON.parse(pendingLinks);
-                    console.log('Processing child links for:', childEmails);
-
-                    // Add delay to ensure auth is fully ready
-                    setTimeout(async () => {
-                        try {
-                            const results = await this.linkParentToChildren(userInfo.profile.id, childEmails);
-                            console.log('Link results:', results);
-                            localStorage.removeItem('pending_child_links');
-
-                            // Show detailed results to user
-                            const successCount = results.filter(r => r.success).length;
-                            const failedEmails = results.filter(r => !r.success).map(r => r.email);
-                            const notFoundEmails = childEmails.filter(email =>
-                                !results.some(r => r.email === email)
-                            );
-
-                            if (successCount > 0) {
-                                window.PortalUI?.showNotification(
-                                    `Successfully linked ${successCount} child account${successCount > 1 ? 's' : ''}!`,
-                                    'success'
-                                );
-                            }
-
-                            if (notFoundEmails.length > 0 || failedEmails.length > 0) {
-                                const allFailed = [...notFoundEmails, ...failedEmails];
-                                setTimeout(() => {
-                                    this.showChildLinkResultsModal(results, notFoundEmails);
-                                }, 1500);
-                            }
-
-                            // Reload dashboard to show linked children
-                            if (successCount > 0) {
-                                await this.loadParentTeacherDashboard();
-                            }
-                        } catch (error) {
-                            console.error('Failed to link children:', error);
-                            window.PortalUI?.showNotification('Error linking child accounts. Please try again from the dashboard.', 'error');
-                        }
-                    }, 1000);
-                }
+                // A parent's children are linked by staff approval or by redeeming a
+                // school-issued code, both through SECURITY DEFINER functions. This
+                // used to replay addresses typed at signup as a direct client-side
+                // write to parent_child_links - no review, and the policy behind it
+                // checked only who the PARENT was, never which child.
                 
                 const userType = userInfo.profile?.user_type;
 
@@ -1597,7 +1554,6 @@
                 const grade = document.getElementById('reg-grade')?.value;
                 const userType = document.getElementById('reg-usertype')?.value;
                 const enrollmentType = document.getElementById('reg-enrollment-type')?.value;
-                const childEmailsTextarea = document.getElementById('child-emails');
 
                 const registerBtn = document.getElementById('register-submit-btn');
 
@@ -1676,19 +1632,6 @@
                         throw new Error(profileResult.error);
                     }
             
-                    // If parent, handle child relationships
-                    // In handleRegister, replace the parent linking section with:
-                    if (userType === 'parent' && childEmailsTextarea) {
-                        const childEmails = childEmailsTextarea.value
-                            .split('\n')
-                            .map(email => email.trim())
-                            .filter(email => email.length > 0);
-                    
-                        if (childEmails.length > 0) {
-                            console.log('Storing child emails for later:', childEmails);
-                            localStorage.setItem('pending_child_links', JSON.stringify(childEmails));
-                        }
-                    }
             
                     // Notify admins of new registration (don't block)
                     this.notifyAdminsOfNewUser(authData.user.id, firstName, lastName, email, userType).catch(err => {
@@ -1708,68 +1651,6 @@
                         registerBtn.textContent = 'Register';
                     }
                 }
-            }
-
-            async linkParentToChildren(parentId, childEmails) {
-                const results = [];
-
-                for (const childEmail of childEmails) {
-                    try {
-                        // First find the child's user ID
-                        const { data: childProfile, error: childError } = await this.auth.supabase
-                            .from('user_profiles')
-                            .select('id, first_name, last_name, user_type')
-                            .eq('email', childEmail)
-                            .single();
-
-                        if (childError || !childProfile) {
-                            console.warn(`Child account not found for email: ${childEmail}`);
-                            results.push({ email: childEmail, success: false, reason: 'not_found' });
-                            continue;
-                        }
-
-                        // Verify it's a student account
-                        if (childProfile.user_type !== 'student') {
-                            console.warn(`Account ${childEmail} is not a student account`);
-                            results.push({ email: childEmail, success: false, reason: 'not_student' });
-                            continue;
-                        }
-
-                        // Use UPSERT with the correct table name
-                        const { data, error } = await this.auth.supabase
-                            .from('parent_child_links')
-                            .upsert({
-                                parent_id: parentId,
-                                child_id: childProfile.id,
-                                created_at: new Date().toISOString()
-                            }, {
-                                onConflict: 'parent_id,child_id',
-                                ignoreDuplicates: false
-                            });
-
-                        if (error) {
-                            console.error(`Error linking to child ${childEmail}:`, error);
-                            results.push({ email: childEmail, success: false, reason: 'link_error', error: error.message });
-                        } else {
-                            results.push({
-                                email: childEmail,
-                                success: true,
-                                childName: `${childProfile.first_name} ${childProfile.last_name}`
-                            });
-                        }
-
-                    } catch (error) {
-                        console.error(`Failed to link parent to child ${childEmail}:`, error);
-                        results.push({ email: childEmail, success: false, reason: 'error', error: error.message });
-                    }
-                }
-
-                const successCount = results.filter(r => r.success).length;
-                if (successCount > 0) {
-                    console.log(`Successfully linked to ${successCount} child account(s)`);
-                }
-
-                return results;
             }
 
             async notifyAdminsOfNewUser(userId, firstName, lastName, email, userType) {
@@ -1821,65 +1702,6 @@
                 } catch (error) {
                     console.error('Error sending new user registration notification:', error);
                 }
-            }
-
-            showChildLinkResultsModal(results, notFoundEmails) {
-                const successResults = results.filter(r => r.success);
-                const failedResults = results.filter(r => !r.success);
-
-                let content = '<div style="padding: 10px;">';
-
-                // Show successful links
-                if (successResults.length > 0) {
-                    content += `
-                        <div style="margin-bottom: 20px;">
-                            <h4 style="color: var(--accent-2); margin-bottom: 10px;">Successfully Linked</h4>
-                            ${successResults.map(r => `
-                                <div style="padding: 8px; background: rgba(139, 255, 176, 0.1); border-radius: 6px; margin-bottom: 5px;">
-                                    ${r.childName || r.email}
-                                </div>
-                            `).join('')}
-                        </div>
-                    `;
-                }
-
-                // Show failed/not found
-                if (notFoundEmails.length > 0 || failedResults.length > 0) {
-                    content += `
-                        <div style="margin-bottom: 20px;">
-                            <h4 style="color: var(--warning); margin-bottom: 10px;">Could Not Link</h4>
-                            <p style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">
-                                These accounts could not be linked. The child may need to register first.
-                            </p>
-                            ${notFoundEmails.map(email => `
-                                <div style="padding: 8px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; margin-bottom: 5px;">
-                                    <strong>${email}</strong>
-                                    <span style="color: var(--muted); font-size: 12px;"> - Account not found</span>
-                                </div>
-                            `).join('')}
-                            ${failedResults.map(r => `
-                                <div style="padding: 8px; background: rgba(255, 211, 106, 0.1); border-radius: 6px; margin-bottom: 5px;">
-                                    <strong>${r.email}</strong>
-                                    <span style="color: var(--muted); font-size: 12px;"> - ${
-                                        r.reason === 'not_student' ? 'Not a student account' :
-                                        r.reason === 'link_error' ? 'Link failed' : 'Error occurred'
-                                    }</span>
-                                </div>
-                            `).join('')}
-                            <p style="color: var(--muted); font-size: 12px; margin-top: 10px;">
-                                You can link children later from your dashboard using the "Link Another Child" button.
-                            </p>
-                        </div>
-                    `;
-                }
-
-                content += `
-                    <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
-                        <button class="btn btn-primary" onclick="portal.closeModal()">Got it</button>
-                    </div>
-                </div>`;
-
-                this.showModal('child-link-results', 'Child Account Linking Results', content);
             }
 
             async handlePasswordReset(e) {
@@ -2294,15 +2116,12 @@
             handleUserTypeChange(e) {
                 const userType = e.target.value;
                 const isStudent = userType === 'student';
-                const isParent = userType === 'parent';
 
                 const gradeGroup = document.getElementById('grade-group');
                 const enrollmentTypeGroup = document.getElementById('enrollment-type-group');
-                const childEmailGroup = document.getElementById('child-email-group');
 
                 if (gradeGroup) gradeGroup.style.display = isStudent ? 'block' : 'none';
                 if (enrollmentTypeGroup) enrollmentTypeGroup.style.display = isStudent ? 'block' : 'none';
-                if (childEmailGroup) childEmailGroup.style.display = isParent ? 'block' : 'none';
             }
 
             checkPasswordMatch() {
@@ -2710,13 +2529,19 @@
             
             async loadParentDashboard(dashboardSection, userInfo, firstName) {
                 try {
-                    console.log('Loading parent dashboard for:', userInfo.profile.id);
-                    
+                    // parent_child_links.parent_id holds the AUTH id - that is what
+                    // rt_resolve_link_request writes and what every read policy on it
+                    // compares against auth.uid(). Passing the profile id happens to
+                    // work today only because the two match for all four parents;
+                    // for students they differ on 130 of 168 rows, so this is one
+                    // backfill away from a parent seeing an empty dashboard.
+                    const parentAuthId = userInfo.user?.id || userInfo.profile?.auth_user_id || userInfo.profile?.id;
+
                     // Step 1: Get child IDs (simple query, no joins)
                     const { data: links, error: linkError } = await this.auth.supabase
                         .from('parent_child_links')
                         .select('child_id')
-                        .eq('parent_id', userInfo.profile.id);
+                        .eq('parent_id', parentAuthId);
                     
                     console.log('Parent links found:', links);
                     
@@ -3061,149 +2886,136 @@
             }
 
             // Parent-specific methods
+            //
+            // Linking used to be self-service: type the child's email, look them
+            // up, write parent_child_links straight from the browser. It never
+            // worked - the lookup is refused by the profile policy for a child you
+            // are not yet linked to, so it always answered "no student found" - and
+            // the RLS policy behind the write checked only who the PARENT was,
+            // never which child. Had the lookup succeeded, any parent could have
+            // claimed any pupil and read their medical info.
+            //
+            // Both paths now go through the school, using the same two RPCs as the
+            // portal, so there is one contract and two thin screens rather than two
+            // implementations that drift.
             showLinkChildModal() {
+                // Free text with no autocomplete on purpose: a search box here
+                // would confirm whether a given name is enrolled, which is a roster
+                // oracle for anyone who can register an account.
                 const modalContent = `
-                    <form id="link-child-form" onsubmit="portal.linkChildByEmail(event)">
-                        <div style="margin-bottom: 15px;">
-                            <label style="display: block; margin-bottom: 5px; color: var(--muted);">Child's Email Address</label>
-                            <input type="email" id="child-email-input" class="form-control" placeholder="child@example.com" required>
-                            <small style="color: var(--muted);">Enter the email address your child uses to sign in.</small>
+                    <form id="link-child-form" onsubmit="portal.requestChildLink(event)">
+                        <div style="margin-bottom: 14px;">
+                            <label style="display: block; margin-bottom: 5px; color: var(--muted);">Your child's full name</label>
+                            <input type="text" id="link-student-name" class="form-control" required
+                                   placeholder="First and last name" autocomplete="off">
                         </div>
+                        <div style="display: flex; gap: 10px; margin-bottom: 14px;">
+                            <div style="flex: 1;">
+                                <label style="display: block; margin-bottom: 5px; color: var(--muted);">Grade <span style="opacity:.6">(optional)</span></label>
+                                <input type="text" id="link-student-grade" class="form-control" placeholder="e.g. 9">
+                            </div>
+                            <div style="flex: 1;">
+                                <label style="display: block; margin-bottom: 5px; color: var(--muted);">You are their <span style="opacity:.6">(optional)</span></label>
+                                <input type="text" id="link-relationship" class="form-control" placeholder="Mother, Father, Guardian">
+                            </div>
+                        </div>
+                        <p style="color: var(--muted); font-size: 12px; margin: 0 0 14px;">
+                            The school checks each request by hand before connecting an account,
+                            so nobody can attach themselves to a child who isn't theirs. We'll
+                            email you when it's done.
+                        </p>
                         <div style="display: flex; gap: 10px; justify-content: flex-end;">
                             <button type="button" class="btn btn-secondary" onclick="portal.closeModal()">Cancel</button>
-                            <button type="submit" class="btn btn-primary">Link Child</button>
+                            <button type="submit" class="btn btn-primary">Send Request</button>
                         </div>
                     </form>
+
+                    <hr style="border: none; border-top: 1px solid var(--border); margin: 18px 0;">
+
+                    <details>
+                        <summary style="cursor: pointer; color: var(--muted); font-size: 13px;">Have a link code from the school?</summary>
+                        <form id="link-child-code-form" onsubmit="portal.linkChildByCode(event)" style="margin-top: 12px;">
+                            <input type="text" id="child-code-input" class="form-control" placeholder="ABCD2345"
+                                   maxlength="11" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                                   style="font-family: monospace; font-size: 18px; letter-spacing: 2px; text-transform: uppercase;">
+                            <div style="display: flex; justify-content: flex-end; margin-top: 10px;">
+                                <button type="submit" class="btn btn-secondary">Link with code</button>
+                            </div>
+                        </form>
+                    </details>
                 `;
                 this.showModal('link-child', 'Link a Child', modalContent);
             }
 
-            async linkChildByEmail(event) {
+            async requestChildLink(event) {
                 event.preventDefault();
 
-                const emailInput = document.getElementById('child-email-input');
-                const childEmail = emailInput?.value?.trim().toLowerCase();
+                const name = (document.getElementById('link-student-name')?.value || '').trim();
+                const grade = (document.getElementById('link-student-grade')?.value || '').trim();
+                const rel = (document.getElementById('link-relationship')?.value || '').trim();
 
-                if (!childEmail) {
-                    window.PortalUI?.showNotification('Please enter an email address', 'error');
+                if (name.length < 3) {
+                    window.PortalUI?.showNotification("Please enter your child's full name", 'error');
                     return;
                 }
 
                 try {
-                    // Find the child's profile by email
-                    // Note: This query may be restricted by RLS policies
-                    const { data: childProfile, error: findError } = await this.auth.supabase
-                        .from('user_profiles')
-                        .select('id, first_name, last_name, email, user_type')
-                        .eq('email', childEmail)
-                        .eq('user_type', 'student')
-                        .single();
+                    const { data, error } = await this.auth.supabase.rpc('parent_request_link', {
+                        p_student_name: name, p_grade: grade || null, p_relationship: rel || null
+                    });
 
-                    console.log('Link child lookup result:', { childProfile, findError, searchedEmail: childEmail });
-
-                    if (findError) {
-                        console.error('Error finding child profile:', findError);
-                        // Check if it's an RLS/permission issue vs not found
-                        if (findError.code === 'PGRST116') {
-                            window.PortalUI?.showNotification('No student found with that email address. Make sure the student has registered first.', 'error');
-                        } else {
-                            window.PortalUI?.showNotification('Error looking up student: ' + findError.message, 'error');
-                        }
+                    if (error) {
+                        console.error('parent_request_link failed:', error);
+                        window.PortalUI?.showNotification('Could not send the request: ' + error.message, 'error');
+                        return;
+                    }
+                    if (!data?.success) {
+                        window.PortalUI?.showNotification(data?.error || 'Could not send the request', 'error');
                         return;
                     }
 
-                    if (!childProfile) {
-                        window.PortalUI?.showNotification('No student found with that email address', 'error');
-                        return;
-                    }
-
-                    // Check if already linked to another parent
-                    const { data: existingLink } = await this.auth.supabase
-                        .from('parent_child_links')
-                        .select('parent_id')
-                        .eq('child_id', childProfile.id)
-                        .maybeSingle();
-
-                    if (existingLink && existingLink.parent_id !== this.auth.currentUser.id) {
-                        window.PortalUI?.showNotification('This student is already linked to another parent account. Please contact the school administrator if you believe this is an error.', 'warning');
-                        this.closeModal();
-                        return;
-                    }
-
-                    // Create the link
-                    const { error: linkError } = await this.auth.supabase
-                        .from('parent_child_links')
-                        .upsert({
-                            parent_id: this.auth.currentUser.id,
-                            child_id: childProfile.id
-                        }, { onConflict: 'parent_id,child_id' });
-
-                    if (linkError) {
-                        console.error('Error linking child:', linkError);
-                        window.PortalUI?.showNotification('Failed to link child: ' + linkError.message, 'error');
-                        return;
-                    }
-
-                    window.PortalUI?.showNotification(`Successfully linked ${childProfile.first_name} to your account!`, 'success');
+                    // Says nothing about whether that student exists, for the same
+                    // reason the field has no autocomplete.
+                    window.PortalUI?.showNotification(data.message || 'Request sent.', 'success', 12000);
                     this.closeModal();
-
-                    // Reload the parent dashboard
-                    await this.loadParentTeacherDashboard();
-
-                } catch (error) {
-                    console.error('Error in linkChildByEmail:', error);
+                } catch (e) {
+                    console.error('requestChildLink failed:', e);
                     window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
                 }
             }
 
-            // Track failed login attempts and alert admins for security
-            async trackFailedLogin(email, errorMessage) {
+            async linkChildByCode(event) {
+                event.preventDefault();
+
+                const raw = (document.getElementById('child-code-input')?.value || '').trim().toUpperCase();
+                if (raw.length < 4) {
+                    window.PortalUI?.showNotification('Enter the code the school gave you', 'error');
+                    return;
+                }
+
                 try {
-                    // Store failed attempt count in sessionStorage
-                    const key = `failed_login_${email}`;
-                    const attempts = parseInt(sessionStorage.getItem(key) || '0') + 1;
-                    sessionStorage.setItem(key, attempts.toString());
+                    // SECURITY DEFINER: it does the lookup with RLS bypassed and
+                    // returns only the one child the code belongs to, which is why
+                    // no profile policy had to be loosened.
+                    const { data, error } = await this.auth.supabase.rpc('parent_claim_student', { p_code: raw });
 
-                    // Only alert admins after 3+ failed attempts (to reduce noise)
-                    if (attempts >= 3) {
-                        // Get all admins with notification preferences
-                        const { data: admins } = await this.auth.supabase
-                            .from('user_profiles')
-                            .select('id, email_notifications')
-                            .eq('user_type', 'admin');
-
-                        if (admins && admins.length > 0) {
-                            // Create security alert notification for each admin
-                            for (const admin of admins) {
-                                const emailPrefs = admin.email_notifications || {};
-                                // Default to true if no preference set
-                                if (emailPrefs.system_alerts === false) continue;
-
-                                await this.auth.supabase
-                                    .from('notifications')
-                                    .insert({
-                                        user_id: admin.id,
-                                        type: 'system_alert',
-                                        title: 'Security Alert: Multiple Failed Login Attempts',
-                                        message: `${attempts} failed login attempts for email: ${email}. Last error: ${errorMessage}`,
-                                        is_read: false,
-                                        metadata: {
-                                            alertType: 'failed_login',
-                                            email: email,
-                                            attempts: attempts,
-                                            errorMessage: errorMessage,
-                                            timestamp: new Date().toISOString()
-                                        }
-                                    });
-                            }
-                        }
-
-                        // Reset counter after alerting
-                        sessionStorage.removeItem(key);
+                    if (error) {
+                        console.error('parent_claim_student failed:', error);
+                        window.PortalUI?.showNotification('Could not link that student: ' + error.message, 'error');
+                        return;
                     }
-                } catch (err) {
-                    // Don't let tracking errors break the login flow
-                    console.error('Error tracking failed login:', err);
+                    if (!data?.success) {
+                        window.PortalUI?.showNotification(data?.error || 'That code did not work', 'error');
+                        return;
+                    }
+
+                    window.PortalUI?.showNotification(
+                        `${data.student_name} is now linked to your account.`, 'success');
+                    this.closeModal();
+                    await this.loadParentTeacherDashboard();
+                } catch (e) {
+                    console.error('linkChildByCode failed:', e);
+                    window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
                 }
             }
 
