@@ -13788,19 +13788,49 @@
         }
       }
 
+      // Every notification type the database permits, in one place.
+      //
+      // There were three of these maps - a toast, a list row and a detail modal -
+      // and they had already drifted apart: the toast was missing
+      // assignment_due_soon and class_announcement, and none of them had gained
+      // any of the ten types added since they were written. Unknown types fall
+      // back to a bell, so the gap never showed up as a bug, just as a screen
+      // full of identical grey bells.
+      //
+      // Keep in step with notifications_type_check.
+      notificationTypeConfig(type) {
+        const map = {
+          // learning
+          new_message:            { icon: '💬', class: 'message',    label: 'Message' },
+          assignment_posted:      { icon: '📝', class: 'assignment', label: 'Assignment' },
+          assignment_graded:      { icon: '⭐', class: 'grade',      label: 'Grade' },
+          assignment_due_soon:    { icon: '⏰', class: 'assignment', label: 'Due Soon' },
+          submission_received:    { icon: '📥', class: 'assignment', label: 'Submission' },
+          note_added:             { icon: '📋', class: 'note',       label: 'Note' },
+          class_announcement:     { icon: '📢', class: 'system',     label: 'Announcement' },
+          strike:                 { icon: '⚠️', class: 'note',       label: 'Strike' },
+          // parent-facing
+          child_grade:            { icon: '🎓', class: 'grade',      label: 'Child Grade' },
+          child_assignment:       { icon: '📚', class: 'assignment', label: 'Child Assignment' },
+          attendance_alert:       { icon: '🕒', class: 'note',       label: 'Attendance' },
+          // staff queues
+          link_request:           { icon: '👪', class: 'system',     label: 'Link Request' },
+          material_request:       { icon: '📦', class: 'system',     label: 'Materials' },
+          bug_report:             { icon: '🐛', class: 'system',     label: 'Bug Report' },
+          enrollment_application: { icon: '🎒', class: 'system',     label: 'Application' },
+          facility_booking:       { icon: '🏫', class: 'system',     label: 'Booking' },
+          // housekeeping
+          system:                 { icon: '🔔', class: 'system',     label: 'Announcement' },
+          system_health:          { icon: '🩺', class: 'system',     label: 'System Health' },
+          new_user_registration:  { icon: '🙋', class: 'system',     label: 'New Account' },
+          system_alert:           { icon: '🚨', class: 'system',     label: 'Security Alert' },
+        };
+        return map[type] || { icon: '🔔', class: 'system', label: 'Notification' };
+      }
+
       showNotificationToast(notification) {
         if (window.PortalUI) {
-          const typeIcons = {
-            new_message: '💬',
-            assignment_posted: '📝',
-            assignment_graded: '⭐',
-            submission_received: '📥',
-            child_grade: '🎓',
-            child_assignment: '📚',
-            note_added: '📋',
-            system: '🔔'
-          };
-          const icon = typeIcons[notification.type] || '🔔';
+          const icon = this.notificationTypeConfig(notification.type).icon;
           window.PortalUI.showNotification(`${icon} ${notification.title}: ${notification.message}`, 'info', 5000);
         }
       }
@@ -13819,20 +13849,7 @@
       }
 
       renderNotificationItem(notification) {
-        const typeConfig = {
-          new_message: { icon: '💬', class: 'message' },
-          assignment_posted: { icon: '📝', class: 'assignment' },
-          assignment_graded: { icon: '⭐', class: 'grade' },
-          assignment_due_soon: { icon: '⏰', class: 'assignment' },
-          submission_received: { icon: '📥', class: 'assignment' },
-          note_added: { icon: '📋', class: 'note' },
-          child_grade: { icon: '🎓', class: 'grade' },
-          child_assignment: { icon: '📚', class: 'assignment' },
-          class_announcement: { icon: '📢', class: 'system' },
-          system: { icon: '🔔', class: 'system' }
-        };
-
-        const config = typeConfig[notification.type] || { icon: '🔔', class: 'system' };
+        const config = this.notificationTypeConfig(notification.type);
         const timeAgo = this.formatNotificationTime(notification.created_at);
 
         return `
@@ -13969,20 +13986,7 @@
       }
 
       showNotificationDetail(notification) {
-        const typeConfig = {
-          new_message: { icon: '💬', label: 'Message' },
-          assignment_posted: { icon: '📝', label: 'Assignment' },
-          assignment_graded: { icon: '⭐', label: 'Grade' },
-          assignment_due_soon: { icon: '⏰', label: 'Due Soon' },
-          submission_received: { icon: '📥', label: 'Submission' },
-          note_added: { icon: '📋', label: 'Note' },
-          child_grade: { icon: '🎓', label: 'Child Grade' },
-          child_assignment: { icon: '📚', label: 'Child Assignment' },
-          class_announcement: { icon: '📢', label: 'Announcement' },
-          system: { icon: '🔔', label: 'Announcement' }
-        };
-
-        const config = typeConfig[notification.type] || { icon: '🔔', label: 'Notification' };
+        const config = this.notificationTypeConfig(notification.type);
         const time = new Date(notification.created_at).toLocaleString();
 
         const modal = document.createElement('div');
@@ -33640,12 +33644,17 @@
       // Parent-Child Link Management (Admin)
       async showLinkChildToParentModal(parentId, parentName) {
         try {
-          // Get all students (including inactive - allows linking records-only accounts to parents)
+          // Every student, whatever their account status - a records-only account
+          // is exactly the kind that needs linking to a parent.
+          //
+          // There was an .in('account_status', [...]) here naming all three
+          // spellings, which filters nothing but would have dropped any row
+          // where the column is NULL. Listing every legal value is not the same
+          // as not filtering.
           const { data: students } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, email, grade_level, account_status')
             .eq('user_type', 'student')
-            .in('account_status', ['activated', 'active', 'inactive'])
             .order('last_name'));
 
           // Get already linked children for this parent
@@ -56198,13 +56207,20 @@
           return;
         }
         const act = scored[0];
+        // activity_enrollments.status is active | inactive | tryout | waitlisted.
+        // There is no 'enrolled', so filtering on it matched nothing and Riven
+        // answered "has no enrolled students yet" for every activity. _enrollStudent
+        // writes 'tryout' for a sport and 'active' for a club, so both count as
+        // being in it; waitlisted and inactive do not.
         const { data: enrollments } = await this.auth.supabase
           .from('activity_enrollments')
           .select('student_id, status, user_profiles!activity_enrollments_student_id_fkey(first_name, last_name)')
           .eq('activity_id', act.id)
-          .eq('status', 'enrolled');
+          .in('status', ['active', 'tryout']);
         const students = (enrollments || [])
-          .map(e => e.user_profiles ? `${e.user_profiles.first_name} ${e.user_profiles.last_name}` : null)
+          .map(e => e.user_profiles
+            ? `${e.user_profiles.first_name} ${e.user_profiles.last_name}${e.status === 'tryout' ? ' (tryout)' : ''}`
+            : null)
           .filter(Boolean)
           .sort();
         if (!students.length) {
