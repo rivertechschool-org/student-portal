@@ -35183,19 +35183,68 @@
               </div>` : ''}
 
             <div style="margin-top:12px; display:flex; flex-direction:column; gap:6px;">
-              ${(f.members || []).map(m => `
-                <label style="display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; cursor:pointer; ${m.dismissed ? 'opacity:0.65;' : ''}">
-                  <input type="checkbox" ${m.dismissed ? 'checked' : ''}
-                    onchange="app.togglePickupDismissed('${m.student_id}', this.checked)"
-                    style="width:20px; height:20px;">
-                  <span style="flex:1;">
-                    ${this.escapeHtml(m.first_name)} ${this.escapeHtml(m.last_name)}
-                    ${m.grade_level ? `<span style="color:var(--muted); font-size:12px;"> Grade ${this.escapeHtml(m.grade_level)}</span>` : ''}
-                  </span>
-                  ${m.dismissed
-                    ? `<span style="font-size:12px; color:var(--muted);">called ${new Date(m.dismissed_at).toLocaleTimeString()}</span>`
-                    : ''}
-                </label>`).join('')}
+              ${(f.members || []).map(m => {
+                const notes = m.notes || [];
+                const dated = notes.some(n => !n.standing);
+                return `
+                <div style="border:1px solid ${dated ? 'var(--warning, #e67e22)' : 'var(--border)'}; border-width:${dated ? '2px' : '1px'}; border-radius:8px; overflow:hidden; ${m.dismissed ? 'opacity:0.65;' : ''}">
+                  <div style="display:flex; align-items:center;">
+                    <label style="flex:1; display:flex; align-items:center; gap:10px; padding:10px 12px; cursor:pointer; margin:0;">
+                      <input type="checkbox" ${m.dismissed ? 'checked' : ''}
+                        onchange="app.togglePickupDismissed('${m.student_id}', this.checked)"
+                        style="width:20px; height:20px;">
+                      <span style="flex:1;">
+                        ${this.escapeHtml(m.first_name)} ${this.escapeHtml(m.last_name)}
+                        ${m.grade_level ? `<span style="color:var(--muted); font-size:12px;"> Grade ${this.escapeHtml(m.grade_level)}</span>` : ''}
+                      </span>
+                      ${m.dismissed
+                        ? `<span style="font-size:12px; color:var(--muted);">called ${new Date(m.dismissed_at).toLocaleTimeString()}</span>`
+                        : ''}
+                    </label>
+                    <button class="btn btn-secondary small"
+                            title="Pickup note for ${this.jsAttr(m.first_name + ' ' + m.last_name)}"
+                            onclick="app.showPickupNoteModal('${m.student_id}', '${this.jsAttr(m.first_name + ' ' + m.last_name)}')"
+                            style="margin-right:10px; padding:4px 9px; font-size:13px;">
+                      ${notes.length ? '📝' : '＋'}
+                    </button>
+                  </div>
+
+                  ${notes.map(n => `
+                    <div style="padding:9px 12px; background:${n.standing ? 'rgba(106,169,255,0.10)' : 'rgba(230,126,34,0.14)'}; border-top:1px solid ${n.standing ? 'rgba(106,169,255,0.3)' : 'rgba(230,126,34,0.35)'}; font-size:14px; line-height:1.4;">
+                      <strong style="color:${n.standing ? 'var(--accent)' : 'var(--warning, #e67e22)'};">
+                        ${n.standing ? 'Usually' : (n.today_only ? 'Today' : 'Until ' + this._formatDateOnly(n.ends_on))}:
+                      </strong>
+                      ${this.escapeHtml(n.note)}
+                    </div>`).join('')}
+
+                  ${/* Who may collect. Collapsed, because it is reference read
+                        on an unfamiliar face, not an exception to act on - and
+                        an open list per child buries the notes above it. */''}
+                  <details style="border-top:1px solid var(--border);">
+                    <summary style="cursor:pointer; padding:7px 12px; font-size:12px; color:var(--muted); user-select:none;">
+                      Who may collect${(m.pickup_list || []).length ? ` (${m.pickup_list.length})` : ' — none on file'}
+                    </summary>
+                    ${(m.pickup_list || []).length ? `
+                      <div style="padding:0 12px 10px;">
+                        ${m.pickup_list.map(c => `
+                          ${/* The href is reduced to digits and +, not just
+                                escaped: jsAttr keeps an attribute well-formed but
+                                would happily carry a javascript: payload into an
+                                href. The visible text stays as entered. */''}
+                          <div style="display:flex; align-items:baseline; gap:8px; padding:5px 0; border-bottom:1px solid var(--border); flex-wrap:wrap;">
+                            <span style="font-weight:600; font-size:13px;">${this.escapeHtml(c.name || 'Unnamed')}</span>
+                            ${c.is_primary ? '<span style="font-size:10px; background:var(--accent); color:var(--bg); padding:1px 6px; border-radius:8px;">primary</span>' : ''}
+                            ${c.relationship ? `<span style="color:var(--muted); font-size:12px;">${this.escapeHtml(c.relationship)}</span>` : ''}
+                            ${c.phone ? `<a href="tel:${encodeURIComponent(String(c.phone).replace(/[^\d+]/g, ''))}" style="margin-left:auto; font-size:13px;">${this.escapeHtml(c.phone)}</a>` : ''}
+                            ${c.note ? `<div style="width:100%; color:var(--muted); font-size:11px;">${this.escapeHtml(c.note)}</div>` : ''}
+                          </div>`).join('')}
+                      </div>`
+                      : `<div style="padding:0 12px 10px; color:var(--muted); font-size:12px;">
+                           No authorised adults recorded. Add them under the student's emergency contacts.
+                         </div>`}
+                  </details>
+                </div>`;
+              }).join('')}
               ${!(f.members || []).length
                 ? `<div style="color:var(--muted); font-size:13px;">No students on this number yet.</div>` : ''}
             </div>
@@ -35209,6 +35258,215 @@
                    </button>` : ''}
             </div>
           </div>`).join('');
+      }
+
+      // Dates for pickup notes are LOCAL dates, never UTC.
+      //
+      // new Date().toISOString() is UTC. Setting "tomorrow" from a US evening
+      // would land a day early, and a pickup note showing on the wrong day is
+      // how a child leaves with the wrong adult. Worth the four lines.
+      _localDateStr(d) {
+        const x = d instanceof Date ? d : new Date(d);
+        return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+      }
+
+      async showPickupNoteModal(studentId, studentName) {
+        this._pickupNoteStudent = { id: studentId, name: studentName };
+        this._pickupNoteEditing = null;
+        try {
+          this._pickupNoteList = await this._pickupRpc('rt_student_pickup_notes',
+                                                       { p_student_id: studentId }) || [];
+        } catch (e) {
+          console.error('rt_student_pickup_notes failed:', e);
+          this._pickupNoteList = [];
+        }
+        this.showModal('pickup-note', `📝 Pickup note — ${this.escapeHtml(studentName)}`,
+                       this._renderPickupNoteBody());
+      }
+
+      _renderPickupNoteBody() {
+        const notes = this._pickupNoteList || [];
+        const editing = this._pickupNoteEditing;
+        const today = this._localDateStr(new Date());
+        const tomorrow = this._localDateStr(new Date(Date.now() + 86400000));
+
+        // Scheduled and expired notes are shown greyed rather than hidden, so
+        // staff can see that tomorrow is already covered and do not add a
+        // second note saying the same thing.
+        const row = (n) => {
+          const when = n.starts_on == null && n.ends_on == null ? 'Every day'
+            : n.starts_on === n.ends_on ? this._formatDateOnly(n.starts_on)
+            : `${n.starts_on ? this._formatDateOnly(n.starts_on) : 'always'} → ${n.ends_on ? this._formatDateOnly(n.ends_on) : 'no end'}`;
+          const tone = n.active ? 'var(--warning, #e67e22)' : 'var(--muted)';
+          const state = n.active ? 'In force today' : (n.expired ? 'Finished' : 'Scheduled');
+          return `
+            <div style="border-left:3px solid ${tone}; background:${n.active ? 'rgba(230,126,34,0.10)' : 'transparent'}; padding:9px 12px; border-radius:0 6px 6px 0; margin-bottom:8px; ${n.expired ? 'opacity:0.55;' : ''}">
+              <div style="font-size:14px; line-height:1.4;">${this.escapeHtml(n.note)}</div>
+              <div style="color:var(--muted); font-size:11px; margin-top:5px;">
+                ${state} · ${when} · added by ${this.escapeHtml(n.author || 'Staff')}
+              </div>
+              <div style="display:flex; gap:6px; margin-top:7px;">
+                <button class="btn btn-secondary small" style="font-size:11px; padding:3px 8px;"
+                        onclick="app.editPickupNote('${n.id}')">Edit</button>
+                <button class="btn btn-secondary small" style="font-size:11px; padding:3px 8px; color:var(--danger);"
+                        onclick="app.deletePickupNote('${n.id}')">Remove</button>
+              </div>
+            </div>`;
+        };
+
+        const sel = (v, cur) => v === cur ? 'selected' : '';
+        const curWhen = !editing ? 'today'
+          : (editing.starts_on == null && editing.ends_on == null) ? 'always'
+          : (editing.starts_on === editing.ends_on && editing.starts_on === today) ? 'today'
+          : (editing.starts_on === editing.ends_on && editing.starts_on === tomorrow) ? 'tomorrow'
+          : 'range';
+
+        return `
+          ${notes.length ? `<div style="margin-bottom:16px;">${notes.map(row).join('')}</div>` : ''}
+
+          <div style="border-top:1px solid var(--border); padding-top:14px;">
+            <div style="font-weight:600; font-size:13px; margin-bottom:8px;">
+              ${editing ? 'Edit note' : 'Add a note'}
+            </div>
+
+            <textarea id="pickup-note-text" rows="3" maxlength="500"
+              placeholder="e.g. Aunt Kate is collecting Jom today — silver estate"
+              style="width:100%; padding:10px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text); font-family:inherit; font-size:14px; resize:vertical;">${editing ? this.escapeHtml(editing.note) : ''}</textarea>
+
+            <div style="display:flex; gap:10px; align-items:flex-end; margin-top:10px; flex-wrap:wrap;">
+              <div style="flex:1; min-width:150px;">
+                <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:4px;">When</label>
+                <select id="pickup-note-when" onchange="app._togglePickupNoteRange()"
+                        style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text);">
+                  <option value="today"    ${sel('today', curWhen)}>Today only</option>
+                  <option value="tomorrow" ${sel('tomorrow', curWhen)}>Tomorrow only</option>
+                  <option value="range"    ${sel('range', curWhen)}>Pick dates</option>
+                  <option value="always"   ${sel('always', curWhen)}>Every day, until removed</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="pickup-note-range" style="display:${curWhen === 'range' ? 'flex' : 'none'}; gap:10px; margin-top:10px; flex-wrap:wrap;">
+              <div style="flex:1; min-width:130px;">
+                <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:4px;">From</label>
+                <input type="date" id="pickup-note-from" value="${editing?.starts_on || today}"
+                  style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text);">
+              </div>
+              <div style="flex:1; min-width:130px;">
+                <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:4px;">To</label>
+                <input type="date" id="pickup-note-to" value="${editing?.ends_on || today}"
+                  style="width:100%; padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--bg); color:var(--text);">
+              </div>
+            </div>
+
+            <p style="color:var(--muted); font-size:11px; margin:10px 0 0;">
+              Staff only — parents never see this. Dated notes stop showing by themselves.
+            </p>
+
+            <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
+              ${editing ? `<button class="btn btn-secondary" onclick="app.cancelPickupNoteEdit()">Cancel edit</button>` : ''}
+              <button class="btn btn-primary" onclick="app.savePickupNote()">
+                ${editing ? 'Save note' : 'Add note'}
+              </button>
+            </div>
+          </div>`;
+      }
+
+      _togglePickupNoteRange() {
+        const when = document.getElementById('pickup-note-when')?.value;
+        const box = document.getElementById('pickup-note-range');
+        if (box) box.style.display = when === 'range' ? 'flex' : 'none';
+      }
+
+      _refreshPickupNoteModal() {
+        const body = document.querySelector('#modal-pickup-note .modal-body')
+                  || document.getElementById('pickup-note-body');
+        if (body) { body.innerHTML = this._renderPickupNoteBody(); return true; }
+        return false;
+      }
+
+      editPickupNote(noteId) {
+        this._pickupNoteEditing = (this._pickupNoteList || []).find(n => n.id === noteId) || null;
+        if (!this._refreshPickupNoteModal()) {
+          this.showModal('pickup-note',
+            `📝 Pickup note — ${this.escapeHtml(this._pickupNoteStudent?.name || '')}`,
+            this._renderPickupNoteBody());
+        }
+      }
+
+      cancelPickupNoteEdit() {
+        this._pickupNoteEditing = null;
+        this._refreshPickupNoteModal();
+      }
+
+      async savePickupNote() {
+        const text = (document.getElementById('pickup-note-text')?.value || '').trim();
+        if (text.length < 2) {
+          this.showNotification('Write the note first', 'error');
+          return;
+        }
+
+        const when = document.getElementById('pickup-note-when')?.value || 'today';
+        const today = this._localDateStr(new Date());
+        const tomorrow = this._localDateStr(new Date(Date.now() + 86400000));
+
+        let from = null;
+        let to = null;
+        if (when === 'today')         { from = today;    to = today; }
+        else if (when === 'tomorrow') { from = tomorrow; to = tomorrow; }
+        else if (when === 'range') {
+          from = document.getElementById('pickup-note-from')?.value || null;
+          to   = document.getElementById('pickup-note-to')?.value || null;
+          if (from && to && to < from) {
+            this.showNotification('That range ends before it starts', 'error');
+            return;
+          }
+        }
+        // 'always' leaves both null - a standing note.
+
+        try {
+          const res = await this._pickupRpc('rt_set_pickup_note', {
+            p_student_id: this._pickupNoteStudent.id,
+            p_note: text,
+            p_starts_on: from,
+            p_ends_on: to,
+            p_note_id: this._pickupNoteEditing?.id || null,
+          });
+          if (!res?.success) {
+            this.showNotification(res?.error || 'Could not save the note', 'error');
+            return;
+          }
+          this.showNotification('Note saved', 'success');
+          this._pickupNoteEditing = null;
+          this._pickupNoteList = await this._pickupRpc('rt_student_pickup_notes',
+            { p_student_id: this._pickupNoteStudent.id }) || [];
+          this._refreshPickupNoteModal();
+          // The board carries the notes, so re-run the search behind the modal.
+          await this.pickupSearch();
+        } catch (e) {
+          console.error('savePickupNote failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
+      async deletePickupNote(noteId) {
+        if (!confirm('Remove this pickup note?')) return;
+        try {
+          const res = await this._pickupRpc('rt_delete_pickup_note', { p_note_id: noteId });
+          if (!res?.success) {
+            this.showNotification(res?.error || 'Could not remove the note', 'error');
+            return;
+          }
+          this._pickupNoteEditing = null;
+          this._pickupNoteList = await this._pickupRpc('rt_student_pickup_notes',
+            { p_student_id: this._pickupNoteStudent.id }) || [];
+          this._refreshPickupNoteModal();
+          await this.pickupSearch();
+          this.showNotification('Note removed', 'success');
+        } catch (e) {
+          console.error('deletePickupNote failed:', e);
+          this.showNotification(e.message, 'error');
+        }
       }
 
       async pickupSearch() {
