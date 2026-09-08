@@ -39506,6 +39506,7 @@
           <button class="btn btn-secondary" data-filter="pending" onclick="app.loadMaterialRequests('pending', this)">Pending</button>
           <button class="btn btn-secondary" data-filter="in_progress" onclick="app.loadMaterialRequests('in_progress', this)">In Progress</button>
           <button class="btn btn-secondary" data-filter="completed" onclick="app.loadMaterialRequests('completed', this)">Completed</button>
+          <button class="btn btn-secondary" data-filter="rejected" onclick="app.loadMaterialRequests('rejected', this)">Declined</button>
         </div>
         <div id="materials-requests-container">
           <div style="text-align: center; padding: 20px;"><div class="loading-spinner"></div><p>Loading requests...</p></div>
@@ -39560,13 +39561,17 @@
         const statusColors = {
           'pending': 'var(--warning)',
           'in_progress': 'var(--info, #3b82f6)',
-          'completed': 'var(--accent-2, #22c55e)'
+          'completed': 'var(--accent-2, #22c55e)',
+          'rejected': 'var(--muted)'
         };
 
         const statusLabels = {
           'pending': 'Pending',
           'in_progress': 'In Progress',
-          'completed': 'Completed'
+          'completed': 'Completed',
+          // Grey rather than red: declining a request is an ordinary answer,
+          // not a failure, and the reason sits alongside it.
+          'rejected': 'Declined'
         };
 
         const priorityColors = {
@@ -39741,11 +39746,12 @@
               <option value="pending" ${request.status === 'pending' ? 'selected' : ''}>Pending</option>
               <option value="in_progress" ${request.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
               <option value="completed" ${request.status === 'completed' ? 'selected' : ''}>Completed</option>
+              <option value="rejected" ${request.status === 'rejected' ? 'selected' : ''}>Declined</option>
             </select>
           </div>
           <div style="margin-bottom: 15px;">
             <label style="display: block; margin-bottom: 5px; font-weight: bold;">Admin Notes</label>
-            <textarea id="detail-admin-notes" rows="3" placeholder="Add notes about this request..."
+            <textarea id="detail-admin-notes" rows="3" placeholder="Add notes about this request. Required if you decline it - the requester is sent whatever you write here."
               style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); resize: vertical;">${this.escapeHtml(request.admin_notes || '')}</textarea>
           </div>
           <div style="display: flex; gap: 10px; justify-content: flex-end;">
@@ -39799,6 +39805,16 @@
         const status = document.getElementById('detail-material-status').value;
         const adminNotes = document.getElementById('detail-admin-notes').value.trim();
 
+        // A constraint enforces this too, but a raw check_violation is not
+        // something to show an admin. Declining without a reason leaves the
+        // requester with an outcome and nothing to act on, so they ask again.
+        if (status === 'rejected' && !adminNotes) {
+          this.showNotification(
+            'Add a note saying why before declining — the requester is sent it.', 'error');
+          document.getElementById('detail-admin-notes')?.focus();
+          return;
+        }
+
         const { error } = await this.supabaseQuery(() => this.auth.supabase
           .from('material_requests')
           .update({
@@ -39812,7 +39828,9 @@
         if (error) throw error;
 
         this.closeModal('material-request-detail');
-        this.showNotification('Request status updated successfully!', 'success');
+        this.showNotification(
+          `Status updated${status === 'pending' ? '' : ' — the requester has been notified'}.`,
+          'success');
         this.loadMaterialRequests('all');
 
       } catch (error) {
