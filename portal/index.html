@@ -37753,13 +37753,17 @@
           const statusColors = {
             'open': 'var(--danger)',
             'in_progress': 'var(--warning)',
-            'resolved': 'var(--accent-2)'
+            'resolved': 'var(--accent-2)',
+            'closed': 'var(--muted)'
           };
 
           const statusLabels = {
             'open': 'Open',
             'in_progress': 'In Progress',
-            'resolved': 'Resolved'
+            'resolved': 'Resolved',
+            // Its own label: closed means looked at and not being fixed, which
+            // is a different answer to the reporter than "resolved".
+            'closed': 'Closed'
           };
 
           const bugTypeLabels = {
@@ -37884,7 +37888,8 @@
                   <select id="bug-status-select" style="width: 100%; padding: 8px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); margin-top: 5px;">
                     <option value="open" ${report.status === 'open' ? 'selected' : ''}>Open</option>
                     <option value="in_progress" ${report.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
-                    <option value="resolved" ${report.status === 'resolved' || report.status === 'closed' ? 'selected' : ''}>Resolved</option>
+                    <option value="resolved" ${report.status === 'resolved' ? 'selected' : ''}>Resolved</option>
+                    <option value="closed" ${report.status === 'closed' ? 'selected' : ''}>Closed (not fixing)</option>
                   </select>
                 </div>
                 <div>
@@ -37936,7 +37941,7 @@
 
               <div style="margin-bottom: 15px;">
                 <label style="color: var(--muted); font-size: 12px;">Admin Notes</label>
-                <textarea id="bug-admin-notes" rows="3" placeholder="Add notes about this bug..."
+                <textarea id="bug-admin-notes" rows="3" placeholder="Add notes about this bug. Required if you close it without a fix - the reporter is sent whatever you write here."
                   style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); resize: vertical; margin-top: 5px;">${report.admin_notes || ''}</textarea>
               </div>
             </div>
@@ -37963,6 +37968,17 @@
           const status = document.getElementById('bug-status-select').value;
           const adminNotes = document.getElementById('bug-admin-notes').value.trim();
 
+          // Same rule as declining a materials request, and same reasoning:
+          // "closed" on its own tells the reporter the outcome and nothing
+          // they can act on. A constraint enforces it; this exists so an
+          // admin sees a sentence rather than a check_violation.
+          if (status === 'closed' && !adminNotes) {
+            this.showNotification(
+              'Say why before closing without a fix — the reporter is sent it.', 'error');
+            document.getElementById('bug-admin-notes')?.focus();
+            return;
+          }
+
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('bug_reports')
             .update({
@@ -37975,7 +37991,9 @@
           if (error) throw error;
 
           this.closeModal('bug-report-details');
-          this.showNotification('Bug report updated successfully', 'success');
+          this.showNotification(
+            `Bug report updated${status === 'open' ? '' : ' — the reporter has been notified'}.`,
+            'success');
           this.loadBugReports();
 
         } catch (error) {
