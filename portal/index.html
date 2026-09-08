@@ -39349,6 +39349,25 @@
             .order('last_name');
 
           students = studentData || [];
+
+          // What the day already says about these students. A teacher marking
+          // period 3 should be able to see that Jim went home sick in period 2
+          // before deciding what to put - otherwise the only honest mark for
+          // that class, absent, looks like a contradiction.
+          let dailyByStudent = {};
+          if (students.length) {
+            try {
+              const day = await this._pickupRpc('rt_daily_attendance_for', {
+                p_student_ids: students.map(x => x.id),
+                p_date: today,
+              }) || [];
+              for (const d of day) dailyByStudent[d.student_id] = d;
+            } catch (e) {
+              // A missing roll-up must not stop the register being taken.
+              console.warn('daily attendance unavailable:', e);
+            }
+          }
+          this._classDaily = dailyByStudent;
         }
 
         // Get existing attendance session for this date and period
@@ -39510,6 +39529,7 @@
                         <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
+                            ${this.dailyStatusChip(dailyByStudent[student.id])}
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
                           <td style="padding: 12px; text-align: center;">
@@ -39572,6 +39592,35 @@
       selects.forEach(select => {
         select.value = 'present';
       });
+    }
+
+    // The day's status, small and underneath the name. Deliberately not a
+    // control: the class register is what a teacher edits, and the day follows
+    // from it. Showing it as something clickable would invite editing the
+    // summary instead of the fact.
+    dailyStatusChip(day) {
+      if (!day) {
+        return '<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">Day: not taken</div>';
+      }
+      const look = {
+        present:         { icon: '✅', label: 'Present',    colour: 'var(--accent-2)' },
+        late:            { icon: '⏰', label: 'Late',       colour: 'var(--warning)' },
+        left_early:      { icon: '🚪', label: 'Left early', colour: 'var(--warning)' },
+        late_left_early: { icon: '⚠️', label: 'Late, left early', colour: 'var(--warning)' },
+        absent:          { icon: '❌', label: 'Absent',     colour: 'var(--danger)' },
+      }[day.status] || { icon: '•', label: day.status, colour: 'var(--muted)' };
+
+      // Periods matter here: "left early" alone does not tell you whether it
+      // happened before or after the class you are marking.
+      const when = [
+        day.arrived_at_period ? `arrived P${day.arrived_at_period}` : null,
+        day.left_at_period ? `left P${day.left_at_period}` : null,
+      ].filter(Boolean).join(', ');
+
+      return `<div style="font-size: 11px; color: ${look.colour}; margin-top: 2px;"
+                   title="Attendance for the whole day. Marking this class updates it, but a class cannot undo a presence the day has already recorded.">
+          Day: ${look.icon} ${look.label}${day.excused ? ' (excused)' : ''}${when ? ` · ${when}` : ''}
+        </div>`;
     }
 
     async saveClassAttendance(classId, date, period = null) {
