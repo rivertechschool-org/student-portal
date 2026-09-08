@@ -12861,19 +12861,121 @@
         }
       }
 
+      async saveMyName() {
+        const first = (document.getElementById('me-first-name')?.value || '').trim();
+        const last = (document.getElementById('me-last-name')?.value || '').trim();
+        const username = (document.getElementById('me-username')?.value || '').trim();
+
+        if (!first || !last) {
+          this.showNotification('First and last name are both needed', 'error');
+          return;
+        }
+        if (!username) {
+          this.showNotification('Students need something to call you', 'error');
+          return;
+        }
+
+        const profile = this.userInfo.profile;
+        if (first === profile.first_name && last === profile.last_name
+            && username === (profile.username || '')) {
+          this.showNotification('Nothing changed', 'info');
+          return;
+        }
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .update({ first_name: first, last_name: last, username })
+            .eq('id', profile.id));
+
+          if (error) {
+            // username is UNIQUE, and "duplicate key value violates unique
+            // constraint" is not something to show a teacher.
+            if (error.code === '23505' || /duplicate key|unique/i.test(error.message)) {
+              this.showNotification(
+                `${username} is already taken by someone else. Try another.`, 'error');
+              return;
+            }
+            // The privilege guard speaks in plain English; pass it through.
+            if (error.code === '42501') {
+              this.showNotification(error.message, 'error');
+              return;
+            }
+            throw error;
+          }
+
+          // Keep the cached profile in step, or the rest of the session keeps
+          // showing the old name until a reload.
+          profile.first_name = first;
+          profile.last_name = last;
+          profile.username = username;
+          if (this.auth.userProfile) {
+            this.auth.userProfile.first_name = first;
+            this.auth.userProfile.last_name = last;
+            this.auth.userProfile.username = username;
+          }
+
+          this.showNotification('Name updated', 'success');
+          this.renderProfile();
+        } catch (e) {
+          console.error('saveMyName failed:', e);
+          this.showNotification('Could not save: ' + e.message, 'error');
+        }
+      }
+
       renderProfile() {
         const profileInfo = document.getElementById('profile-info');
         if (!this.userInfo) return;
         
         const profile = this.userInfo.profile;
-        profileInfo.innerHTML = `
-          <div class="list">
+
+        // Staff may rename themselves. Students and parents may not: a student
+        // renaming their own row changes what every register, gradebook and
+        // pickup list calls them, and there is no reason for them to.
+        //
+        // This is only safe because a BEFORE UPDATE trigger now refuses
+        // user_type, account_status, auth_user_id, email, the games PIN, the
+        // parent link code and the RTC balance from anyone who is not an
+        // admin. RLS gates rows, never columns, so before that guard existed
+        // the same policy that permits this form also permitted a teacher to
+        // set their own user_type to 'admin'.
+        const canRename = profile.user_type === 'teacher' || profile.user_type === 'admin';
+
+        const nameBlock = canRename ? `
+            <div style="padding: 12px 0;">
+              <div class="list-item-title" style="margin-bottom: 8px;">Your name</div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <input type="text" id="me-first-name" value="${this.jsAttr(profile.first_name || '')}"
+                       placeholder="First name" autocomplete="given-name"
+                       style="flex: 1; min-width: 130px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+                <input type="text" id="me-last-name" value="${this.jsAttr(profile.last_name || '')}"
+                       placeholder="Last name" autocomplete="family-name"
+                       style="flex: 1; min-width: 130px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+              </div>
+
+              <div class="list-item-title" style="margin: 14px 0 8px;">What students see</div>
+              <input type="text" id="me-username" value="${this.jsAttr(profile.username || '')}"
+                     placeholder="e.g. Mr. Jordan" autocomplete="off"
+                     style="width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text);">
+              <div style="color: var(--muted); font-size: 11px; margin-top: 5px;">
+                This is the name on your classes, messages and assignments. It has to be
+                different from everyone else's.
+              </div>
+
+              <div style="display: flex; justify-content: flex-end; margin-top: 12px;">
+                <button class="btn btn-primary" onclick="app.saveMyName()">Save name</button>
+              </div>
+            </div>` : `
             <div class="list-item">
               <div class="list-item-content">
                 <div class="list-item-title">Full Name</div>
                 <div class="list-item-meta">${profile.first_name} ${profile.last_name}</div>
               </div>
-            </div>
+            </div>`;
+
+        profileInfo.innerHTML = `
+          <div class="list">
+            ${nameBlock}
             <div class="list-item">
               <div class="list-item-content">
                 <div class="list-item-title">Email</div>
