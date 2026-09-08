@@ -38654,10 +38654,29 @@
     //
     // Matching is on the row's own text, so it covers the name, the grade and
     // the Homeschool/Full-Time line without needing the student list here.
+    // Which enrolment filter is showing, read back out of the buttons. Keeping
+    // it in the DOM means a date change - which rebuilds them - resets it,
+    // rather than leaving a filter set that nothing on screen explains.
+    setAttendanceEnrollment(scope, value) {
+      const bar = document.getElementById(scope + '-enrollment');
+      if (!bar) return;
+      for (const b of bar.querySelectorAll('button')) {
+        const on = b.getAttribute('data-enrollment') === value;
+        b.setAttribute('data-active', String(on));
+        b.classList.toggle('btn-primary', on);
+        b.classList.toggle('btn-secondary', !on);
+      }
+      this.filterAttendanceRoster(scope);
+    }
+
     filterAttendanceRoster(scope) {
       const input = document.getElementById(scope + '-search');
       const box = document.getElementById(scope + '-rows');
       if (!input || !box) return;
+
+      const bar = document.getElementById(scope + '-enrollment');
+      const active = bar?.querySelector('button[data-active="true"]');
+      const enrolment = active?.getAttribute('data-enrollment') || 'all';
 
       const q = input.value.trim().toLowerCase();
       const rows = [...box.querySelectorAll('tbody > tr[data-student-id]')];
@@ -38671,7 +38690,10 @@
 
       for (const tr of entryRows) {
         const id = tr.getAttribute('data-student-id');
-        const hit = !q || tr.innerText.toLowerCase().includes(q);
+        const matchesText = !q || tr.innerText.toLowerCase().includes(q);
+        const matchesEnrolment = enrolment === 'all'
+          || tr.getAttribute('data-enrollment') === enrolment;
+        const hit = matchesText && matchesEnrolment;
         tr.classList.toggle('att-hidden', !hit);
         if (hit) { shown.add(id); matches++; }
       }
@@ -38684,10 +38706,11 @@
       const count = document.getElementById(scope + '-search-count');
       if (count) {
         const total = entryRows.length;
-        count.textContent = q
+        const filtering = !!q || enrolment !== 'all';
+        count.textContent = filtering
           ? `${matches} of ${total} shown`
           : `${total} students`;
-        count.style.color = (q && matches === 0) ? 'var(--warning)' : 'var(--muted)';
+        count.style.color = (filtering && matches === 0) ? 'var(--warning)' : 'var(--muted)';
       }
     }
 
@@ -38812,6 +38835,24 @@
                        style="flex: 1; min-width: 180px; padding: 9px 12px; font-size: 15px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text);">
                 <span id="daily-attendance-search-count" style="color: var(--muted); font-size: 12px; white-space: nowrap;">${students.length + ' students'}</span>
               </div>
+
+              ${/* The chosen filter lives in the DOM rather than on the app, so
+                    changing the date - which re-renders this whole block - puts
+                    it back to All on its own instead of leaving a stale filter
+                    hiding half the roster. */''}
+              <div id="daily-attendance-enrollment" class="keep-row"
+                   style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;">
+                ${[
+                  { v: 'all', label: `All (${students.length})` },
+                  { v: 'full-time', label: `Full-Time (${students.filter(x => x.enrollment_type !== 'homeschool').length})` },
+                  { v: 'homeschool', label: `Homeschool (${students.filter(x => x.enrollment_type === 'homeschool').length})` },
+                ].map(o => `
+                  <button type="button" data-enrollment="${o.v}" data-active="${o.v === 'all'}"
+                          onclick="app.setAttendanceEnrollment('daily-attendance', '${o.v}')"
+                          class="btn ${o.v === 'all' ? 'btn-primary' : 'btn-secondary'} small"
+                          style="font-size: 12px;">${o.label}</button>
+                `).join('')}
+              </div>
               <div id="daily-attendance-rows" style="max-height: 60vh; overflow-y: auto;">
                 <table style="width: 100%; border-collapse: collapse;">
                   <thead style="position: sticky; top: 0; background: var(--card); z-index: 1;">
@@ -38827,7 +38868,9 @@
                     ${students.map(student => {
                       const att = attendanceMap[student.id] || {};
                       return `
-                        <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
+                        <tr data-student-id="${student.id}"
+                            data-enrollment="${student.enrollment_type === 'homeschool' ? 'homeschool' : 'full-time'}"
+                            style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                             <div style="font-size: 12px; color: var(--muted);">${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
