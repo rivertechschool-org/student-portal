@@ -28820,11 +28820,11 @@
                   </select>
                 </div>
                 <div>
-                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Account Status</label>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Enrolment</label>
                   <select id="report-account-status" class="form-control" style="width: 100%; padding: 8px;" onchange="app.updateStudentFilterByStatus()">
-                    <option value="active">Active Students</option>
-                    <option value="inactive">Inactive Students</option>
-                    <option value="all">All Students</option>
+                    <option value="enrolled">Currently enrolled</option>
+                    <option value="past">Past students</option>
+                    <option value="all">All students</option>
                   </select>
                 </div>
                 <div>
@@ -28960,17 +28960,17 @@
             });
           }
 
-          // Load ALL students (active and inactive) and store for filtering
+          // Load every student, enrolled and past, and filter in the browser.
           const { data: students } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .select('id, first_name, last_name, grade_level, account_status')
+            .select('id, first_name, last_name, grade_level, account_status, student_status')
             .eq('user_type', 'student')
             .order('last_name'));
 
           // Store all students for status filtering
           this.reportAllStudents = students || [];
 
-          // Initially show active students
+          // Opens on the currently enrolled, which is what a report usually wants.
           this.updateStudentFilterByStatus();
 
           const studentSelect = document.getElementById('report-student');
@@ -29017,10 +29017,15 @@
 
         const selectedStatus = statusSelect.value;
 
-        // Filter students by status
+        // Compare through isEnrolled rather than against a literal. The previous
+        // version tested `account_status === 'active'`, and nothing in the table
+        // is spelled that way, so the default filter matched zero students and
+        // this dropdown came up empty on every visit.
         let filteredStudents = this.reportAllStudents;
-        if (selectedStatus !== 'all') {
-          filteredStudents = this.reportAllStudents.filter(s => s.account_status === selectedStatus);
+        if (selectedStatus === 'enrolled') {
+          filteredStudents = this.reportAllStudents.filter(s => this.isEnrolled(s));
+        } else if (selectedStatus === 'past') {
+          filteredStudents = this.reportAllStudents.filter(s => !this.isEnrolled(s));
         }
 
         // Rebuild student dropdown
@@ -29028,7 +29033,9 @@
         filteredStudents.forEach(student => {
           const option = document.createElement('option');
           option.value = student.id;
-          const statusLabel = selectedStatus === 'all' ? ` [${student.account_status}]` : '';
+          const statusLabel = selectedStatus === 'all'
+            ? (this.isEnrolled(student) ? '' : ' [past student]')
+            : '';
           option.textContent = `${student.last_name}, ${student.first_name} (Grade ${student.grade_level || 'N/A'})${statusLabel}`;
           studentSelect.appendChild(option);
         });
