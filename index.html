@@ -1972,72 +1972,65 @@
                 }
                 
                 try {
-                    // Step 1: Find the inactive student profile by username
-                    const { data: profile, error: findError } = await this.auth.supabase
-                        .from('user_profiles')
-                        .select('*')
-                        .eq('username', username)
-                        .eq('account_status', 'inactive')
-                        .eq('user_type', 'student')
-                        .single();
-                    
-                    if (findError || !profile) {
+                    // The sign-in page runs as nobody (the anon role), and
+                    // user_profiles has no anon SELECT policy - deliberately,
+                    // since the lockdown. Reading the row here always came back
+                    // empty, so every student saw "No inactive account found".
+                    //
+                    // So nothing is read or written from the browser any more:
+                    //
+                    //   1. student_username_unclaimed() - a SECURITY DEFINER
+                    //      function anon may call - answers only yes/no: is
+                    //      there a student with this username who has no login
+                    //      yet. Asked BEFORE signUp so a typo does not leave an
+                    //      orphaned auth user behind.
+                    //   2. signUp carries the username as user metadata.
+                    //      A trigger on auth.users (claim_student_profile_on_signup)
+                    //      links the new auth user to that profile and marks it
+                    //      activated, server-side, with no policy involved.
+                    //
+                    // Email confirmation is on for this site, so signUp returns
+                    // no session; that is why the link cannot be made from here
+                    // after signing up either.
+                    const cleanUsername = username.trim().toLowerCase();
+                    const { data: unclaimed, error: checkError } = await this.auth.supabase
+                        .rpc('student_username_unclaimed', { p_username: cleanUsername });
+
+                    if (checkError) {
+                        console.error('student_username_unclaimed failed:', checkError);
+                        // 42883 = function does not exist: the SQL side has not
+                        // been installed on this database yet.
+                        throw new Error(checkError.code === '42883' || /does not exist|not find the function/i.test(checkError.message || '')
+                            ? 'Account activation is not set up yet. Please ask your teacher to activate your account for you.'
+                            : 'Could not check that username right now. Please try again in a minute.');
+                    }
+                    if (!unclaimed) {
                         throw new Error('No inactive account found with that username. Please check with your teacher.');
                     }
-                    
-                    // Step 2: Check if student is eligible for activation
-                    // (You can add grade level checks here if needed)
-                    
-                    // Step 3: Create auth user
+
                     const { data: authData, error: authError } = await this.auth.supabase.auth.signUp({
                         email: email,
-                        password: password
+                        password: password,
+                        options: {
+                            data: { claim_username: cleanUsername },
+                            emailRedirectTo: `${window.location.origin}/confirm.html`
+                        }
                     });
-                    
-                    if (authError) throw new Error(PortalUI.friendlyAuthError(authError));
-                    
+
+                    if (authError) {
+                        if (/already registered/i.test(authError.message || '')) {
+                            throw new Error('This email already has an account. Sign in with it, or use "Forgot password".');
+                        }
+                        throw new Error(PortalUI.friendlyAuthError(authError));
+                    }
+
                     if (!authData.user) {
                         throw new Error('Failed to create authentication account');
                     }
-                    
-                    // Step 4: Link the new auth user to the pre-created profile.
-                    // auth_user_id/email are NOT protected by the
-                    // protect_user_profile_columns trigger, so this direct
-                    // update persists for an anon/authenticated caller.
-                    const { error: linkError } = await this.auth.supabase
-                        .from('user_profiles')
-                        .update({
-                            auth_user_id: authData.user.id,
-                            email: email,
-                            updated_at: new Date().toISOString()
-                        })
-                        .eq('username', username)
-                        .eq('account_status', 'inactive');
 
-                    if (linkError) {
-                        console.error('Profile link error:', linkError);
-                        // NOTE: browser-side auth.admin.deleteUser() always fails
-                        // (no service-role key in the client), so no cleanup call
-                        // here — it would only log a confusing 403. Orphaned auth
-                        // users are reaped server-side.
-                        throw new Error('Failed to activate account. Please contact your teacher.');
-                    }
-
-                    // Step 5: Flip account_status/can_login via the SECURITY DEFINER
-                    // RPC. A direct UPDATE of those columns is silently reverted by
-                    // the protect_user_profile_columns trigger for anon/authenticated
-                    // callers (H-10 activation loop), so it MUST go through an RPC.
-                    const { error: activateError } = await this.auth.supabase
-                        .rpc('reactivate_student', { p_student_id: profile.id });
-
-                    if (activateError) {
-                        console.error('Account activation RPC error:', activateError);
-                        throw new Error('Failed to activate account. Please contact your teacher.');
-                    }
-                    
                     // Success!
                     if (alerts) {
-                        alerts.innerHTML = '<div class="alert alert-success">Account activated! Please check your email to verify, then you can login.</div>';
+                        alerts.innerHTML = '<div class="alert alert-success">Account activated! Check your email for a confirmation link, then come back here and sign in.</div>';
                     }
                     
                     // Clear form
