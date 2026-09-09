@@ -5213,6 +5213,18 @@ function answerIsTypeable(answer) {
     // included: typing one into a single-line box tests bracket formatting,
     // not mathematics.)
     if (/^\{\s*(?:[^{}]*)\}$/.test(answer.trim())) return true;
+    // Symbols with no key and no insert button. π √ ∛ ° ≤ ≥ ≠ ² have buttons
+    // and ⟨4, 0⟩ grades equal to (4, 0), but a student facing "3 sec²θ dθ" or
+    // "uv − ∫v du" in a bare text box has no way to produce the glyphs at all.
+    // Those questions keep their options and go back to multiple choice.
+    if (/[θ∫∮∇∂εδ→≡∀∃¬⇒ₙ₀₁₂₃₄₅₆₇₈₉₊]/.test(answer)) return false;
+    // Prose. detectType files sentences like "split into two integrals at
+    // x = c" under 'algebraic' because they contain an x and a digit, so every
+    // definition-shaped answer in tiers 5+ was silently rendered as a typed
+    // box the student had to hit word for word. Two adjacent alphabetic words
+    // of 3+ letters is the line: real typed answers ("7√3", "x = 7 or x = -4",
+    // "-1 and 1", "log(4) + log(8)") never have two, prose always does.
+    if (/[a-z]{3,}[\s,;:()]+[a-z]{3,}/i.test(answer)) return false;
     let detected;
     try { detected = AnswerInterpreter.detectType(answer); } catch (e) { return false; }
     return !NON_TYPEABLE_ANSWER_TYPES.has(detected);
@@ -5226,6 +5238,10 @@ function answerIsTypeable(answer) {
 function shouldTypeAnswer(q, tier) {
     if (!q) return false;
     if (q.visual && q.visual.mode === 'interactive') return false;
+    // Some questions are selection tasks by nature - "which expression NEEDS
+    // the product rule" has no answer without the candidates in front of you.
+    // A generator marks those forceChoice and keeps its options on screen.
+    if (q.forceChoice) return false;
     return Number(tier) >= 5 && answerIsTypeable(q.answer);
 }
 
@@ -5236,6 +5252,12 @@ function shouldTypeAnswer(q, tier) {
 // generator can declare alternate forms via `acceptableAnswers`. Typed input
 // makes that matter in a way multiple choice never did: "64π/3" and "(64/3)π"
 // are the same answer, and a student who writes the second is not wrong.
+//
+// Some questions have infinitely many right answers - "give a point in the
+// solution region" has a whole half-plane of them - so no list of alternates
+// can be written down. Those declare `validate(typed)` instead and decide for
+// themselves. `answer` still holds ONE example, because the options list and
+// the "Answer: ..." line after a wrong attempt both need something to show.
 function typedAnswerIsCorrect(userInput, expectedOrQuestion) {
     if (!userInput) return false;
     const isQ = expectedOrQuestion && typeof expectedOrQuestion === 'object'
@@ -5246,14 +5268,25 @@ function typedAnswerIsCorrect(userInput, expectedOrQuestion) {
     const alts = (Array.isArray(expected) ? expected : [expected])
         .concat(extra)
         .filter(a => a !== undefined && a !== null && String(a).trim() !== '');
-    if (!alts.length) return false;
+    const validator = (isQ && typeof expectedOrQuestion.validate === 'function')
+        ? expectedOrQuestion.validate : null;
+    if (!alts.length && !validator) return false;
     let correct = false;
-    try {
-        correct = AnswerInterpreter.checkAnswer(userInput, alts.length === 1 ? alts[0] : alts).correct;
-    } catch (e) { correct = false; }
-    if (!correct) {
-        const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
-        if (alts.some(a => norm(a) === norm(userInput))) correct = true;
+    if (alts.length) {
+        try {
+            correct = AnswerInterpreter.checkAnswer(userInput, alts.length === 1 ? alts[0] : alts).correct;
+        } catch (e) { correct = false; }
+        if (!correct) {
+            const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
+            if (alts.some(a => norm(a) === norm(userInput))) correct = true;
+        }
+    }
+    // Checked last, so the canonical answer never depends on the validator
+    // being right. A validator that throws leaves the string result standing
+    // rather than turning a correct answer into a wrong one.
+    if (!correct && validator) {
+        try { correct = validator(String(userInput)) === true; }
+        catch (e) { console.warn('validate() threw for this question:', e); }
     }
     return correct;
 }
@@ -10741,7 +10774,7 @@ const generators = {
             // equation — vary the concept asked.
             const concept = pick([
                 { q: "A trend line that best fits scattered data is called the line of...?",   a: "best fit",       opts: ["best fit", "symmetry", "reflection", "slope"],          exp: "The line of best fit minimizes total distance to all points." },
-                { q: "A correlation coefficient (r) ranges between which two values?",         a: "-1 and 1",       opts: ["-1 and 1", "0 and 1", "-100 and 100", "0 and ∞"],       exp: "r ∈ [-1, 1]; ±1 is perfect, 0 is no linear correlation." },
+                { q: "A correlation coefficient (r) ranges between what two values?",          a: "-1 and 1",       opts: ["-1 and 1", "0 and 1", "-100 and 100", "0 and ∞"],       exp: "r ∈ [-1, 1]; ±1 is perfect, 0 is no linear correlation." },
                 { q: "If r = 0, the linear correlation is...?",                                a: "none",           opts: ["none", "perfect", "strong", "negative"],                 exp: "r = 0 means no linear relationship between the variables." },
                 { q: "A scatter plot's best-fit line has a negative slope. The correlation is...?", a: "Negative",  opts: ["Positive", "Negative", "None", "Undefined"],            exp: "Negative slope on the best-fit line implies negative correlation." },
                 { q: "Correlation ≠ ___ (important statistical reminder).",                    a: "causation",      opts: ["causation", "regression", "mean", "median"],             exp: "Correlation does not imply causation — both variables may be driven by a third factor." }
@@ -11085,7 +11118,7 @@ const generators = {
                 ];
                 const [src, tgt] = sidePairs[idx];
                 const other = sidePairs.filter((_, i) => i !== idx).map(p => p[1]);
-                return { subType: type, question: `If △${a.join("")} ≅ △${b.join("")}, which side corresponds to ${src}?`,
+                return { subType: type, question: `If △${a.join("")} ≅ △${b.join("")}, what side corresponds to ${src}?`,
                     answer: tgt, type: "conceptual",
                     options: shuffle([tgt, ...other, tgt.split("").reverse().join("")]),
                     explanation: `Corresponding parts follow the order in the congruence statement: ${a[0]}↔${b[0]}, ${a[1]}↔${b[1]}, ${a[2]}↔${b[2]}. ${src} ↔ ${tgt}.` };
@@ -11096,7 +11129,7 @@ const generators = {
             const angleSrc = `∠${a[idx]}`;
             const angleTgt = `∠${b[idx]}`;
             const otherTgts = [0, 1, 2].filter(i => i !== idx).map(i => `∠${b[i]}`);
-            return { subType: type, question: `If △${a.join("")} ≅ △${b.join("")}, which angle corresponds to ${angleSrc}?`,
+            return { subType: type, question: `If △${a.join("")} ≅ △${b.join("")}, what angle corresponds to ${angleSrc}?`,
                 answer: angleTgt, type: "conceptual",
                 options: shuffle([angleTgt, ...otherTgts, `∠${a[idx]}`]),
                 explanation: `Corresponding angles: ${a[idx]}↔${b[idx]}, so ${angleSrc} ↔ ${angleTgt}.` };
@@ -11359,7 +11392,10 @@ const generators = {
                 const x1 = rand(-6, 6), y1 = rand(-6, 6);
                 const x2 = x1 + 2 * rand(1, 6), y2 = y1 + 2 * rand(1, 6);
                 const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-                return { subType: type, question: `Through which point does the perpendicular bisector of the segment from (${x1}, ${y1}) to (${x2}, ${y2}) pass?`,
+                // "Through which point does it pass" has a whole line of right
+                // answers; where it CROSSES the segment names exactly one -
+                // the midpoint, which is the skill being tested.
+                return { subType: type, question: `The perpendicular bisector of the segment from (${x1}, ${y1}) to (${x2}, ${y2}) crosses it at what point?`,
                     answer: `(${mx}, ${my})`, type: "procedural",
                     options: uniqOpts([`(${mx}, ${my})`, `(${x1}, ${y1})`, `(${x2}, ${y2})`, `(${mx + 1}, ${my})`]),
                     explanation: `It always passes through the MIDPOINT: ((${x1} + ${x2})/2, (${y1} + ${y2})/2) = (${mx}, ${my}).` };
@@ -11378,7 +11414,7 @@ const generators = {
             const mid = (a + b) / 2;
             const midStr = Number.isInteger(mid) ? String(mid) : String(mid);
             return { subType: "equidistant", type: "procedural",
-                question: `A and B sit on a number line at ${a} and ${b}. Which point is equidistant from both?`,
+                question: `A and B sit on a number line at ${a} and ${b}. What number is equidistant from both?`,
                 answer: midStr,
                 options: uniqOpts([midStr, String(a), String(b), String(b - a)]),
                 explanation: `Equidistant means the midpoint: (${a} + ${b})/2 = ${midStr}. That is exactly the property the perpendicular bisector encodes in two dimensions.` };
@@ -12481,7 +12517,7 @@ const generators = {
             const type = pick(available);
             if (type === "setup") {
                 const a = rand(1, 4);
-                return { subType: type, question: `To divide by (x - ${a}) using synthetic division, use which number?`, answer: a, type: "conceptual",
+                return { subType: type, question: `To divide by (x - ${a}) using synthetic division, what number do you use?`, answer: a, type: "conceptual",
                     options: [a, -a, a * 2, 0],
                     explanation: `For (x - ${a}), use +${a} in synthetic division (opposite sign).` };
             } else if (type === "divide") {
@@ -13782,8 +13818,8 @@ const generators = {
             }
             if (type === "increasing") {
                 const a = rand(1, 6);
-                return { subType: type, question: `f(x) = x² − ${2 * a}x. On which interval is f INCREASING?`,
-                    answer: `x > ${a}`, type: "procedural",
+                return { subType: type, question: `f(x) = x² − ${2 * a}x. On what interval is f INCREASING?`,
+                    answer: `x > ${a}`, acceptableAnswers: [`(${a}, ∞)`, `(${a}, inf)`, `(${a}, infinity)`], type: "procedural",
                     options: uniqOpts([`x > ${a}`, `x < ${a}`, `x > ${2 * a}`, `all x`]),
                     explanation: `f′(x) = 2x − ${2 * a} is positive when x > ${a}, so f increases there and decreases for x < ${a}.` };
             }
@@ -14066,12 +14102,16 @@ const generators = {
                 { q: `d/dx[x²·x³] can be done two ways. What should you get either way?`, a: "5x^4",
                   d: ["6x^4", "2x·3x²", "x^5"],
                   e: `Product rule: 2x·x³ + x²·3x² = 2x⁴ + 3x⁴ = 5x⁴. Or simplify first: x⁵ → 5x⁴. Same answer — a good self-check.` },
-                { q: `Which expression NEEDS the product rule?`, a: "x²·sin(x)",
+                { q: `Which expression NEEDS the product rule?`, a: "x²·sin(x)", fc: true,
                   d: ["x² + sin(x)", "sin(x)/x²", "sin(x²)"],
                   e: `Only x²·sin(x) is a product of two x-dependent factors. A sum differentiates term by term, a quotient needs the quotient rule, and sin(x²) is a composite needing the chain rule.` }
             ];
             const b = pick(bank);
+            // fc: "which expression NEEDS..." is a selection task - without the
+            // candidates on screen there is nothing to select, and any product
+            // a student typed would be an answer to a different question.
             return { subType: "formula", type: "conceptual", question: b.q, answer: b.a,
+                ...(b.fc ? { forceChoice: true } : {}),
                 options: uniqOpts([b.a, ...b.d]), explanation: b.e };
         },
         "Integration Techniques": () => {
@@ -33745,7 +33785,7 @@ const lessons = {
                     const a = rand(1, 4);
                     return {
                         id: "setup", name: "Setup Synthetic Division",
-                        goalProblem: `To divide by (x - 3) using synthetic division, use which number?`,
+                        goalProblem: `To divide by (x - 3) using synthetic division, what number do you use?`,
                         teachingSteps: [
                             { title: "What is Synthetic Division?", explanation: "A shortcut for dividing polynomials by (x - c).", visual: "Fast polynomial division" },
                             { title: "Finding c", explanation: "For (x - c), use +c in the box.<br>For (x - 3), use c = 3.<br>For (x + 2), use c = -2.", visual: "x - 3 → use 3" },
@@ -46008,12 +46048,35 @@ if ('speechSynthesis' in window) {
     const d1 = `(${px+1}, ${px+h-1})`;   // below the line y > x+h  -> fails first
     const d2 = `(${px-1}, ${cap+1})`;    // at/above the cap y < cap -> fails second
     const d3 = `(${px+2}, ${px+h-3})`;   // below the line -> fails first
+    // The overlap is an unbounded region, so the answer is any point in it,
+    // not the one this draw happened to pick. That only became visible when
+    // tier 5 started typing answers instead of choosing them: as multiple
+    // choice "which point" had four candidates and one right one, but with the
+    // options gone a student who correctly reads the region off the graph and
+    // writes any other point in it was marked wrong. Hence a validator rather
+    // than a list - the region has infinitely many points and no enumeration
+    // of them is possible.
+    const asPoint = (s) => {
+      const parts = String(s).replace(/[()\[\]\s]/g, '').split(',');
+      if (parts.length !== 2) return null;
+      const num = (t) => {
+        if (/^[+-]?\d+(\.\d+)?$/.test(t)) return Number(t);
+        const f = t.match(/^([+-]?\d+)\/([+-]?\d+)$/);   // "1/2" is a point too
+        return (f && Number(f[2]) !== 0) ? Number(f[1]) / Number(f[2]) : null;
+      };
+      const x = num(parts[0]), y = num(parts[1]);
+      return (x === null || y === null) ? null : [x, y];
+    };
     return {
       subType: "test_point",
-      question: `Which point is a solution to the system?   y > x${hStr},   y < ${cap}`,
+      question: `Give a point (x, y) that satisfies BOTH:   y > x${hStr},   y < ${cap}`,
       answer,
+      validate: (typed) => {
+        const pt = asPoint(typed);
+        return !!pt && pt[1] > pt[0] + h && pt[1] < cap;
+      },
       options: optS(answer, [d1, d2, d3]),
-      explanation: `${answer}: ${py} > ${px+h} ✓ and ${py} < ${cap} ✓. Both inequalities hold, so it lies in the overlap.`
+      explanation: `Any point in the overlap works - e.g. ${answer}, since ${py} > ${px+h} ✓ and ${py} < ${cap} ✓. Both inequalities must hold at once.`
     };
   });
 
@@ -46457,9 +46520,18 @@ if ('speechSynthesis' in window) {
     }
     const x0 = ri(1,4), y0 = m*x0 + b;
     const answer = `(${x0}, ${y0})`;
-    return { subType:"point", question:`Which point lies on the line y = ${m}x ${bStr}?`, answer,
+    // A line holds infinitely many points, so grade the property, not the one
+    // point this draw picked - same shape as the Systems of Inequalities fix.
+    const onLine = (s) => {
+      const parts = String(s).replace(/[()\s]/g, '').split(',');
+      if (parts.length !== 2 || !parts.every(t => /^[+-]?\d+(\.\d+)?$/.test(t))) return false;
+      const px = Number(parts[0]), py = Number(parts[1]);
+      return Math.abs(py - (m*px + b)) < 1e-9;
+    };
+    return { subType:"point", question:`Give a point (x, y) on the line y = ${m}x ${bStr}.`, answer,
+      validate: onLine,
       options: optS(answer, [ `(${x0}, ${y0+1})`, `(${x0+1}, ${y0})`, `(${x0}, ${y0-2})` ]),
-      explanation:`At x = ${x0}: y = ${m}(${x0}) ${bStr} = ${y0}, so (${x0}, ${y0}) is on the line.` };
+      explanation:`Any point on the line works - e.g. at x = ${x0}: y = ${m}(${x0}) ${bStr} = ${y0}, so (${x0}, ${y0}).` };
   });
 
   // =====================================================================
@@ -47540,7 +47612,10 @@ if ('speechSynthesis' in window) {
       const a=ri(2,6);
       const answer=`x = ${a+3}`;
       const options=sh(U(answer, [`x = ${a+3} and x = -${a}`, `x = -${a}`, "no solution"]));
-      return { question:`Solve log(x − ${a}) + log(x) = log(${(a+3)*3}). Which solutions are valid?`, answer, options, subType:"extraneous",
+      // "Which solutions are valid?" assumed candidate roots on buttons.
+      // Typed, the student solves from scratch, so ask for that - and accept
+      // the bare number, since "7" and "x = 7" are the same finding.
+      return { question:`Solve log(x − ${a}) + log(x) = log(${(a+3)*3}). Give the valid solution.`, answer, acceptableAnswers:[String(a+3)], options, subType:"extraneous",
         explanation:`Condensing gives x(x − ${a}) = ${(a+3)*3}, with roots x = ${a+3} and a negative root. The negative root makes log(x) undefined, so it is EXTRANEOUS — always check solutions against the original domain.` };
     }
     if(t==="condense"){
@@ -47868,8 +47943,12 @@ if ('speechSynthesis' in window) {
       const idx=ri(0,forms.length-1); const target=forms[idx];
       const others=sh(forms.filter((_,i)=>i!==idx)).slice(0,3).map(f=>f.form);
       const options=sh(U(target.form, others));
-      return { question:`Which equation ${target.d.charAt(0).toLowerCase()+target.d.slice(1)} of the parent f(x)?`,
-        answer:target.form, options, subType:"write",
+      // Was "Which equation shift left 3 units of the parent f(x)?" - broken
+      // grammar from splicing a description where a verb phrase belonged, and
+      // "which" with no options once tier 5 switched to typed input. Accept
+      // the form without "y = ", since writing just f(x-3)+2 is the same map.
+      return { question:`Write the equation for this transformation of the parent f(x): ${target.d.toLowerCase()}.`,
+        answer:target.form, acceptableAnswers:[target.form.replace(/^y = /,'')], options, subType:"write",
         explanation:`${target.d} is written ${target.form}.` };
     }
     if(mode===2){
@@ -48649,7 +48728,7 @@ if ('speechSynthesis' in window) {
           const j=(i+1)%3;
           const ans=`${B[i]}${B[j]}`;
           return { subType:"cpctc", type:"conceptual",
-            question:`Given △ABC ≅ △DEF, which side corresponds to ${A[i]}${A[j]}?`,
+            question:`Given △ABC ≅ △DEF, what side corresponds to ${A[i]}${A[j]}?`,
             answer:ans, options:sh([ans, `${B[j]}${B[(j+1)%3]}`, `${B[(i+2)%3]}${B[i]}`, `${A[i]}${A[j]}`]),
             explanation:`Match the letters position by position: A↔D, B↔E, C↔F. So ${A[i]}${A[j]} ↔ ${ans}. That is CPCTC — corresponding parts of congruent triangles are congruent.` };
         }
@@ -48668,7 +48747,7 @@ if ('speechSynthesis' in window) {
           explanation:`Corresponding parts of congruent triangles are congruent, and ∠${A[i]} corresponds to ∠${B[i]}, so m∠${B[i]} = ${deg}°.` };
       }
       const bank = [
-        { q:"Two triangles share a common side. Which property lets you use that side in a congruence proof?", a:"the Reflexive Property",
+        { q:"Two triangles share a common side. What property lets you use that side in a congruence proof?", a:"the Reflexive Property",
           d:["the Symmetric Property","the Transitive Property","the Distributive Property"],
           e:"A shared side is congruent to itself — the Reflexive Property. It is the step students forget when the two triangles overlap." },
         { q:"You have proved △ABC ≅ △DEF. What does CPCTC let you conclude?", a:"every pair of corresponding sides and angles is congruent",
@@ -49924,8 +50003,8 @@ if ('speechSynthesis' in window) {
       const answer = "Exponential";
       const options = sh([answer, "Linear", "Quadratic", "Constant"]);
       return { subType:"choose", type:"conceptual",
-        question:`A population doubles every year. Which type of model best represents it?`,
-        answer, options,
+        question:`A population doubles every year. What type of model best represents it?`,
+        answer, acceptableAnswers:["exponential growth", "exponential model", "exponential growth model"], options,
         explanation:`Multiplying by a fixed factor each period is exponential growth (A = P·gᵗ).` };
     }
   });
@@ -50072,9 +50151,20 @@ if ('speechSynthesis' in window) {
       const answer = String(r+n);
       const options = sh([answer, String(r+1), String(r+n+1), String(r-1)]);
       return { subType:"congruence", type:"procedural",
-        question:`Which number is congruent to ${r} modulo ${n}?`,
-        answer, options,
-        explanation:`${r+n} ≡ ${r} (mod ${n}) because ${r+n} − ${r} = ${n} is divisible by ${n}.` };
+        question:`Give an integer other than ${r} that is congruent to ${r} modulo ${n}.`,
+        answer,
+        // Every r + kn qualifies, negatives included; only the trivial r
+        // itself is excluded, since the question is about finding ANOTHER
+        // member of the residue class. (v - r) % n === 0 holds exactly when
+        // n divides v - r, whichever sign the difference has.
+        validate: (typed) => {
+          const t = String(typed).trim();
+          if (!/^[+-]?\d+$/.test(t)) return false;
+          const v = Number(t);
+          return v !== r && (v - r) % n === 0;
+        },
+        options,
+        explanation:`Any ${r} + k·${n} works - e.g. ${r+n}, since ${r+n} − ${r} = ${n} is divisible by ${n}.` };
     }
   });
 
