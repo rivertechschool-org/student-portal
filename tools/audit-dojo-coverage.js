@@ -349,7 +349,7 @@ for (const { tier, name } of placements) {
     // Key on the whole item, not the prompt. Diagram-based skills ("What time
     // does this clock show?") reuse one prompt and vary the `visual` and the
     // answer; keying on question alone reports those as frozen when they are not.
-    if (q.question) seen.add([q.question, q.visual, q.answer].join(' '));
+    if (q.question) seen.add([q.question, q.visual, q.answer].join('\u0000'));
   }
   if (seen.size === 1) problems.push(`T${tier} ${name}: always produces the same question`);
 }
