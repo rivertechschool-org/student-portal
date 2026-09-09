@@ -10003,6 +10003,13 @@
                   <button class="btn btn-secondary" onclick="app.showCSVImportModal()">
                     Import from CSV
                   </button>
+                  <!-- Groups are edited here because this is the only student
+                       roster left. The button used to sit on the Student
+                       Management screen, which 3825a83 retired without moving
+                       it, leaving the tables readable but not maintainable. -->
+                  <button class="btn btn-secondary" onclick="app.showStudentGroups()">
+                    Manage Groups
+                  </button>
                 </div>
               </div>
 
@@ -33701,6 +33708,10 @@
                           <td>${user.email || 'N/A'}</td>
                           <td>${user.username}</td>
                           <td style="display: flex; gap: 5px; flex-wrap: wrap;">
+                            ${user.email ? `
+                            <button class="btn btn-secondary small" onclick="app.resendTeacherInvite('${this.jsAttr(user.email)}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}')">
+                              &#9993;&#65039; Reinvite
+                            </button>` : ''}
                             <button class="btn btn-primary small" onclick="app.promoteToAdmin('${user.id}', '${this.jsAttr((user.first_name || '') + ' ' + (user.last_name || ''))}')">
                               Promote to Admin
                             </button>
@@ -34230,6 +34241,47 @@
         `;
 
         this.showModal('teacher-invite-success', '✅ Teacher Invited', modalContent);
+      }
+
+      // Sends a teacher their set-password link again.
+      //
+      // This is the "Forgot Password" step the invite success modal already
+      // tells the admin to relay by hand, done for them. It cannot reuse
+      // resendStudentInvite: that calls the admin-resend-activation edge
+      // function, which filters .eq('user_type', 'student') and would return a
+      // teacher as simply not found.
+      //
+      // Re-running sendTeacherInvitation is not an option either - signUp()
+      // on an existing address is the "already registered" path there, and the
+      // profile already exists, so there is nothing left to provision. The
+      // account is fine; only the email needs sending again.
+      async resendTeacherInvite(email, name) {
+        const to = (email || '').trim();
+        if (!to) {
+          this.showNotification(`No email on record for ${name || 'this teacher'}`, 'error');
+          return;
+        }
+        if (!confirm(`Send a set-password link to ${to}?\n\n${name || 'They'} uses it to choose a password and sign in. Any link sent earlier stops working.`)) {
+          return;
+        }
+
+        try {
+          this.showNotification('Sending...', 'info');
+          // reset.html sits at the site root, not under /portal/, so this is
+          // origin-relative rather than relative to the current page.
+          const { error } = await this.auth.supabase.auth.resetPasswordForEmail(to, {
+            redirectTo: `${window.location.origin}/reset.html`
+          });
+          // Invites and resets draw on the same Supabase email quota, and
+          // "email rate limit exceeded" is the error an admin working through a
+          // staff list will actually hit.
+          if (error) throw new Error(window.PortalUI.friendlyAuthError(error));
+
+          this.showNotification(`Sign-in link sent to ${to}.`, 'success');
+        } catch (e) {
+          console.error('resendTeacherInvite failed:', e);
+          this.showNotification(`Not sent: ${e.message}`, 'error');
+        }
       }
 
       async renderStudentManagement() {
