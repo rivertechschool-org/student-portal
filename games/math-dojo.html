@@ -5285,13 +5285,32 @@ function getUnlockedSubSkillTypes(lessonKey, map, orderedSubSkillIds) {
     const completed = (typeof state !== 'undefined' && state.completedSubSkills && state.completedSubSkills[lessonKey]) || [];
     const completedSet = new Set(completed);
     const current = orderedSubSkillIds.find(id => !completedSet.has(id));
-    const allowed = new Set(completed);
-    if (current) allowed.add(current);
-    const types = [];
-    for (const id of allowed) {
+
+    // Separated, because the sub-skill just taught deserves more practice than
+    // the ones already mastered. Callers pick() uniformly from what comes back,
+    // so a flat list gave the new skill only 1/n of the questions: a student who
+    // had just been taught subtracting fractions was drawing evenly from LCD,
+    // adding and subtracting, and could easily see several additions in a row
+    // and conclude the lesson never asked them to subtract at all.
+    const reviewTypes = [];
+    const currentTypes = [];
+    const collect = (id, into) => {
         const mapped = map[id];
-        if (Array.isArray(mapped)) types.push(...mapped);
-        else if (mapped) types.push(mapped);
+        if (Array.isArray(mapped)) into.push(...mapped);
+        else if (mapped) into.push(mapped);
+    };
+    for (const id of completed) {
+        if (id !== current) collect(id, reviewTypes);
+    }
+    if (current) collect(current, currentTypes);
+
+    // Repeating the current types weights the draw without changing pick().
+    // Roughly half the questions are the new skill and half are review, which
+    // is the point of practice after a lesson.
+    const types = reviewTypes.slice();
+    if (currentTypes.length) {
+        const repeats = Math.max(1, reviewTypes.length);
+        for (let i = 0; i < repeats; i++) types.push(...currentTypes);
     }
     if (types.length === 0) {
         // Safety net: unknown sub-skill state — fall back to the first
@@ -28562,8 +28581,21 @@ const lessons = {
                 }};
         },
         "Systems by Substitution": () => {
-            const x = rand(2, 5), y = rand(1, 4);
-            const sum = x + y, diff = x - y;
+            // The guided problem is posed as `y = x + diff` and `x + y = sum + diff`.
+            // Substituting gives x + (x + diff) = sum + diff, so 2x = sum - and the
+            // walkthrough's last steps assert exactly that, ending at x.
+            //
+            // diff used to be x - y and sum used to be x + y, which makes both claims
+            // false unless x happens to equal y. With x=3, y=1 the student was shown
+            // "y = x + 2 and x + y = 6" - whose real answer is x = 2 - then told
+            // "2x = 4, divide by 2" and given x = 3. The equation was right and the
+            // answer was wrong.
+            //
+            // diff is now an offset in its own right rather than a derived value, so
+            // y = x + diff holds by construction and sum is 2x by definition.
+            const x = rand(2, 5), diff = rand(1, 4);
+            const y = x + diff;
+            const sum = 2 * x;
             return {
                 goalProblem: `Solve: y = 2x - 1 and 3x + y = 9`,
                 teachingSteps: [
