@@ -30953,6 +30953,20 @@
                     <option value="all">All Classes</option>
                   </select>
                 </div>
+                <div id="attendance-group-wrap" style="display: none;">
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Group</label>
+                  <select id="attendance-group" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="all">All Groups</option>
+                  </select>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Enrollment</label>
+                  <select id="attendance-enrollment" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                    <option value="all">All Students</option>
+                    <option value="full-time">🎓 Full-Time</option>
+                    <option value="homeschool">🏠 Homeschool</option>
+                  </select>
+                </div>
                 <div>
                   <label style="display: block; margin-bottom: 5px; font-weight: bold;">Status</label>
                   <select id="attendance-status" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
@@ -30989,8 +31003,52 @@
           </div>
         `;
 
+        // Dropped so re-entering the screen picks up group edits made since.
+        this._attStudentIndex = null;
+
         // Load filter options
         await this.loadAttendanceFilters();
+      }
+
+      // Group and enrolment are properties of the STUDENT, not of an
+      // attendance row, so searchAttendance cannot express them as query
+      // filters and needs this lookup. Memoised for the life of the screen:
+      // both the dropdown build and every search read it.
+      async _loadAttendanceStudentIndex() {
+        if (this._attStudentIndex) return this._attStudentIndex;
+        const idx = { enrollment: {}, groupsOf: {}, groups: [] };
+        try {
+          const { data: students, error } = await this.auth.supabase
+            .from('user_profiles')
+            .select('id, enrollment_type')
+            .eq('user_type', 'student');
+          if (error) throw error;
+          (students || []).forEach(s => {
+            // Everywhere else in this file reads anything that is not the
+            // literal 'homeschool' as Full-Time, NULL included. Normalise the
+            // same way here: comparing the raw column instead would drop every
+            // student whose type was never set out of BOTH filters, and a
+            // filter that silently loses rows looks like missing attendance.
+            idx.enrollment[s.id] = s.enrollment_type === 'homeschool' ? 'homeschool' : 'full-time';
+          });
+        } catch (e) {
+          console.warn('Enrollment types unavailable, continuing without that filter:', e);
+        }
+        const g = await this._loadStudentGroupIndex();
+        idx.groups = g.groups;
+        idx.groupsOf = g.byStudent;
+        this._attStudentIndex = idx;
+        return idx;
+      }
+
+      // Does one student pass the group and enrolment filters? Its own method
+      // because the two rules that fail silently live here: an unknown student
+      // is excluded rather than defaulted, and the index has already folded a
+      // NULL enrollment_type into 'full-time' so this can compare exactly.
+      _attendanceStudentMatches(studentId, group, enrollment, index) {
+        if (group !== 'all' && !((index.groupsOf || {})[studentId] || []).includes(group)) return false;
+        if (enrollment !== 'all' && (index.enrollment || {})[studentId] !== enrollment) return false;
+        return true;
       }
 
       async loadAttendanceFilters() {
@@ -31028,6 +31086,22 @@
               classSelect.appendChild(option);
             });
           }
+
+          // Groups. The wrapper starts hidden and is only revealed once there
+          // is something to pick, so a school that has not defined any groups
+          // is not shown a dropdown whose only entry is "All Groups".
+          const { groups } = await this._loadAttendanceStudentIndex();
+          const groupSelect = document.getElementById('attendance-group');
+          if (groupSelect && groups.length) {
+            groups.forEach(g => {
+              const option = document.createElement('option');
+              option.value = g.id;
+              option.textContent = g.name;
+              groupSelect.appendChild(option);
+            });
+            const wrap = document.getElementById('attendance-group-wrap');
+            if (wrap) wrap.style.display = '';
+          }
         } catch (error) {
           console.error('Error loading attendance filters:', error);
         }
@@ -31040,6 +31114,8 @@
         const classId = document.getElementById('attendance-class').value;
         const status = document.getElementById('attendance-status').value;
         const type = document.getElementById('attendance-type').value;
+        const group = document.getElementById('attendance-group')?.value || 'all';
+        const enrollment = document.getElementById('attendance-enrollment')?.value || 'all';
         const resultsDiv = document.getElementById('attendance-results');
 
         resultsDiv.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Searching...</p></div>';
@@ -31095,6 +31171,17 @@
               if (status !== 'all') query = query.eq('status', status);
               return query;
             });
+          }
+
+          // Group and enrolment describe the student, not the attendance row,
+          // so they cannot join the query above - narrow the fetched records
+          // instead. Deliberately not .in('student_id', [...]): "Full-Time"
+          // alone is 130+ UUIDs, and PostgREST sends that as a GET query
+          // string. Applied before the stats below, so the percentages and the
+          // per-student breakdown describe what is on screen.
+          if (group !== 'all' || enrollment !== 'all') {
+            const idx = await this._loadAttendanceStudentIndex();
+            records = records.filter(r => this._attendanceStudentMatches(r.student_id, group, enrollment, idx));
           }
 
           // Get student info for all records
@@ -38774,6 +38861,31 @@
       }
     }
 
+    // Student groups, for any screen that filters a roster by cohort.
+    //
+    // The tables are staff-read-only and a group filter is never load-bearing,
+    // so every caller wants the same degrade - carry on with no groups rather
+    // than fail the screen - and it lives here instead of in each call site.
+    // Returns group rows plus a studentId -> [groupId] index, since callers
+    // need both the dropdown and the per-row membership.
+    async _loadStudentGroupIndex() {
+      try {
+        const [{ data: groupRows, error }, { data: memberRows }] = await Promise.all([
+          this.auth.supabase.from('student_groups').select('id, name').order('name'),
+          this.auth.supabase.from('student_group_members').select('group_id, student_id')
+        ]);
+        if (error) throw error;
+        const byStudent = {};
+        (memberRows || []).forEach(m => {
+          (byStudent[m.student_id] = byStudent[m.student_id] || []).push(m.group_id);
+        });
+        return { groups: groupRows || [], byStudent };
+      } catch (e) {
+        console.warn('Student groups unavailable, continuing without that filter:', e);
+        return { groups: [], byStudent: {} };
+      }
+    }
+
     // ==================== DAILY ATTENDANCE MANAGEMENT ====================
 
     // Filter a roster in place. Rows are hidden, never re-rendered: every row
@@ -38806,6 +38918,10 @@
       const bar = document.getElementById(scope + '-enrollment');
       const active = bar?.querySelector('button[data-active="true"]');
       const enrolment = active?.getAttribute('data-enrollment') || 'all';
+      // Optional: only the daily roster carries a group picker, and only when
+      // the school has defined groups. Absent, this reads 'all' and the clause
+      // below is a no-op, which is what the class roster wants.
+      const group = document.getElementById(scope + '-group')?.value || 'all';
 
       const q = input.value.trim().toLowerCase();
       const rows = [...box.querySelectorAll('tbody > tr[data-student-id]')];
@@ -38822,7 +38938,11 @@
         const matchesText = !q || tr.innerText.toLowerCase().includes(q);
         const matchesEnrolment = enrolment === 'all'
           || tr.getAttribute('data-enrollment') === enrolment;
-        const hit = matchesText && matchesEnrolment;
+        // Space-separated ids: a student may be in several groups, and split
+        // on a row with no groups yields [''], which matches no real id.
+        const matchesGroup = group === 'all'
+          || (tr.getAttribute('data-groups') || '').split(' ').includes(group);
+        const hit = matchesText && matchesEnrolment && matchesGroup;
         tr.classList.toggle('att-hidden', !hit);
         if (hit) { shown.add(id); matches++; }
       }
@@ -38835,7 +38955,7 @@
       const count = document.getElementById(scope + '-search-count');
       if (count) {
         const total = entryRows.length;
-        const filtering = !!q || enrolment !== 'all';
+        const filtering = !!q || enrolment !== 'all' || group !== 'all';
         count.textContent = filtering
           ? `${matches} of ${total} shown`
           : `${total} students`;
@@ -38879,6 +38999,9 @@
           if (studentError) throw studentError;
           students = studentData || [];
         }
+
+        // Cohort membership for the roster's group picker.
+        const { groups: studentGroups, byStudent: groupsOfStudent } = await this._loadStudentGroupIndex();
 
         // Get existing attendance for this date
         const { data: attendanceData, error: attError } = await this.auth.supabase
@@ -38981,6 +39104,20 @@
                           class="btn ${o.v === 'all' ? 'btn-primary' : 'btn-secondary'} small"
                           style="font-size: 12px;">${o.label}</button>
                 `).join('')}
+                ${/* In the same bar, and so re-rendered by a date change too -
+                      the filter never outlives the roster it was set on. Only
+                      shown once groups exist; the count is of students on THIS
+                      roster, not of the group, since a cohort member who is not
+                      scheduled today has no row to reveal. */''}
+                ${studentGroups.length ? `
+                <select id="daily-attendance-group" onchange="app.filterAttendanceRoster('daily-attendance')"
+                        style="padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">
+                  <option value="all">All Groups</option>
+                  ${studentGroups.map(g => {
+                    const n = students.filter(s => (groupsOfStudent[s.id] || []).includes(g.id)).length;
+                    return `<option value="${g.id}">${this.escapeHtml(g.name)} (${n})</option>`;
+                  }).join('')}
+                </select>` : ''}
               </div>
               <div id="daily-attendance-rows" style="max-height: 60vh; overflow-y: auto;">
                 <table style="width: 100%; border-collapse: collapse;">
@@ -38999,6 +39136,7 @@
                       return `
                         <tr data-student-id="${student.id}"
                             data-enrollment="${student.enrollment_type === 'homeschool' ? 'homeschool' : 'full-time'}"
+                            data-groups="${(groupsOfStudent[student.id] || []).join(' ')}"
                             style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
