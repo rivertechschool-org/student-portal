@@ -39265,6 +39265,27 @@
       }
     }
 
+    // Split the school's cohorts into the two lists the daily roster offers.
+    //
+    // "Relevant today" can only mean "has someone on today's roster": a group
+    // carries no day of its own, only members. Full-time students are
+    // scheduled every day, so a cohort containing them is always in today's
+    // list - which is the point, they are the students on the roster every
+    // single time it is opened.
+    //
+    // The count on both lists is of rows on THIS roster, not of the group, so
+    // it always says how many students the choice will leave on screen. That
+    // is why an entry in the full list can honestly read (0): picking it
+    // empties the roster, and the number said so first.
+    _cohortsForRoster(students, groups, groupsOfStudent) {
+      const all = (groups || []).map(g => ({
+        id: g.id,
+        name: g.name,
+        n: (students || []).filter(s => ((groupsOfStudent || {})[s.id] || []).includes(g.id)).length,
+      }));
+      return { all, today: all.filter(g => g.n > 0) };
+    }
+
     // ==================== DAILY ATTENDANCE MANAGEMENT ====================
 
     // Filter a roster in place. Rows are hidden, never re-rendered: every row
@@ -39289,6 +39310,18 @@
       this.filterAttendanceRoster(scope);
     }
 
+    // Two pickers, one filter. Today's Groups is the short list a teacher wants
+    // while taking the register; All Groups reaches a cohort with nobody in
+    // today. Choosing in one clears the other, because two group filters at
+    // once can only ever mean an empty roster with nothing on screen saying
+    // why.
+    setAttendanceGroup(scope, which) {
+      const other = document.getElementById(
+        scope + (which === 'today' ? '-group-all' : '-group-today'));
+      if (other) other.value = 'all';
+      this.filterAttendanceRoster(scope);
+    }
+
     filterAttendanceRoster(scope) {
       const input = document.getElementById(scope + '-search');
       const box = document.getElementById(scope + '-rows');
@@ -39297,10 +39330,14 @@
       const bar = document.getElementById(scope + '-enrollment');
       const active = bar?.querySelector('button[data-active="true"]');
       const enrolment = active?.getAttribute('data-enrollment') || 'all';
-      // Optional: only the daily roster carries a group picker, and only when
-      // the school has defined groups. Absent, this reads 'all' and the clause
-      // below is a no-op, which is what the class roster wants.
-      const group = document.getElementById(scope + '-group')?.value || 'all';
+      // Two group pickers on the daily roster: the short "today" list and the
+      // full one. Only one can hold a choice at a time - setAttendanceGroup
+      // clears the other - so the first that is not 'all' wins. Both absent,
+      // which is the class roster and a school with no groups defined, reads
+      // as 'all' and the clause below is a no-op.
+      const group = [scope + '-group-today', scope + '-group-all']
+        .map(id => document.getElementById(id)?.value)
+        .find(v => v && v !== 'all') || 'all';
 
       const q = input.value.trim().toLowerCase();
       const rows = [...box.querySelectorAll('tbody > tr[data-student-id]')];
@@ -39385,8 +39422,11 @@
           students = studentData || [];
         }
 
-        // Cohort membership for the roster's group picker.
+        // Cohort membership for the roster's group pickers.
         const { groups: studentGroups, byStudent: groupsOfStudent } = await this._loadStudentGroupIndex();
+
+        const { all: groupsOnRoster, today: todaysGroups } =
+          this._cohortsForRoster(students, studentGroups, groupsOfStudent);
 
         // Get existing attendance for this date
         const { data: attendanceData, error: attError } = await this.auth.supabase
@@ -39491,17 +39531,29 @@
                 `).join('')}
                 ${/* In the same bar, and so re-rendered by a date change too -
                       the filter never outlives the roster it was set on. Only
-                      shown once groups exist; the count is of students on THIS
-                      roster, not of the group, since a cohort member who is not
-                      scheduled today has no row to reveal. */''}
+                      shown once groups exist.
+
+                      Two pickers, because one list was doing two jobs badly:
+                      it offered every cohort in the school on every day, so
+                      finding the handful that actually meet today meant
+                      reading past the rest. Today's Groups is that short list;
+                      All Groups is still there, to its right, for reaching a
+                      cohort with nobody in today. */''}
                 ${studentGroups.length ? `
-                <select id="daily-attendance-group" onchange="app.filterAttendanceRoster('daily-attendance')"
+                <select id="daily-attendance-group-today"
+                        onchange="app.setAttendanceGroup('daily-attendance', 'today')"
+                        ${todaysGroups.length ? '' : 'disabled'}
+                        title="Cohorts with students on today's roster"
                         style="padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">
-                  <option value="all">All Groups</option>
-                  ${studentGroups.map(g => {
-                    const n = students.filter(s => (groupsOfStudent[s.id] || []).includes(g.id)).length;
-                    return `<option value="${g.id}">${this.escapeHtml(g.name)} (${n})</option>`;
-                  }).join('')}
+                  <option value="all">${todaysGroups.length ? `Today's Groups (${todaysGroups.length})` : 'No groups today'}</option>
+                  ${todaysGroups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)} (${g.n})</option>`).join('')}
+                </select>
+                <select id="daily-attendance-group-all"
+                        onchange="app.setAttendanceGroup('daily-attendance', 'all')"
+                        title="Every cohort in the school, whichever day it meets"
+                        style="padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">
+                  <option value="all">All Groups (${groupsOnRoster.length})</option>
+                  ${groupsOnRoster.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)} (${g.n})</option>`).join('')}
                 </select>` : ''}
               </div>
               <div id="daily-attendance-rows" style="max-height: 60vh; overflow-y: auto;">
