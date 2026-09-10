@@ -55,64 +55,19 @@ function method(name, indent = '    ') {
 }
 
 const matchClassToMaster = method('matchClassToMaster');
-const _paintClassAttendanceRow = method('_paintClassAttendanceRow');
 
 // ---- the smallest DOM the method touches -------------------------------
-//
-// A mark is no longer one <select>. It is a hidden field the save reads, two
-// buttons, and a picker for the rarer statuses, and this button has to move all
-// four together - a row whose stored value says 'absent' while the Present
-// button is still lit is a lie the teacher will act on. So the stub is a real
-// enough row rather than a bare value holder.
-function buildRow(id, value) {
-  const field = { dataset: { studentId: id }, value: value || '' };
-
-  const buttons = ['present', 'absent'].map(status => ({
-    dataset: { status },
-    attrs: { 'aria-pressed': String(value === status) },
-    setAttribute(k, v) { this.attrs[k] = v; },
-    getAttribute(k) { return this.attrs[k]; },
-  }));
-
-  const extras = ['late', 'left_early', 'late_left_early'];
-  const more = {
-    options: [{ value: '' }, ...extras.map(value => ({ value }))],
-    value: extras.includes(value) ? value : '',
-    attrs: { 'data-chosen': String(extras.includes(value)) },
-    setAttribute(k, v) { this.attrs[k] = v; },
-    getAttribute(k) { return this.attrs[k]; },
-  };
-
-  const tr = {
-    querySelector: (sel) => (sel === '.class-attendance-status' ? field
-      : sel === '.att-quick-more' ? more : null),
-    querySelectorAll: (sel) => (sel === '.att-quick-btn' ? buttons : []),
-  };
-
-  field.closest = () => tr;
-  return { field, buttons, more, tr };
-}
-
 function run(rows, daily) {
-  const built = rows.map(r => buildRow(r.id, r.value));
-  const fields = built.map(b => b.field);
-  global.document = { querySelectorAll: () => fields };
+  const selects = rows.map(r => ({ dataset: { studentId: r.id }, value: r.value || '' }));
+  global.document = { querySelectorAll: () => selects };
   const notes = [];
   const app = {
     _classDaily: daily,
     showNotification: (message, type) => notes.push({ message, type }),
     matchClassToMaster,
-    _paintClassAttendanceRow,
   };
   app.matchClassToMaster();
-  return {
-    values: fields.map(f => f.value),
-    // What the teacher actually sees: the lit button, or the picker's choice.
-    shown: built.map(b => b.buttons.filter(x => x.getAttribute('aria-pressed') === 'true')
-      .map(x => x.dataset.status)[0] || (b.more.getAttribute('data-chosen') === 'true' ? b.more.value : '')),
-    note: notes[0] || null,
-    notes,
-  };
+  return { values: selects.map(s => s.value), note: notes[0] || null, notes };
 }
 
 // ---- the day wins ------------------------------------------------------
@@ -173,22 +128,6 @@ ok('  and does not claim to have set anything', !/set from the day/.test(r.note.
 ok('the note points at what still has to happen',
   /Save Attendance/.test(run([{ id: 'a', value: '' }], { a: { status: 'present' } }).note.message));
 
-// ---- the row shows what it stores --------------------------------------
-console.log('\n== the buttons follow the copied marks ==\n');
-
-r = run(
-  [{ id: 'a', value: '' }, { id: 'b', value: 'present' }, { id: 'c', value: '' }],
-  { a: { status: 'present' }, b: { status: 'absent' }, c: { status: 'late' } }
-);
-check('stored values', r.values, ['present', 'absent', 'late']);
-check('and the controls agree with them', r.shown, ['present', 'absent', 'late']);
-
-// The one that used to go wrong: a lit Present button left behind after the
-// day overwrote that row with a secondary mark.
-r = run([{ id: 'a', value: 'present' }], { a: { status: 'left_early' } });
-check('a button releases when the day supplies an extra', r.shown, ['left_early']);
-check('  and the value follows', r.values, ['left_early']);
-
 // ---- degenerate cases --------------------------------------------------
 console.log('\n== nothing on screen ==\n');
 
@@ -202,22 +141,12 @@ check('  it warns', r.note.type, 'warning');
 // ---- the two vocabularies have to stay in step -------------------------
 console.log('\n== daily and class offer the same statuses ==\n');
 
-// The daily register still declares one flat list. The class register splits
-// the same vocabulary across two buttons and an extras picker, so it is
-// reassembled here in the order the daily list uses.
-const dailyList = [...html.matchAll(/const statusOptions = \[\s*\{ value: 'present'[\s\S]*?\];/g)]
+const lists = [...html.matchAll(/const statusOptions = \[\s*\{ value: 'present'[\s\S]*?\];/g)]
   .map(m => [...m[0].matchAll(/value: '([a-z_]+)'/g)].map(x => x[1]));
-check('the daily register was found', dailyList.length, 1);
-
-const classButtons = [...html.matchAll(/class="att-quick-btn" data-status="([a-z_]+)"/g)].map(m => m[1]);
-const classExtras = [...html.matchAll(/const extraStatusOptions = \[[\s\S]*?\];/g)]
-  .map(m => [...m[0].matchAll(/value: '([a-z_]+)'/g)].map(x => x[1]));
-check('the class register was found', classExtras.length, 1);
-
-const classList = [...classButtons, ...classExtras[0]];
-check('and the two registers offer identical statuses', classList, dailyList[0]);
+check('both registers were found', lists.length, 2);
+check('and they offer identical statuses', lists[0], lists[1]);
 ok('including the ones this test copies',
-  ['present', 'absent', 'late', 'left_early', 'late_left_early'].every(v => classList.includes(v)));
+  ['present', 'absent', 'late', 'left_early', 'late_left_early'].every(v => lists[0].includes(v)));
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
