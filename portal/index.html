@@ -1290,6 +1290,84 @@
        state, and overwriting it would reveal notes that should stay shut. */
     tr.att-hidden { display: none !important; }
 
+    /* Class attendance: one-tap Present / Not Present.
+       Taking a register is the single most repeated action a teacher does, so
+       the two answers that cover ~95% of students are buttons, not a dropdown
+       that costs two clicks each. The rarer marks (late, left early, both)
+       live in the small picker to the right so they stay one click away
+       without slowing the common case down. */
+    .att-quick {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      justify-content: center;
+      flex-wrap: nowrap;
+    }
+
+    .att-quick-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      /* 40px tall so it stays a comfortable tap target on a tablet, which is
+         what attendance actually gets taken on. */
+      min-height: 40px;
+      padding: 8px 14px;
+      font-size: 14px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--muted);
+      transition: background .12s ease, color .12s ease, border-color .12s ease;
+    }
+
+    .att-quick-btn:hover { border-color: var(--accent); color: var(--text); }
+
+    /* Selected state is a filled chip, so a teacher can scan the column and
+       see at a glance who is still unmarked. */
+    .att-quick-btn[data-status="present"][aria-pressed="true"] {
+      background: var(--accent-2);
+      border-color: var(--accent-2);
+      color: #0f1216;
+    }
+
+    .att-quick-btn[data-status="absent"][aria-pressed="true"] {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: #0f1216;
+    }
+
+    .att-quick-more {
+      min-height: 40px;
+      max-width: 148px;
+      padding: 8px;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    /* When one of the secondary marks is chosen the picker itself becomes the
+       selected chip, since neither button is lit in that case. */
+    .att-quick-more[data-chosen="true"] {
+      border-color: var(--warning);
+      color: var(--warning);
+      font-weight: 600;
+    }
+
+    /* Phones: stack the two buttons over the picker rather than letting the
+       row scroll sideways. */
+    @media (max-width: 768px) {
+      .att-quick { flex-wrap: wrap; }
+      .att-quick-btn { flex: 1 1 44%; padding: 8px 10px; }
+      .att-quick-more { flex: 1 1 100%; max-width: none; }
+    }
+
     /* Utility classes for mobile visibility */
     @media (max-width: 768px) {
       /* Tables on a phone.
@@ -39236,7 +39314,13 @@
 
       for (const tr of entryRows) {
         const id = tr.getAttribute('data-student-id');
-        const matchesText = !q || tr.innerText.toLowerCase().includes(q);
+        // A row may declare exactly what is searchable about it. The class
+        // roster does, because its status controls bake the words "Present"
+        // and "More" into every row and a search for either would otherwise
+        // match the whole class. Rows without the attribute keep matching on
+        // their full text, which is what the daily roster wants.
+        const haystack = (tr.getAttribute('data-search') || tr.innerText).toLowerCase();
+        const matchesText = !q || haystack.includes(q);
         const matchesEnrolment = enrolment === 'all'
           || tr.getAttribute('data-enrollment') === enrolment;
         // Space-separated ids: a student may be in several groups, and split
@@ -39890,13 +39974,14 @@
           attendanceMap[a.student_id] = a;
         });
 
-        const statusOptions = [
-          { value: 'present', label: 'Present', icon: '✅' },
-          { value: 'absent', label: 'Absent', icon: '❌' },
+        // Present and absent are the two buttons; everything else is a rarer
+        // mark that sits behind the "More…" picker beside them.
+        const extraStatusOptions = [
           { value: 'late', label: 'Late', icon: '⏰' },
           { value: 'left_early', label: 'Left Early', icon: '🚪' },
           { value: 'late_left_early', label: 'Late & Left Early', icon: '⚠️' }
         ];
+        const extraStatusValues = extraStatusOptions.map(o => o.value);
 
         const modalContent = `
           <div style="margin-bottom: 20px;">
@@ -40009,22 +40094,43 @@
                     ${students.map(student => {
                       const att = attendanceMap[student.id] || {};
                       return `
-                        <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
+                        <tr data-student-id="${student.id}"
+                            data-search="${this.escapeHtml(`${student.first_name} ${student.last_name} ${student.grade_level || 'N/A'}`)}"
+                            style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                             ${this.dailyStatusChip(dailyByStudent[student.id])}
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
                           <td style="padding: 12px; text-align: center;">
-                            <select class="class-attendance-status" data-student-id="${student.id}"
-                                    style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
-                              <option value="">-- Select --</option>
-                              ${statusOptions.map(opt => `
-                                <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>
-                                  ${opt.icon} ${opt.label}
-                                </option>
-                              `).join('')}
-                            </select>
+                            <!-- The saved value lives in a hidden input rather than the
+                                 control itself, because the status can now come from
+                                 either of the two buttons or the extras picker. Everything
+                                 that reads a mark still reads .class-attendance-status. -->
+                            <input type="hidden" class="class-attendance-status"
+                                   data-student-id="${student.id}" value="${att.status || ''}">
+                            <div class="att-quick">
+                              <button type="button" class="att-quick-btn" data-status="present"
+                                      aria-pressed="${att.status === 'present' ? 'true' : 'false'}"
+                                      onclick="app.setClassAttendanceStatus(this, 'present')">
+                                ✅ Present
+                              </button>
+                              <button type="button" class="att-quick-btn" data-status="absent"
+                                      aria-pressed="${att.status === 'absent' ? 'true' : 'false'}"
+                                      onclick="app.setClassAttendanceStatus(this, 'absent')">
+                                ❌ Not Present
+                              </button>
+                              <select class="att-quick-more" title="Late, left early, or both"
+                                      data-chosen="${extraStatusValues.includes(att.status) ? 'true' : 'false'}"
+                                      onchange="app.setClassAttendanceStatus(this, this.value)">
+                                <option value="">More…</option>
+                                ${extraStatusOptions.map(opt => `
+                                  <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>
+                                    ${opt.icon} ${opt.label}
+                                  </option>
+                                `).join('')}
+                              </select>
+                            </div>
                           </td>
                           <td style="padding: 12px;">
                             <input type="text" class="class-attendance-notes" data-student-id="${student.id}"
@@ -40071,10 +40177,47 @@
     }
 
     markAllClassPresent(classId, date) {
-      const selects = document.querySelectorAll('.class-attendance-status');
-      selects.forEach(select => {
-        select.value = 'present';
+      document.querySelectorAll('#class-attendance-rows .class-attendance-status')
+        .forEach(field => this._paintClassAttendanceRow(field.closest('tr'), 'present'));
+    }
+
+    // One click, one mark. `control` is whichever thing the teacher touched -
+    // a Present/Not Present button or the extras picker - and we work back to
+    // its row from there so the row does not need its id threaded through the
+    // markup twice.
+    setClassAttendanceStatus(control, status) {
+      const row = control.closest('tr[data-student-id]');
+      if (!row) return;
+
+      const current = row.querySelector('.class-attendance-status')?.value || '';
+      // Tapping the mark a student already has clears it. Without this there
+      // is no way back to unmarked once a button has been pressed by mistake,
+      // and an unmarked student is not the same as an absent one: only marks
+      // with a value are saved.
+      const next = (status && status === current) ? '' : status;
+      this._paintClassAttendanceRow(row, next);
+    }
+
+    // Single place that decides what a row looks like for a given status, so
+    // the buttons, the picker and the hidden value can never disagree.
+    _paintClassAttendanceRow(row, status) {
+      if (!row) return;
+
+      const field = row.querySelector('.class-attendance-status');
+      if (field) field.value = status || '';
+
+      row.querySelectorAll('.att-quick-btn').forEach(btn => {
+        btn.setAttribute('aria-pressed', btn.dataset.status === status ? 'true' : 'false');
       });
+
+      const more = row.querySelector('.att-quick-more');
+      if (more) {
+        // The picker only ever shows one of its own options; present, absent
+        // and unmarked all send it back to the "More…" placeholder.
+        const isExtra = [...more.options].some(o => o.value && o.value === status);
+        more.value = isExtra ? status : '';
+        more.setAttribute('data-chosen', isExtra ? 'true' : 'false');
+      }
     }
 
     // The day's status, small and underneath the name. Deliberately not a
