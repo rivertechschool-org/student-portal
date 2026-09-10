@@ -3790,44 +3790,397 @@
                 }
             }
 
-            async showManageSchoolEvents() {
-                try {
-                    const { data: events, error } = await this.auth.supabase
-                        .from('school_events')
-                        .select('id, title, event_type, start_date, end_date, description, created_at')
-                        .order('start_date', { ascending: false });
+            escapeHtml(str) {
+                return String(str === null || str === undefined ? '' : str)
+                    .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+            }
 
-                    if (error) throw error;
+            // Today as YYYY-MM-DD where the school actually is. Deriving a
+            // calendar day from UTC reads as tomorrow from late afternoon on,
+            // which is exactly when someone sits down to enter next term's dates.
+            localTodayStr() {
+                const d = new Date();
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            }
 
-                    let listHTML = '';
-                    if (!events || events.length === 0) {
-                        listHTML = '<p style="color:var(--muted);padding:12px 0;">No school events yet.</p>';
-                    } else {
-                        listHTML = '<div style="max-height:400px;overflow-y:auto;">';
-                        events.forEach(ev => {
-                            const dateRange = ev.end_date ? `${ev.start_date} to ${ev.end_date}` : ev.start_date;
-                            const typeBadge = `<span style="background:#e879f9;color:#000;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${ev.event_type}</span>`;
-                            const desc = ev.description ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${ev.description}</div>` : '';
-                            listHTML += `
-                                <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);">
-                                    <div style="flex:1;">
-                                        <div style="font-weight:600;">${ev.title}${typeBadge}</div>
-                                        <div style="font-size:12px;color:var(--muted);margin-top:2px;">${dateRange}</div>
-                                        ${desc}
-                                    </div>
-                                    <button class="btn btn-sm" onclick="portal.deleteSchoolEvent('${ev.id}')" style="color:var(--danger);border-color:var(--danger);margin-left:10px;flex-shrink:0;">Delete</button>
-                                </div>
-                            `;
-                        });
-                        listHTML += '</div>';
+            isValidDateStr(value) {
+                if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))) return false;
+                const [y, m, d] = String(value).split('-').map(Number);
+                const dt = new Date(y, m - 1, d);
+                return dt.getFullYear() === y && dt.getMonth() === m - 1 && dt.getDate() === d;
+            }
+
+            // First day of the school year currently in progress: the earliest
+            // quarter start that shares a school_year with the quarter we are in.
+            // Returns null when the quarters table cannot answer - the caller then
+            // shows every event rather than hiding rows on a guess.
+            pickSchoolYearStart(quarters, todayStr) {
+                const rows = (quarters || []).filter(q => q && q.start_date);
+                if (!rows.length) return null;
+
+                let year = rows.find(q => q.is_current)?.school_year;
+                if (!year) {
+                    year = rows.find(q => q.start_date <= todayStr && (q.end_date || q.start_date) >= todayStr)?.school_year;
+                }
+                if (!year) {
+                    const started = rows.filter(q => q.start_date <= todayStr)
+                                        .sort((a, b) => String(b.start_date).localeCompare(String(a.start_date)));
+                    year = started[0]?.school_year;
+                }
+
+                if (year) {
+                    const starts = rows.filter(q => q.school_year === year).map(q => q.start_date).sort();
+                    return starts[0] || null;
+                }
+
+                // No school_year recorded anywhere: use the earliest quarter that
+                // started within the last twelve months.
+                const [y, m, d] = todayStr.split('-');
+                const cutoff = `${Number(y) - 1}-${m}-${d}`;
+                const recent = rows.map(q => q.start_date).filter(v => v <= todayStr && v >= cutoff).sort();
+                return recent[0] || null;
+            }
+
+            // One event per line: date | title | type | end date
+            // Type defaults to "event"; the end date is only for multi-day events.
+            // Tabs separate as well as pipes, so a spreadsheet column pastes in
+            // directly. Blank lines and lines starting with # are ignored.
+            parseBulkEvents(text) {
+                const VALID_TYPES = ['event', 'holiday', 'closure', 'half_day'];
+                const rows = [];
+                const errors = [];
+
+                String(text || '').split('\n').forEach((raw, idx) => {
+                    const lineNo = idx + 1;
+                    const line = raw.trim();
+                    if (!line || line.startsWith('#')) return;
+
+                    const parts = line.split(line.includes('\t') ? '\t' : '|').map(p => p.trim());
+                    const dateStr = parts[0];
+                    const title = parts[1];
+                    const typeRaw = parts[2];
+                    const endRaw = parts[3];
+
+                    if (parts.length < 2 || !title) {
+                        errors.push(`Line ${lineNo}: needs a date and a title, separated by |`);
+                        return;
+                    }
+                    if (!this.isValidDateStr(dateStr)) {
+                        errors.push(`Line ${lineNo}: "${dateStr}" is not a real date in YYYY-MM-DD form`);
+                        return;
+                    }
+                    const type = (typeRaw || 'event').toLowerCase().replace(/[\s-]+/g, '_');
+                    if (!VALID_TYPES.includes(type)) {
+                        errors.push(`Line ${lineNo}: "${typeRaw}" is not a type - use ${VALID_TYPES.join(', ')}`);
+                        return;
+                    }
+                    if (endRaw && !this.isValidDateStr(endRaw)) {
+                        errors.push(`Line ${lineNo}: end date "${endRaw}" is not a real date in YYYY-MM-DD form`);
+                        return;
+                    }
+                    if (endRaw && endRaw < dateStr) {
+                        errors.push(`Line ${lineNo}: end date ${endRaw} falls before the start date ${dateStr}`);
+                        return;
                     }
 
-                    this.showModal('manage-school-events', 'Manage School Events', listHTML);
+                    // Every row carries the same keys - PostgREST rejects a bulk
+                    // insert whose objects have differing key sets.
+                    rows.push({
+                        title,
+                        event_type: type,
+                        start_date: dateStr,
+                        end_date: endRaw && endRaw !== dateStr ? endRaw : null,
+                        description: null
+                    });
+                });
+
+                return { rows, errors };
+            }
+
+            async showManageSchoolEvents() {
+                try {
+                    const sb = this.auth.supabase;
+                    const [eventsRes, quartersRes] = await Promise.all([
+                        sb.from('school_events')
+                          .select('id, title, event_type, start_date, end_date, description, created_at')
+                          .order('start_date', { ascending: false }),
+                        sb.from('quarters').select('start_date, end_date, school_year, is_current')
+                    ]);
+
+                    if (eventsRes.error) throw eventsRes.error;
+
+                    this._manageEvents = {
+                        events: eventsRes.data || [],
+                        schoolStart: this.pickSchoolYearStart(quartersRes.data, this.localTodayStr()),
+                        hidePast: true,
+                        pane: null
+                    };
+
+                    this.showModal('manage-school-events', 'Manage School Events', `
+                        <div id="manage-events-body">
+                            ${this.renderManageEventsToolbar()}
+                            <div id="manage-events-pane"></div>
+                            <div id="manage-events-list">${this.renderManageEventsList()}</div>
+                        </div>
+                    `);
 
                 } catch (err) {
                     console.error('Error loading school events:', err);
                     window.PortalUI?.showNotification('Failed to load school events: ' + err.message, 'error');
                 }
+            }
+
+            renderManageEventsToolbar() {
+                const st = this._manageEvents;
+                const start = st?.schoolStart;
+                const olderCount = start ? st.events.filter(ev => ev.start_date < start).length : 0;
+
+                const filterHTML = start
+                    ? `<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);cursor:pointer;">
+                           <input type="checkbox" ${st.hidePast ? 'checked' : ''} onchange="portal.setManageEventsHidePast(this.checked)">
+                           This school year only, from ${start}${olderCount ? ` &mdash; ${olderCount} older hidden` : ''}
+                       </label>`
+                    : `<span style="font-size:12px;color:var(--muted);">No quarter dates on record, so events cannot be filtered by school year.</span>`;
+
+                return `
+                    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;padding-bottom:10px;border-bottom:1px solid var(--border);">
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-sm" onclick="portal.openManageEventsPane('single')" style="background:#e879f9;border-color:#e879f9;color:#000;">+ Add Event</button>
+                            <button class="btn btn-sm" onclick="portal.openManageEventsPane('bulk')">+ Add Several</button>
+                        </div>
+                        ${filterHTML}
+                    </div>
+                `;
+            }
+
+            renderManageEventsList() {
+                const st = this._manageEvents;
+                if (!st) return '';
+                const start = st.schoolStart;
+                const olderCount = start ? st.events.filter(ev => ev.start_date < start).length : 0;
+                const shown = (start && st.hidePast) ? st.events.filter(ev => ev.start_date >= start) : st.events;
+
+                if (!shown.length) {
+                    const msg = st.events.length
+                        ? `No events in this school year yet.${olderCount ? ' Untick the filter to see the ' + olderCount + ' older one' + (olderCount === 1 ? '' : 's') + '.' : ''}`
+                        : 'No school events yet.';
+                    return `<p style="color:var(--muted);padding:12px 0;">${msg}</p>`;
+                }
+
+                let html = '<div style="max-height:340px;overflow-y:auto;">';
+                shown.forEach(ev => {
+                    const dateRange = ev.end_date ? `${ev.start_date} to ${ev.end_date}` : ev.start_date;
+                    const typeBadge = `<span style="background:#e879f9;color:#000;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${this.escapeHtml(ev.event_type)}</span>`;
+                    const desc = ev.description ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${this.escapeHtml(ev.description)}</div>` : '';
+                    html += `
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border);">
+                            <div style="flex:1;">
+                                <div style="font-weight:600;">${this.escapeHtml(ev.title)}${typeBadge}</div>
+                                <div style="font-size:12px;color:var(--muted);margin-top:2px;">${dateRange}</div>
+                                ${desc}
+                            </div>
+                            <button class="btn btn-sm" onclick="portal.deleteSchoolEvent('${ev.id}')" style="color:var(--danger);border-color:var(--danger);margin-left:10px;flex-shrink:0;">Delete</button>
+                        </div>
+                    `;
+                });
+                return html + '</div>';
+            }
+
+            openManageEventsPane(pane) {
+                if (!this._manageEvents) return;
+                const next = this._manageEvents.pane === pane ? null : pane;
+                this._manageEvents.pane = next;
+                const host = document.getElementById('manage-events-pane');
+                if (!host) return;
+                host.innerHTML = next === 'single' ? this.renderAddEventPane()
+                               : next === 'bulk' ? this.renderBulkEventsPane()
+                               : '';
+            }
+
+            setManageEventsHidePast(hide) {
+                if (!this._manageEvents) return;
+                this._manageEvents.hidePast = !!hide;
+                const host = document.getElementById('manage-events-list');
+                if (host) host.innerHTML = this.renderManageEventsList();
+            }
+
+            renderAddEventPane() {
+                const today = this.localTodayStr();
+                return `
+                    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;">
+                        <div class="form-group">
+                            <label>Title</label>
+                            <input type="text" id="mae-title" placeholder="Event title">
+                        </div>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <div class="form-group" style="flex:1;min-width:150px;">
+                                <label>Date</label>
+                                <input type="date" id="mae-start" value="${today}">
+                            </div>
+                            <div class="form-group" style="flex:1;min-width:150px;">
+                                <label>End date (optional)</label>
+                                <input type="date" id="mae-end">
+                            </div>
+                            <div class="form-group" style="flex:1;min-width:150px;">
+                                <label>Type</label>
+                                <select id="mae-type">
+                                    <option value="event">Event</option>
+                                    <option value="holiday">Holiday</option>
+                                    <option value="closure">Closure</option>
+                                    <option value="half_day">Half Day</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Description (optional)</label>
+                            <textarea id="mae-description" rows="2" placeholder="Description"></textarea>
+                        </div>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-primary" onclick="portal.submitManageAddEvent()" style="flex:1;background:#e879f9;border-color:#e879f9;color:#000;">Save event</button>
+                            <button class="btn" onclick="portal.openManageEventsPane(null)" style="flex:1;">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            renderBulkEventsPane() {
+                const ph = '2026-09-24 | Chemistry Lab&#10;2026-11-21 | Thanksgiving Break | closure | 2026-11-29&#10;2026-12-18 | Christmas Party';
+                return `
+                    <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;">
+                        <div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6;">
+                            One event per line: <strong>date | title | type | end date</strong>.
+                            Type defaults to <strong>event</strong> and the end date is only needed for a multi-day event,
+                            so <strong>date | title</strong> on its own is enough. Types are event, holiday, closure, half_day.
+                            Tabs separate as well as pipes, so a spreadsheet column pastes straight in.
+                        </div>
+                        <textarea id="mbe-text" rows="8" placeholder="${ph}" style="width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;"></textarea>
+                        <div id="mbe-preview" style="margin-top:10px;"></div>
+                        <div style="display:flex;gap:8px;margin-top:10px;">
+                            <button class="btn" onclick="portal.previewBulkEvents()" style="flex:1;">Check lines</button>
+                            <button class="btn btn-primary" onclick="portal.submitBulkEvents()" style="flex:1;background:#e879f9;border-color:#e879f9;color:#000;">Create events</button>
+                            <button class="btn" onclick="portal.openManageEventsPane(null)" style="flex:1;">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            previewBulkEvents() {
+                const parsed = this.parseBulkEvents(document.getElementById('mbe-text')?.value);
+                const host = document.getElementById('mbe-preview');
+                if (!host) return parsed;
+
+                let html = '';
+                if (parsed.rows.length) {
+                    html += `<div style="font-size:12px;color:var(--muted);margin-bottom:4px;">${parsed.rows.length} event${parsed.rows.length === 1 ? '' : 's'} ready to create:</div>`;
+                    html += '<div style="max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;">';
+                    parsed.rows.forEach(r => {
+                        const range = r.end_date ? `${r.start_date} to ${r.end_date}` : r.start_date;
+                        html += `<div style="padding:6px 10px;border-bottom:1px solid var(--border);font-size:12px;">
+                            <strong>${this.escapeHtml(r.title)}</strong>
+                            <span style="background:#e879f9;color:#000;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:6px;">${r.event_type}</span>
+                            <span style="color:var(--muted);margin-left:6px;">${range}</span>
+                        </div>`;
+                    });
+                    html += '</div>';
+                }
+                if (parsed.errors.length) {
+                    html += `<div style="margin-top:8px;font-size:12px;color:var(--danger);line-height:1.6;">`;
+                    html += `<div style="font-weight:600;margin-bottom:2px;">${parsed.errors.length} line${parsed.errors.length === 1 ? '' : 's'} will be skipped:</div>`;
+                    parsed.errors.forEach(e => { html += `<div>${this.escapeHtml(e)}</div>`; });
+                    html += '</div>';
+                }
+                if (!parsed.rows.length && !parsed.errors.length) {
+                    html = '<div style="font-size:12px;color:var(--muted);">Nothing entered yet.</div>';
+                }
+                host.innerHTML = html;
+                return parsed;
+            }
+
+            async submitBulkEvents() {
+                const { rows, errors } = this.previewBulkEvents();
+
+                if (!rows.length) {
+                    window.PortalUI?.showNotification(
+                        errors.length ? 'No usable lines - see the problems listed.' : 'Enter at least one event.',
+                        'warning');
+                    return;
+                }
+                if (errors.length && !confirm(
+                        `${rows.length} event${rows.length === 1 ? '' : 's'} will be created and `
+                        + `${errors.length} line${errors.length === 1 ? '' : 's'} skipped. Continue?`)) {
+                    return;
+                }
+
+                const userId = this.auth.getUserInfo().profile?.id;
+                const payload = rows.map(r => ({
+                    title: r.title,
+                    event_type: r.event_type,
+                    start_date: r.start_date,
+                    end_date: r.end_date,
+                    description: r.description,
+                    created_by: userId
+                }));
+
+                try {
+                    const { error } = await this.auth.supabase.from('school_events').insert(payload);
+                    if (error) throw error;
+
+                    window.PortalUI?.showNotification(`${rows.length} school event${rows.length === 1 ? '' : 's'} created.`, 'success');
+                    await this.refreshAfterEventChange();
+
+                } catch (err) {
+                    console.error('Bulk add school events error:', err);
+                    window.PortalUI?.showNotification('Failed to create events: ' + err.message, 'error');
+                }
+            }
+
+            async submitManageAddEvent() {
+                const title = document.getElementById('mae-title')?.value?.trim();
+                const startDate = document.getElementById('mae-start')?.value || '';
+                const endDate = document.getElementById('mae-end')?.value || '';
+                const eventType = document.getElementById('mae-type')?.value || 'event';
+                const description = document.getElementById('mae-description')?.value?.trim() || null;
+
+                if (!title) {
+                    window.PortalUI?.showNotification('Please enter a title.', 'warning');
+                    return;
+                }
+                if (!this.isValidDateStr(startDate)) {
+                    window.PortalUI?.showNotification('Please pick a date.', 'warning');
+                    return;
+                }
+                if (endDate && endDate < startDate) {
+                    window.PortalUI?.showNotification('The end date falls before the start date.', 'warning');
+                    return;
+                }
+
+                const userId = this.auth.getUserInfo().profile?.id;
+
+                try {
+                    const { error } = await this.auth.supabase.from('school_events').insert({
+                        title,
+                        event_type: eventType,
+                        start_date: startDate,
+                        end_date: endDate && endDate !== startDate ? endDate : null,
+                        description,
+                        created_by: userId
+                    });
+
+                    if (error) throw error;
+
+                    window.PortalUI?.showNotification('School event created.', 'success');
+                    await this.refreshAfterEventChange();
+
+                } catch (err) {
+                    console.error('Add school event error:', err);
+                    window.PortalUI?.showNotification('Failed to create school event: ' + err.message, 'error');
+                }
+            }
+
+            async refreshAfterEventChange() {
+                await this.showManageSchoolEvents();
+                await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
+                this.renderCalendar(this.calendarYear, this.calendarMonth);
             }
 
             async deleteSchoolEvent(eventId) {
