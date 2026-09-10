@@ -49102,7 +49102,7 @@
       // Track the last READ separately so "what about dylan?" works even
       // right after a write (set grade -> ask about another student)
       const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES', 'DAILY_ROSTER'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES'];
       if (readIntents.includes(intent.intent)) {
         this._nlpContext.lastReadIntent = intent.intent;
       }
@@ -50143,12 +50143,7 @@
         // the single-student intent below.
         {
           intent: 'MARK_ATTENDANCE_GROUP',
-          // notIfLeadingVerb: "who is here today in lower ms" is a question
-          // about the register, and isQuestion does not see it — it lists no
-          // WH-words and the sentence carries no "?". Without this the
-          // second pattern below matched (here … today), the cohort boost
-          // took it to 24, and ASKING who was in MARKED EVERYONE PRESENT.
-          w: 6, notIfNoteCommand: true, notIfQuestion: true, notIfLeadingVerb: true, classMatchBoost: true,
+          w: 6, notIfNoteCommand: true, notIfQuestion: true, classMatchBoost: true,
           patterns: [
             /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
             /\b(present|absent|here)\b.*\btoday\b/
@@ -50941,36 +50936,6 @@
           ],
           requiresStudent: true
         },
-        // DAILY_ROSTER — "attendance for lower ms", "who's here in jr high
-        // today". The school takes ONE register a day per COHORT, not per
-        // class, so a cohort named next to an attendance word is asking for
-        // that register: who was due in today, and what each of them was
-        // marked. requiresGroup is what keeps it there — without a cohort this
-        // never bids, so every class-shaped and student-shaped attendance
-        // phrasing still lands where it did.
-        //
-        // It has to outbid ATTENDANCE_ISSUES (15) and VIEW_ATTENDANCE (16),
-        // which answer a genuinely different question — a pattern over the
-        // last month rather than the state of the room right now — and lose
-        // to MARK_ATTENDANCE_GROUP (23+ with its cohort boost), which writes.
-        {
-          intent: 'DAILY_ROSTER',
-          w: 6,
-          patterns: [
-            /\battendance\b/,
-            /\broll ?call\b/,
-            // "in" only counts next to a time word: "who is IN TODAY" asks the
-            // register, "who is IN lower ms" asks for the roster, and reading
-            // the second as the first answers a question nobody asked.
-            /\bwho(.s| is| was| are| were)?\s+(here|out|absent|missing|late|tardy)\b/,
-            /\bwho(.s| is| was| are| were)?\s+in\s+(today|yet|so far|this morning)\b/,
-            /\bwho\s+(isn.?t|is not|aren.?t|are not|hasn.?t|haven.?t|didn.?t)\b/,
-            /\b(here|present|absent)\s+today\b/,
-            /\bin\s+today\b/,
-            /\b(show|showed|showing)\s+up\b/
-          ],
-          requiresGroup: true
-        },
         // ATTENDANCE_ISSUES — aggregate over ALL students ("which students have
         // bad attendance"); must precede VIEW_ATTENDANCE which is per-student
         {
@@ -51275,19 +51240,6 @@
         if (pattern.requiresClassOrGroup && !entities.classMatch && !entities.groupMatch) continue;
         if (pattern.notIfStudent && entities.student) continue;
         if (pattern.requiresGroupContext && !entities.classMatch && !entities.groupMatch && !this._nlpContext?.lastGroup) continue;
-        // A cohort named outright. Unlike requiresClassOrGroup this will NOT
-        // settle for a class, because the daily register is a cohort fact: a
-        // class roster answers a different question. It also stands down the
-        // moment the sentence points at a CLASS — either by saying so ("the
-        // lower ms class") or by naming one with a word the cohort did not
-        // supply ("lower ms english", where "lower ms" alone would still have
-        // matched the cohort). That is the same test _rivenResolveGroup uses,
-        // so the two agree about what a sentence is pointing at.
-        if (pattern.requiresGroup) {
-          if (!entities.groupMatch) continue;
-          if (/\bclass(es)?\b/.test(normalized)) continue;
-          if (entities.classMatch && this._rivenClassNamedBeyondCohort(entities.classMatch)) continue;
-        }
 
         // The most specific pattern that matches decides the weight
         let w = 0, hit = false;
@@ -51324,7 +51276,6 @@
         if (pattern.requiresSince) score += 2;
         if (pattern.requiresStudentOrClass) score += 2;
         if (pattern.requiresGroupContext) score += entities.classMatch ? 3 : 2;
-        if (pattern.requiresGroup) score += 3;
         if (pattern.classMatchBoost && (entities.classMatch || entities.groupMatch)) score += 8;
         // An explicit note command wins outright. `notIfNoteCommand` already
         // knocks competing WRITES out, but a READ could still edge ADD_NOTE out
@@ -51625,10 +51576,6 @@
           }
           break;
 
-        case 'DAILY_ROSTER':
-          await this.terminalDailyRoster(entities);
-          break;
-
         case 'UNDO_RTC':
           await this.terminalUndoLast();
           break;
@@ -51914,8 +51861,6 @@
     • "Message [student]" / "Message [student]'s parents" — opens a message to them<br>
     • "Rename [class] to [new name]"<br>
     • "Show attendance for [class]" — per-student breakdown for the class<br>
-    • "Attendance for lower MS" — today's register for a whole cohort: who was<br>
-    &nbsp;&nbsp;&nbsp;due in on this weekday, and who is absent, late or left early<br>
     • "What classes is [student] in?" / "Who's in [class]?"<br>
     • "What homework does [student] have coming up?" — pending assignments<br>
     • "Any overdue homework in [class]?" — overdue assignments<br>
@@ -52390,137 +52335,6 @@
         if (clean > 0) html += `<div style="color:#8bffb0;font-size:12px;margin-top:6px;">✅ ${clean} student${clean !== 1 ? 's' : ''} with perfect attendance.</div>`;
       }
       html += `<div style="color:var(--muted);font-size:11px;margin-top:6px;">Say "show [name]'s attendance" for their full record.</div>`;
-      this._showRivenMessage(html, true);
-    }
-
-    // ---- The day's register, for a whole cohort --------------------------
-    //
-    // Sort one day of daily_attendance rows against the students who were DUE
-    // in that day. Pure, and deliberately apart from both the query and the
-    // markup, because every rule worth getting right lives here:
-    //
-    //  * An UNMARKED student is not an absent one. Folding the two together
-    //    is the failure that matters on this screen: "nobody is missing" and
-    //    "nobody has been marked yet" look identical to a teacher and mean
-    //    opposite things.
-    //  * A cohort member who does not come in on this weekday is not part of
-    //    today's register at all, so they are counted separately rather than
-    //    padding it.
-    //  * ...unless somebody actually recorded them today. A student who turned
-    //    up on a day they do not normally attend still has to appear, or the
-    //    register silently disagrees with the room.
-    _rivenDailyBuckets(students, attendanceRows, scheduledIds) {
-      const marked = {};
-      (attendanceRows || []).forEach(r => { if (r && r.status) marked[r.student_id] = r; });
-      const due = new Set(scheduledIds || []);
-      const buckets = { present: [], late: [], left_early: [], late_left_early: [],
-                        absent: [], unmarked: [], notToday: [] };
-      for (const s of (students || [])) {
-        const row = marked[s.id] || null;
-        const expected = due.has(s.id);
-        if (!expected && !row) { buckets.notToday.push({ student: s, row: null, expected }); continue; }
-        const entry = { student: s, row, expected };
-        const bucket = row ? buckets[row.status] : buckets.unmarked;
-        (bucket || buckets.unmarked).push(entry);
-      }
-      return buckets;
-    }
-
-    // "attendance for lower ms" / "who's here in jr high today" — the same
-    // question the Take Daily Attendance screen answers, without leaving the
-    // terminal, and read-only: nothing here writes a status.
-    async terminalDailyRoster(entities) {
-      const sb = this.auth.supabase;
-      if (!this._terminalAllGroups?.length) await this._loadTerminalGroups();
-      const said = entities.normalized || entities.original || '';
-      const gm = entities.groupMatch || this._rivenMatchGroup(said);
-      if (!gm) {
-        const known = (this._terminalAllGroups || []).map(g => g.name);
-        this.terminalPrintError(known.length
-          ? `Which group's attendance? I know: ${known.join(', ')}.`
-          : 'There are no student groups set up yet — add them under Admin → Student Groups.');
-        return;
-      }
-      if (gm.ambiguous) { this._showGroupPicker(gm.candidates, entities.original || ''); return; }
-
-      const ids = [...new Set(gm.studentIds || [])];
-      if (!ids.length) {
-        this.terminalPrintError(`${gm.name} has no students in it yet. Add them under Admin → Student Groups.`);
-        return;
-      }
-
-      // ONE day. "today", "yesterday" and "on tuesday" all come back from
-      // _parseTimeframe with sinceDate === untilDate; a wider timeframe
-      // ("last week") is a different question, so rather than quietly report
-      // one day of it, fall back to today and say which day was read.
-      const oneDay = entities.sinceDate && entities.sinceDate === entities.untilDate;
-      const date = oneDay ? entities.sinceDate : this._isoDaysAgo(0);
-      const dow = new Date(date + 'T12:00:00').getDay();
-      const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dow];
-
-      this.terminalPrint('Loading the register…', '#6aa9ff');
-
-      const [sched, profiles, att] = await Promise.all([
-        sb.from('student_schedule').select('student_id').eq('day_of_week', dow).in('student_id', ids),
-        sb.from('user_profiles').select('id, first_name, last_name, grade_level, enrollment_type')
-          .in('id', ids).order('last_name'),
-        sb.from('daily_attendance').select('*').eq('date', date).in('student_id', ids)
-      ]);
-      const err = sched.error || profiles.error || att.error;
-      if (err) { this.terminalPrintError('Could not read the register: ' + err.message); return; }
-
-      const students = (profiles.data || []).map(s => ({
-        ...s, full_name: `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Student'
-      }));
-      const scheduledIds = (sched.data || []).map(r => r.student_id);
-      const b = this._rivenDailyBuckets(students, att.data || [], scheduledIds);
-      const roster = b.present.length + b.late.length + b.left_early.length
-        + b.late_left_early.length + b.absent.length + b.unmarked.length;
-
-      // Remember the cohort so "give them 5 rtc" lands on the same students.
-      this._nlpContext = this._nlpContext || {};
-      this._nlpContext.lastGroup = { label: gm.name, groupId: gm.id, classId: null,
-        byClass: null, studentIds: ids, timestamp: Date.now() };
-
-      const esc = s => this.escapeHtml(String(s));
-      const line = (icon, label, list, color) => {
-        if (!list.length) return '';
-        const names = list.map(e => {
-          const bits = [];
-          if (e.row?.arrived_at_period) bits.push(`in P${e.row.arrived_at_period}`);
-          if (e.row?.left_at_period) bits.push(`out P${e.row.left_at_period}`);
-          if (e.row?.excused) bits.push(e.row.excuse_note ? `excused: ${e.row.excuse_note}` : 'excused');
-          if (!e.expected) bits.push(`not usually in on ${dayName}s`);
-          const tail = bits.length
-            ? ` <span style="color:var(--muted);font-size:11px;">(${esc(bits.join(' · '))})</span>` : '';
-          return `${esc(e.student.full_name)}${tail}`;
-        }).join(', ');
-        return `<div style="padding:5px 10px;margin:3px 0;background:rgba(255,255,255,0.03);border-left:3px solid ${color};border-radius:4px;">
-          <b>${icon} ${label} (${list.length})</b> — ${names}</div>`;
-      };
-
-      let html = `<div style="font-weight:600;margin-bottom:8px;">📋 ${esc(gm.name)} — daily attendance, ${dayName} ${esc(date)}</div>`;
-      if (!roster) {
-        html += `<div style="color:var(--muted);">Nobody in ${esc(gm.name)} comes in on ${dayName}s, and nothing was recorded for them.</div>`;
-      } else if (b.unmarked.length === roster) {
-        html += `<div style="color:#ffd36a;">⏳ Attendance has not been taken yet — ${roster} due in.</div>`;
-      } else if (b.unmarked.length) {
-        html += `<div style="color:#6aa9ff;">📝 ${roster - b.unmarked.length} of ${roster} marked.</div>`;
-      } else {
-        html += `<div style="color:#8bffb0;">✅ All ${roster} marked.</div>`;
-      }
-
-      html += line('✅', 'Present', b.present, '#8bffb0');
-      html += line('⏰', 'Late', b.late, '#ffd36a');
-      html += line('🚪', 'Left early', b.left_early, '#ffd36a');
-      html += line('⚠️', 'Late &amp; left early', b.late_left_early, '#ffb36a');
-      html += line('❌', 'Absent', b.absent, '#ff6a6a');
-      html += line('⬜', 'Not marked yet', b.unmarked, '#97a2b0');
-
-      if (b.notToday.length) {
-        html += `<div style="color:var(--muted);font-size:11px;margin-top:6px;">${b.notToday.length} other ${b.notToday.length === 1 ? 'student' : 'students'} in ${esc(gm.name)} ${b.notToday.length === 1 ? 'does' : 'do'} not come in on ${dayName}s.</div>`;
-      }
-      html += `<div style="color:var(--muted);font-size:11px;margin-top:6px;">Attendance → Take Attendance to change any of these.</div>`;
       this._showRivenMessage(html, true);
     }
 
