@@ -11,7 +11,7 @@
     <link rel="stylesheet" href="shared/styles.css">
 
     <!-- Load shared configuration first -->
-    <script src="shared/config.js?v=17"></script>
+    <script src="shared/config.js?v=18"></script>
     <script src="shared/supabase.min.js"></script>
 
     <style>
@@ -2328,8 +2328,11 @@
             async loadStudentStats() {
                 try {
                     const userInfo = this.auth.getUserInfo();
-                    // Use auth UUID — class_enrollments.student_id stores auth.uid()
-                    const userId = userInfo.profile?.auth_user_id || userInfo.user?.id;
+                    // class_enrollments.student_id is a foreign key to
+                    // user_profiles.id, so match on the profile row id — the auth
+                    // uid only coincides with it for legacy self-registered
+                    // accounts. See PortalAuth.studentRecordId() in shared/config.js.
+                    const userId = this.auth.studentRecordId();
 
                     // Get actual class count from database
                     const { data: enrollments, error } = await this.auth.supabase
@@ -3212,8 +3215,12 @@
                 const sb = this.auth.supabase;
                 const userInfo = this.auth.getUserInfo();
                 const userType = userInfo.profile?.user_type;
-                // Use auth UUID for DB lookups — class_enrollments.student_id stores auth.uid(), not user_profiles.id
+                // classes.teacher_id stores the auth uid, so teacher/admin lookups
+                // below keep using it.
                 const userId = userInfo.profile?.auth_user_id || userInfo.user?.id;
+                // class_enrollments.student_id is a different thing: a foreign key
+                // to user_profiles.id. See PortalAuth.studentRecordId().
+                const studentRecordId = this.auth.studentRecordId();
 
                 const monthStart = `${year}-${String(month + 1).padStart(2, '0')}-01`;
                 const lastDay = new Date(year, month + 1, 0).getDate();
@@ -3226,7 +3233,7 @@
                     // Determine class IDs based on user type
                     if (userType === 'student') {
                         const { data: enrollments } = await sb.from('class_enrollments')
-                            .select('class_id').eq('student_id', userId).eq('status', 'active');
+                            .select('class_id').eq('student_id', studentRecordId).eq('status', 'active');
                         classIds = (enrollments || []).map(e => e.class_id);
                     } else if (userType === 'parent') {
                         // Use child's classes
