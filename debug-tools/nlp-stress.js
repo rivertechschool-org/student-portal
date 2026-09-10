@@ -44,7 +44,7 @@ const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
   '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance',
   '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef',
-  '_rivenResolvedStudent','_rivenNamesEachClass'];
+  '_rivenResolvedStudent','_rivenNamesEachClass','_rivenClassNamedBeyondCohort'];
 const app = { _nlpContext: {} };
 for (const name of methods) app[name] = extract(name).bind ? extract(name) : extract(name);
 // rebind so `this` works
@@ -1726,3 +1726,110 @@ t39('a list needs every name in full',
 
 app._terminalAllStudents = _s39; app._terminalAllClasses = _c39; app._terminalAllGroups = _g39;
 console.log(`round 39: ${p39} pass, ${f39} fail`);
+
+// ── round 40: the cohort register is a READ ───────────────────────────────
+// This school takes one daily register per COHORT, against the students who
+// come in on that weekday. "attendance for lower ms" is a teacher asking to
+// see it — who was due in, and who is absent, late or left early — and there
+// was nowhere for that sentence to go: with no class named, VIEW_ATTENDANCE
+// wants a student or a class, and ATTENDANCE_ISSUES answers a different
+// question (a month of absences, not the state of the room).
+//
+// The two edges that matter: it must never outrank the write ("mark lower
+// middle present" still fills the register in), and asking about the register
+// must never fill it in — "who is here today in lower ms" carries no "?" and
+// no leading auxiliary, so isQuestion never saw it, and the cohort boost took
+// MARK_ATTENDANCE_GROUP to 24. Asking who was in marked everyone present.
+console.log('\n== round 40: reading a cohort register vs taking it ==');
+let p40 = 0, f40 = 0;
+const t40 = (label, ok) => { ok ? p40++ : f40++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _g40 = app._terminalAllGroups, _c40 = app._terminalAllClasses;
+app._terminalAllGroups = [
+  { id: 'g-hs', name: 'Full High',           studentIds: ['s1'] },
+  { id: 'g-jh', name: 'Full Junior High',    studentIds: ['s2'] },
+  { id: 'g-oe', name: 'Full Old Elementary', studentIds: ['s3'] },
+  { id: 'g-ym', name: 'Full Young Middle',   studentIds: ['s4', 's5'] },
+];
+app._terminalAllClasses = [
+  { id: 'c1', name: 'Chess', subject: 'Games', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+  { id: 'lmm', name: 'Lower MS Math', subject: 'Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+  { id: 'lme', name: 'Lower MS English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+];
+
+// the register, asked for
+[
+  'attendance lower ms',
+  'attendance for lower ms',
+  'attendance for jr high today',
+  'attendance for upper middle',
+  'daily attendance for full young middle',
+  "who's here in lower ms today",
+  'who is here today in lower ms',
+  'who is absent in upper elementary',
+  'who did not show up in jr high',
+  'roll call for lower ms',
+].forEach(text => {
+  const got = run(text).intent;
+  t40(`"${text}" -> DAILY_ROSTER (got ${got})`, got === 'DAILY_ROSTER');
+});
+
+// asking about the register never fills it in
+['who is here today in lower ms', "who's here in lower ms", 'who is absent in lower ms today'].forEach(text => {
+  const got = run(text).intent;
+  t40(`"${text}" is not a write (got ${got})`,
+    !['MARK_ATTENDANCE_GROUP', 'MARK_ATTENDANCE'].includes(got));
+});
+
+// ...and taking it still takes it
+[
+  ['mark lower middle present', 'MARK_ATTENDANCE_GROUP'],
+  ['mark lower ms absent today', 'MARK_ATTENDANCE_GROUP'],
+  ['take attendance for lower ms', 'MARK_ATTENDANCE_GROUP'],
+  ['take full attendance for lower ms', 'MARK_ATTENDANCE_GROUP'],
+  ['mark everyone in lower ms present today', 'MARK_ATTENDANCE_GROUP'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t40(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// A cohort's words are inside its classes' names, so the register has to let
+// go the moment the sentence points at a class - by naming one ("lower ms
+// english", where "lower ms" alone still matched the cohort) or by saying the
+// word outright ("the lower ms class"). Otherwise every class read in a
+// cohort-named class would have turned into the cohort's register.
+[
+  'show attendance for lower ms english',
+  'attendance for lower ms math',
+  'attendance for the lower ms class',
+  'attendance for all lower ms classes',
+].forEach(text => {
+  const got = run(text).intent;
+  t40(`"${text}" is not the cohort register (got ${got})`, got !== 'DAILY_ROSTER');
+});
+
+// no cohort named, nothing changes: these are the readings that already worked
+[
+  ['attendance report for chess', 'VIEW_ATTENDANCE'],
+  ['was jordan absent yesterday', 'VIEW_ATTENDANCE'],
+  ['which students have bad attendance', 'ATTENDANCE_ISSUES'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t40(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// a cohort named for a reason that is not attendance is still that reason.
+// (An award naming a cohort that also matches a class name reads as ADD_RTC
+// here rather than GROUP_RTC — a pre-existing precedence miss, unrelated to
+// the register. What is pinned is only that the register never steals it.)
+[
+  ['give lower middle 5 rtc', ['ADD_RTC', 'GROUP_RTC']],
+  // "who is IN lower ms" is the roster question, not the register one
+  ['who is in lower ms', ['VIEW_ROSTER']],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t40(`"${text}" -> ${want.join('/')} (got ${got})`, want.includes(got));
+});
+
+app._terminalAllGroups = _g40; app._terminalAllClasses = _c40;
+console.log(`round 40: ${p40} pass, ${f40} fail`);
