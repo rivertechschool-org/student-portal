@@ -39934,8 +39934,8 @@
               console.warn('daily attendance unavailable:', e);
             }
           }
-          this._classDaily = dailyByStudent;
         }
+        this._classDaily = dailyByStudent;
 
         // Get existing attendance session for this date and period
         let sessionQuery = this.auth.supabase
@@ -40146,8 +40146,8 @@
               </div>
 
               <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button class="btn btn-secondary" onclick="app.markAllClassPresent('${classId}', '${today}')" style="flex: 1;">
-                  ✅ Mark All Present
+                <button class="btn btn-secondary" onclick="app.matchClassToMaster()" style="flex: 1;">
+                  📋 Match Master
                 </button>
               </div>
             `}
@@ -40176,9 +40176,42 @@
       this.showClassAttendance(classId, newDate, null);
     }
 
-    markAllClassPresent(classId, date) {
-      document.querySelectorAll('#class-attendance-rows .class-attendance-status')
-        .forEach(field => this._paintClassAttendanceRow(field.closest('tr'), 'present'));
+    // Copy the day's register onto this class's rows. The daily attendance is
+    // the master: if the office has Jim absent for the day, period 3 reading
+    // present is a contradiction somebody has to unpick later.
+    //
+    // A student with nothing on the day is left alone rather than defaulted.
+    // "Not taken" is not "present", and a guess made here is invisible the
+    // moment it is saved - which is why the button this replaces, which set
+    // every row to present regardless of the day, was worth losing.
+    matchClassToMaster() {
+      const daily = this._classDaily || {};
+      const fields = document.querySelectorAll('.class-attendance-status');
+      if (!fields.length) return;
+
+      let set = 0, already = 0, missing = 0;
+
+      fields.forEach(field => {
+        const day = daily[field.dataset.studentId];
+        if (!day || !day.status) { missing++; return; }
+        if (field.value === day.status) { already++; return; }
+        // Through the painter, never the value alone. The mark is shown by the
+        // Present / Not Present buttons and the extras picker as well as the
+        // hidden field, and writing one of the three leaves them disagreeing.
+        this._paintClassAttendanceRow(field.closest('tr'), day.status);
+        set++;
+      });
+
+      if (!set && !already) {
+        this.showNotification("The day's register has nothing recorded for these students yet.", 'warning');
+        return;
+      }
+
+      const parts = [];
+      if (set) parts.push(`${set} set from the day`);
+      if (already) parts.push(`${already} already matched`);
+      if (missing) parts.push(`${missing} not on the day's register`);
+      this.showNotification(parts.join(' \u00b7 ') + '. Press Save Attendance to keep it.', set ? 'success' : 'info');
     }
 
     // One click, one mark. `control` is whichever thing the teacher touched -

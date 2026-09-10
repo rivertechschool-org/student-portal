@@ -15,6 +15,9 @@
 //   - tapping the mark a student already has clears it, since unmarked is not
 //     the same as absent and is not saved at all.
 //
+// The Match Master button paints rows through the same helper; that its
+// buttons follow the copied marks is covered in class-match-master.test.js.
+//
 // Run: node tests/class-attendance-quick-mark.test.js
 
 const fs = require('fs');
@@ -102,7 +105,6 @@ function method(name) {
 const app = {
   setClassAttendanceStatus: method('setClassAttendanceStatus'),
   _paintClassAttendanceRow: method('_paintClassAttendanceRow'),
-  markAllClassPresent: method('markAllClassPresent'),
 };
 
 // --- what the row says ---------------------------------------------------
@@ -166,24 +168,6 @@ more5.value = 'late';
 app.setClassAttendanceStatus.call(app, more5, 'late');
 check('re-picking the current extra clears it too', saved(row), '');
 check('  ...and releases the picker', picker(row), '/false');
-
-console.log('\n== Mark All Present still works ==\n');
-
-const box = new El('div', { class: 'rows' });
-const rows = ['a', 'b', 'c'].map((id) => box.append(buildRow(id)));
-rows[1].querySelector('.class-attendance-status').value = 'late';
-rows[1].querySelector('.att-quick-more').value = 'late';
-
-global.document = {
-  querySelectorAll: (sel) => (sel === '#class-attendance-rows .class-attendance-status'
-    ? box.querySelectorAll('.class-attendance-status')
-    : []),
-};
-
-app.markAllClassPresent.call(app, 'class-1', '2026-09-10');
-check('every row saves present', rows.map(saved).join(','), 'present,present,present');
-check('every Present button lights', rows.map(lit).join(','), 'present,present,present');
-check('the late student\'s picker is released', picker(rows[1]), '/false');
 
 console.log(`\n  ${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
