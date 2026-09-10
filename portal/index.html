@@ -17747,6 +17747,12 @@
       async showAddStudentsToClass(classId) {
           const existingModal = document.getElementById('student-mgmt-modal-overlay');
           if (existingModal) existingModal.remove();
+
+          // Undo only ever applies to adds made in the picker that is open now.
+          // Reopening rebuilds the list from the database (everyone enrolled has
+          // dropped out of it), so a stale stack would point at rows that are
+          // gone.
+          this._classAddUndoStack = [];
           
           // Create modal directly in body (not in container)
           const modalOverlay = document.createElement('div');
@@ -17866,7 +17872,7 @@
               }
               
               listDiv.innerHTML = `
-                  <p style="margin-bottom: 15px;">Select students to add to <strong>${classData?.name || 'this class'}</strong>
+                  <p style="margin-bottom: 15px;">Select students to add to <strong>${classData?.name || 'this class'}</strong>:</p>
                   <div style="display: flex; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px;">
                       <input type="text" id="add-students-search" placeholder="Search by name..."
                              oninput="app.filterAddStudentsList()"
@@ -17885,7 +17891,15 @@
                           ${groups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)}</option>`).join('')}
                       </select>` : ''}
                   </div>
-                  <p id="add-students-count" style="color: var(--muted); font-size: 12px; margin-bottom: 10px;"></p>:</p>
+                  <div id="add-students-bulk-bar" style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0 6px;">
+                      ${groups.length ? `
+                      <button class="btn btn-primary small" id="add-students-add-all"
+                              onclick="app.addAllStudentsInGroup('${classId}')" disabled>Add all in group</button>` : ''}
+                      <button class="btn btn-secondary small" id="add-students-undo"
+                              onclick="app.undoLastClassAdd()" style="display: none;">↩ Undo</button>
+                      <span id="add-students-bulk-note" style="color: var(--muted); font-size: 12px;"></span>
+                  </div>
+                  <p id="add-students-count" style="color: var(--muted); font-size: 12px; margin-bottom: 10px;"></p>
                   <div style="max-height: 400px; overflow-y: auto;">
                       <table style="width: 100%;">
                           <thead>
@@ -17948,6 +17962,7 @@
 
         const rows = document.querySelectorAll('.add-student-row');
         let shown = 0;
+        let addable = 0;
 
         rows.forEach(row => {
           const matchesName  = !term  || (row.dataset.name || '').includes(term);
@@ -17955,7 +17970,10 @@
           const matchesGroup = !group || (row.dataset.groups || '').split(' ').includes(group);
           const visible = matchesName && matchesGrade && matchesGroup;
           row.style.display = visible ? '' : 'none';
-          if (visible) shown++;
+          if (visible) {
+            shown++;
+            if (row.dataset.added !== 'true') addable++;
+          }
         });
 
         const countEl = document.getElementById('add-students-count');
@@ -17964,13 +17982,213 @@
             ? `${rows.length} student${rows.length === 1 ? '' : 's'} available`
             : `Showing ${shown} of ${rows.length}`;
         }
+
+        // "Add all" is deliberately gated on a group being picked: adding every
+        // student a name search happens to match is rarely what anyone means,
+        // and it is the one bulk action here that cannot be eyeballed first.
+        const addAllBtn = document.getElementById('add-students-add-all');
+        if (addAllBtn && addAllBtn.dataset.busy !== 'true') {
+          addAllBtn.disabled = !group || addable === 0;
+          addAllBtn.textContent = (group && addable)
+            ? `➕ Add all ${addable} shown`
+            : 'Add all in group';
+        }
+
+        const noteEl = document.getElementById('add-students-bulk-note');
+        if (noteEl && document.getElementById('add-students-add-all')) {
+          noteEl.textContent = group
+            ? (addable === 0 ? 'Everyone shown is already added.' : '')
+            : 'Pick a group to turn on “Add all”.';
+        }
+
+        this._refreshAddStudentsUndo();
       }
 
-      async enrollStudentInClass(classId, studentId, buttonElement) {
+      // Enroll every student currently visible in the picker. Gated on a group
+      // being selected (see filterAddStudentsList); the name and grade boxes
+      // still narrow it further, so what you see is exactly what gets added.
+      async addAllStudentsInGroup(classId) {
+        const groupSelect = document.getElementById('add-students-group');
+        const group = groupSelect?.value || '';
+        if (!group) {
+          window.PortalUI.showNotification('Pick a group first, then use Add all.', 'warning');
+          return;
+        }
+
+        const groupLabel = groupSelect.options[groupSelect.selectedIndex]?.text || 'this group';
+        const rows = Array.from(document.querySelectorAll('.add-student-row'))
+          .filter(row => row.style.display !== 'none' && row.dataset.added !== 'true');
+
+        if (!rows.length) {
+          window.PortalUI.showNotification('No students left to add in that group.', 'warning');
+          return;
+        }
+
+        const addAllBtn = document.getElementById('add-students-add-all');
+        if (addAllBtn) {
+          addAllBtn.dataset.busy = 'true';
+          addAllBtn.disabled = true;
+        }
+
+        // One undo entry for the whole batch, so undoing a mis-click is a
+        // single press rather than one per student.
+        const entries = [];
+        let added = 0, failed = 0;
+
+        for (let i = 0; i < rows.length; i++) {
+          const button = rows[i].querySelector('button[id^="enroll-btn-"]');
+          const studentId = button ? button.id.replace('enroll-btn-', '') : '';
+          if (!studentId) continue;
+
+          if (addAllBtn) addAllBtn.textContent = `Adding ${i + 1} of ${rows.length}...`;
+
+          const result = await this.enrollStudentInClass(classId, studentId, button, {
+            silent: true,
+            collect: entries
+          });
+
+          if (result && result.ok) added++; else failed++;
+        }
+
+        if (entries.length) {
+          this._pushClassAddUndo(classId, `${entries.length} student${entries.length === 1 ? '' : 's'} from ${groupLabel}`, entries);
+        }
+
+        if (addAllBtn) addAllBtn.dataset.busy = '';
+        this.filterAddStudentsList();
+
+        if (failed) {
+          window.PortalUI.showNotification(`Added ${added} student${added === 1 ? '' : 's'}; ${failed} failed. Check the list.`, failed === rows.length ? 'error' : 'warning');
+        } else {
+          window.PortalUI.showNotification(`✅ Added ${added} student${added === 1 ? '' : 's'} from ${groupLabel}.`, 'success');
+        }
+      }
+
+      // Remember one undoable step (a single add, or a whole "Add all" batch).
+      _pushClassAddUndo(classId, label, entries) {
+        this._classAddUndoStack = this._classAddUndoStack || [];
+        this._classAddUndoStack.push({ classId, label, entries });
+        if (this._classAddUndoStack.length > 20) this._classAddUndoStack.shift();
+        this._refreshAddStudentsUndo();
+      }
+
+      _refreshAddStudentsUndo() {
+        const undoBtn = document.getElementById('add-students-undo');
+        if (!undoBtn) return;
+
+        const stack = this._classAddUndoStack || [];
+        const last = stack[stack.length - 1];
+
+        if (!last) {
+          undoBtn.style.display = 'none';
+          return;
+        }
+
+        undoBtn.style.display = '';
+        undoBtn.disabled = false;
+        undoBtn.textContent = `↩ Undo (${last.label})`;
+      }
+
+      // Put the last add back the way it was: rows this picker created go to
+      // 'removed', rows it merely reactivated go back to the status they had.
+      // Same convention the rest of the portal uses for leaving a class, so
+      // nothing is hard-deleted.
+      async undoLastClassAdd() {
+        const stack = this._classAddUndoStack || [];
+        const step = stack.pop();
+        if (!step) {
+          this._refreshAddStudentsUndo();
+          return;
+        }
+
+        const undoBtn = document.getElementById('add-students-undo');
+        if (undoBtn) {
+          undoBtn.disabled = true;
+          undoBtn.textContent = 'Undoing...';
+        }
+
+        const stillFailed = [];
+        let undone = 0;
+
+        for (const entry of step.entries) {
+          const target = entry.action === 'reactivated' ? (entry.priorStatus || 'removed') : 'removed';
+          try {
+            const { error } = await this.supabaseQuery(() => {
+              const update = this.auth.supabase
+                .from('class_enrollments')
+                .update({ status: target, updated_at: new Date().toISOString() });
+              return entry.enrollmentId
+                ? update.eq('id', entry.enrollmentId)
+                : update.eq('class_id', step.classId).eq('student_id', entry.studentId);
+            });
+            if (error) throw error;
+            undone++;
+            this._resetAddStudentRow(entry.studentId);
+          } catch (err) {
+            console.error('Undo add-to-class failed for student', entry.studentId, err);
+            stillFailed.push(entry);
+          }
+        }
+
+        // Anything that would not revert stays undoable, so a retry is possible.
+        if (stillFailed.length) {
+          this._classAddUndoStack.push({ ...step, entries: stillFailed, label: `${stillFailed.length} not undone` });
+        }
+
+        this.filterAddStudentsList();
+        this._refreshAddStudentsUndo();
+
+        if (stillFailed.length) {
+          window.PortalUI.showNotification(`Undid ${undone}; ${stillFailed.length} could not be undone.`, 'warning');
+        } else {
+          window.PortalUI.showNotification(`↩ Undone: ${undone} student${undone === 1 ? '' : 's'} removed from the class.`, 'success');
+        }
+      }
+
+      // Put one row's button back to its "not added yet" state.
+      _resetAddStudentRow(studentId) {
+        const button = document.getElementById(`enroll-btn-${studentId}`);
+        if (!button) return;
+        button.disabled = false;
+        button.textContent = 'Add to Class';
+        button.style.background = '';
+        button.style.color = '';
+        button.dataset.enrolling = 'false';
+        const row = button.closest('.add-student-row');
+        if (row) row.dataset.added = '';
+      }
+
+      // options.silent   — skip the per-student toast (the batch reports once)
+      // options.collect  — array to record the undo entry in, instead of
+      //                    pushing a one-student step of its own
+      // Returns { ok, action, studentId, enrollmentId, priorStatus } so callers
+      // can undo exactly what happened.
+      async enrollStudentInClass(classId, studentId, buttonElement, options = {}) {
+          const silent = options.silent === true;
+          const notify = (message, type) => {
+              if (!silent) window.PortalUI.showNotification(message, type);
+          };
+          const remember = (entry) => {
+              if (Array.isArray(options.collect)) {
+                  options.collect.push(entry);
+              } else {
+                  this._pushClassAddUndo(classId, entry.studentName || '1 student', [entry]);
+              }
+          };
+          const markRowAdded = () => {
+              const row = buttonElement && buttonElement.closest
+                  ? buttonElement.closest('.add-student-row')
+                  : null;
+              if (row) row.dataset.added = 'true';
+          };
+          const studentName = buttonElement && buttonElement.closest
+              ? (buttonElement.closest('tr')?.querySelector('td')?.textContent || '').trim()
+              : '';
+
           try {              
               // PREVENT DOUBLE CLICKS
               if (buttonElement && buttonElement.dataset.enrolling === 'true') {
-                  return;
+                  return { ok: false, action: 'busy', studentId };
               }
               
               // Disable button and mark as enrolling
@@ -17993,13 +18211,14 @@
                   // If enrollment exists
                   if (existing.status === 'active') {
                       // Already active
-                      window.PortalUI.showNotification('Student is already enrolled in this class', 'warning');
+                      notify('Student is already enrolled in this class', 'warning');
                       if (buttonElement) {
                           buttonElement.textContent = '✓ Already Enrolled';
                           buttonElement.disabled = true;
                           buttonElement.dataset.enrolling = 'false';
                       }
-                      return;
+                      markRowAdded();
+                      return { ok: true, action: 'already', studentId };
                   } else {
                       // Reactivate the removed/inactive enrollment
                       const { error: updateError } = await this.supabaseQuery(() => this.auth.supabase
@@ -18013,37 +18232,54 @@
                       
                       
                       if (updateError) throw updateError;
-                      
-                      window.PortalUI.showNotification('✅ Student re-enrolled successfully!', 'success');
+
+                      remember({
+                          studentId,
+                          studentName,
+                          enrollmentId: existing.id,
+                          action: 'reactivated',
+                          priorStatus: existing.status
+                      });
+                      notify('✅ Student re-enrolled successfully!', 'success');
                   }
               } else {
                   
-                  // No enrollment exists, create new one
-                  const { error: insertError } = await this.supabaseQuery(() => this.auth.supabase
+                  // No enrollment exists, create new one. The row id comes back
+                  // so undo can revert this exact enrollment.
+                  const { data: inserted, error: insertError } = await this.supabaseQuery(() => this.auth.supabase
                       .from('class_enrollments')
                       .insert({
                           class_id: classId,
                           student_id: studentId,
                           status: 'active',
                           enrolled_at: new Date().toISOString()
-                      }));
+                      })
+                      .select('id'));
                   
                   if (insertError) {
                       // Check if it's a duplicate key error (race condition)
                       if (insertError.code === '23505') {
-                          window.PortalUI.showNotification('✅ Student enrolled successfully! (detected race condition)', 'success');
+                          notify('✅ Student enrolled successfully! (detected race condition)', 'success');
                           if (buttonElement) {
                               buttonElement.textContent = '✓ Added';
                               buttonElement.style.background = 'var(--accent-2)';
                               buttonElement.style.color = 'var(--bg)';
                               buttonElement.dataset.enrolling = 'false';
                           }
-                          return; // IMPORTANT: This should stop here
+                          markRowAdded();
+                          return { ok: true, action: 'race', studentId }; // IMPORTANT: This should stop here
                       }
                       throw insertError;
                   }
-                  
-                  window.PortalUI.showNotification('✅ Student enrolled successfully!', 'success');
+
+                  remember({
+                      studentId,
+                      studentName,
+                      enrollmentId: inserted?.[0]?.id || null,
+                      action: 'created',
+                      priorStatus: null
+                  });
+                  notify('✅ Student enrolled successfully!', 'success');
               }
               
               // Update button to show success
@@ -18053,16 +18289,20 @@
                   buttonElement.style.color = 'var(--bg)';
                   buttonElement.dataset.enrolling = 'false';
               }
-              
+              markRowAdded();
+
+              return { ok: true, action: 'enrolled', studentId };
               
           } catch (error) {
-              window.PortalUI.showNotification('Failed to enroll student: ' + error.message, 'error');
+              notify('Failed to enroll student: ' + error.message, 'error');
               
               if (buttonElement) {
                   buttonElement.disabled = false;
                   buttonElement.textContent = 'Add to Class';
                   buttonElement.dataset.enrolling = 'false';
               }
+
+              return { ok: false, action: 'failed', studentId, error };
           }
       }
       
