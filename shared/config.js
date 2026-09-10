@@ -519,6 +519,26 @@ class PortalAuth {
         };
     }
 
+    // The id to use whenever this signed-in student appears in a student_id
+    // column that points at user_profiles — class_enrollments above all, whose
+    // class_enrollments_student_id_fkey constraint REQUIRES a user_profiles.id.
+    //
+    // A profile row's id and the auth uid are two different things. They happen
+    // to match for legacy accounts that self-registered (the profile was made
+    // with id = the new auth uid), which is why using the auth uid appeared to
+    // work for years. Roster-created students are the other shape: staff make
+    // the user_profiles row first with its own id, and auth_user_id is filled in
+    // later when the student claims the login. For those students the auth uid
+    // matches no profile row at all, so reading enrollments by it returns
+    // nothing ("No Classes Yet" even when the teacher has enrolled them) and
+    // inserting it violates the foreign key on join-by-code.
+    //
+    // Always prefer the profile id; fall back to the auth uid only when the
+    // profile hasn't loaded, which is what the old code did everywhere.
+    studentRecordId() {
+        return this.userProfile?.id || this.currentUser?.id || null;
+    }
+
     // Auth state notification system
     notifyAuthChange(event) {
         window.dispatchEvent(new CustomEvent('portalAuthChange', {

@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=17"></script>
+  <script src="../shared/config.js?v=18"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -5899,7 +5899,9 @@
           this.auth.supabase
             .from('class_enrollments')
             .select('id, class_id, student_id, status')
-            .eq('student_id', this.userInfo.user.id)
+            // student_id is a user_profiles.id, not the auth uid — see
+            // PortalAuth.studentRecordId() in shared/config.js
+            .eq('student_id', this.auth.studentRecordId())
             .in('status', ['active', 'archived']), 30000);
       
         if (enrollError) {
@@ -20336,13 +20338,23 @@
             this.showNotification('Invalid class code. Please check and try again.', 'error');
             return;
           }
-          
+
+          // class_enrollments.student_id points at user_profiles.id, so enroll
+          // this student under their profile row id rather than their auth uid.
+          // Roster-created students have different values for the two, and the
+          // auth uid fails class_enrollments_student_id_fkey outright.
+          const studentRecordId = this.auth.studentRecordId();
+          if (!studentRecordId) {
+            this.showNotification('Your student profile has not finished loading. Please refresh and try again.', 'error');
+            return;
+          }
+
           // Check if already enrolled
           const { data: existingEnrollment } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('id, status')
             .eq('class_id', classData.id)
-            .eq('student_id', this.userInfo.user.id)
+            .eq('student_id', studentRecordId)
             .maybeSingle());
           
           if (existingEnrollment) {
@@ -20387,7 +20399,7 @@
           const { error: enrollError } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .insert({
-              student_id: this.userInfo.user.id,
+              student_id: studentRecordId,
               class_id: classData.id,
               status: 'active',
               enrolled_at: new Date().toISOString()
@@ -27454,7 +27466,8 @@
             .from('class_enrollments')
             .select('*')
             .eq('class_id', classId)
-            .eq('student_id', this.userInfo.user.id)
+            // profile row id, not the auth uid (studentRecordId in config.js)
+            .eq('student_id', this.auth.studentRecordId())
             .in('status', ['active', 'archived'])
             .single());
       
@@ -28564,7 +28577,8 @@
           const { data: enrollments, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('class_enrollments')
             .select('*')
-            .eq('student_id', this.userInfo.user.id)
+            // profile row id, not the auth uid (studentRecordId in config.js)
+            .eq('student_id', this.auth.studentRecordId())
             .eq('current_quarter_id', quarterId)
             .eq('status', 'active'));
           
@@ -28583,7 +28597,8 @@
                 )
               `)
               .eq('quarter_id', quarterId)
-              .eq('class_enrollments.student_id', this.userInfo.user.id));
+              // profile row id, not the auth uid (studentRecordId in config.js)
+              .eq('class_enrollments.student_id', this.auth.studentRecordId()));
             
             gradeData = snapshots?.map(snap => ({
               ...snap,
