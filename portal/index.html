@@ -829,6 +829,44 @@
       margin-bottom: 16px;
     }
 
+    /* A class description is free text a teacher typed, and some run to a
+       paragraph. Left alone they push the stats and buttons off the bottom of
+       a card, worst on a phone where the card is already the width of the
+       screen. Show an opening and let the reader take the rest in place.
+
+       overflow-wrap matters as much as the truncation: one long unbroken token
+       - a pasted URL, usually - stretches the card past the viewport however
+       few characters are shown. */
+    .class-desc {
+      overflow-wrap: anywhere;
+    }
+
+    .class-desc-empty {
+      opacity: 0.7;
+      font-style: italic;
+    }
+
+    .class-desc-toggle {
+      background: none;
+      border: 0;
+      padding: 0 0 0 4px;
+      font: inherit;
+      font-size: 0.9em;
+      color: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+      opacity: 0.85;
+    }
+
+    .class-desc-toggle:hover { opacity: 1; }
+
+    /* Used where the surrounding rule does not already colour the text. */
+    .class-desc-sm {
+      color: var(--muted);
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+
     .class-stats {
       display: flex;
       justify-content: space-between;
@@ -7718,7 +7756,7 @@
               <div class="list-item">
                 <div class="list-item-content">
                   <div class="list-item-title">${c.name}</div>
-                  <div class="list-item-meta">${c.description || 'No description'}</div>
+                  ${this.classDescription(c.description, 'list-item-meta')}
                 </div>
               </div>
             `).join('')
@@ -16910,7 +16948,7 @@
             ${showWithdrawnBadge ? `<span style="background: #e67e22; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">WITHDRAWN</span>` : ''}
             ${showClosedBadge ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>` : ''}
             <h3>${cls.name}</h3>
-            <p>${cls.description || 'No description available'}</p>
+            ${this.classDescription(cls.description)}
             <div class="class-stats">
               <span>📚 ${cls.subject}</span>
               <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
@@ -33643,7 +33681,7 @@
                   <div class="class-card" style="cursor: pointer; position: relative;">
                     <div onclick="app.openClassAsAdmin('${cls.id}')">
                       <h3>${cls.name}</h3>
-                      <p>${cls.description || 'No description available'}</p>
+                      ${this.classDescription(cls.description)}
                       <div class="class-stats">
                         <span>📚 ${cls.subject}</span>
                         <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
@@ -33670,7 +33708,7 @@
                     <span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>
                     <div onclick="app.openClassAsAdmin('${cls.id}')">
                       <h3 style="margin-top: 20px;">${cls.name}</h3>
-                      <p>${cls.description || 'No description available'}</p>
+                      ${this.classDescription(cls.description)}
                       <div class="class-stats">
                         <span>📚 ${cls.subject}</span>
                         <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
@@ -33789,9 +33827,7 @@
                      <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px;">
                        <div style="flex: 1;">
                          <h4 style="margin-bottom: 8px;">${cls.name}</h4>
-                         <p style="color: var(--muted); font-size: 13px; margin-bottom: 8px;">
-                           ${cls.description || 'No description'}
-                         </p>
+                         ${this.classDescription(cls.description, 'class-desc-sm')}
                          <div style="font-size: 12px; color: var(--muted);">
                            <span>📚 ${cls.subject || 'N/A'}</span> •
                            <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span> •
@@ -40155,6 +40191,69 @@
       if (already) parts.push(`${already} already matched`);
       if (missing) parts.push(`${missing} not on the day's register`);
       this.showNotification(parts.join(' \u00b7 ') + '. Press Save Attendance to keep it.', set ? 'success' : 'info');
+    }
+
+    // One opening line of a class description, with the rest a click away.
+    //
+    // Truncation is by character count, not a CSS line clamp, because a clamp
+    // cannot tell the caller whether it actually clipped anything - the "more"
+    // control would then have to appear on every description or be measured
+    // after paint. A count is deterministic, renders the same at every width,
+    // and is testable without a DOM.
+    //
+    // The cut only happens past LIMIT, so an ordinary one-line description is
+    // untouched and carries no control at all. Both halves ship in the markup;
+    // expanding swaps which is hidden rather than going back for the text.
+    classDescription(text, extraClass = '') {
+      const full = String(text == null ? '' : text).trim();
+      const cls = ('class-desc ' + extraClass).trim();
+
+      if (!full) {
+        return `<p class="${cls} class-desc-empty">No description</p>`;
+      }
+
+      const LIMIT = 100;
+      if (full.length <= LIMIT) {
+        return `<p class="${cls}">${this.escapeHtml(full)}</p>`;
+      }
+
+      // Cut on a word boundary so the preview never ends mid-word. A single
+      // unbroken token longer than LIMIT has no boundary to find, so it is cut
+      // where it falls - overflow-wrap keeps that from stretching the card.
+      let head = full.slice(0, LIMIT);
+      const space = head.lastIndexOf(' ');
+      if (space > LIMIT * 0.6) head = head.slice(0, space);
+      head = head.replace(/[\s.,;:!?-]+$/, '');
+
+      const id = 'cd' + (this._classDescSeq = (this._classDescSeq || 0) + 1);
+      return `<p class="${cls}" id="${id}">` +
+        `<span class="class-desc-head">${this.escapeHtml(head)}\u2026</span>` +
+        `<span class="class-desc-rest" hidden>${this.escapeHtml(full)}</span>` +
+        `<button type="button" class="class-desc-toggle" aria-expanded="false" ` +
+        `onclick="app.toggleClassDescription(event, '${id}')">more</button>` +
+        `</p>`;
+    }
+
+    toggleClassDescription(ev, id) {
+      // Every one of these sits inside a card whose own click opens the class.
+      // Without this, reading the description navigates away from it.
+      if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+
+      const host = document.getElementById(id);
+      if (!host) return;
+
+      const head = host.querySelector('.class-desc-head');
+      const rest = host.querySelector('.class-desc-rest');
+      const btn = host.querySelector('.class-desc-toggle');
+      if (!head || !rest) return;
+
+      const opening = rest.hidden;
+      rest.hidden = !opening;
+      head.hidden = opening;
+      if (btn) {
+        btn.textContent = opening ? 'less' : 'more';
+        btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      }
     }
 
     // The day's status, small and underneath the name. Deliberately not a
