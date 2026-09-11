@@ -29,6 +29,14 @@ Internal engineering and review docs used to live in this repo's root. They were
 August 2026 precisely because they were being served to the public. Keep that kind of material
 in a **private** repo, a shared drive, or GitHub Issues on a private tracker — not here.
 
+**One deliberate exception:** `HANDOFF.md`, the note-passing log between the people working
+on this repo and their assistants. It is here rather than in the backend repo because Claude
+sessions are scoped to this repo and cannot read that one, so a log there would be invisible
+to half its audience. It is published like everything else, and it carries its own statement
+of what may never be written into it — decisions and open questions, never keys, student
+data, security findings, or schema. Move it to the backend repo the day Claude can read that
+repo. Nothing else gets this exemption.
+
 If you find a security problem, **do not open a public issue and do not write it into a file
 here.** Contact a repo admin directly.
 
