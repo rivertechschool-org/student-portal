@@ -10171,6 +10171,9 @@
                   <button class="btn btn-secondary" onclick="app.showCSVImportModal()">
                     Import from CSV
                   </button>
+                  <button class="btn btn-secondary" onclick="app.showDuplicateStudents()">
+                    \u{1F465} Find duplicates
+                  </button>
                   <!-- Groups are edited here because this is the only student
                        roster left. The button used to sit on the Student
                        Management screen, which 3825a83 retired without moving
@@ -10358,6 +10361,122 @@
         `;
 
         document.body.appendChild(overlay);
+      }
+
+      // ---- Two profiles, one child -------------------------------------------
+      //
+      // Students were pre-added by staff and some then signed themselves up,
+      // which made a second profile: a working login with none of the history.
+      // The records are on one row and the login is on the other.
+      //
+      // The admin chooses which row survives, because the answer is not always
+      // the older one - a self-made profile can have a month of Dojo progress on
+      // it while the pre-added row has the enrolments. The merge moves
+      // everything either way; what the choice decides is which row's version
+      // wins where both hold a record of the same thing.
+      async showDuplicateStudents() {
+        try {
+          this.showNotification('Looking for duplicates...', 'info');
+          const groups = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('rt_duplicate_students'));
+          if (groups.error) throw groups.error;
+          this._dupGroups = (typeof groups.data === 'string' ? JSON.parse(groups.data) : groups.data) || [];
+          this._renderDuplicateStudents();
+        } catch (e) {
+          console.error('showDuplicateStudents failed:', e);
+          this.showNotification(
+            /function .* does not exist/i.test(e.message || '')
+              ? 'The duplicate-merge migration has not been run yet.'
+              : `Couldn't look for duplicates: ${e.message}`, 'error');
+        }
+      }
+
+      _renderDuplicateStudents() {
+        const groups = this._dupGroups || [];
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+
+        const body = !groups.length
+          ? `<div class="empty-state"><h3>No duplicates</h3>
+             <p>No two student profiles share a name.</p></div>`
+          : groups.map((g, gi) => `
+            <div class="card" style="padding:14px; margin-bottom:14px;">
+              <div style="font-weight:700; margin-bottom:4px;">${esc(g.name)}</div>
+              <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+                Choose the profile to KEEP. Everything on the other one moves across, and it is then removed.
+              </div>
+              ${(g.profiles || []).map((p) => `
+                <label style="display:flex; align-items:flex-start; gap:10px; padding:10px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px; cursor:pointer;">
+                  <input type="radio" name="dup-${gi}" value="${esc(p.id)}" style="margin-top:3px;">
+                  <div style="flex:1; min-width:0;">
+                    <div style="font-weight:600;">
+                      ${esc(p.first_name)} ${esc(p.last_name)}
+                      <span style="font-size:11px; color:${p.records > 0 ? 'var(--success, #4caf50)' : 'var(--muted)'}; font-weight:600;">
+                        ${p.records > 0 ? `${p.records} records` : 'no records'}
+                      </span>
+                      ${p.has_login ? `<span style="font-size:11px; color:var(--accent); font-weight:600;"> has login</span>` : ''}
+                    </div>
+                    <div style="font-size:12px; color:var(--muted);">
+                      ${esc(p.account_status || '')}${p.email ? ' \u00b7 ' + esc(p.email) : ''}
+                      \u00b7 added ${esc(String(p.created_at || '').slice(0, 10))}
+                    </div>
+                  </div>
+                </label>`).join('')}
+              <button class="btn btn-primary" onclick="app.mergeDuplicateStudents(${gi})" style="margin-top:6px;">
+                Merge this pair
+              </button>
+            </div>`).join('');
+
+        this.showModal('dup-students', 'Duplicate students', `
+          <div>
+            ${body}
+            <div style="display:flex; justify-content:flex-end; margin-top:14px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('dup-students')">Close</button>
+            </div>
+          </div>
+        `);
+      }
+
+      async mergeDuplicateStudents(groupIndex) {
+        const g = (this._dupGroups || [])[groupIndex];
+        if (!g) return;
+        const picked = document.querySelector(`input[name="dup-${groupIndex}"]:checked`)?.value;
+        if (!picked) { this.showNotification('Choose which profile to keep first.', 'warning'); return; }
+
+        const losers = (g.profiles || []).filter(p => p.id !== picked);
+        const keeper = (g.profiles || []).find(p => p.id === picked);
+        // Naming the numbers in the prompt, because "merge" hides the one thing
+        // worth checking: whether the row about to be removed is the one with
+        // the history on it.
+        const summary = losers.map(l => `\u2022 removing a profile with ${l.records} record${l.records === 1 ? '' : 's'}`).join('\n');
+        if (!confirm(
+          `Keep the profile with ${keeper.records} record${keeper.records === 1 ? '' : 's'}` +
+          `${keeper.has_login ? ' (has login)' : ''}.\n${summary}\n\n` +
+          `Everything on the removed profile moves across first. This cannot be undone.`)) return;
+
+        try {
+          let moved = 0, dropped = 0, tookLogin = false, orphan = null;
+          for (const l of losers) {
+            const { data, error } = await this.auth.supabase
+              .rpc('rt_merge_student', { p_keep: picked, p_drop: l.id });
+            if (error) throw error;
+            const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+            moved += res.rows_moved || 0;
+            dropped += res.rows_dropped || 0;
+            tookLogin = tookLogin || !!res.took_login;
+            orphan = orphan || res.orphan_auth_user || null;
+          }
+          this.showNotification(
+            `Merged. ${moved} record${moved === 1 ? '' : 's'} moved` +
+            `${dropped ? `, ${dropped} duplicate${dropped === 1 ? '' : 's'} dropped` : ''}` +
+            `${tookLogin ? ', login carried over' : ''}.` +
+            `${orphan ? ' The removed sign-in still exists and now points at nothing - delete it in Supabase Auth.' : ''}`,
+            'success');
+          await this.showDuplicateStudents();
+          await this.renderAdminStudentRecords();
+        } catch (e) {
+          console.error('mergeDuplicateStudents failed:', e);
+          this.showNotification(`Merge failed, nothing was changed: ${e.message}`, 'error');
+        }
       }
 
       async markStudentAsPast(studentId) {
