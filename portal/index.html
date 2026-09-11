@@ -52436,9 +52436,14 @@
           await this.terminalStudentBriefing(entities);
           break;
 
-        case 'BRIEFING':
-          await this.terminalBriefing();
+        case 'BRIEFING': {
+          // "school-wide briefing" is the way to the other one; everything else
+          // means yours.
+          const scope = this._rivenSchoolScope(entities);
+          if (scope.refused) this._showRivenMessage(`A school-wide briefing is admin-only — here's yours.`, true);
+          await this.terminalBriefing({ school: scope.school });
           break;
+        }
 
         case 'MARK_READ':
           await this._rivenMarkAllRead();
@@ -55213,8 +55218,21 @@
         }
       }
 
-      const scopeLabel = classRow ? `${classRow.name}, ${sinceLabel}` : sinceLabel;
-      this.terminalPrint(`Scanning attendance${classRow ? ' for ' + classRow.name : ' across all students'}…`, '#6aa9ff');
+      // No class named means YOUR students, not every student the database
+      // will return. An admin can read the whole school here; that is
+      // permission, not what they asked for.
+      const scope = this._rivenSchoolScope(entities);
+      if (scope.refused) this._showRivenMessage(`Scanning the whole school is admin-only — here are your own students.`, true);
+      if (!classRow && !scope.school) {
+        allowedIds = await this._rivenMyStudentIds();
+        if (!allowedIds.size) {
+          this._showRivenMessage(`You aren't listed as the teacher of any class, so I have no students to scan. Name a class and I'll look there.`, true);
+          return;
+        }
+      }
+      const whoLabel = classRow ? ` for ${classRow.name}` : (scope.school ? ' across the school' : ' across your classes');
+      const scopeLabel = classRow ? `${classRow.name}, ${sinceLabel}` : `${scope.school ? 'school-wide' : 'your classes'}, ${sinceLabel}`;
+      this.terminalPrint(`Scanning attendance${whoLabel}…`, '#6aa9ff');
 
       let q = sb.from('class_attendance')
         .select('student_id, status, date')
@@ -55234,7 +55252,7 @@
         : (data || []);
 
       if (!filtered.length) {
-        this._showRivenMessage(`Good news — no absences, lates, or early exits recorded${classRow ? ' for ' + this.escapeHtml(classRow.name) : ' for anyone'} (${this.escapeHtml(sinceLabel)}). 🎉`, true);
+        this._showRivenMessage(`Good news — no absences, lates, or early exits recorded${this.escapeHtml(whoLabel)} (${this.escapeHtml(sinceLabel)}). 🎉`, true);
         return;
       }
       if (!this._terminalAllStudents || !this._terminalAllStudents.length) await this._loadTerminalStudents();
@@ -55294,10 +55312,23 @@
         }
       }
 
+      // Same rule as the briefing: with no class named, this is your classes.
+      const scope = this._rivenSchoolScope(entities);
+      if (scope.refused) this._showRivenMessage(`Scanning the whole school is admin-only — here are your own classes.`, true);
+      let myClassIds = null;
+      if (!classRow && !scope.school) {
+        myClassIds = this._rivenMyClassRows().map(c => c.id);
+        if (!myClassIds.length) {
+          this._showRivenMessage(`You aren't listed as the teacher of any class, so I have no grades to scan. Name a class and I'll look there.`, true);
+          return;
+        }
+      }
+
       let q = sb.from('quarter_grade_snapshots')
         .select('class_grade, enrollment_id, class_enrollments!inner(student_id, class_id)')
         .eq('quarter_id', quarter.id);
       if (classRow) q = q.eq('class_enrollments.class_id', classRow.id);
+      else if (myClassIds) q = q.in('class_enrollments.class_id', myClassIds);
       const { data: snaps, error } = await q;
       if (error) { this.terminalPrintError('Could not load grades: ' + error.message); return; }
 
@@ -55327,7 +55358,8 @@
       const classNameOf = {};
       (this._terminalAllClasses || []).forEach(c => { classNameOf[c.id] = c.name; });
 
-      let html = `<div style="font-weight:600;margin-bottom:8px;">📉 Students below ${threshold}%${classRow ? ' in ' + this.escapeHtml(classRow.name) : ''} — ${this.escapeHtml(quarter.name || 'current quarter')}</div>`;
+      const gradeScopeLabel = classRow ? ` in ${classRow.name}` : (scope.school ? ' school-wide' : ' in your classes');
+      let html = `<div style="font-weight:600;margin-bottom:8px;">📉 Students below ${threshold}%${this.escapeHtml(gradeScopeLabel)} — ${this.escapeHtml(quarter.name || 'current quarter')}</div>`;
       ranked.forEach(s => {
         const classLabels = s.failing.map(f => `${classNameOf[f.classId] || '?'} (${f.grade}%)`).join(', ');
         const color = s.best < 60 ? '#ff6a6a' : '#ffd36a';
@@ -57163,7 +57195,7 @@
     }
 
     _rivenSaidEveryTeacher(text) {
-      return /\b(every teacher|all teachers|whole school|school[- ]wide|every class in the school|other teachers|everyone'?s classes)\b/i.test(text || '');
+      return /\b(every teacher|all teachers|all of the teachers|whole school|entire school|across the school|school[- ]?wide|every class in the school|other teachers|everyone'?s classes)\b/i.test(text || '');
     }
 
     // Same class name, different classes ("English" and "English") reads as a
@@ -57355,12 +57387,42 @@
     // past-due assignments waiting for grades, students with multiple missing
     // assignments (one-click note), attendance not yet taken today, birthdays.
 
-    _rivenMyClassRows() {
+    // "My classes" means mine - for an admin as much as for anyone.
+    //
+    // This used to hand an admin every class in the school, on the reasoning
+    // that an admin watches over all of it. Permission is not relevance: the
+    // briefing opened with thirty-seven registers belonging to other teachers
+    // and buried the two that were the admin's own. School-wide is still here,
+    // it is just something you ask for - and only an admin gets it.
+    _rivenMyClassRows({ school = false } = {}) {
+      const all = this._terminalAllClasses || [];
+      if (school && this.userInfo?.profile?.user_type === 'admin') return all;
       const me = this.userInfo.user.id;
-      const mine = (this._terminalAllClasses || []).filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
-      // Admins watch over the whole school; teachers see their own classes
-      if (this.userInfo.profile.user_type === 'admin') return this._terminalAllClasses || [];
-      return mine;
+      return all.filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
+    }
+
+    // Did they ask for the whole school, and may they have it? `refused` is the
+    // case worth naming out loud: a teacher who asked for school-wide gets
+    // their own scope back, and should be told that is what happened rather
+    // than handed a short answer that looks like the school has no problems.
+    _rivenSchoolScope(entities) {
+      const said = this._rivenSaidEveryTeacher(
+        `${entities?.normalized || ''} ${entities?.original || entities?._rawInput || ''}`);
+      if (!said) return { school: false, refused: false };
+      if (this.userInfo?.profile?.user_type !== 'admin') return { school: false, refused: true };
+      return { school: true, refused: false };
+    }
+
+    // The students the asker's own classes account for. Aggregate reads with no
+    // named class scope to this instead of to every row the database will hand
+    // over. Returns null for the school-wide case, meaning "do not filter".
+    async _rivenMyStudentIds({ school = false } = {}) {
+      if (school && this.userInfo?.profile?.user_type === 'admin') return null;
+      const ids = this._rivenMyClassRows().map(c => c.id);
+      if (!ids.length) return new Set();
+      const { data } = await this.auth.supabase
+        .from('class_enrollments').select('student_id').in('class_id', ids).eq('status', 'active');
+      return new Set((data || []).map(e => e.student_id));
     }
 
     // Render a list with the remainder hidden behind a "show all" toggle so
@@ -57579,9 +57641,17 @@
       }
     }
 
-    async terminalBriefing({ auto = false } = {}) {
+    async terminalBriefing({ auto = false, school = false } = {}) {
       const userType = this.userInfo?.profile?.user_type;
       if (userType !== 'teacher' && userType !== 'admin') return;
+      const isAdmin = userType === 'admin';
+      if (school && !isAdmin) {
+        this._showRivenMessage(`A school-wide briefing is admin-only — here's yours instead.`, true);
+        school = false;
+      }
+      // An admin who teaches nothing has no "mine" to report on, so school-wide
+      // is the only briefing there is for them.
+      if (isAdmin && !school && !this._rivenMyClassRows().length) school = true;
       const throttleKey = 'riven_briefing_at_' + this.userInfo.profile.id;
       if (auto) {
         const last = parseInt(localStorage.getItem(throttleKey) || '0');
@@ -57594,7 +57664,7 @@
       const sb = this.auth.supabase;
       const me = this.userInfo.user.id;
       const today = this._isoDaysAgo(0);
-      const classRows = this._rivenMyClassRows();
+      const classRows = this._rivenMyClassRows({ school });
       const classIds = classRows.map(c => c.id);
       const classById = {};
       classRows.forEach(c => { classById[c.id] = c; });
@@ -57722,8 +57792,11 @@
         sections.push(`<div>📅 <b>Attendance not yet taken today</b> (${dueToday.length} class${dueToday.length === 1 ? '' : 'es'}):<br><span style="font-size: 12px;">${this._briefingExpand(lines, 6, 'classes')}</span><br><span style="font-size: 12px; color: #6b5236;">Say "mark everyone in [class] present" and I'll handle it.</span></div>`);
       }
 
-      // 7. Birthdays in the next 7 days
-      const bdays = (dobRes.data || []).map(p => {
+      // 7. Birthdays in the next 7 days - of the students in your own classes,
+      // unless this is the school-wide briefing.
+      const myStudentIds = new Set(enrollments.map(e => e.student_id));
+      const bdayPool = school ? (dobRes.data || []) : (dobRes.data || []).filter(p => myStudentIds.has(p.id));
+      const bdays = bdayPool.map(p => {
         const dob = new Date(p.date_of_birth + 'T12:00:00');
         const now = new Date();
         const next = new Date(now.getFullYear(), dob.getMonth(), dob.getDate());
@@ -57735,14 +57808,21 @@
         sections.push(`<div>🎂 <b>Birthdays this week</b>:<br><span style="font-size: 12px;">${this._briefingExpand(bdays.map(b => `• ${this.escapeHtml(b.name)} (${b.inDays === 0 ? 'today!' : b.inDays === 1 ? 'tomorrow' : 'in ' + b.inDays + ' days'})`), 5, 'birthdays')}</span></div>`);
       }
 
+      // An admin's own classes are a slice of the school, so say how big the
+      // rest is rather than leaving them to wonder what they are not seeing.
+      const others = (this._terminalAllClasses || []).length - classRows.length;
+      const offer = (isAdmin && !school && others > 0)
+        ? `<div style="margin-top: 10px; font-size: 12px; color: #6b5236;">That's your own ${classRows.length} class${classRows.length === 1 ? '' : 'es'}. Say <b>"school-wide briefing"</b> for the other ${others}.</div>`
+        : '';
+
       if (!sections.length) {
-        if (!auto) this._showRivenMessage(`All clear — nothing needs your attention right now. 🎉`, true);
+        if (!auto) this._showRivenMessage(`All clear — nothing needs your attention right now. 🎉` + offer, true);
         return;
       }
-      const scopeNote = userType === 'admin' ? 'school-wide' : `across your ${classRows.length} class${classRows.length === 1 ? '' : 'es'}`;
+      const scopeNote = school ? 'school-wide' : `across your ${classRows.length} class${classRows.length === 1 ? '' : 'es'}`;
       this._showRivenMessage(
         `<div style="font-weight: 700; margin-bottom: 8px;">📋 Here's what needs your attention (${scopeNote}):</div>` +
-        sections.map(s => `<div style="margin: 10px 0;">${s}</div>`).join(''), true);
+        sections.map(s => `<div style="margin: 10px 0;">${s}</div>`).join('') + offer, true);
     }
 
     async _rivenMarkAllRead() {
