@@ -649,6 +649,22 @@ class PortalUI {
         badge.style.background = errors ? '#f44336' : '#ff9800';
         badge.style.color = errors ? '#fff' : '#000';
         badge.textContent = `${count} message${count === 1 ? '' : 's'}`;
+        PortalUI.positionIssueBadge(badge);
+    }
+
+    // Riven's launcher owns the bottom-right corner of the portal, so this sits
+    // just above it. With Riven's panel open there is no "above" left in that
+    // corner - the panel is 620px tall - so the badge steps to the other side
+    // rather than floating on top of the chat. Called on every badge update and
+    // again whenever Riven changes state.
+    static positionIssueBadge(badge = null) {
+        badge = badge || document.getElementById('portal-issue-badge');
+        if (!badge) return;
+        const state = document.getElementById('riven-widget')?.dataset.state;
+        const open = state === 'docked' || state === 'full';
+        badge.style.right = open ? 'auto' : '18px';
+        badge.style.left = open ? '18px' : 'auto';
+        badge.style.bottom = (!open && state) ? '88px' : '18px';
     }
 
     static showNotificationHistory() {

@@ -2292,10 +2292,11 @@
               <!-- Will be populated by renderRTCBankHelper() -->
             </section>
 
-            <!-- Teacher Terminal Section (Teachers & Admins) -->
-            <section id="teacher-terminal-section" class="hidden">
-              <!-- Will be populated by renderTeacherTerminal() -->
-            </section>
+            <!-- Riven used to render here. It is a floating widget mounted on
+                 <body> now (see mountRivenWidget); this stays so the
+                 #teacher-terminal hash still resolves to a real section before
+                 loadSectionContent redirects to home and opens the widget. -->
+            <section id="teacher-terminal-section" class="hidden"></section>
 
             <!-- Notes Section (Teachers & Admins) -->
             <section id="notes-section" class="hidden">
@@ -2771,6 +2772,12 @@
         // Setup navigation and route to correct section
         this.setupUnifiedNavigation();
         this.setupEventListeners();
+
+        // Riven is a pinned widget, not a section: mount it here so its
+        // transcript exists from load. Anything it is pushed before someone
+        // opens it - a message arriving, the briefing - used to be written
+        // into an element that did not exist yet and was lost.
+        this.mountRivenWidget().catch(e => console.warn('Riven:', e));
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
@@ -5781,8 +5788,10 @@
       showSection(sectionName) {
         // Update current section
         this.currentSection = sectionName;
-        // Leaving Riven: drop the fullscreen takeover + restore page scroll.
-        if (sectionName !== 'teacher-terminal') this._exitRivenFullscreen();
+        // Navigating out of Riven's fullscreen: you asked for this page, so the
+        // page has to be visible. Riven stays reachable - docked in the corner
+        // on a desktop, back to the circle on a phone.
+        if (document.body.classList.contains('riven-fs')) this.restoreRiven();
 
         // Update unified navigation
         this.setupUnifiedNavigation();
@@ -5890,8 +5899,13 @@
             this.showSection('admin-rtc-management');
             return;
           case 'teacher-terminal':
+            // Riven is a floating widget now. The nav entry, the
+            // #teacher-terminal hash and old links all still land here, so put
+            // the page somewhere real and open the widget over it. Home first,
+            // or showSection's fullscreen check would close what we just opened.
+            this.showSection('home');
             this.renderTeacherTerminal();
-            break;
+            return;
           case 'notes':
             // Now a tab under My Students. Route there so old links, the Riven
             // section map and any bookmark still land on the notes view.
@@ -46915,20 +46929,124 @@
 
     // ==================== TEACHER TERMINAL ====================
 
+    // ==================== RIVEN, THE FLOATING ASSISTANT ====================
+    //
+    // Riven used to be a section you navigated to: the page was replaced by a
+    // chat, and that chat was rebuilt from scratch on every visit. Two things
+    // were wrong with that. You had to leave whatever you were doing to ask a
+    // question - and `#terminal-output` did not exist until the first visit, so
+    // every proactive push (a message arriving, the briefing) was written into
+    // nothing and silently dropped.
+    //
+    // It is now a launcher pinned to the bottom-right corner, mounted once at
+    // load and never torn down. Three states, held in `data-state` on the
+    // widget so the CSS and the error badge in shared/config.js can both read
+    // it without asking us:
+    //
+    //   closed   the circle on its own
+    //   docked   a panel above the circle, actions across the top (desktop)
+    //   full     the old fullscreen takeover - and what a phone always gets,
+    //            because a 420px panel on a 390px screen is a worse fullscreen
+    //
+    // ONE RULE FOR ANYONE EDITING THIS: never put `transform`, `filter`,
+    // `perspective` or `will-change` on #riven-widget or #riven-panel. Riven's
+    // own overlays are `position: fixed`, and any of those properties on an
+    // ancestor makes it their containing block - which would trap them inside
+    // a 420px box and clip them to it. The command palette is appended to
+    // <body> rather than to the panel for the same reason.
+
+    _rivenNarrow() {
+      try { return window.matchMedia('(max-width: 700px)').matches; }
+      catch (_) { return window.innerWidth <= 700; }
+    }
+
+    _rivenState() {
+      return document.getElementById('riven-widget')?.dataset.state || null;
+    }
+
+    _setRivenState(state) {
+      const widget = document.getElementById('riven-widget');
+      if (!widget) return;
+      widget.dataset.state = state;
+
+      if (state === 'full') this._enterRivenFullscreen();
+      else this._exitRivenFullscreen();
+
+      if (state === 'closed') {
+        this._hideAutocomplete();
+        this.closeTerminalPalette();
+      } else {
+        // Opening clears the unread marker and drops you at the newest message.
+        this._rivenUnread = 0;
+        this._renderRivenUnread();
+        const out = document.getElementById('terminal-output');
+        if (out) setTimeout(() => { out.scrollTop = out.scrollHeight; }, 30);
+        // Don't steal the keyboard on a phone - the viewport jump is worse than
+        // the extra tap.
+        if (!this._rivenNarrow()) setTimeout(() => document.getElementById('terminal-input')?.focus(), 60);
+      }
+
+      // The badge lives in the same corner; tell it where Riven is now.
+      try { PortalUI.positionIssueBadge(); } catch (_) {}
+    }
+
+    openRiven(mode = null) {
+      if (!document.getElementById('riven-widget')) return;
+      this._rivenFirstOpen();
+      this._setRivenState(mode || (this._rivenNarrow() ? 'full' : 'docked'));
+    }
+
+    closeRiven() { this._setRivenState('closed'); }
+
+    toggleRiven() {
+      if (this._rivenState() === 'closed') this.openRiven();
+      else this.closeRiven();
+    }
+
+    expandRiven() { this._rivenFirstOpen(); this._setRivenState('full'); }
+
+    // Back from fullscreen. On a phone there is no docked size worth having,
+    // so "restore" means close.
+    restoreRiven() { this._setRivenState(this._rivenNarrow() ? 'closed' : 'docked'); }
+
+    // Work deferred until someone actually opens Riven. The 1GB upgrade model
+    // in particular must never be fetched on a page load nobody asked for.
+    _rivenFirstOpen() {
+      if (this._rivenOpened) return;
+      this._rivenOpened = true;
+      this._rivenReady().then(() => this._initPhi3State()).catch(() => {});
+    }
+
+    _renderRivenUnread() {
+      const dot = document.getElementById('riven-unread');
+      if (!dot) return;
+      const n = this._rivenUnread || 0;
+      dot.hidden = n === 0;
+      dot.textContent = n > 9 ? '9+' : String(n);
+    }
+
+    // Something arrived while Riven was shut. Mark the circle so it is not lost.
+    _rivenNoteUnread() {
+      if (this._rivenState() !== 'closed') return;
+      this._rivenUnread = (this._rivenUnread || 0) + 1;
+      this._renderRivenUnread();
+    }
+
     _enterRivenFullscreen() {
       document.body.classList.add('riven-fs');
-      const shell = document.getElementById('riven-shell');
-      if (!shell) return;
+      const widget = document.getElementById('riven-widget');
+      if (!widget) return;
+      // Pin to the *visible* viewport so the input footer sits at the top of the
+      // keyboard and nothing scrolls underneath it. Height and top, never
+      // transform - see the rule at the top of this block.
       const fit = () => {
         const vv = window.visualViewport;
         if (vv) {
-          // Pin the shell to the *visible* viewport so the input footer always
-          // sits at the top of the keyboard, and nothing scrolls beneath it.
-          shell.style.height = vv.height + 'px';
-          shell.style.transform = 'translateY(' + vv.offsetTop + 'px)';
+          widget.style.height = vv.height + 'px';
+          widget.style.top = vv.offsetTop + 'px';
         } else {
-          shell.style.height = window.innerHeight + 'px';
-          shell.style.transform = '';
+          widget.style.height = window.innerHeight + 'px';
+          widget.style.top = '0px';
         }
       };
       this._rivenFit = fit;
@@ -46942,8 +47060,8 @@
 
     _exitRivenFullscreen() {
       document.body.classList.remove('riven-fs');
-      const shell = document.getElementById('riven-shell');
-      if (shell) { shell.style.height = ''; shell.style.transform = ''; }
+      const widget = document.getElementById('riven-widget');
+      if (widget) { widget.style.height = ''; widget.style.top = ''; }
       if (this._rivenFit) {
         if (window.visualViewport) {
           window.visualViewport.removeEventListener('resize', this._rivenFit);
@@ -46954,239 +47072,305 @@
       }
     }
 
-    async renderTeacherTerminal() {
-      const section = document.getElementById('teacher-terminal-section');
-      if (!section) { console.error('Terminal section not found'); return; }
+    // ---- Mount --------------------------------------------------------------
 
-      // Initialize terminal state
+    async mountRivenWidget() {
+      if (document.getElementById('riven-widget')) return;
+      const userType = this.userInfo?.profile?.user_type;
+      if (userType !== 'teacher' && userType !== 'admin') return;
+
       if (!this._terminalHistory) this._terminalHistory = [];
       if (!this._terminalHistoryIndex) this._terminalHistoryIndex = -1;
       if (!this._terminalRecentStudents) this._terminalRecentStudents = [];
       this._terminalCommandPaletteOpen = false;
       this._terminalAutocompleteResults = [];
       this._terminalAutocompleteIndex = -1;
+      this._rivenUnread = 0;
+      // Placeholder so _renderUpgradeButton can paint before anyone opens Riven.
+      // The real _initPhi3State() - which may auto-load a 1GB model - waits for
+      // the first open.
+      this._phi3State = { pipe: null, loading: false, active: false, progress: 0, error: null };
+      this._phi3History = [];
 
-      // Load all students, classes, store items, and privileges for matching/autocomplete
-      await Promise.all([
-        this._loadTerminalStudents(),
-        this._loadTerminalClasses(),
-        this._loadTerminalGroups(),
-        this._loadTerminalStoreItems(),
-        this._loadTerminalPrivileges()
-      ]);
-      this._initPhi3State();
+      const widget = document.createElement('div');
+      widget.id = 'riven-widget';
+      widget.dataset.state = 'closed';
+      widget.innerHTML = this._rivenWidgetHtml();
+      document.body.appendChild(widget);
 
-      const RIVEN_BUILD = '2026-09-05·b';
-      section.innerHTML = `
-        <div id="riven-shell" style="max-width: 1200px; margin: 0 auto; padding: 20px;">
-          <!-- Header -->
-          <div id="riven-topbar" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-              <button class="btn btn-secondary" onclick="app.showSection('home')" style="padding: 6px 12px;">← Back</button>
-              <div style="display: flex; align-items: center; gap: 10px;">
-                <div style="width: 44px; height: 44px; border-radius: 50%; background: #f2e6c9; border: 2px solid #d97a3a; overflow: hidden; flex-shrink: 0;">
-                  <img src="../shared/riven-avatar.jpg" alt="Riven" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;">
-                </div>
-                <div>
-                  <h2 style="margin: 0; font-size: 20px; color: #e8a33c;">Riven <span style="font-size: 11px; font-weight: 600; color: var(--muted); background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; vertical-align: middle;">build ${RIVEN_BUILD}</span></h2>
-                  <div style="font-size: 11px; color: var(--muted);">Your AI Teaching Assistant</div>
-                </div>
-              </div>
-            </div>
-            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-              <button onclick="app.terminalQuickAction('list')" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="List all students">
-                👥 Students
-              </button>
-              <button onclick="app.terminalQuickAction('briefing')" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="What needs attention">
-                📋 Briefing
-              </button>
-              <button onclick="app.clearTerminalChat()" class="btn btn-secondary" style="padding: 8px 16px; font-size: 13px;" title="Clear the conversation and start fresh">
-                🧹 Clear chat
-              </button>
-              <button onclick="app.toggleTerminalPalette()" class="btn" style="padding: 8px 16px; font-size: 13px;">
-                <span style="opacity: 0.7; margin-right: 6px;">⌘K</span> Quick Search
-              </button>
-              <div style="display: flex; align-items: center; gap: 4px;">
-                <button id="riven-upgrade-btn" onclick="app.toggleRivenUpgrade()"
-                  class="btn btn-secondary riven-upgrade-btn-idle"
-                  style="padding: 8px 14px; font-size: 13px; border-radius: 8px; border: 1px solid #d97a3a; font-weight: 600; letter-spacing: 0.01em;"
-                  title="Download a smarter AI model for Riven">
-                  ✨ Smarter Riven
-                </button>
-                <button onclick="app.showRivenUpgradeInfo()" style="background:none;border:none;color:var(--muted);font-size:13px;cursor:pointer;padding:4px 6px;border-radius:4px;" title="Learn more">?</button>
-              </div>
-            </div>
+      // On <body>, not in the panel: it is a full-screen overlay and must not
+      // be a descendant of anything that could become its containing block.
+      const palette = document.createElement('div');
+      palette.id = 'terminal-palette';
+      palette.style.cssText = 'display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 10000; padding: 20px;';
+      palette.setAttribute('onclick', 'if(event.target === this) app.closeTerminalPalette()');
+      palette.innerHTML = `
+        <div style="max-width: 700px; margin: 60px auto; background: var(--card); border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
+          <div style="padding: 16px; border-bottom: 1px solid var(--border);">
+            <input type="text" id="palette-search"
+              placeholder="Search students, commands, or type to filter..."
+              style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 15px;"
+              oninput="app.filterPalette(this.value)"
+              onkeydown="app.handlePaletteKeydown(event)">
           </div>
+          <div id="palette-results" style="max-height: 500px; overflow-y: auto;"></div>
+        </div>`;
+      document.body.appendChild(palette);
 
-          <!-- Command Palette Modal -->
-          <div id="terminal-palette" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); z-index: 10000; padding: 20px;" onclick="if(event.target === this) app.closeTerminalPalette()">
-            <div style="max-width: 700px; margin: 60px auto; background: var(--card); border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.5);">
-              <!-- Search Input -->
-              <div style="padding: 16px; border-bottom: 1px solid var(--border);">
-                <input
-                  type="text"
-                  id="palette-search"
-                  placeholder="Search students, commands, or type to filter..."
-                  style="width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 15px;"
-                  oninput="app.filterPalette(this.value)"
-                  onkeydown="app.handlePaletteKeydown(event)"
-                >
-              </div>
-              <!-- Results -->
-              <div id="palette-results" style="max-height: 500px; overflow-y: auto;"></div>
-            </div>
-          </div>
-
-          <!-- Suggested Actions -->
-          <details id="terminal-quick-actions" open style="margin-bottom: 16px;">
-            <summary style="cursor: pointer; padding: 12px; background: var(--surface-bg); border-radius: 8px; font-weight: 600; color: var(--text); user-select: none;">💡 Quick Actions</summary>
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin-top: 12px; padding: 0 4px;">
-              <button onclick="app.terminalQuickAction('list')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-                <div style="font-size: 20px; margin-bottom: 4px;">👥</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">View Students</div>
-                <div style="font-size: 11px; color: var(--muted);">List all students</div>
-              </button>
-              <button onclick="app.terminalQuickAction('help')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-                <div style="font-size: 20px; margin-bottom: 4px;">❓</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">What can I do</div>
-                <div style="font-size: 11px; color: var(--muted);">Everything I understand</div>
-              </button>
-              <button onclick="app.terminalQuickAction('briefing')" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-                <div style="font-size: 20px; margin-bottom: 4px;">📋</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Briefing</div>
-                <div style="font-size: 11px; color: var(--muted);">What needs attention</div>
-              </button>
-              <button onclick="app.clearTerminalChat()" class="card" style="padding: 14px; text-align: left; cursor: pointer; border: 1px solid var(--border); transition: all 0.2s; background: var(--card);" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
-                <div style="font-size: 20px; margin-bottom: 4px;">🧹</div>
-                <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">Clear chat</div>
-                <div style="font-size: 11px; color: var(--muted);">Start fresh</div>
-              </button>
-            </div>
-          </details>
-
-          <!-- Chat Interface -->
-          <style>
-            /* Fullscreen Riven: the whole page becomes the chat app — header
-               pinned at top, message log the only scroller, input locked to the
-               top of the keyboard, nothing scrolling underneath. Toggled by the
-               body.riven-fs class (added in showSection / renderTeacherTerminal). */
-            body.riven-fs { overflow: hidden !important; }
-            body.riven-fs #riven-shell {
-              /* Above page content/nav, but BELOW modals (base ~1010) and the
-                 command palette (10000) so Riven's dialogs still surface. */
-              position: fixed; inset: 0; z-index: 900;
-              max-width: none !important; margin: 0 !important;
-              padding: 8px 10px !important;
-              display: flex; flex-direction: column; gap: 10px;
-              background: var(--bg); height: 100dvh;
-            }
-            body.riven-fs #riven-topbar { flex: 0 0 auto; margin-bottom: 0 !important; }
-            body.riven-fs #terminal-quick-actions,
-            body.riven-fs #terminal-recent-bar { display: none !important; }
-            body.riven-fs #riven-chat-card {
-              flex: 1 1 auto !important; min-height: 0 !important;
-              display: flex; flex-direction: column; margin: 0 !important;
-            }
-            body.riven-fs #terminal-output { flex: 1 1 auto !important; min-height: 0 !important; max-height: none !important; }
-            body.riven-fs #riven-input-area { flex: 0 0 auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important; }
-          </style>
-          <div id="riven-chat-card" class="card" style="padding: 0; margin-bottom: 16px; background: #2b2118; border: 1px solid #6b5236; position: relative; border-radius: 12px; overflow: hidden;">
-            <div id="terminal-output" style="padding: 20px; min-height: 400px; max-height: 600px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
-              <!-- Riven Intro Message -->
-              <div style="display: flex; gap: 12px; margin-bottom: 16px;">
-                <div style="width: 36px; height: 36px; border-radius: 50%; background: #f2e6c9; border: 2px solid #d97a3a; overflow: hidden; flex-shrink: 0;">
-                  <img src="../shared/riven-avatar.jpg" alt="Riven" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;">
-                </div>
-                <div style="flex: 1;">
-                  <div style="background: #f2e6c9; padding: 12px 16px; border-radius: 12px 12px 12px 4px; border: 1px solid #b08d5a;">
-                    <div style="font-weight: 700; color: #2f6b6d; margin-bottom: 4px;">Riven</div>
-                    <div style="color: #3d2817; line-height: 1.6;">
-                      Hi! I'm Riven, your AI teaching assistant. I can help you manage students, award RTC, check balances, and more.
-                      <br><br>
-                      Just ask me naturally like:
-                      <ul style="margin: 8px 0; padding-left: 20px; color: #6b5236;">
-                        <li>"How much gold does Evelyn have?"</li>
-                        <li>"Give John 50 RTC for great work"</li>
-                        <li>"Show me the top 10 students"</li>
-                      </ul>
-                      <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #d9c49a; font-size: 12px; color: #6b5236;">
-                        💡 You can also use /commands if you prefer
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- Autocomplete Dropdown -->
-            <div id="terminal-autocomplete" style="display: none; position: absolute; bottom: 70px; left: 20px; right: 20px; background: var(--card); border: 1px solid var(--accent); border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 -4px 12px rgba(0,0,0,0.3);"></div>
-
-            <!-- Input Area -->
-            <div id="riven-input-area" style="padding: 16px; border-top: 1px solid #6b5236; background: #241b12;">
-              <div style="display: flex; align-items: end; gap: 10px; position: relative;">
-                <input
-                  type="text"
-                  id="terminal-input"
-                  autocomplete="off"
-                  placeholder="Ask Riven anything..."
-                  style="flex: 1; padding: 12px 16px; border: 1px solid #8a6f4d; border-radius: 24px; background: #f2e6c9; color: #3d2817; font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; outline: none; transition: border-color 0.2s;"
-                  onfocus="this.style.borderColor='#d97a3a'"
-                  onblur="this.style.borderColor='#8a6f4d'"
-                  oninput="app.handleTerminalInput(event)"
-                  onkeydown="app.handleTerminalKeydown(event)"
-                >
-                <button onclick="app._sendMessage()" style="width: 44px; height: 44px; border-radius: 50%; background: #d97a3a; border: 2px solid #b05f24; color: #f2e6c9; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: transform 0.2s; flex-shrink: 0;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
-                  ↑
-                </button>
-              </div>
-              <div id="terminal-suggestions" style="font-size: 11px; color: #a08a64; margin-top: 6px; margin-left: 16px;"></div>
-            </div>
-          </div>
-
-          <!-- Recent Students (if any) -->
-          <div id="terminal-recent-bar" style="display: none; margin-bottom: 16px;">
-            <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px; font-weight: 600;">RECENT STUDENTS</div>
-            <div id="terminal-recent-list" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
-          </div>
-        </div>
-      `;
-
-      // Initialize UI
-      setTimeout(() => {
-        this._enterRivenFullscreen();
-        const input = document.getElementById('terminal-input');
-        if (input) {
-          input.focus();
-          // Keep the input visible above the mobile keyboard when it opens.
-          input.addEventListener('focus', () => {
-            setTimeout(() => { try { input.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (_) {} }, 250);
-          });
-        }
-        this._updateRecentStudentsBar();
-      }, 100);
-
-      // Restore the persisted conversation (survives tab switches and logins)
-      // and keep persisting on every change
+      // The transcript is live from here on, so a push that lands before anyone
+      // opens Riven is kept instead of dropped.
+      const out = document.getElementById('terminal-output');
+      if (out) out.innerHTML = this._rivenIntroHtml();
       this._restoreTerminalChat();
-      // Reversals from earlier today, rebuilt from their specs. Without this a
-      // reload silently emptied the undo list while the chat above still showed
-      // the writes that were made.
       this._restoreRivenUndo();
-      // Roll yesterday's buffer up on open; batched thereafter.
-      this._rivenFlushUsage({ force: true }).catch(() => {});
       this._setupTerminalPersistence();
+      this._renderRivenUnread();
 
-      // Proactive briefing: surface anything needing attention (throttled to
-      // once per 4 hours; silent when there's nothing)
-      setTimeout(() => { this.terminalBriefing({ auto: true }).catch(e => console.warn('briefing:', e)); }, 1200);
-
-      // Global keyboard shortcut for command palette
+      // ⌘K / Ctrl-K, whenever Riven is open.
       document.addEventListener('keydown', (e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'k' && this.currentSection === 'teacher-terminal') {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k' && this._rivenState() && this._rivenState() !== 'closed') {
           e.preventDefault();
           this.toggleTerminalPalette();
         }
       });
+
+      // Rosters, classes, groups, shop and privileges. Deferred a beat so they
+      // queue behind the page's own first paint rather than competing with it.
+      setTimeout(() => {
+        this._rivenReady()
+          .then(() => {
+            this._rivenFlushUsage({ force: true }).catch(() => {});
+            // Proactive briefing: throttled to once per four hours, silent when
+            // there is nothing to say. It needs the rosters above, so it runs
+            // here rather than on a timer of its own.
+            return this.terminalBriefing({ auto: true });
+          })
+          .catch(e => console.warn('Riven mount:', e));
+      }, 2000);
+    }
+
+    // Rosters and catalogs, loaded once and shared by every later caller.
+    _rivenReady() {
+      if (!this._rivenReadyPromise) {
+        this._rivenReadyPromise = Promise.all([
+          this._loadTerminalStudents(),
+          this._loadTerminalClasses(),
+          this._loadTerminalGroups(),
+          this._loadTerminalStoreItems(),
+          this._loadTerminalPrivileges()
+        ]).catch(e => { this._rivenReadyPromise = null; throw e; });
+      }
+      return this._rivenReadyPromise;
+    }
+
+    _rivenIntroHtml() {
+      return `
+        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+          <div style="width: 36px; height: 36px; border-radius: 50%; background: #f2e6c9; border: 2px solid #d97a3a; overflow: hidden; flex-shrink: 0;">
+            <img src="../shared/riven-avatar.jpg" alt="Riven" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;">
+          </div>
+          <div style="flex: 1;">
+            <div style="background: #f2e6c9; padding: 12px 16px; border-radius: 12px 12px 12px 4px; border: 1px solid #b08d5a;">
+              <div style="font-weight: 700; color: #2f6b6d; margin-bottom: 4px;">Riven</div>
+              <div style="color: #3d2817; line-height: 1.6;">
+                Hi! I'm Riven, your AI teaching assistant. I can help you manage students, award RTC, check balances, and more.
+                <br><br>
+                Just ask me naturally like:
+                <ul style="margin: 8px 0; padding-left: 20px; color: #6b5236;">
+                  <li>"How much gold does Evelyn have?"</li>
+                  <li>"Give John 50 RTC for great work"</li>
+                  <li>"Show me the top 10 students"</li>
+                </ul>
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #d9c49a; font-size: 12px; color: #6b5236;">
+                  💡 You can also use /commands if you prefer
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    _rivenWidgetHtml() {
+      const RIVEN_BUILD = '2026-09-10·a';
+      return `
+        <style>
+          /* No transform/filter/will-change on the widget or the panel. See the
+             rule in the comment above mountRivenWidget(). */
+          #riven-widget {
+            position: fixed; right: 18px; bottom: 18px; z-index: 900;
+            display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+          }
+          #riven-launcher {
+            width: 56px; height: 56px; border-radius: 50%; padding: 0;
+            border: 2px solid #d97a3a; background: #f2e6c9; cursor: pointer;
+            overflow: hidden; position: relative; flex: 0 0 auto;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+          }
+          #riven-launcher:hover { border-color: #f0964f; }
+          #riven-launcher:focus-visible { outline: 3px solid #f0964f; outline-offset: 2px; }
+          #riven-launcher img {
+            width: 100%; height: 100%; display: block; object-fit: cover;
+            object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;
+          }
+          #riven-unread {
+            position: absolute; top: -3px; right: -3px; min-width: 20px; height: 20px;
+            padding: 0 5px; border-radius: 10px; background: #d64545; color: #fff;
+            font-size: 11px; font-weight: 700; line-height: 20px; text-align: center;
+            box-shadow: 0 0 0 2px #2b2118;
+          }
+          #riven-panel {
+            display: none; flex-direction: column; overflow: hidden;
+            width: min(420px, calc(100vw - 36px));
+            height: min(620px, calc(100vh - 130px));
+            background: #2b2118; border: 1px solid #6b5236; border-radius: 14px;
+            box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+          }
+          #riven-widget[data-state="docked"] #riven-panel,
+          #riven-widget[data-state="full"] #riven-panel { display: flex; }
+          #riven-widget[data-state="docked"] #riven-restore,
+          #riven-widget[data-state="full"] #riven-expand { display: none; }
+
+          #riven-topbar {
+            flex: 0 0 auto; padding: 10px 12px; background: #241b12;
+            border-bottom: 1px solid #6b5236; display: flex; flex-direction: column; gap: 8px;
+          }
+          #riven-topbar .riven-id { display: flex; align-items: center; gap: 10px; }
+          #riven-topbar .riven-face {
+            width: 34px; height: 34px; border-radius: 50%; background: #f2e6c9;
+            border: 2px solid #d97a3a; overflow: hidden; flex-shrink: 0;
+          }
+          #riven-topbar .riven-face img {
+            width: 100%; height: 100%; display: block; object-fit: cover;
+            object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;
+          }
+          #riven-topbar .riven-name { font-size: 15px; font-weight: 700; color: #e8a33c; line-height: 1.2; }
+          #riven-topbar .riven-build {
+            font-size: 10px; font-weight: 600; color: #a08a64; background: rgba(255,255,255,0.06);
+            padding: 1px 5px; border-radius: 5px; vertical-align: middle;
+          }
+          #riven-topbar .riven-sub { font-size: 11px; color: #a08a64; }
+          #riven-topbar .riven-win { margin-left: auto; display: flex; gap: 2px; }
+          #riven-topbar .riven-win button {
+            background: none; border: none; color: #a08a64; cursor: pointer;
+            padding: 7px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+          }
+          #riven-topbar .riven-win button svg {
+            width: 15px; height: 15px; display: block; fill: none;
+            stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+          }
+          #riven-topbar .riven-win button:hover { background: rgba(255,255,255,0.07); color: #f2e6c9; }
+
+          /* The actions, across the top. More of them than fit at 420px, so the
+             strip scrolls rather than wrapping into a second and third row. */
+          #riven-actions-wrap { position: relative; }
+          #riven-actions-wrap::after {
+            content: ''; position: absolute; top: 0; right: 0; bottom: 0; width: 28px;
+            pointer-events: none; background: linear-gradient(to right, rgba(36,27,18,0), #241b12);
+          }
+          #riven-actions { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+          #riven-actions::-webkit-scrollbar { display: none; }
+          #riven-actions .riven-act {
+            flex: 0 0 auto; white-space: nowrap; padding: 6px 10px; font-size: 12px;
+            border-radius: 8px; border: 1px solid #6b5236; background: #33261a;
+            color: #f2e6c9; cursor: pointer; font-family: inherit; font-weight: 600;
+          }
+          #riven-actions .riven-act:hover { border-color: #d97a3a; }
+          #riven-actions .riven-act-kbd { opacity: 0.6; margin-right: 4px; font-weight: 400; }
+          @media (max-width: 700px) { #riven-actions .riven-act-kbd { display: none; } }
+
+          #riven-chat-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
+          #terminal-output {
+            flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+          }
+          #riven-input-area {
+            flex: 0 0 auto; padding: 12px; border-top: 1px solid #6b5236; background: #241b12;
+            padding-bottom: calc(12px + env(safe-area-inset-bottom));
+          }
+
+          /* Fullscreen: the panel becomes the page. The launcher goes away - the
+             close button in the header is the way out. */
+          body.riven-fs { overflow: hidden !important; }
+          body.riven-fs #riven-widget {
+            left: 0; right: 0; top: 0; bottom: auto; height: 100dvh;
+            gap: 0; align-items: stretch;
+          }
+          body.riven-fs #riven-launcher { display: none; }
+          body.riven-fs #riven-panel {
+            width: 100%; height: 100%; border: none; border-radius: 0; box-shadow: none;
+          }
+        </style>
+
+        <!-- Panel first, launcher second: the column stacks downward, so this
+             is what puts the circle under the panel rather than over its top
+             corner. -->
+        <div id="riven-panel" role="dialog" aria-label="Riven, your AI teaching assistant">
+          <div id="riven-topbar">
+            <div class="riven-id">
+              <div class="riven-face"><img src="../shared/riven-avatar.jpg" alt=""></div>
+              <div style="min-width: 0;">
+                <div class="riven-name">Riven <span class="riven-build">build ${RIVEN_BUILD}</span></div>
+                <div class="riven-sub">Your AI Teaching Assistant</div>
+              </div>
+              <!-- Drawn rather than typed. These were ⛶ / 🗗 / ✕, and the
+                   middle one has no glyph in Samsung's font - on a real phone it
+                   rendered as a tofu box. An inline path cannot go missing. -->
+              <div class="riven-win">
+                <button id="riven-expand" type="button" onclick="app.expandRiven()" title="Full screen" aria-label="Full screen">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2H2v4M10 2h4v4M6 14H2v-4M10 14h4v-4"/></svg>
+                </button>
+                <button id="riven-restore" type="button" onclick="app.restoreRiven()" title="Leave full screen" aria-label="Leave full screen">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6h4V2M14 6h-4V2M2 10h4v4M14 10h-4v4"/></svg>
+                </button>
+                <button type="button" onclick="app.closeRiven()" title="Close" aria-label="Close Riven">
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9"/></svg>
+                </button>
+              </div>
+            </div>
+            <div id="riven-actions-wrap"><div id="riven-actions">
+              <button class="riven-act" type="button" onclick="app.terminalQuickAction('list')" title="List all students">👥 Students</button>
+              <button class="riven-act" type="button" onclick="app.terminalQuickAction('briefing')" title="What needs attention">📋 Briefing</button>
+              <button class="riven-act" type="button" onclick="app.toggleTerminalPalette()" title="Search students and commands"><span class="riven-act-kbd">⌘K</span>Search</button>
+              <button class="riven-act" type="button" onclick="app.terminalQuickAction('help')" title="Everything I understand">❓ Help</button>
+              <button id="riven-upgrade-btn" class="riven-act riven-upgrade-btn-idle" type="button" onclick="app.toggleRivenUpgrade()" title="Download a smarter AI model for Riven">✨ Smarter</button>
+              <button class="riven-act" type="button" onclick="app.showRivenUpgradeInfo()" title="About the upgrade">?</button>
+              <button class="riven-act" type="button" onclick="app.clearTerminalChat()" title="Clear the conversation and start fresh">🧹 Clear</button>
+            </div></div>
+          </div>
+
+          <div id="riven-chat-card">
+            <div id="terminal-output"></div>
+
+            <div id="terminal-autocomplete" style="display: none; position: absolute; bottom: 78px; left: 12px; right: 12px; background: var(--card); border: 1px solid var(--accent); border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 -4px 12px rgba(0,0,0,0.3);"></div>
+
+            <div id="riven-input-area">
+              <div style="display: flex; align-items: end; gap: 10px; position: relative;">
+                <input type="text" id="terminal-input" autocomplete="off" placeholder="Ask Riven anything..."
+                  style="flex: 1; min-width: 0; padding: 11px 14px; border: 1px solid #8a6f4d; border-radius: 24px; background: #f2e6c9; color: #3d2817; font-size: 14px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; outline: none; transition: border-color 0.2s;"
+                  onfocus="this.style.borderColor='#d97a3a'"
+                  onblur="this.style.borderColor='#8a6f4d'"
+                  oninput="app.handleTerminalInput(event)"
+                  onkeydown="app.handleTerminalKeydown(event)">
+                <button type="button" onclick="app._sendMessage()" aria-label="Send"
+                  style="width: 42px; height: 42px; border-radius: 50%; background: #d97a3a; border: 2px solid #b05f24; color: #f2e6c9; font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">↑</button>
+              </div>
+              <div id="terminal-suggestions" style="font-size: 11px; color: #a08a64; margin-top: 6px; margin-left: 14px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <button id="riven-launcher" type="button" onclick="app.toggleRiven()" title="Ask Riven" aria-label="Ask Riven">
+          <img src="../shared/riven-avatar.jpg" alt="">
+          <span id="riven-unread" hidden></span>
+        </button>`;
+    }
+
+    // Riven is no longer a section. The nav entry, the #teacher-terminal hash
+    // and every in-app link still route here, so keep the name and open the
+    // widget instead of drawing a page.
+    async renderTeacherTerminal() {
+      await this.mountRivenWidget();
+      this.openRiven();
     }
 
     // ---- Persistent chat (localStorage, per user) ----
@@ -47433,7 +47617,10 @@
       this._nlpContext = {};
       this._rivenUndoStack = [];
       this._pendingAction = null;
-      this.renderTeacherTerminal();
+      // Reset the transcript, not the widget. Rebuilding the shell here would
+      // tear the floating panel out from under the click that asked for it.
+      const out = document.getElementById('terminal-output');
+      if (out) { out.innerHTML = this._rivenIntroHtml(); out.scrollTop = 0; }
     }
 
     async _loadTerminalStudents() {
@@ -53226,7 +53413,7 @@
         btn.textContent = '⚠️ Upgrade failed';
       } else {
         btn.classList.add('riven-upgrade-btn-idle');
-        btn.textContent = '✨ Smarter Riven';
+        btn.textContent = '✨ Smarter';
       }
     }
 
@@ -59315,6 +59502,9 @@
       this._updateRecentStudentsBar();
     }
 
+    // The recent-students strip lived under the old full-page chat and has no
+    // room in the docked panel, so this no-ops. The list itself is still kept:
+    // /recent reads it, and so does the ⌘K palette.
     _updateRecentStudentsBar() {
       const bar = document.getElementById('terminal-recent-bar');
       const list = document.getElementById('terminal-recent-list');
@@ -59627,6 +59817,9 @@
     _showRivenMessage(content, isHtml = false) {
       const output = document.getElementById('terminal-output');
       if (!output) return;
+      // Riven talks while shut too - a message arriving, the briefing. Count it
+      // onto the circle rather than letting it sit unseen in the transcript.
+      this._rivenNoteUnread();
 
       const bubble = document.createElement('div');
       bubble.style.cssText = 'display: flex; gap: 12px; margin: 16px 0;';
