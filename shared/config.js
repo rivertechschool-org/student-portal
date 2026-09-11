@@ -816,6 +816,9 @@ class PortalUI {
     // toggling that one flag — there is no second list to keep in step.
     static navDestinations(userType, currentApp = 'main') {
         const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
+        // The two assessment tools are their own pages under portal/, so the
+        // prefix depends on which app is asking.
+        const toolPath = currentApp === 'portal' ? '' : 'portal/';
         // .jpg, not .png - there is no PNG in shared/, and referencing one 404s
         // on every page render. The crop and border match how Riven is framed
         // everywhere else.
@@ -833,6 +836,13 @@ class PortalUI {
             { icon: '🏆', label: 'Activities', app: 'portal', section: 'activities', roles: ['student', 'teacher', 'admin', 'parent'] , secondary: true },
 
             { icon: '💰', label: 'RTC', app: 'portal', section: 'admin-rtc-management', roles: ['teacher', 'admin'] , secondary: true },
+            // Assessment tools, not sections: each is its own page with its own
+            // class picker, so they belong to the teacher rather than to any one
+            // class. They used to sit in every class's action grid, which put PE
+            // Assessment in front of a maths teacher and duplicated a picker the
+            // tool already had.
+            { icon: '🏃', label: 'PE Assessment', app: 'portal', section: 'pe-assessment', url: `${toolPath}pe-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
+            { icon: '🤖', label: 'Tech Projects', app: 'portal', section: 'tech-assessment', url: `${toolPath}tech-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
             { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
             { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
@@ -885,6 +895,13 @@ class PortalUI {
         const navItemsHTML = visibleItems.map(item => {
             const isActive = item.app === currentApp && item.section === currentSection;
             const activeClass = isActive ? ' active' : '';
+
+            // A destination with a url is a page of its own rather than a
+            // section, so it is always a link - including if someone promotes
+            // it out of `secondary` later.
+            if (item.url) {
+                return `<a href="${item.url}" target="_blank" rel="noopener" class="nav-item${activeClass}"><span>${item.icon}</span><span>${item.label}</span></a>`;
+            }
 
             if (item.app === currentApp) {
                 // Same app — button with local navigation
