@@ -859,7 +859,13 @@ class PortalUI {
             // tool already had.
             { icon: '🏃', label: 'PE Assessment', app: 'portal', section: 'pe-assessment', url: `${toolPath}pe-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
             { icon: '🤖', label: 'Tech Projects', app: 'portal', section: 'tech-assessment', url: `${toolPath}tech-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
-            { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
+            // Riven is the floating launcher in the corner of the portal now, so
+            // it does not need a nav tab there as well. The main app has no such
+            // launcher - the widget only exists in portal/index.html - so from
+            // there it stays a link across, which is the only one-click way in.
+            ...(currentApp === 'portal' ? [] : [
+              { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
+            ]),
             { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
         ];

@@ -331,8 +331,18 @@ ok('  then opens the widget over it', /this\.renderTeacherTerminal\(\)/.test(rou
 ok('  and stops there', /return;/.test(route));
 ok('#teacher-terminal is still a valid hash',
   (html.match(/'teacher-terminal', 'irl-purchases'/g) || []).length === 2);
-ok('the nav entry is untouched',
-  /label: 'Riven', app: 'portal', section: 'teacher-terminal'/.test(cfg));
+// The tab is gone from the portal, where the circle is, and kept in the main
+// app, where there is no circle to press.
+const destOf = (app) => PortalUI.navDestinations('teacher', app).map(i => i.label);
+check('no Riven tab in the portal nav', destOf('portal').includes('Riven'), false);
+check('  still one in the main app', destOf('main').includes('Riven'), true);
+// navDestinations returns every destination and leaves role filtering to
+// buildUnifiedNav, so the check that matters is the roles on the item itself.
+check('  and it is still teacher and admin only',
+  PortalUI.navDestinations('teacher', 'main').find(i => i.label === 'Riven').roles.slice().sort(),
+  ['admin', 'teacher']);
+ok('the section route still resolves for the hash and old links',
+  /case 'teacher-terminal':/.test(html));
 ok('navigating out of fullscreen docks Riven rather than closing the page over it',
   /if \(document\.body\.classList\.contains\('riven-fs'\)\) this\.restoreRiven\(\);/.test(html));
 ok('⌘K is bound to the widget being open, not to a section',
