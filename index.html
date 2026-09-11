@@ -3920,7 +3920,10 @@
                         events: eventsRes.data || [],
                         schoolStart: this.pickSchoolYearStart(quartersRes.data, this.localTodayStr()),
                         hidePast: true,
-                        pane: null
+                        pane: null,
+                        // Reopening the modal always lands on the list, never
+                        // half-way through an edit left behind from last time.
+                        editingId: null
                     };
 
                     this.showModal('manage-school-events', 'Manage School Events', `
@@ -3976,6 +3979,11 @@
 
                 let html = '<div style="max-height:340px;overflow-y:auto;">';
                 shown.forEach(ev => {
+                    // Editing happens in the row itself rather than in a pane at
+                    // the top. A typo in one of nine identically-named events is
+                    // the normal reason to be here, and a form that floats away
+                    // from the row makes it easy to correct the wrong one.
+                    if (st.editingId === ev.id) { html += this.renderEditEventRow(ev); return; }
                     const dateRange = ev.end_date ? `${ev.start_date} to ${ev.end_date}` : ev.start_date;
                     const typeBadge = `<span style="background:#e879f9;color:#000;padding:2px 6px;border-radius:4px;font-size:11px;font-weight:600;margin-left:6px;">${this.escapeHtml(ev.event_type)}</span>`;
                     const desc = ev.description ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">${this.escapeHtml(ev.description)}</div>` : '';
@@ -3986,7 +3994,10 @@
                                 <div style="font-size:12px;color:var(--muted);margin-top:2px;">${dateRange}</div>
                                 ${desc}
                             </div>
-                            <button class="btn btn-sm" onclick="portal.deleteSchoolEvent('${ev.id}')" style="color:var(--danger);border-color:var(--danger);margin-left:10px;flex-shrink:0;">Delete</button>
+                            <div style="display:flex;gap:6px;margin-left:10px;flex-shrink:0;">
+                                <button class="btn btn-sm" onclick="portal.editSchoolEvent('${ev.id}')">Edit</button>
+                                <button class="btn btn-sm" onclick="portal.deleteSchoolEvent('${ev.id}')" style="color:var(--danger);border-color:var(--danger);">Delete</button>
+                            </div>
                         </div>
                     `;
                 });
@@ -4051,7 +4062,7 @@
             }
 
             renderBulkEventsPane() {
-                const ph = '2026-09-24 | Chemistry Lab&#10;2026-11-21 | Thanksgiving Break | closure | 2026-11-29&#10;2026-12-18 | Christmas Party';
+                const ph = '2026-09-24 | Physics Lab&#10;2026-11-21 | Thanksgiving Break | closure | 2026-11-29&#10;2026-12-18 | Christmas Party';
                 return `
                     <div style="border:1px solid var(--border);border-radius:8px;padding:12px;margin:12px 0;">
                         <div style="font-size:12px;color:var(--muted);margin-bottom:8px;line-height:1.6;">
@@ -4188,6 +4199,102 @@
                 await this.showManageSchoolEvents();
                 await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
                 this.renderCalendar(this.calendarYear, this.calendarMonth);
+            }
+
+            // The row, as a form. Ids are suffixed with the event id so two
+            // rows can never fight over the same input - only one row is ever
+            // in edit mode, but an id collision here would silently save the
+            // wrong event, which is not a failure anyone would notice.
+            renderEditEventRow(ev) {
+                const v = (x) => this.escapeHtml(x == null ? '' : String(x));
+                const sel = (t) => ev.event_type === t ? ' selected' : '';
+                return `
+                    <div style="border:1px solid #e879f9;border-radius:8px;padding:12px;margin:10px 0;">
+                        <div class="form-group">
+                            <label>Title</label>
+                            <input type="text" id="mee-title-${ev.id}" value="${v(ev.title)}">
+                        </div>
+                        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                            <div class="form-group" style="flex:1;min-width:150px;">
+                                <label>Date</label>
+                                <input type="date" id="mee-start-${ev.id}" value="${v(ev.start_date)}">
+                            </div>
+                            <div class="form-group" style="flex:1;min-width:150px;">
+                                <label>End date (optional)</label>
+                                <input type="date" id="mee-end-${ev.id}" value="${v(ev.end_date)}">
+                            </div>
+                            <div class="form-group" style="flex:1;min-width:150px;">
+                                <label>Type</label>
+                                <select id="mee-type-${ev.id}">
+                                    <option value="event"${sel('event')}>Event</option>
+                                    <option value="holiday"${sel('holiday')}>Holiday</option>
+                                    <option value="closure"${sel('closure')}>Closure</option>
+                                    <option value="half_day"${sel('half_day')}>Half Day</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Description (optional)</label>
+                            <textarea id="mee-description-${ev.id}" rows="2">${v(ev.description)}</textarea>
+                        </div>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-primary" onclick="portal.submitManageEditEvent('${ev.id}')" style="flex:1;background:#e879f9;border-color:#e879f9;color:#000;">Save changes</button>
+                            <button class="btn" onclick="portal.cancelEditSchoolEvent()" style="flex:1;">Cancel</button>
+                        </div>
+                    </div>
+                `;
+            }
+
+            editSchoolEvent(eventId) {
+                if (!this._manageEvents) return;
+                // One at a time. Opening a second editor would leave unsaved
+                // text in the first with nothing on screen saying so.
+                this._manageEvents.editingId = eventId;
+                const host = document.getElementById('manage-events-list');
+                if (host) host.innerHTML = this.renderManageEventsList();
+            }
+
+            cancelEditSchoolEvent() {
+                if (!this._manageEvents) return;
+                this._manageEvents.editingId = null;
+                const host = document.getElementById('manage-events-list');
+                if (host) host.innerHTML = this.renderManageEventsList();
+            }
+
+            async submitManageEditEvent(eventId) {
+                const g = (p) => document.getElementById(`mee-${p}-${eventId}`);
+                const title = g('title')?.value.trim();
+                const start = g('start')?.value;
+                const end = g('end')?.value || null;
+                const type = g('type')?.value || 'event';
+                const description = g('description')?.value.trim() || null;
+
+                if (!title) { window.PortalUI?.showNotification('The event needs a title.', 'warning'); return; }
+                if (!start) { window.PortalUI?.showNotification('The event needs a date.', 'warning'); return; }
+                if (end && end < start) {
+                    window.PortalUI?.showNotification('The end date is before the start date.', 'warning');
+                    return;
+                }
+
+                try {
+                    const { error } = await this.auth.supabase
+                        .from('school_events')
+                        .update({ title, start_date: start, end_date: end, event_type: type, description })
+                        .eq('id', eventId);
+                    if (error) throw error;
+
+                    window.PortalUI?.showNotification('Event updated.', 'success');
+                    this._manageEvents.editingId = null;
+
+                    // Same refresh the delete path uses, so the list and the
+                    // calendar behind it never disagree about what changed.
+                    await this.showManageSchoolEvents();
+                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
+                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+                } catch (err) {
+                    console.error('Edit school event error:', err);
+                    window.PortalUI?.showNotification('Failed to update the event: ' + err.message, 'error');
+                }
             }
 
             async deleteSchoolEvent(eventId) {
