@@ -364,6 +364,14 @@ const T6 = [
   // unsupported actions: honest decline, never a student card / never RTC
   ['Mark charlotte as present for all classes yesterday.', 'MARK_ATTENDANCE', 'Charlotte Tebow', true],
   ['mark noah absent today', 'MARK_ATTENDANCE', 'Noah Williams', true],
+  // Planned absences vs marking one now. The whole distinction is the date:
+  // "out today" is a register being dictated, "out monday" is a note about a
+  // day that has not happened.
+  ['noah is out next monday', 'PLAN_ABSENCE', 'Noah Williams', true],
+  ['charlotte is out monday to wednesday', 'PLAN_ABSENCE', 'Charlotte Tebow', true],
+  ['noah has a dentist appointment on friday', 'PLAN_ABSENCE', 'Noah Williams', true],
+  ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
+  ['charlotte wont be in tomorrow', 'PLAN_ABSENCE', 'Charlotte Tebow', true],
   ['Put 30 gold in the bank', 'CAPABILITY', null, true],
   ['Give charlotte 30 gold in the bank', 'CAPABILITY', null, true],
   ["Let's add charlotte to a math class.", 'ENROLL_STUDENT', 'Charlotte Tebow', true],

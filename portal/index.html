@@ -31367,6 +31367,22 @@
               </div>
             </div>
 
+            <!-- Absences the office already knows about. Sits above the search
+                 filters because it is the thing you come to this screen to DO;
+                 the filters below are for looking back at what happened. -->
+            <div class="card" style="margin-bottom: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                <h3 style="margin: 0;">📅 Upcoming Absences</h3>
+                <button class="btn btn-primary" onclick="app.showAddPlannedAbsenceModal()">+ Add planned absence</button>
+              </div>
+              <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+                Recorded here, filled in automatically when that day's register is opened.
+              </div>
+              <div id="planned-absences-body">
+                <div style="color: var(--muted); font-size: 13px; padding: 8px 0;">Loading…</div>
+              </div>
+            </div>
+
             <!-- Filters -->
             <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">🔍 Search Filters</h3>
@@ -31445,6 +31461,11 @@
 
         // Dropped so re-entering the screen picks up group edits made since.
         this._attStudentIndex = null;
+
+        // Two reads, neither of which should hold the other up: the filters
+        // are what the screen is measured by, the upcoming list is what it is
+        // opened for.
+        this.renderPlannedAbsencesPanel().catch(e => console.warn('planned absences:', e));
 
         // Load filter options
         await this.loadAttendanceFilters();
@@ -39494,6 +39515,182 @@
       }
     }
 
+    // ==================== PLANNED ABSENCES ====================
+    //
+    // An absence the office hears about before it happens: "Noah is away Monday
+    // to Wednesday". It lives in its own table rather than as a future-dated
+    // daily_attendance row, because a plan and a record are different things -
+    // a future row would be counted as a real absence by every percentage and
+    // every "who has bad attendance" scan the moment it was entered.
+    //
+    // rt_apply_planned_absences turns the plan into the record, on the day, and
+    // never overwrites a mark that is already there. See the migration in the
+    // backend repo for the full reasoning.
+
+    // Upcoming and current. Past plans have done their job and only clutter.
+    async _fetchPlannedAbsences({ includePast = false } = {}) {
+      const today = this._localDateStr(new Date());
+      let q = this.auth.supabase
+        .from('planned_absences')
+        .select('id, student_id, start_date, end_date, excused, reason, created_at')
+        .order('start_date');
+      if (!includePast) q = q.gte('end_date', today);
+      const { data, error } = await q;
+      if (error) throw error;
+      const rows = data || [];
+      if (!rows.length) return [];
+
+      // Names are a separate read: planned_absences holds ids, and the roster
+      // this panel sits beside may not have loaded yet.
+      const ids = [...new Set(rows.map(r => r.student_id))];
+      const { data: people } = await this.auth.supabase
+        .from('user_profiles').select('id, first_name, last_name').in('id', ids);
+      const nameOf = {};
+      (people || []).forEach(p => { nameOf[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim(); });
+      return rows.map(r => ({ ...r, student_name: nameOf[r.student_id] || 'Unknown student' }));
+    }
+
+    // Called when a register is opened, for the date that register is showing.
+    // Keyed to that date rather than to "today" on purpose: it is also what
+    // stops a plan spanning a weekend from marking anyone absent on a Saturday,
+    // because nobody opens a Saturday register.
+    async applyPlannedAbsences(dateStr) {
+      try {
+        const { data, error } = await this.auth.supabase
+          .rpc('rt_apply_planned_absences', { p_date: dateStr });
+        if (error) throw error;
+        return typeof data === 'string' ? JSON.parse(data) : data;
+      } catch (err) {
+        // A register that cannot pre-fill is still a working register. Never
+        // let this stop the roster from opening.
+        console.warn('Planned absences could not be applied:', err);
+        return null;
+      }
+    }
+
+    async renderPlannedAbsencesPanel() {
+      const body = document.getElementById('planned-absences-body');
+      if (!body) return;
+      let rows;
+      try {
+        rows = await this._fetchPlannedAbsences();
+      } catch (err) {
+        body.innerHTML = `<div style="color: var(--muted); font-size: 13px;">Couldn't load planned absences: ${this.escapeHtml(err.message)}</div>`;
+        return;
+      }
+      if (!rows.length) {
+        body.innerHTML = `<div style="color: var(--muted); font-size: 13px; padding: 8px 0;">Nothing coming up. Add one when a family tells you about a trip or an appointment.</div>`;
+        return;
+      }
+      const today = this._localDateStr(new Date());
+      const fmt = (d) => new Date(d + 'T12:00:00').toLocaleDateString(undefined,
+        { weekday: 'short', day: 'numeric', month: 'short' });
+      body.innerHTML = rows.map(r => {
+        const span = r.start_date === r.end_date ? fmt(r.start_date) : `${fmt(r.start_date)} \u2013 ${fmt(r.end_date)}`;
+        const isNow = r.start_date <= today && r.end_date >= today;
+        return `
+          <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap;">
+            <div style="flex: 1 1 200px; min-width: 0;">
+              <div style="font-weight: 600;">${this.escapeHtml(r.student_name)}${isNow ? ' <span style="font-size: 11px; font-weight: 600; color: #d97a3a;">today</span>' : ''}</div>
+              <div style="font-size: 12px; color: var(--muted); overflow-wrap: anywhere;">
+                ${this.escapeHtml(span)}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}${r.excused ? '' : ' \u00b7 unexcused'}
+              </div>
+            </div>
+            <button class="btn btn-secondary small" onclick="app.deletePlannedAbsence('${this.jsAttr(r.id)}')"
+              title="Remove this planned absence">Remove</button>
+          </div>`;
+      }).join('');
+    }
+
+    async showAddPlannedAbsenceModal() {
+      const { data: students } = await this.auth.supabase
+        .from('user_profiles')
+        .select('id, first_name, last_name, grade_level')
+        .eq('user_type', 'student')
+        .order('last_name');
+      const today = this._localDateStr(new Date());
+      const options = (students || []).map(st =>
+        `<option value="${this.jsAttr(st.id)}">${this.escapeHtml(`${st.last_name || ''}, ${st.first_name || ''}`.trim())}${st.grade_level ? ' (' + this.escapeHtml(String(st.grade_level)) + ')' : ''}</option>`
+      ).join('');
+      this.showModal('add-planned-absence', '\u{1F4C5} Planned absence', `
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Student</label>
+            <select id="pa-student" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+              <option value="">-- Choose a student --</option>${options}
+            </select>
+          </div>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">First day away</label>
+              <input type="date" id="pa-start" value="${today}" onchange="app._syncPlannedAbsenceEnd()"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            </div>
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Last day away</label>
+              <input type="date" id="pa-end" value="${today}"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            </div>
+          </div>
+          <div style="font-size: 12px; color: var(--muted); margin-top: -8px;">
+            One day away? Leave both the same. Weekends inside a range look after themselves \u2014 a day is only
+            marked when someone opens that day's register.
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Reason</label>
+            <input type="text" id="pa-reason" placeholder="Family trip, orthodontist, ..." maxlength="200"
+              style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+          </div>
+          <label style="display: flex; align-items: center; gap: 8px;">
+            <input type="checkbox" id="pa-excused" checked>
+            <span>Excused</span>
+          </label>
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('add-planned-absence')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.savePlannedAbsence()">Save</button>
+          </div>
+        </div>
+      `, true);
+    }
+
+    // Moving the first day past the last one is always a typo, never an intent.
+    _syncPlannedAbsenceEnd() {
+      const start = document.getElementById('pa-start');
+      const end = document.getElementById('pa-end');
+      if (start && end && (!end.value || end.value < start.value)) end.value = start.value;
+    }
+
+    async savePlannedAbsence() {
+      const studentId = document.getElementById('pa-student')?.value;
+      const start = document.getElementById('pa-start')?.value;
+      const end = document.getElementById('pa-end')?.value;
+      const reason = document.getElementById('pa-reason')?.value.trim() || null;
+      const excused = !!document.getElementById('pa-excused')?.checked;
+
+      if (!studentId) { this.showNotification('Choose a student first', 'warning'); return; }
+      if (!start || !end) { this.showNotification('Both dates are needed', 'warning'); return; }
+      if (end < start) { this.showNotification('The last day is before the first day', 'warning'); return; }
+
+      const { error } = await this.auth.supabase.from('planned_absences').insert({
+        student_id: studentId, start_date: start, end_date: end,
+        excused, reason, created_by: this.userInfo.user.id
+      });
+      if (error) { this.showNotification('Could not save it: ' + error.message, 'error'); return; }
+
+      this.closeModal('add-planned-absence');
+      this.showNotification('Planned absence saved', 'success');
+      await this.renderPlannedAbsencesPanel();
+    }
+
+    async deletePlannedAbsence(id) {
+      // Removing the plan does not undo a day already marked from it - that is a
+      // real attendance record now, and belongs to whoever takes the register.
+      const { error } = await this.auth.supabase.from('planned_absences').delete().eq('id', id);
+      if (error) { this.showNotification('Could not remove it: ' + error.message, 'error'); return; }
+      this.showNotification('Removed', 'success');
+      await this.renderPlannedAbsencesPanel();
+    }
+
     async showDailyAttendanceRoster(dateStr = null) {
       // Close existing attendance modal first to prevent stacking
       this.closeModal('daily-attendance');
@@ -39536,6 +39733,18 @@
 
         const { today: todaysGroups } =
           this._cohortsForRoster(students, studentGroups, groupsOfStudent, dayOfWeek);
+
+        // Anything planned for this day goes in before the register is drawn,
+        // so it opens already reflecting what the office was told. It fills
+        // gaps only - a student who turned up anyway and was marked present
+        // stays present, however many times this runs.
+        const plannedApplied = await this.applyPlannedAbsences(today);
+        const { data: plannedRows } = await this.auth.supabase
+          .from('planned_absences')
+          .select('student_id, reason')
+          .lte('start_date', today).gte('end_date', today);
+        const plannedBy = {};
+        (plannedRows || []).forEach(p => { plannedBy[p.student_id] = p.reason || ''; });
 
         // Get existing attendance for this date
         const { data: attendanceData, error: attError } = await this.auth.supabase
@@ -39671,6 +39880,7 @@
                           <td style="padding: 12px;">
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                             <div style="font-size: 12px; color: var(--muted);">${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
+                            ${plannedBy[student.id] !== undefined ? `<div style="font-size: 11px; color: #d97a3a; margin-top: 2px;">\u{1F4C5} planned absence${plannedBy[student.id] ? ' \u00b7 ' + this.escapeHtml(plannedBy[student.id]) : ''}</div>` : ''}
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
                           <td style="padding: 12px; text-align: center;">
@@ -47195,7 +47405,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-11·a';
+      const RIVEN_BUILD = '2026-09-11·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -50569,6 +50779,7 @@
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
         'UPDATE_CLASS', 'ENROLL_GROUP',
         'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
+        'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
         'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
@@ -51386,6 +51597,43 @@
             /\bshow me what you can do\b/,
             /\bcan you (understand|hear|see|read) (me|this|us)\b/,
             /^help\b/
+          ]
+        },
+        // PLAN_ABSENCE — an absence someone already knows about. Deliberately
+        // does NOT use "mark X absent" phrasing: that is MARK_ATTENDANCE, about
+        // today, and stealing it would mean a register mark quietly became a
+        // note about the future. These are the ways people say it in advance.
+        {
+          intent: 'PLAN_ABSENCE',
+          w: 8, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          // Every pattern opens with the same guard: NOT TODAY. "jordan is out
+          // today" is a register mark being dictated, not a note about the
+          // future, and MARK_ATTENDANCE owns it. Without this, the most common
+          // way of reporting an absence in the moment would quietly become a
+          // plan and the day would go unmarked.
+          patterns: [
+            /^(?!.*\b(today|right now|just now|this morning|this afternoon)\b)[\s\S]*\b(is|are|will be|wont be|will not be|is going to be|are going to be)\b.{0,20}\b(out|away|absent|gone|off|missing)\b/,
+            /^(?!.*\b(today|right now|just now)\b)[\s\S]*\b(wont|will not|cant|cannot|can not)\b.{0,12}\b(be (in|here)|make it|attend|come in)\b/,
+            /^(?!.*\b(today|right now|just now)\b)[\s\S]*\b(has|have|got)\b.{0,16}\b(appointment|dentist|doctor|orthodontist|surgery|funeral|wedding|court)\b/,
+            /^(?!.*\btoday\b)[\s\S]*\b(out|away|absent|gone)\b.{0,10}\b(next|this|on)\b.{0,12}\b(mon|tues?|wed|thur?s?|fri|sat|sun)/,
+            /\b(planned|upcoming|future|expected)\s+absence\b/,
+            /^(?!.*\btoday\b)[\s\S]*\b(family trip|vacation|out of town|travelling|traveling)\b/,
+          ]
+        },
+        // VIEW_PLANNED_ABSENCES — the list, not a change to it.
+        //
+        // "this week" is deliberately NOT a cue. "anyone absent this week?" is a
+        // question about what has already happened, which is ATTENDANCE_ISSUES;
+        // only words that can only point forward belong here.
+        {
+          intent: 'VIEW_PLANNED_ABSENCES',
+          w: 7,
+          patterns: [
+            /\b(planned|upcoming|expected|future)\s+absences?\b/,
+            /\bwho(?:'?s| is| are)\s+(?:going to be\s+)?(?:out|away|absent|gone)\b.{0,24}\b(next|upcoming|coming up|ahead|tomorrow)\b/,
+            /\banyone\s+(?:out|away|absent|off)\b.{0,20}\b(next week|next month|coming up|upcoming|tomorrow)\b/,
+            /\bwho\s+will be\s+(?:out|away|missing|absent)\b/,
+            /\bwho(?:'?s| is)\s+(?:going to be\s+)?(?:out|away|absent)\s+(?:next|tomorrow)\b/,
           ]
         },
         // BRIEFING — "anything I should know?", "catch me up", "what's new"
@@ -52509,6 +52757,14 @@
           await this.terminalStudentBriefing(entities);
           break;
 
+        case 'PLAN_ABSENCE':
+          await this.terminalPlanAbsence(entities);
+          break;
+
+        case 'VIEW_PLANNED_ABSENCES':
+          await this.terminalShowPlannedAbsences(entities);
+          break;
+
         case 'BRIEFING': {
           // "school-wide briefing" is the way to the other one; everything else
           // means yours.
@@ -52571,6 +52827,9 @@
     • "Add [student] to chess club" / "Remove [student] from chess club"<br>
     • "Book the gym friday 2pm to 3pm" — checks for clashes, goes in as pending approval<br>
     • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
+    • "[student] is out monday to wednesday" — an absence you already know about;<br>
+    &nbsp;&nbsp;&nbsp;the register fills it in on the day and leaves any mark already there alone<br>
+    • "Who's out next week?" — the upcoming absence list<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
     • "Create a class called [name]"<br>
     • "Set [student]'s final grade in [class] to 92" (or participation/academic, letters OK)<br>
@@ -53371,6 +53630,7 @@
         RENAME_CLASS: 'rename a class', UPDATE_CONTACT: 'change contact info',
         GRANT_PRIVILEGE: 'grant a privilege', REVOKE_PRIVILEGE: 'revoke a privilege',
         BUY_ITEM: 'log a purchase', BUY_PRIVILEGE: 'buy a privilege',
+        PLAN_ABSENCE: 'note an upcoming absence',
       };
       const what = ACTION[intent.blockedIntent] || 'make that change';
       const target = who ? ` for <b>${esc(who)}</b>` : '';
@@ -55692,6 +55952,252 @@
            .replace(/\s{2,}/g, ' ')
            .replace(/^[\s,:-]+|[\s,:-]+$/g, '');
       return t.length >= 2 ? t : '';
+    }
+
+    // A bare date phrase, resolved against today. Shares its vocabulary with
+    // _rivenParseDueDate on purpose - "friday" should not mean one thing for an
+    // assignment and another for an absence - but it takes the phrase alone
+    // rather than digging it out of a "due ..." clause.
+    _rivenPhraseToDate(phrase) {
+      const p = (phrase || '').toLowerCase().trim().replace(/\s+/g, ' ').replace(/[.,;!?]+$/, '');
+      if (!p) return null;
+      const mk = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const plus = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d; };
+
+      if (/^today$/.test(p)) return { iso: mk(new Date()), label: 'today' };
+      if (/^tomorrow$/.test(p)) return { iso: mk(plus(1)), label: 'tomorrow' };
+      const inN = p.match(/^in (\d{1,2}) days?$/);
+      if (inN) return { iso: mk(plus(parseInt(inN[1]))), label: `in ${inN[1]} days` };
+
+      const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dm = p.match(/^(?:on\s+)?(?:next |this |the )?(sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?$/);
+      if (dm) {
+        const stem = { sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, wednes: 3, thu: 4, thur: 4, thurs: 4, fri: 5, sat: 6 }[dm[1]];
+        if (stem === undefined) return null;
+        // The next occurrence strictly ahead. "out friday" said on a Friday is
+        // about the coming one; the resolved date is shown before anything is
+        // saved, so a mismatch is caught by the person, not by a guess.
+        let delta = (stem - new Date().getDay() + 7) % 7;
+        if (delta === 0) delta = 7;
+        const d = plus(delta);
+        return { iso: mk(d), label: `${DAYS[stem]} ${mk(d)}` };
+      }
+      const iso = p.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (iso) return { iso: p, label: p };
+      const slash = p.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+      if (slash) {
+        const yr = slash[3] ? (slash[3].length === 2 ? 2000 + +slash[3] : +slash[3]) : new Date().getFullYear();
+        const d = new Date(yr, +slash[1] - 1, +slash[2]);
+        if (!isNaN(d)) return { iso: mk(d), label: mk(d) };
+      }
+      // "the 17th" on its own, so a range can be written in day numbers as
+      // well as weekdays. The month comes from the same rules the list uses.
+      if (/^(?:on\s+|the\s+)*\d{1,2}(?:st|nd|rd|th)$/.test(p)) {
+        const list = this._rivenAbsenceDayNumbers(p);
+        if (list && list.length) return { iso: list[0], label: list[0] };
+      }
+      return null;
+    }
+
+    // Day numbers in a sentence: "17, 18 and the 21st of this month".
+    //
+    // Returns ISO dates, or null when the text does not carry a list of days.
+    // Two guards keep it from reading numbers that are not dates: every number
+    // must be a possible day of month, and there must be either more than one
+    // of them or an ordinal suffix on the one - so "5" on its own is never a
+    // date, whatever else the sentence says.
+    _rivenAbsenceDayNumbers(text) {
+      const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june',
+                      'july', 'august', 'september', 'october', 'november', 'december'];
+      const t = (text || '').toLowerCase();
+
+      const list = t.match(/\b(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?(?:\s*(?:,|and|&|\+)\s*(?:the\s+)?\d{1,2}(?:st|nd|rd|th)?)+/);
+      const single = t.match(/\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b/);
+      const segment = list ? list[0] : (single ? single[0] : null);
+      if (!segment) return null;
+
+      const days = (segment.match(/\d{1,2}/g) || []).map(Number).filter(n => n >= 1 && n <= 31);
+      if (!days.length) return null;
+      if (days.length === 1 && !/\d{1,2}(st|nd|rd|th)/.test(segment)) return null;
+
+      // Where the days live. An explicit month wins; otherwise the first day is
+      // anchored to its nearest occurrence that is not already past.
+      const now = new Date();
+      let year = now.getFullYear();
+      let month = now.getMonth();
+      const named = t.match(new RegExp('\\b(?:of|in)\\s+(' + MONTHS.join('|') + ')\\b'));
+      if (/\bof\s+next\s+month\b/.test(t)) {
+        month += 1;
+      } else if (named) {
+        month = MONTHS.indexOf(named[1]);
+        if (month < now.getMonth()) year += 1;
+      } else if (!/\bof\s+this\s+month\b/.test(t) && days[0] < now.getDate()) {
+        month += 1;
+      }
+
+      // Walk them in the order they were said. A day smaller than the one
+      // before it has crossed into the next month - "the 30th and the 2nd".
+      const out = [];
+      let prev = 0;
+      for (const d of days) {
+        if (d < prev) month += 1;
+        let y = year, m = month;
+        while (m > 11) { m -= 12; y += 1; }
+        const dt = new Date(y, m, d);
+        // A day that does not exist in that month (the 31st of September) is a
+        // mishearing, not a date. Drop it rather than silently sliding to the 1st.
+        if (dt.getDate() !== d) { prev = d; continue; }
+        out.push(`${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`);
+        prev = d;
+      }
+      return out.length ? out : null;
+    }
+
+    // One sentence can carry several absences, and they need not be next to
+    // each other: "Jason will be missing 17, 18 and the 21st of this month" is
+    // three days, two of them consecutive.
+    //
+    // Returns SPANS rather than dates - consecutive days collapsed into one,
+    // everything else its own. That is the shape planned_absences stores, and
+    // the shape a person reads back: "17-18 and 21", not "17, 18, 21".
+    _rivenResolveAbsenceSpans(raw) {
+      const t = (raw || '').toLowerCase();
+      const span = (a, b) => ({ start: a, end: b || a });
+
+      // An explicit range first: "monday to wednesday", "3/17 through 3/21",
+      // "the 17th to the 21st".
+      //
+      // Both ends must LOOK like dates. A lazy "any text" group starts as early
+      // as it can, so in "charlotte is out monday to wednesday" it captured
+      // "out" - which is not a date, so the range was abandoned and the
+      // sentence quietly fell through to the single-day path and lost its end.
+      const DATEISH = '(?:next\\s+|this\\s+|on\\s+|the\\s+)*(?:today|tomorrow|\\d{4}-\\d{2}-\\d{2}|'
+        + '\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|\\d{1,2}(?:st|nd|rd|th)|'
+        + '(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?)';
+      const RANGE = new RegExp('\\b(' + DATEISH + ')\\s+(?:to|through|thru|until|till|[-\\u2013\\u2014])\\s+(' + DATEISH + ')\\b');
+      const r = t.match(RANGE);
+      if (r) {
+        const a = this._rivenPhraseToDate(r[1]);
+        const b = this._rivenPhraseToDate(r[2]);
+        if (a && b) {
+          // "monday to wednesday" said on a Thursday resolves Monday ahead and
+          // Wednesday ahead - which lands Wednesday BEFORE Monday. The second
+          // end is the one that must move, a week at a time.
+          let end = b.iso;
+          if (end < a.iso) {
+            const d = new Date(b.iso + 'T12:00:00');
+            d.setDate(d.getDate() + 7);
+            end = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+          }
+          return [span(a.iso, end)];
+        }
+      }
+
+      // Then a list of day numbers, which is how people give scattered days.
+      const days = this._rivenAbsenceDayNumbers(t);
+      if (days) {
+        const sorted = [...new Set(days)].sort();
+        const spans = [];
+        let start = sorted[0], prev = sorted[0];
+        for (const iso of sorted.slice(1)) {
+          const gap = (new Date(iso + 'T12:00:00') - new Date(prev + 'T12:00:00')) / 86400000;
+          if (gap === 1) { prev = iso; continue; }
+          spans.push(span(start, prev));
+          start = iso; prev = iso;
+        }
+        spans.push(span(start, prev));
+        return spans;
+      }
+
+      // Finally a single phrase: "out monday", "away tomorrow".
+      const SINGLE = /\b(?:out|away|absent|gone|off|missing)\b[^a-z0-9]{0,12}(?:on\s+|next\s+|this\s+)?([a-z0-9\/\-]{3,12}(?: \d{1,2})?)/;
+      const m = t.match(SINGLE);
+      if (m) {
+        const one = this._rivenPhraseToDate(m[1]);
+        if (one) return [span(one.iso)];
+      }
+      for (const cand of (t.match(/\b(?:today|tomorrow|in \d{1,2} days?|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|(?:next |this )?(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?)\b/g) || [])) {
+        const one = this._rivenPhraseToDate(cand);
+        if (one) return [span(one.iso)];
+      }
+      return null;
+    }
+
+    // "2026-09-17 to 2026-09-18, and 2026-09-21"
+    _rivenSpanLabel(spans) {
+      const one = (sp) => sp.start === sp.end ? sp.start : `${sp.start} to ${sp.end}`;
+      const parts = spans.map(one);
+      if (parts.length === 1) return parts[0];
+      return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+    }
+
+    async terminalPlanAbsence(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Who is going to be away? Give me a name.'); return; }
+      const raw = entities._rawInput || entities.original || entities.normalized || '';
+      const spans = this._rivenResolveAbsenceSpans(raw);
+      if (!spans || !spans.length) {
+        this._showRivenMessage(
+          `When is ${this.escapeHtml(student.full_name)} away? Try <em>"${this.escapeHtml(student.first_name || student.full_name.split(' ')[0])} is out monday"</em>, ` +
+          `<em>"\u2026 out monday to wednesday"</em>, or <em>"\u2026 missing the 17th, 18th and 21st"</em>.`, true);
+        return;
+      }
+      // Whatever is left after the name and the dates is usually the reason.
+      const reason = (raw.match(/\b(?:for|because of|due to)\s+(.{2,60}?)\s*[.!?]*$/i)?.[1]
+        || raw.match(/\b(appointment|dentist|doctor|orthodontist|surgery|funeral|vacation|holiday|family trip|trip|camp|wedding|court|therapy)\b/i)?.[0]
+        || null);
+      const label = this._rivenSpanLabel(spans);
+      const dayCount = spans.reduce((n, sp) =>
+        n + Math.round((new Date(sp.end + 'T12:00:00') - new Date(sp.start + 'T12:00:00')) / 86400000) + 1, 0);
+
+      this._requestConfirmation(
+        `Put <b>${this.escapeHtml(student.full_name)}</b> down as away <b>${this.escapeHtml(label)}</b>${reason ? ` (${this.escapeHtml(reason)})` : ''}? ` +
+        `That's ${dayCount} day${dayCount === 1 ? '' : 's'}${spans.length > 1 ? ` across ${spans.length} stretches` : ''}. ` +
+        `I'll fill each register in on the day, and leave any mark that is already there alone.`,
+        async () => {
+          const rows = spans.map(sp => ({
+            student_id: student.id, start_date: sp.start, end_date: sp.end,
+            excused: true, reason, created_by: this.userInfo.user.id
+          }));
+          const { data, error } = await this.auth.supabase
+            .from('planned_absences').insert(rows).select('id');
+          if (error) throw error;
+          const ids = (data || []).map(d => d.id);
+          // One undo for the sentence, not one per stretch: the teacher said it
+          // once, so taking it back is one word.
+          this._pushUndo(`the planned absence for ${student.full_name}`, async () => {
+            const { error: e } = await this.auth.supabase.from('planned_absences').delete().in('id', ids);
+            if (e) throw e;
+          }, { kind: 'planned_absence', ids });
+          this._naturalSuccess([
+            `Noted \u2014 ${student.full_name} is down as away ${label}. I'll fill it in on the day.`,
+            `${student.full_name} is on the list for ${label}. The registers will know.`
+          ]);
+          this.renderPlannedAbsencesPanel?.().catch(() => {});
+        });
+    }
+
+    async terminalShowPlannedAbsences(entities) {
+      let rows;
+      try { rows = await this._fetchPlannedAbsences(); }
+      catch (err) { this.terminalPrintError('Could not read the upcoming absences: ' + err.message); return; }
+      const who = this._rivenResolvedStudent(entities);
+      if (who) rows = rows.filter(r => r.student_id === who.id);
+      if (!rows.length) {
+        this._showRivenMessage(who
+          ? `Nothing on the list for ${this.escapeHtml(who.full_name)}.`
+          : `Nobody is down as away. Say <em>"[name] is out monday to wednesday"</em> to add one.`, true);
+        return;
+      }
+      const today = this._localDateStr(new Date());
+      const lines = rows.map(r => {
+        const span = r.start_date === r.end_date ? r.start_date : `${r.start_date} \u2192 ${r.end_date}`;
+        const now = r.start_date <= today && r.end_date >= today ? ' <b>(today)</b>' : '';
+        return `\u2022 <b>${this.escapeHtml(r.student_name)}</b> \u2014 ${this.escapeHtml(span)}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}${now}`;
+      });
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 8px;">\u{1F4C5} Upcoming absences</div>` +
+        `<div style="font-size: 13px;">${this._briefingExpand(lines, 8, 'absences')}</div>`, true);
     }
 
     async terminalCreateAssignment(entities) {
