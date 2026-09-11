@@ -47158,7 +47158,11 @@
           this._loadTerminalGroups(),
           this._loadTerminalStoreItems(),
           this._loadTerminalPrivileges()
-        ]).catch(e => { this._rivenReadyPromise = null; throw e; });
+        ])
+          // Needs the class list above to know which classes are yours, so it
+          // follows the others rather than joining them.
+          .then(() => this._loadMyStudentIds())
+          .catch(e => { this._rivenReadyPromise = null; throw e; });
       }
       return this._rivenReadyPromise;
     }
@@ -47847,8 +47851,12 @@
       const dropdown = document.getElementById('terminal-autocomplete');
       if (!dropdown) return;
 
+      // Your own students first. An admin typing "ch" should not have to read
+      // past three other teachers' rosters to reach their own. Array#sort is
+      // stable, so the existing alphabetical order survives inside each group.
       const matches = (this._terminalAllStudents || [])
         .filter(s => s.full_name.toLowerCase().includes(query.toLowerCase()))
+        .sort((a, b) => this._rivenOwnRank(a) - this._rivenOwnRank(b))
         .slice(0, 5);
 
       if (matches.length === 0) {
@@ -47863,7 +47871,7 @@
       matches.forEach((s, idx) => {
         html += `
           <div onclick="app._selectAutocomplete(${idx})" style="padding: 10px 14px; cursor: pointer; border-bottom: 1px solid var(--border); font-size: 12px;" onmouseover="this.style.background='var(--surface-bg)'" onmouseout="this.style.background='transparent'">
-            <div style="font-weight: 600;">${this.escapeHtml(s.full_name)}</div>
+            <div style="font-weight: 600;">${this.escapeHtml(s.full_name)}${this._rivenIsMyStudent(s.id) ? ' <span style="font-size: 10px; font-weight: 600; color: #2f6b6d;">yours</span>' : ''}</div>
             <div style="color: var(--muted); font-size: 11px;">${s.email} • ${s.rtc_balance || 0} RTC</div>
           </div>
         `;
@@ -49558,6 +49566,20 @@
         this.terminalPrint(`💭 I think you mean ${entities.student.student.full_name}...`, '#ffd36a');
       }
 
+      // Reached past your own classes. You are allowed to - that is what being
+      // an admin is - but say it, because a name that quietly resolved to
+      // another teacher's student is the likeliest way to act on the wrong
+      // child. Never fires for a teacher: RLS means the roster they can see is
+      // already their own.
+      const _resolved = entities.student?.student;
+      if (_resolved && !entities.student.fromContext && studentIntents.includes(intent.intent)
+          && this._rivenMyStudentIdSet && !this._rivenIsMyStudent(_resolved.id)) {
+        const _asAdmin = this.userInfo?.profile?.user_type === 'admin';
+        this.terminalPrint(
+          `${_resolved.full_name} isn't in your classes${_asAdmin ? ' \u2014 going ahead as admin' : ''}.`,
+          '#a08a64');
+      }
+
       // Execute the matched intent
       await this._executeIntent(intent, entities);
 
@@ -49706,7 +49728,7 @@
                style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer; transition: all 0.2s;"
                onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
                onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
-            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(student.full_name)}</div>
+            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(student.full_name)}${this._rivenIsMyStudent(student.id) ? ' <span style="font-size: 10px; font-weight: 600; color: #2f6b6d;">yours</span>' : ''}</div>
             <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${this.escapeHtml(student.email)} • ${student.rtc_balance || 0} RTC</div>
           </div>
         `;
@@ -50319,15 +50341,31 @@
         matches.push(...fullMatches);
       }
 
-      // Sort by score
-      matches.sort((a, b) => b.score - a.score);
+      // Sort by score, then by whose student it is.
+      //
+      // Ownership is a TIEBREAK and nothing more. It reorders names the matcher
+      // already rates the same and can never lift a worse spelling over a
+      // better one - "give charlotte 5 rtc" should not reach Charlotte Innis
+      // just because she is yours, if the sentence said Charlotte Tebow.
+      matches.sort((a, b) => (b.score - a.score) || (this._rivenOwnRank(a.student) - this._rivenOwnRank(b.student)));
 
       // Check if there's a clear winner
       if (matches.length === 1 || matches[0].score - matches[1].score > 0.15) {
         return { student: matches[0].student, score: matches[0].score, ambiguous: false };
       }
 
-      // Ambiguous - multiple close matches
+      // No clear winner on spelling. If exactly one of the close matches is
+      // your own student, that is who they meant - an admin naming a student
+      // out loud means the one they teach, not one of three strangers who
+      // happen to share the name. Two of yours is still a real question.
+      const close = matches.filter(m => matches[0].score - m.score <= 0.15);
+      const mine = close.filter(m => this._rivenIsMyStudent(m.student.id));
+      if (mine.length === 1) {
+        return { student: mine[0].student, score: mine[0].score, ambiguous: false };
+      }
+
+      // Ambiguous - multiple close matches. The sort above already put yours
+      // at the top of the picker.
       return {
         ambiguous: true,
         matches: matches.slice(0, 5).map(m => m.student),
@@ -57411,6 +57449,29 @@
       if (!said) return { school: false, refused: false };
       if (this.userInfo?.profile?.user_type !== 'admin') return { school: false, refused: true };
       return { school: true, refused: false };
+    }
+
+    // Whose student is this? Answered synchronously, because the name matcher
+    // runs on every keystroke and cannot await. The set is built once at mount.
+    //
+    // An unknown roster means "no opinion", never "not yours": if the lookup
+    // failed, every student should keep matching exactly as they did before,
+    // rather than every student quietly becoming a stranger.
+    _rivenIsMyStudent(id) {
+      return !!(this._rivenMyStudentIdSet && this._rivenMyStudentIdSet.has(id));
+    }
+
+    _rivenOwnRank(student) {
+      return this._rivenIsMyStudent(student?.id) ? 0 : 1;
+    }
+
+    async _loadMyStudentIds() {
+      try {
+        this._rivenMyStudentIdSet = await this._rivenMyStudentIds();
+      } catch (err) {
+        console.warn('Riven: own-roster lookup unavailable, name matching stays neutral:', err);
+        this._rivenMyStudentIdSet = null;
+      }
     }
 
     // The students the asker's own classes account for. Aggregate reads with no

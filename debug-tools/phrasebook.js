@@ -47,7 +47,7 @@ global.localStorage = {
 };
 
 const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe',
-  '_fuzzyFindStudent', '_calculateSimilarity', '_levenshteinDistance', '_rivenMatchClass',
+  '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance', '_rivenMatchClass',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_semanticExampleBank',
   '_rivenContentTokens', '_rivenSuggestionTemplates', '_rivenStatsKey', '_rivenPhrasebookKey',

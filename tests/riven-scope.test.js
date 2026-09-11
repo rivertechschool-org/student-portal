@@ -226,6 +226,109 @@ console.log('\n== the students a scan covers ==\n');
       /You aren't listed as the teacher of any class/.test(body));
   }
 
+  // ---- whose student did that name mean? --------------------------------
+  console.log('\n== an ambiguous name leans toward your own students ==\n');
+
+  // Three Charlottes, the way a school actually has them. Two belong to other
+  // teachers; an admin can see all three, which is what made a bare first name
+  // open a picker instead of doing the obvious thing.
+  const CHARLOTTES = [
+    { id: 'st-tebow',  first_name: 'Charlotte', last_name: 'Tebow',  full_name: 'Charlotte Tebow',  email: 'ct@x', rtc_balance: 10 },
+    { id: 'st-innis',  first_name: 'Charlotte', last_name: 'Innis',  full_name: 'Charlotte Innis',  email: 'ci@x', rtc_balance: 20 },
+    { id: 'st-vance',  first_name: 'Charlotte', last_name: 'Vance',  full_name: 'Charlotte Vance',  email: 'cv@x', rtc_balance: 30 },
+    { id: 'st-dylan',  first_name: 'Dylan',     last_name: 'Reyes',  full_name: 'Dylan Reyes',      email: 'dr@x', rtc_balance: 40 },
+  ];
+
+  function matcher(mineIds) {
+    const app = {
+      _nlpContext: {},
+      _terminalAllStudents: CHARLOTTES,
+      _terminalPinnedStudent: null,
+      _rivenMyStudentIdSet: mineIds === null ? null : new Set(mineIds),
+    };
+    for (const n of ['_fuzzyFindStudent', '_calculateSimilarity', '_levenshteinDistance',
+                     '_isCommonWordTypo', '_commonWords', '_hasCommandSignal',
+                     '_hasCommandVerb', '_rivenIsMyStudent', '_rivenOwnRank']) {
+      const fn = extract(n);
+      app[n] = function (...a) { return fn.apply(app, a); };
+    }
+    return app;
+  }
+
+  {
+    const app = matcher(['st-tebow']);
+    const r = app._fuzzyFindStudent('charlotte', 'charlotte');
+    check('one of the three is yours, so that is who it means', r.ambiguous, false);
+    check('  and it is the right one', r.student.full_name, 'Charlotte Tebow');
+  }
+  {
+    // Two of yours is a real question, not a tie to break.
+    const app = matcher(['st-tebow', 'st-innis']);
+    const r = app._fuzzyFindStudent('charlotte', 'charlotte');
+    check('two of yours still asks', r.ambiguous, true);
+    check('  and yours are offered first', r.matches.slice(0, 2).map(m => m.full_name).sort(),
+      ['Charlotte Innis', 'Charlotte Tebow']);
+  }
+  {
+    // None of them yours: unchanged behaviour, the picker.
+    const app = matcher(['st-dylan']);
+    check('none of yours asks, as it always did', app._fuzzyFindStudent('charlotte', 'charlotte').ambiguous, true);
+  }
+  {
+    // THE RULE THAT MATTERS: ownership breaks ties, it does not beat spelling.
+    // The sentence named Vance; Vance is not yours; Vance is still who it means.
+    const app = matcher(['st-tebow']);
+    const r = app._fuzzyFindStudent('charlotte vance', 'charlotte vance');
+    check('a name you actually said wins over a name you own', r.ambiguous, false);
+    check('  even when the other one is yours', r.student.full_name, 'Charlotte Vance');
+  }
+  {
+    // A failed roster lookup must leave matching exactly as it was, not turn
+    // every student into a stranger.
+    const app = matcher(null);
+    check('no roster means no opinion', app._fuzzyFindStudent('charlotte', 'charlotte').ambiguous, true);
+    check('  and nobody counts as yours', app._rivenIsMyStudent('st-tebow'), false);
+  }
+  {
+    const app = matcher(['st-innis']);
+    check('_rivenOwnRank sorts yours to the front', [
+      app._rivenOwnRank(CHARLOTTES[0]), app._rivenOwnRank(CHARLOTTES[1]),
+    ], [1, 0]);
+    check('  and an unknown student is not a crash', app._rivenOwnRank(undefined), 1);
+  }
+
+  // ---- and the surfaces that show the names -----------------------------
+  console.log('\n== the name lists say which are yours ==\n');
+
+  const auto = slice('    _showAutocomplete(query) {', '    _hideAutocomplete() {');
+  ok('autocomplete sorts your students first',
+    /\.sort\(\(a, b\) => this\._rivenOwnRank\(a\) - this._rivenOwnRank\(b\)\)/.test(auto));
+  ok('  before it takes the top five', auto.indexOf('_rivenOwnRank') < auto.indexOf('.slice(0, 5)'));
+  ok('  and marks them', /_rivenIsMyStudent\(s\.id\) \? ' <span/.test(auto));
+
+  const picker = slice('    _showAmbiguityDialog(matches, originalInput) {', '    async _resolveAmbiguity(');
+  ok('the picker marks them too', /_rivenIsMyStudent\(student\.id\)/.test(picker));
+
+  const nl = slice('      // Reached past your own classes.', '      // Execute the matched intent');
+  ok('reaching outside your classes is said out loud', /isn't in your classes/.test(nl));
+  ok('  named as the admin reach it is', /going ahead as admin/.test(nl));
+  ok('  and only when a roster is actually known', /this\._rivenMyStudentIdSet && !this\._rivenIsMyStudent/.test(nl));
+
+  const ready = slice('    _rivenReady() {', '    _rivenIntroHtml() {');
+  ok('the roster is loaded after the classes it depends on',
+    ready.indexOf('_loadTerminalClasses') < ready.indexOf('_loadMyStudentIds'));
+
+  // Every harness that pulls the matcher out of the file must pull its new
+  // dependency too, or it dies on `this._rivenOwnRank is not a function`.
+  console.log('\n== the harnesses still extract a working matcher ==\n');
+  for (const h of ['nlp-stress', 'frontdoor-precision', 'recovery-ladder',
+                   'group-attendance', 'semantic-coverage']) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'debug-tools', h + '.js'), 'utf8');
+    const listsMatcher = /'_fuzzyFindStudent'/.test(src);
+    ok(`${h} lists _rivenOwnRank beside the matcher`,
+      !listsMatcher || /'_rivenOwnRank'/.test(src));
+  }
+
   console.log(`\n${pass} passed, ${fail} failed\n`);
   process.exit(fail ? 1 : 0);
 })();

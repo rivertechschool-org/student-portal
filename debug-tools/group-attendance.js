@@ -96,7 +96,7 @@ const app = {
 };
 for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput',
                  '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass',
-                 '_rivenFindExcluded', '_fuzzyFindStudent', '_calculateSimilarity',
+                 '_rivenFindExcluded', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',
                  '_levenshteinDistance', '_rivenResolveGroup', '_rivenRequireClasses',
                  '_hasCommandSignal', '_hasCommandVerb', '_isCommonWordTypo', '_commonWords',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
