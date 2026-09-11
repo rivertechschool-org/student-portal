@@ -35997,7 +35997,10 @@
           this._pickupSearch = '';
           this._pickupResults = [];
           this._pickupBoard = board;
-          this.renderPickupModal();
+          // Opens on the register rather than on the search box: "who is still
+          // here" is the question at the start of pickup, and the search is
+          // one tap away for when a car arrives.
+          this.renderPickupModal('here');
         } catch (e) {
           console.error('showPickupBoard failed:', e);
           this.showNotification(
@@ -36038,11 +36041,13 @@
         this.showModal('pickup', 'Pickup', `
           <div>
             <div style="display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap;">
+              ${tabBtn('here', 'Here today')}
               ${tabBtn('dismiss', 'Dismissal')}
               ${tabBtn('today', `Called today (${(b.dismissed_today || []).length})`)}
               ${isAdmin ? tabBtn('unassigned', `Without a number (${b.unassigned || 0})`) : ''}
             </div>
-            ${tab === 'dismiss' ? searchPane
+            ${tab === 'here' ? `<div id="pickup-here">Loading\u2026</div>`
+              : tab === 'dismiss' ? searchPane
               : tab === 'today' ? this._renderPickupToday()
               : unassignedPane}
             <div style="display:flex; gap:10px; margin-top:18px; justify-content:flex-end;">
@@ -36054,6 +36059,7 @@
         `);
 
         if (tab === 'unassigned') this.loadPickupUnassigned();
+        if (tab === 'here') this.loadPickupHereToday();
         setTimeout(() => document.getElementById('pickup-search')?.focus(), 50);
       }
 
@@ -36382,6 +36388,93 @@
         } catch (e) {
           console.error('deletePickupNote failed:', e);
           this.showNotification(e.message, 'error');
+        }
+      }
+
+      // Who the register says turned up, and who is still waiting.
+      //
+      // Read off daily_attendance rather than off the timetable on purpose: the
+      // timetable says who was EXPECTED, and at pickup time the difference
+      // between expected and actually here is the entire question. present and
+      // late only - the left_early statuses mean the student arrived and has
+      // already gone, so listing them would have staff looking for a child who
+      // left at lunch.
+      async loadPickupHereToday() {
+        const host = document.getElementById('pickup-here');
+        try {
+          this._pickupHere = await this._pickupRpc('rt_pickup_here_today') || [];
+        } catch (e) {
+          console.error('loadPickupHereToday failed:', e);
+          if (host) host.innerHTML = `<div class="empty-state"><h3>Couldn't load it</h3><p>${this.escapeHtml(e.message)}</p></div>`;
+          return;
+        }
+        this._renderPickupHere();
+      }
+
+      _renderPickupHere() {
+        const host = document.getElementById('pickup-here');
+        if (!host) return;
+        const rows = this._pickupHere || [];
+
+        if (!rows.length) {
+          host.innerHTML = `<div class="empty-state"><h3>Nobody on the register yet</h3>
+            <p>This lists the students today's daily register marks present or late.
+               Take the register and they will appear here.</p></div>`;
+          return;
+        }
+
+        const waiting = rows.filter(r => !r.dismissed);
+        const gone = rows.filter(r => r.dismissed);
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+        const time = (t) => { try { return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (_) { return ''; } };
+
+        const row = (r) => `
+          <div style="display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; ${r.dismissed ? 'opacity:0.6;' : ''}">
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:600;">
+                ${esc(r.first_name)} ${esc(r.last_name)}
+                ${r.family_number ? `<span style="color:var(--accent); font-weight:700;"> #${esc(r.family_number)}</span>` : ''}
+                ${r.status === 'late' ? `<span style="font-size:11px; color:var(--warning, #e67e22); font-weight:600;"> late</span>` : ''}
+              </div>
+              <div style="font-size:12px; color:var(--muted);">
+                ${r.grade_level ? `Grade ${esc(r.grade_level)}` : ''}${r.dismissed && r.picked_up_at ? ` \u00b7 picked up ${esc(time(r.picked_up_at))}` : ''}
+              </div>
+            </div>
+            ${r.dismissed
+              ? `<button class="btn btn-secondary small" onclick="app.setPickedUp('${this.jsAttr(r.student_id)}', false)">Undo</button>`
+              : `<button class="btn btn-primary small" onclick="app.setPickedUp('${this.jsAttr(r.student_id)}', true)">Picked up</button>`}
+          </div>`;
+
+        host.innerHTML = `
+          <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+            ${waiting.length} still here \u00b7 ${gone.length} picked up \u00b7 ${rows.length} on the register today
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px; max-height:52vh; overflow-y:auto;">
+            ${waiting.map(row).join('')}
+            ${gone.length ? `<div style="margin-top:10px; font-size:12px; color:var(--muted); font-weight:600;">Picked up</div>` : ''}
+            ${gone.map(row).join('')}
+          </div>`;
+      }
+
+      // The same action the Dismissal tab uses, so one child cannot be ticked
+      // in one place and not the other. It stamps the attendance row as well as
+      // the board.
+      async setPickedUp(studentId, pickedUp) {
+        const rec = (this._pickupHere || []).find(r => r.student_id === studentId);
+        // Paint it immediately - the queue does not pause while the network
+        // does - and put it back if the write fails.
+        const before = rec ? { dismissed: rec.dismissed, picked_up_at: rec.picked_up_at } : null;
+        if (rec) {
+          rec.dismissed = !!pickedUp;
+          rec.picked_up_at = pickedUp ? new Date().toISOString() : null;
+          this._renderPickupHere();
+        }
+        try {
+          await this._pickupRpc('rt_set_dismissed', { p_student_ids: [studentId], p_dismissed: !!pickedUp });
+        } catch (e) {
+          console.error('setPickedUp failed:', e);
+          if (rec && before) { rec.dismissed = before.dismissed; rec.picked_up_at = before.picked_up_at; this._renderPickupHere(); }
+          this.showNotification(`Not saved: ${e.message}`, 'error');
         }
       }
 
