@@ -5,7 +5,10 @@
 //   * The daily roster filters rows already on screen, by hiding them - the
 //     same rule attendance-search.test.js guards, since those rows hold
 //     unsaved status selects that a re-render would destroy. Group membership
-//     rides along on each row as data-groups.
+//     rides along on each row as data-groups. Its only filters are the search
+//     box and Today's Groups: the All/Full-Time/Homeschool buttons and the All
+//     Groups picker were taken off that screen, since every student on it is
+//     scheduled for today whatever their enrolment.
 //   * The Attendance search screen filters FETCHED RECORDS. Group and
 //     enrolment describe the student, not the attendance row, so they cannot
 //     be expressed as query filters and are applied after the fetch, before
@@ -150,47 +153,23 @@ box.querySelectorAll = () => tbody.children;
 const input = new El('input');
 input.value = '';
 const countEl = new El('span');
-// The daily roster carries two group pickers: the short list of cohorts with
-// someone on today's roster, and the full list of every cohort in the school.
-// They share one filter, so whichever holds a choice is the one that applies.
+// The daily roster's one group picker: the cohorts that meet today.
 const todaySel = new El('select');
 todaySel.value = 'all';
-const allSel = new El('select');
-allSel.value = 'all';
-
-const bar = new El('div');
-bar.children = ['all', 'full-time', 'homeschool'].map((v) => {
-  const b = new El('button');
-  b.attrs['data-enrollment'] = v;
-  b.attrs['data-active'] = String(v === 'all');
-  return b;
-});
-bar.querySelectorAll = (sel) => (sel === 'button'
-  ? bar.children
-  : bar.children.filter((b) => b.attrs['data-active'] === 'true'));
-bar.querySelector = (sel) => bar.querySelectorAll(sel)[0] || null;
 
 const byId = {
   'daily-attendance-search': input,
   'daily-attendance-rows': box,
   'daily-attendance-search-count': countEl,
-  'daily-attendance-enrollment': bar,
   'daily-attendance-group-today': todaySel,
-  'daily-attendance-group-all': allSel,
 };
 global.document = { getElementById: (id) => byId[id] || null };
 
 const filterAttendanceRoster = method('filterAttendanceRoster', '    ');
-const setAttendanceEnrollment = method('setAttendanceEnrollment', '    ');
-const setAttendanceGroup = method('setAttendanceGroup', '    ');
-// setAttendanceEnrollment and setAttendanceGroup both re-run the filter
-// through `this`.
 const app = { filterAttendanceRoster };
 const runFilter = () => filterAttendanceRoster.call(app, 'daily-attendance');
-const setEnrolment = (v) => setAttendanceEnrollment.call(app, 'daily-attendance', v);
-// Pick a cohort the way the page does: set the select, then fire its handler.
-const pickToday = (v) => { todaySel.value = v; setAttendanceGroup.call(app, 'daily-attendance', 'today'); };
-const pickAll = (v) => { allSel.value = v; setAttendanceGroup.call(app, 'daily-attendance', 'all'); };
+// Pick a cohort the way the page does: set the select, then run the filter.
+const pick = (v) => { todaySel.value = v; runFilter(); };
 
 const rows = tbody.children;
 const entry = rows.filter((r) => !r.classList.contains('excuse-note-row'));
@@ -202,55 +181,40 @@ runFilter();
 check('unfiltered roster shows everyone', visible(), ['ann', 'ben', 'cal', 'dee']);
 check('unfiltered count reads as a total', countEl.textContent, '4 students');
 
-pickToday('g-jh');
+pick('g-jh');
 check('group filter hides non-members', visible(), ['ann', 'ben']);
 check('excuse notes follow their student', visibleNotes(), ['ann', 'ben']);
 check('count switches to "of"', countEl.textContent, '2 of 4 shown');
 
-pickToday('g-choir');
+pick('g-choir');
 check('multi-group student appears under each group', visible(), ['ben', 'dee']);
 
-// The same cohort reached from the other picker filters identically.
-pickToday('all');
-pickAll('g-choir');
-check('the all-groups picker filters the same way', visible(), ['ben', 'dee']);
-
-// Two group filters at once can only mean an empty roster, so choosing in one
-// picker releases the other rather than intersecting with it.
-pickToday('g-jh');
-check('choosing in one picker clears the other', allSel.value, 'all');
-check('  and only the new choice applies', visible(), ['ann', 'ben']);
-pickAll('g-choir');
-check('and the same the other way round', todaySel.value, 'all');
-check('  leaving the all-groups choice showing', visible(), ['ben', 'dee']);
-
-pickAll('all');
-pickToday('g-choir');
-
-// Group and enrolment compose, and so does the search box.
-setEnrolment('homeschool');
-check('group + enrolment', visible(), ['ben', 'dee']);
-setEnrolment('full-time');
-check('group + enrolment can empty the roster', visible(), []);
-check('an empty result warns', countEl.style.color, 'var(--warning)');
-
-setEnrolment('all');
+// The search box is the only other filter on that screen, and the two compose.
 input.value = 'penny';
 runFilter();
 check('group + search', visible(), ['dee']);
+input.value = '';
 
+pick('g-empty');
+check('a cohort nobody on the roster is in empties it', visible(), []);
+check('an empty result warns', countEl.style.color, 'var(--warning)');
+
+// Enrolment is no longer a filter here: every row is scheduled for today, and
+// nothing on screen can narrow by Full-Time or Homeschool any more.
+pick('all');
+check('a roster with no enrolment filter shows every enrolment',
+  visible(), ['ann', 'ben', 'cal', 'dee']);
+
+pick('g-choir');
 // Clearing puts everything back, notes included.
 input.value = '';
-pickToday('all');
+pick('all');
 check('clearing restores every row', visible(), ['ann', 'ben', 'cal', 'dee']);
 check('clearing restores every note', visibleNotes(), ['ann', 'ben', 'cal', 'dee']);
 
-// A school with no cohorts renders neither picker, and the class roster has
-// never had one. Their absence must read as "all" rather than hiding every row.
+// A school with no cohorts renders no picker, and the class roster has never
+// had one. Its absence must read as "all" rather than hiding every row.
 delete byId['daily-attendance-group-today'];
-runFilter();
-check('one picker missing still filters on the other', visible(), ['ann', 'ben', 'cal', 'dee']);
-delete byId['daily-attendance-group-all'];
 runFilter();
 check('no group picker means no group filtering', visible(), ['ann', 'ben', 'cal', 'dee']);
 

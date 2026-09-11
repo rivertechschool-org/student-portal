@@ -1328,6 +1328,86 @@
        state, and overwriting it would reveal notes that should stay shut. */
     tr.att-hidden { display: none !important; }
 
+    /* Class register: one tap per student.
+       Taking a register is the most repeated action a teacher does, and a
+       dropdown cost two taps on every child. The two answers that cover almost
+       every row are icon buttons; the rarer marks sit behind the three dots so
+       the common case stays one tap. Icons rather than labels because this is
+       taken on a phone, where three labelled buttons do not fit a table row. */
+    .att-mark {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .att-mark button,
+    .att-mark .att-more {
+      /* Square and 40px: a comfortable tap target, and three of them still fit
+         the status column on a narrow phone. */
+      width: 40px;
+      height: 40px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 17px;
+      line-height: 1;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      background: var(--card);
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0;
+      transition: background .12s ease, border-color .12s ease, transform .08s ease;
+    }
+
+    .att-mark button:hover,
+    .att-mark .att-more:hover { border-color: var(--accent); }
+    .att-mark button:active { transform: scale(0.94); }
+
+    /* An unchosen icon is dimmed rather than coloured, so the one that IS
+       chosen is the only thing in the column drawing the eye - a teacher
+       scanning for who is still unmarked reads the gaps, not the marks. */
+    .att-mark button { opacity: .45; filter: grayscale(1); }
+    .att-mark button[aria-pressed="true"] {
+      opacity: 1;
+      filter: none;
+      font-size: 19px;
+    }
+    .att-mark button[data-status="present"][aria-pressed="true"] {
+      background: rgba(139, 255, 176, .18);
+      border-color: var(--accent-2);
+    }
+    .att-mark button[data-status="absent"][aria-pressed="true"] {
+      background: rgba(255, 106, 106, .18);
+      border-color: var(--danger);
+    }
+
+    /* The three dots. A native <select> sits invisibly on top of the chip so a
+       tap opens the phone's own picker, with the full labels in it, while what
+       is on screen stays a single glyph. Rendering the select itself would
+       either clip "Late & Left Early" or force the column wide. */
+    .att-more { position: relative; }
+    .att-more select {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+      cursor: pointer;
+      /* Safari draws a select at its own intrinsic size unless told not to. */
+      -webkit-appearance: none;
+      appearance: none;
+      border: 0;
+      padding: 0;
+    }
+    .att-more[data-chosen="true"] {
+      opacity: 1;
+      background: rgba(255, 211, 106, .18);
+      border-color: var(--warning);
+    }
+
     /* Utility classes for mobile visibility */
     @media (max-width: 768px) {
       /* Tables on a phone.
@@ -39330,49 +39410,15 @@
     //
     // Matching is on the row's own text, so it covers the name, the grade and
     // the Homeschool/Full-Time line without needing the student list here.
-    // Which enrolment filter is showing, read back out of the buttons. Keeping
-    // it in the DOM means a date change - which rebuilds them - resets it,
-    // rather than leaving a filter set that nothing on screen explains.
-    setAttendanceEnrollment(scope, value) {
-      const bar = document.getElementById(scope + '-enrollment');
-      if (!bar) return;
-      for (const b of bar.querySelectorAll('button')) {
-        const on = b.getAttribute('data-enrollment') === value;
-        b.setAttribute('data-active', String(on));
-        b.classList.toggle('btn-primary', on);
-        b.classList.toggle('btn-secondary', !on);
-      }
-      this.filterAttendanceRoster(scope);
-    }
-
-    // Two pickers, one filter. Today's Groups is the short list a teacher wants
-    // while taking the register; All Groups reaches a cohort with nobody in
-    // today. Choosing in one clears the other, because two group filters at
-    // once can only ever mean an empty roster with nothing on screen saying
-    // why.
-    setAttendanceGroup(scope, which) {
-      const other = document.getElementById(
-        scope + (which === 'today' ? '-group-all' : '-group-today'));
-      if (other) other.value = 'all';
-      this.filterAttendanceRoster(scope);
-    }
-
     filterAttendanceRoster(scope) {
       const input = document.getElementById(scope + '-search');
       const box = document.getElementById(scope + '-rows');
       if (!input || !box) return;
 
-      const bar = document.getElementById(scope + '-enrollment');
-      const active = bar?.querySelector('button[data-active="true"]');
-      const enrolment = active?.getAttribute('data-enrollment') || 'all';
-      // Two group pickers on the daily roster: the short "today" list and the
-      // full one. Only one can hold a choice at a time - setAttendanceGroup
-      // clears the other - so the first that is not 'all' wins. Both absent,
-      // which is the class roster and a school with no groups defined, reads
-      // as 'all' and the clause below is a no-op.
-      const group = [scope + '-group-today', scope + '-group-all']
-        .map(id => document.getElementById(id)?.value)
-        .find(v => v && v !== 'all') || 'all';
+      // The one filter left beside the search box. Absent - the class roster,
+      // and a school with no groups defined - this reads 'all' and the clause
+      // below is a no-op.
+      const group = document.getElementById(scope + '-group-today')?.value || 'all';
 
       const q = input.value.trim().toLowerCase();
       const rows = [...box.querySelectorAll('tbody > tr[data-student-id]')];
@@ -39386,14 +39432,19 @@
 
       for (const tr of entryRows) {
         const id = tr.getAttribute('data-student-id');
-        const matchesText = !q || tr.innerText.toLowerCase().includes(q);
-        const matchesEnrolment = enrolment === 'all'
-          || tr.getAttribute('data-enrollment') === enrolment;
+        // A row may declare exactly what is searchable about it. The class
+        // roster does, because its three-dot picker bakes the words "Other"
+        // and "Late" into every row and a search for either would otherwise
+        // match the whole class. Rows without it match on their full text,
+        // which is what the daily roster wants - its enrolment caption is
+        // searchable there by design.
+        const haystack = (tr.getAttribute('data-search') || tr.innerText).toLowerCase();
+        const matchesText = !q || haystack.includes(q);
         // Space-separated ids: a student may be in several groups, and split
         // on a row with no groups yields [''], which matches no real id.
         const matchesGroup = group === 'all'
           || (tr.getAttribute('data-groups') || '').split(' ').includes(group);
-        const hit = matchesText && matchesEnrolment && matchesGroup;
+        const hit = matchesText && matchesGroup;
         tr.classList.toggle('att-hidden', !hit);
         if (hit) { shown.add(id); matches++; }
       }
@@ -39406,7 +39457,7 @@
       const count = document.getElementById(scope + '-search-count');
       if (count) {
         const total = entryRows.length;
-        const filtering = !!q || enrolment !== 'all' || group !== 'all';
+        const filtering = !!q || group !== 'all';
         count.textContent = filtering
           ? `${matches} of ${total} shown`
           : `${total} students`;
@@ -39454,7 +39505,7 @@
         // Cohort membership for the roster's group pickers.
         const { groups: studentGroups, byStudent: groupsOfStudent } = await this._loadStudentGroupIndex();
 
-        const { all: groupsOnRoster, today: todaysGroups } =
+        const { today: todaysGroups } =
           this._cohortsForRoster(students, studentGroups, groupsOfStudent, dayOfWeek);
 
         // Get existing attendance for this date
@@ -39512,14 +39563,17 @@
             ${statusBanner}
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
               <div style="display: flex; align-items: center; gap: 15px;">
-                <button class="btn btn-secondary" onclick="app.changeAttendanceDate(-1, '${today}')">◀ Prev</button>
+                ${/* The date field is the only way to move off today. The Prev
+                      and Next buttons that flanked it are gone: the register is
+                      taken on the day, and a stray click on a control sitting
+                      that close to the roster silently moved a teacher onto
+                      another date's marks. */''}
                 <div>
                   <input type="date" id="attendance-date" value="${today}"
                          onchange="app.showDailyAttendanceRoster(this.value)"
                          style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
                   <div style="text-align: center; font-size: 12px; color: var(--muted); margin-top: 5px;">${dayName}</div>
                 </div>
-                <button class="btn btn-secondary" onclick="app.changeAttendanceDate(1, '${today}')">Next ▶</button>
               </div>
               <div>
                 <span style="color: var(--muted);">${students.length} students scheduled</span>
@@ -39542,49 +39596,31 @@
                 <span id="daily-attendance-search-count" style="color: var(--muted); font-size: 12px; white-space: nowrap;">${students.length + ' students'}</span>
               </div>
 
-              ${/* The chosen filter lives in the DOM rather than on the app, so
-                    changing the date - which re-renders this whole block - puts
-                    it back to All on its own instead of leaving a stale filter
-                    hiding half the roster. */''}
-              <div id="daily-attendance-enrollment" class="keep-row"
-                   style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;">
-                ${[
-                  { v: 'all', label: `All (${students.length})` },
-                  { v: 'full-time', label: `Full-Time (${students.filter(x => x.enrollment_type !== 'homeschool').length})` },
-                  { v: 'homeschool', label: `Homeschool (${students.filter(x => x.enrollment_type === 'homeschool').length})` },
-                ].map(o => `
-                  <button type="button" data-enrollment="${o.v}" data-active="${o.v === 'all'}"
-                          onclick="app.setAttendanceEnrollment('daily-attendance', '${o.v}')"
-                          class="btn ${o.v === 'all' ? 'btn-primary' : 'btn-secondary'} small"
-                          style="font-size: 12px;">${o.label}</button>
-                `).join('')}
-                ${/* In the same bar, and so re-rendered by a date change too -
-                      the filter never outlives the roster it was set on. Only
-                      shown once groups exist.
+              ${/* One filter beside the search box, and it lives in the DOM
+                    rather than on the app, so changing the date - which
+                    re-renders this whole block - puts it back on its own
+                    instead of leaving a stale filter hiding half the roster.
 
-                      Two pickers, because one list was doing two jobs badly:
-                      it offered every cohort in the school on every day, so
-                      finding the handful that actually meet today meant
-                      reading past the rest. Today's Groups is that short list;
-                      All Groups is still there, to its right, for reaching a
-                      cohort with nobody in today. */''}
-                ${studentGroups.length ? `
+                    The All / Full-Time / Homeschool buttons and the All Groups
+                    picker that used to sit here are gone. Every student on this
+                    roster is scheduled for today whatever their enrolment, and
+                    a cohort that does not meet today has no business being
+                    filtered to on today's register; the caption under each name
+                    still says Full-Time or Homeschool. What is left is the two
+                    controls a register is actually taken with: find a student,
+                    or narrow to a group that meets today. */''}
+              ${studentGroups.length ? `
+              <div id="daily-attendance-groups" class="keep-row"
+                   style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;">
                 <select id="daily-attendance-group-today"
-                        onchange="app.setAttendanceGroup('daily-attendance', 'today')"
+                        onchange="app.filterAttendanceRoster('daily-attendance')"
                         ${todaysGroups.length ? '' : 'disabled'}
-                        title="Cohorts with students on today's roster"
+                        title="Groups that meet today"
                         style="padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">
                   <option value="all">${todaysGroups.length ? `Today's Groups (${todaysGroups.length})` : 'No groups today'}</option>
                   ${todaysGroups.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)} (${g.n})</option>`).join('')}
                 </select>
-                <select id="daily-attendance-group-all"
-                        onchange="app.setAttendanceGroup('daily-attendance', 'all')"
-                        title="Every cohort in the school, whichever day it meets"
-                        style="padding: 6px 10px; font-size: 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text);">
-                  <option value="all">All Groups (${groupsOnRoster.length})</option>
-                  ${groupsOnRoster.map(g => `<option value="${g.id}">${this.escapeHtml(g.name)} (${g.n})</option>`).join('')}
-                </select>` : ''}
-              </div>
+              </div>` : ''}
               <div id="daily-attendance-rows" style="max-height: 60vh; overflow-y: auto;">
                 <table style="width: 100%; border-collapse: collapse;">
                   <thead style="position: sticky; top: 0; background: var(--card); z-index: 1;">
@@ -39601,7 +39637,6 @@
                       const att = attendanceMap[student.id] || {};
                       return `
                         <tr data-student-id="${student.id}"
-                            data-enrollment="${student.enrollment_type === 'homeschool' ? 'homeschool' : 'full-time'}"
                             data-groups="${(groupsOfStudent[student.id] || []).join(' ')}"
                             style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
@@ -39676,12 +39711,6 @@
       }
     }
 
-    changeAttendanceDate(direction, currentDate) {
-      const date = new Date(currentDate + 'T12:00:00');
-      date.setDate(date.getDate() + direction);
-      const newDate = this._localDateStr(date);
-      this.showDailyAttendanceRoster(newDate);
-    }
 
     onAttendanceStatusChange(select) {
       const studentId = select.dataset.studentId;
@@ -40055,9 +40084,10 @@
           attendanceMap[a.student_id] = a;
         });
 
-        const statusOptions = [
-          { value: 'present', label: 'Present', icon: '✅' },
-          { value: 'absent', label: 'Absent', icon: '❌' },
+        // Present and absent are the two buttons. The rest are rarer marks and
+        // live behind the three dots beside them; the class and daily registers
+        // still share one status vocabulary, which is the union of the two.
+        const extraStatusOptions = [
           { value: 'late', label: 'Late', icon: '⏰' },
           { value: 'left_early', label: 'Left Early', icon: '🚪' },
           { value: 'late_left_early', label: 'Late & Left Early', icon: '⚠️' }
@@ -40174,22 +40204,41 @@
                     ${students.map(student => {
                       const att = attendanceMap[student.id] || {};
                       return `
-                        <tr data-student-id="${student.id}" style="border-bottom: 1px solid var(--border);">
+                        <tr data-student-id="${student.id}"
+                            data-search="${this.escapeHtml(`${student.first_name} ${student.last_name} ${student.grade_level || 'N/A'}`)}"
+                            style="border-bottom: 1px solid var(--border);">
                           <td style="padding: 12px;">
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                             ${this.dailyStatusChip(dailyByStudent[student.id])}
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
                           <td style="padding: 12px; text-align: center;">
-                            <select class="class-attendance-status" data-student-id="${student.id}"
-                                    style="padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
-                              <option value="">-- Select --</option>
-                              ${statusOptions.map(opt => `
-                                <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>
-                                  ${opt.icon} ${opt.label}
-                                </option>
+                            ${/* The mark lives in a hidden field because it can now come
+                                  from either button or the three dots, and everything that
+                                  reads a mark still reads .class-attendance-status. */''}
+                            <input type="hidden" class="class-attendance-status"
+                                   data-student-id="${student.id}" value="${att.status || ''}">
+                            <div class="att-mark">
+                              ${[
+                                { value: 'present', icon: '✅', label: 'Present' },
+                                { value: 'absent', icon: '❌', label: 'Not present' },
+                              ].map(opt => `
+                                <button type="button" data-status="${opt.value}"
+                                        aria-pressed="${att.status === opt.value ? 'true' : 'false'}"
+                                        aria-label="${opt.label}" title="${opt.label}"
+                                        onclick="app.setClassAttendanceStatus(this, '${opt.value}')">${opt.icon}</button>
                               `).join('')}
-                            </select>
+                              <span class="att-more" data-chosen="${extraStatusOptions.some(o => o.value === att.status) ? 'true' : 'false'}">
+                                <span class="att-more-glyph" aria-hidden="true">${(extraStatusOptions.find(o => o.value === att.status) || {}).icon || '⋯'}</span>
+                                <select aria-label="Other marks for this student"
+                                        onchange="app.setClassAttendanceStatus(this, this.value)">
+                                  <option value="">⋯ Other</option>
+                                  ${extraStatusOptions.map(opt => `
+                                    <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>
+                                  `).join('')}
+                                </select>
+                              </span>
+                            </div>
                           </td>
                           <td style="padding: 12px;">
                             <input type="text" class="class-attendance-notes" data-student-id="${student.id}"
@@ -40250,11 +40299,14 @@
 
       let set = 0, already = 0, missing = 0;
 
-      selects.forEach(select => {
-        const day = daily[select.dataset.studentId];
+      selects.forEach(field => {
+        const day = daily[field.dataset.studentId];
         if (!day || !day.status) { missing++; return; }
-        if (select.value === day.status) { already++; return; }
-        select.value = day.status;
+        if (field.value === day.status) { already++; return; }
+        // Through the painter, never the value alone: the mark is shown by two
+        // buttons and the three-dot chip as well as the hidden field, and
+        // writing one of the four leaves them contradicting each other.
+        this._paintClassAttendanceRow(field.closest('tr'), day.status);
         set++;
       });
 
@@ -40330,6 +40382,46 @@
       if (btn) {
         btn.textContent = opening ? 'less' : 'more';
         btn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      }
+    }
+
+    // One tap, one mark. `control` is whichever thing the teacher touched - a
+    // tick, a cross, or the three-dot picker - and the row is found from there
+    // so its id does not need threading through the markup twice.
+    setClassAttendanceStatus(control, status) {
+      const row = control.closest('tr[data-student-id]');
+      if (!row) return;
+
+      const current = row.querySelector('.class-attendance-status')?.value || '';
+      // Tapping the mark a student already has clears it. Without this a
+      // mis-tap cannot be taken back, and unmarked is not the same as absent:
+      // only marks with a value are saved at all.
+      this._paintClassAttendanceRow(row, status && status === current ? '' : status);
+    }
+
+    // The single place that decides how a row looks for a given status, so the
+    // two buttons, the three-dot chip and the stored value cannot drift apart.
+    _paintClassAttendanceRow(row, status) {
+      if (!row) return;
+
+      const field = row.querySelector('.class-attendance-status');
+      if (field) field.value = status || '';
+
+      row.querySelectorAll('.att-mark button').forEach(btn => {
+        btn.setAttribute('aria-pressed', btn.dataset.status === status ? 'true' : 'false');
+      });
+
+      const more = row.querySelector('.att-more');
+      const select = more?.querySelector('select');
+      if (more && select) {
+        // The chip shows the chosen mark's own icon, so a student marked late
+        // reads as late at a glance instead of as three anonymous dots. Present,
+        // absent and unmarked all put the dots back.
+        const chosen = [...select.options].find(o => o.value && o.value === status);
+        select.value = chosen ? status : '';
+        more.setAttribute('data-chosen', chosen ? 'true' : 'false');
+        const glyph = more.querySelector('.att-more-glyph');
+        if (glyph) glyph.textContent = chosen ? chosen.text.trim().split(' ')[0] : '⋯';
       }
     }
 

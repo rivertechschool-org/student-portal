@@ -1,10 +1,9 @@
-// The daily roster's two cohort pickers.
+// The daily roster's cohort picker.
 //
-// There used to be one, listing every cohort in the school on every day, so a
-// teacher taking Tuesday's register read past the Monday and Thursday groups
-// to reach the two that meet today. It is now split: Today's Groups is the
-// short list, All Groups sits beside it for reaching a cohort with nobody in
-// today.
+// It used to list every cohort in the school on every day, so a teacher taking
+// Tuesday's register read past the Monday and Thursday groups to reach the two
+// that meet today. It now lists only today's, and it is the one filter left
+// beside the search box.
 //
 // "Today" is decided by student_groups.meets_days, the weekdays a cohort was
 // told it meets. Friday Art is in Friday's list and absent from Thursday's,
@@ -138,15 +137,22 @@ check('a day nobody meets on', cohortsForRoster(EVERYONE, GROUPS.slice(0, 3), ME
 check('an unusable day leaves only the fallback',
   cohortsForRoster(roster('ann'), GROUPS, MEMBERS, undefined).today.map(g => g.id), ['g-untagged']);
 
-console.log('\n== the page wires both pickers up ==\n');
+console.log('\n== the page wires the picker up ==\n');
 
-ok('today\'s picker exists', /id="daily-attendance-group-today"/.test(html));
-ok('the all-groups picker exists', /id="daily-attendance-group-all"/.test(html));
-ok('today\'s picker routes through setAttendanceGroup',
-  /id="daily-attendance-group-today"[\s\S]{0,240}setAttendanceGroup\('daily-attendance', 'today'\)/.test(html));
-ok('the all-groups picker routes through setAttendanceGroup',
-  /id="daily-attendance-group-all"[\s\S]{0,240}setAttendanceGroup\('daily-attendance', 'all'\)/.test(html));
-ok('the old single picker is gone', !/id="daily-attendance-group"/.test(html));
+ok("today's picker exists", /id="daily-attendance-group-today"/.test(html));
+ok('  and runs the roster filter', /id="daily-attendance-group-today"[\s\S]{0,240}filterAttendanceRoster\('daily-attendance'\)/.test(html));
+
+// Both of the other filters that shared that bar were taken off the screen:
+// every student on this roster is scheduled for today whatever their enrolment,
+// and a cohort that does not meet today has no business being filtered to on
+// today's register.
+ok('the all-groups picker is gone', !/daily-attendance-group-all/.test(html));
+ok('the enrolment buttons are gone', !/daily-attendance-enrollment/.test(html));
+ok('  and nothing is left calling their handler', !/setAttendanceEnrollment/.test(html));
+ok('the prev/next day buttons are gone', !/changeAttendanceDate/.test(html));
+ok('  but the date field still moves the roster',
+  /id="attendance-date"[\s\S]{0,200}showDailyAttendanceRoster\(this\.value\)/.test(html));
+ok('and the search box stays', /id="daily-attendance-search"/.test(html));
 
 // The days are worthless if nothing reads or writes them.
 ok('the group load asks for meets_days', /select\('id, name, meets_days'\)/.test(html));

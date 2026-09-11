@@ -92,27 +92,11 @@ const input = new El('input');
 const box = buildRoster(students);
 const countEl = new El('span');
 
-// The enrolment choice lives in the DOM, not on the app, so changing the date -
-// which rebuilds this bar - resets it rather than leaving a stale filter hiding
-// half the roster with nothing on screen explaining why. The stub mirrors that.
-const bar = new El('div');
-bar.children = ['all', 'full-time', 'homeschool'].map((v) => {
-  const b = new El('button');
-  b.attrs['data-enrollment'] = v;
-  b.attrs['data-active'] = String(v === 'all');
-  return b;
-});
-bar.querySelectorAll = (sel) => (sel === 'button'
-  ? bar.children
-  : bar.children.filter((b) => b.attrs['data-active'] === 'true'));
-bar.querySelector = (sel) => bar.querySelectorAll(sel)[0] || null;
-
 global.document = {
   getElementById: (id) => ({
     'daily-attendance-search': input,
     'daily-attendance-rows': box,
     'daily-attendance-search-count': countEl,
-    'daily-attendance-enrollment': bar,
   }[id] || null),
 };
 
@@ -121,18 +105,10 @@ const entry = rows.filter((r) => !r.classList.contains('excuse-note-row'));
 const notes = rows.filter((r) => r.classList.contains('excuse-note-row'));
 const visible = () => entry.filter((r) => !r.hidden).map((r) => r.attrs['data-student-id']);
 
-const setStart = html.indexOf('\n    setAttendanceEnrollment(scope, value) {');
-if (setStart === -1) throw new Error('setAttendanceEnrollment not found');
-const setEnd = html.indexOf('\n    }\n', setStart);
-const setBody = html.slice(setStart, setEnd + '\n    }\n'.length).trim();
-const setAttendanceEnrollment =
-  eval(`(function ${setBody.slice('setAttendanceEnrollment'.length)})`);
-
 const app = { filterAttendanceRoster };
-const run = (q, enrol) => {
+const run = (q) => {
   input.value = q;
-  if (enrol) setAttendanceEnrollment.call(app, 'daily-attendance', enrol);
-  else filterAttendanceRoster.call(app, 'daily-attendance');
+  filterAttendanceRoster.call(app, 'daily-attendance');
 };
 
 run('becker');
@@ -174,32 +150,21 @@ run('anne');
 check('a matched student un-hides their note row',
       notes.find((n) => n.attrs['data-student-id'] === 'a').hidden, false);
 
-// --- enrolment filter, alone and combined with the search ---------------
-run('', 'homeschool');
-check('homeschool filter', visible().join(','), 'b,d');
-check('  ...counts the filtered set', countEl.textContent, '2 of 4 shown');
+// --- the search box is now the only text filter on this screen ----------
+//
+// The All / Full-Time / Homeschool buttons were taken off the daily roster:
+// every student on it is scheduled for today whatever their enrolment. The
+// enrolment caption under each name stays, so it is still reachable by typing.
+run('homeschool');
+check('enrolment is reachable through the search box', visible().join(','), 'b,d');
+run('full-time');
+check('  ...and so is the other half', visible().join(','), 'a,c');
 
-run('', 'full-time');
-check('full-time filter', visible().join(','), 'a,c');
-
-run('', 'all');
-check('all restores everyone', visible().join(','), 'a,b,c,d');
-check('  ...and drops back to a plain count', countEl.textContent, '4 students');
-
-// The combination is where this goes wrong: it has to be AND, not OR.
-run('becker', 'homeschool');
-check('search AND filter, not OR', visible().join(','), 'b');
-
-run('becker', 'full-time');
-check('the other half of the same pair', visible().join(','), 'a');
-
-run('chiarizio', 'homeschool');
-check('a contradiction shows nobody', visible().length, 0);
-check('  ...and warns rather than looking empty', countEl.textContent, '0 of 4 shown');
-
-// Clearing the text must not silently clear the enrolment filter.
+run('becker');
+check('a surname still narrows to the pair', visible().join(','), 'a,b');
 run('');
-check('clearing text keeps the enrolment filter', visible().join(','), 'b,d');
+check('and clearing restores everyone', visible().join(','), 'a,b,c,d');
+check('  ...with a plain count', countEl.textContent, '4 students');
 
 console.log(`\n  ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
