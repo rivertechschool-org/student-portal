@@ -10382,10 +10382,14 @@
       async showDuplicateStudents() {
         try {
           this.showNotification('Looking for duplicates...', 'info');
-          const groups = await this.supabaseQuery(() =>
-            this.auth.supabase.rpc('rt_duplicate_students'));
+          const [groups, everyone] = await Promise.all([
+            this.supabaseQuery(() => this.auth.supabase.rpc('rt_duplicate_students')),
+            this.supabaseQuery(() => this.auth.supabase.rpc('rt_student_merge_candidates')),
+          ]);
           if (groups.error) throw groups.error;
+          if (everyone.error) throw everyone.error;
           this._dupGroups = (typeof groups.data === 'string' ? JSON.parse(groups.data) : groups.data) || [];
+          this._mergeRoster = (typeof everyone.data === 'string' ? JSON.parse(everyone.data) : everyone.data) || [];
           this._renderDuplicateStudents();
         } catch (e) {
           console.error('showDuplicateStudents failed:', e);
@@ -10400,9 +10404,51 @@
         const groups = this._dupGroups || [];
         const esc = (v) => this.escapeHtml(String(v ?? ''));
 
-        const body = !groups.length
-          ? `<div class="empty-state"><h3>No duplicates</h3>
-             <p>No two student profiles share a name.</p></div>`
+        // Any two profiles, chosen by the person who knows which children exist.
+        //
+        // The automatic list below only pairs exact name matches, so it finds
+        // "Ruthie Argon" twice and misses "Eli Killackey" against "Elijah
+        // Killackey" - the same child, and the commoner case, because someone
+        // signing themselves up types what they are called. Guessing at that
+        // with name similarity scores "Sam Hahn" against "Samantha Hahn" the
+        // same whether they are one child or two siblings, and a confident
+        // wrong answer on a merge that cannot be undone is worse than none.
+        const roster = this._mergeRoster || [];
+        const opt = (p) => `<option value="${esc(p.id)}">` +
+          `${esc(p.last_name || '')}, ${esc(p.first_name || '')}` +
+          `${p.grade_level ? ' (Gr ' + esc(p.grade_level) + ')' : ''}` +
+          ` \u2014 ${p.records} record${p.records === 1 ? '' : 's'}` +
+          `${p.real_login ? ', ' + esc(p.login_email) : p.has_login ? ', PIN only' : ', no sign-in'}</option>`;
+        const picker = `
+          <div class="card" style="padding:14px; margin-bottom:18px;">
+            <div style="font-weight:700; margin-bottom:4px;">Merge any two profiles</div>
+            <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+              For the ones the list below cannot spot \u2014 Eli and Elijah, Sam and Samuel, a
+              misspelling. Everything on the second profile moves to the first, and the second is removed.
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+              <div style="flex:1; min-width:220px;">
+                <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Keep this one</label>
+                <select id="merge-keep" onchange="app._renderMergePreview()"
+                  style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text);">
+                  <option value="">-- choose --</option>${roster.map(opt).join('')}
+                </select>
+              </div>
+              <div style="flex:1; min-width:220px;">
+                <label style="display:block; font-size:12px; font-weight:600; margin-bottom:4px;">Remove this one</label>
+                <select id="merge-drop" onchange="app._renderMergePreview()"
+                  style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text);">
+                  <option value="">-- choose --</option>${roster.map(opt).join('')}
+                </select>
+              </div>
+            </div>
+            <div id="merge-preview" style="margin-top:10px;"></div>
+            <button class="btn btn-primary" onclick="app.mergePickedStudents()" style="margin-top:10px;">Merge these two</button>
+          </div>`;
+
+        const body = picker + (!groups.length
+          ? `<div class="empty-state" style="padding:20px 0;"><h3>No exact-name duplicates</h3>
+             <p>No two student profiles share a name outright. Use the picker above for the rest.</p></div>`
           : groups.map((g, gi) => `
             <div class="card" style="padding:14px; margin-bottom:14px;">
               <div style="font-weight:700; margin-bottom:4px;">${esc(g.name)}</div>
@@ -10429,7 +10475,7 @@
               <button class="btn btn-primary" onclick="app.mergeDuplicateStudents(${gi})" style="margin-top:6px;">
                 Merge this pair
               </button>
-            </div>`).join('');
+            </div>`).join(''));
 
         this.showModal('dup-students', 'Duplicate students', `
           <div>
@@ -10439,6 +10485,120 @@
             </div>
           </div>
         `);
+      }
+
+      // What the two chosen rows are carrying, before anything is done to them.
+      // A name is not enough to choose by: the whole question is which row has
+      // the history on it, and that is invisible in a dropdown label until you
+      // put it there.
+      _renderMergePreview() {
+        const host = document.getElementById('merge-preview');
+        if (!host) return;
+        const roster = this._mergeRoster || [];
+        const keep = roster.find(p => p.id === document.getElementById('merge-keep')?.value);
+        const drop = roster.find(p => p.id === document.getElementById('merge-drop')?.value);
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+        if (!keep || !drop) { host.innerHTML = ''; return; }
+        if (keep.id === drop.id) {
+          host.innerHTML = `<div style="font-size:13px; color:var(--danger, #d9534f);">Those are the same profile.</div>`;
+          return;
+        }
+        const line = (p, what) => `
+          <div style="font-size:13px;">
+            <strong>${what}:</strong> ${esc(p.first_name)} ${esc(p.last_name)}
+            \u2014 ${p.records} record${p.records === 1 ? '' : 's'}
+            ${p.date_of_birth ? ` \u00b7 born ${esc(p.date_of_birth)}` : ''}
+            <div style="color:var(--muted); margin-left:12px;">
+              ${p.real_login ? `signs in as ${esc(p.login_email)}`
+                : p.has_login ? 'PIN only \u2014 no sign-in address'
+                : 'no sign-in'}
+            </div>
+          </div>`;
+
+        // Which sign-in survives is the only thing a merge changes that the
+        // student notices, so it is said here rather than reported afterwards.
+        // The rule: the survivor's own real login wins; failing that the removed
+        // profile's, because a PIN stub is not a login anybody types.
+        const survivingLogin = keep.real_login ? keep.login_email
+                             : drop.real_login ? drop.login_email : null;
+        const leftOver = keep.real_login && drop.real_login ? drop.login_email
+                       : (!keep.real_login && drop.real_login && keep.has_login) ? keep.login_email
+                       : null;
+        // Different birthdays on file is the one signal that says "these are two
+        // different children" outright, and it is worth stopping for.
+        const dobClash = keep.date_of_birth && drop.date_of_birth
+          && keep.date_of_birth !== drop.date_of_birth;
+        host.innerHTML = `
+          <div style="border:1px solid var(--border); border-radius:8px; padding:10px;">
+            ${line(keep, 'Keeping')}
+            ${line(drop, 'Removing')}
+            ${drop.records > keep.records ? `
+              <div style="margin-top:6px; font-size:12px; color:var(--warning, #e67e22); font-weight:600;">
+                The profile being removed has more records than the one being kept. Check that is what you mean.
+              </div>` : ''}
+            ${dobClash ? `
+              <div style="margin-top:6px; font-size:12px; color:var(--danger, #d9534f); font-weight:600;">
+                These have different dates of birth on file \u2014 they may be two different children.
+              </div>` : ''}
+            <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border); font-size:12px;">
+              <strong>After the merge they sign in as:</strong>
+              ${survivingLogin ? esc(survivingLogin) : 'PIN only \u2014 no sign-in address'}
+              ${leftOver ? `<div style="color:var(--warning, #e67e22); margin-top:4px;">
+                  ${esc(leftOver)} is left over and stops working. If that is the one they use,
+                  keep the other profile instead.
+                </div>` : ''}
+            </div>
+          </div>`;
+      }
+
+      async mergePickedStudents() {
+        const keepId = document.getElementById('merge-keep')?.value;
+        const dropId = document.getElementById('merge-drop')?.value;
+        const roster = this._mergeRoster || [];
+        const keep = roster.find(p => p.id === keepId);
+        const drop = roster.find(p => p.id === dropId);
+        if (!keep || !drop) { this.showNotification('Choose both profiles first.', 'warning'); return; }
+        if (keep.id === drop.id) { this.showNotification('Those are the same profile.', 'warning'); return; }
+
+        const name = (p) => `${p.first_name || ''} ${p.last_name || ''}`.trim();
+        if (!confirm(
+          `Keep ${name(keep)} (${keep.records} record${keep.records === 1 ? '' : 's'}).\n` +
+          `Remove ${name(drop)} (${drop.records} record${drop.records === 1 ? '' : 's'}).\n\n` +
+          `Everything on the removed profile moves across first. This cannot be undone.`)) return;
+
+        await this._runStudentMerge(keep.id, drop.id);
+      }
+
+      // One merge call, shared by the picker and the automatic list, so the two
+      // can never report differently or drift apart.
+      async _runStudentMerge(keepId, dropIds) {
+        const losers = Array.isArray(dropIds) ? dropIds : [dropIds];
+        try {
+          let moved = 0, dropped = 0, tookLogin = false, orphan = null;
+          for (const id of losers) {
+            const { data, error } = await this.auth.supabase
+              .rpc('rt_merge_student', { p_keep: keepId, p_drop: id });
+            if (error) throw error;
+            const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+            moved += res.rows_moved || 0;
+            dropped += res.rows_dropped || 0;
+            tookLogin = tookLogin || !!res.took_login;
+            orphan = orphan || res.orphan_auth_user || null;
+          }
+          this.showNotification(
+            `Merged. ${moved} record${moved === 1 ? '' : 's'} moved` +
+            `${dropped ? `, ${dropped} duplicate${dropped === 1 ? '' : 's'} dropped` : ''}` +
+            `${tookLogin ? ', login carried over' : ''}.` +
+            `${orphan ? ' The removed sign-in still exists and now points at nothing - delete it in Supabase Auth.' : ''}`,
+            'success');
+          await this.showDuplicateStudents();
+          await this.renderAdminStudentRecords();
+          return true;
+        } catch (e) {
+          console.error('student merge failed:', e);
+          this.showNotification(`Merge failed, nothing was changed: ${e.message}`, 'error');
+          return false;
+        }
       }
 
       async mergeDuplicateStudents(groupIndex) {
@@ -10458,30 +10618,7 @@
           `${keeper.has_login ? ' (has login)' : ''}.\n${summary}\n\n` +
           `Everything on the removed profile moves across first. This cannot be undone.`)) return;
 
-        try {
-          let moved = 0, dropped = 0, tookLogin = false, orphan = null;
-          for (const l of losers) {
-            const { data, error } = await this.auth.supabase
-              .rpc('rt_merge_student', { p_keep: picked, p_drop: l.id });
-            if (error) throw error;
-            const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
-            moved += res.rows_moved || 0;
-            dropped += res.rows_dropped || 0;
-            tookLogin = tookLogin || !!res.took_login;
-            orphan = orphan || res.orphan_auth_user || null;
-          }
-          this.showNotification(
-            `Merged. ${moved} record${moved === 1 ? '' : 's'} moved` +
-            `${dropped ? `, ${dropped} duplicate${dropped === 1 ? '' : 's'} dropped` : ''}` +
-            `${tookLogin ? ', login carried over' : ''}.` +
-            `${orphan ? ' The removed sign-in still exists and now points at nothing - delete it in Supabase Auth.' : ''}`,
-            'success');
-          await this.showDuplicateStudents();
-          await this.renderAdminStudentRecords();
-        } catch (e) {
-          console.error('mergeDuplicateStudents failed:', e);
-          this.showNotification(`Merge failed, nothing was changed: ${e.message}`, 'error');
-        }
+        await this._runStudentMerge(picked, losers.map(l => l.id));
       }
 
       async markStudentAsPast(studentId) {

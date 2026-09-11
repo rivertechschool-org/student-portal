@@ -65,7 +65,24 @@ const GROUP = {
   ],
 };
 
-function makeApp({ picked = null, confirms = true, rpcError = null } = {}) {
+// The pair the automatic list will never surface: same child, different name.
+const ROSTER = [
+  { id: 'eli',  first_name: 'Eli',    last_name: 'Killackey', grade_level: '6',
+    email: null, account_status: 'inactive', has_login: false,
+    date_of_birth: '2014-03-02', created_at: '2026-01-04T00:00:00Z', records: 88 },
+  { id: 'elij', first_name: 'Elijah', last_name: 'Killackey', grade_level: '6',
+    email: 'e@x.com', account_status: 'activated', has_login: true,
+    date_of_birth: '2014-03-02', created_at: '2026-09-08T00:00:00Z', records: 3 },
+  // Two different children who would score alike on any name-similarity test.
+  { id: 'samh', first_name: 'Sam',      last_name: 'Hahn', grade_level: '4',
+    email: null, account_status: 'inactive', has_login: false,
+    date_of_birth: '2016-05-09', created_at: '2025-11-13T00:00:00Z', records: 40 },
+  { id: 'sama', first_name: 'Samantha', last_name: 'Hahn', grade_level: '8',
+    email: null, account_status: 'activated', has_login: true,
+    date_of_birth: '2012-07-21', created_at: '2025-11-13T00:00:00Z', records: 227 },
+];
+
+function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', drop = '' } = {}) {
   const app = {
     calls: [], notices: [], modal: '', confirmed: '',
     _dupGroups: [GROUP],
@@ -82,6 +99,7 @@ function makeApp({ picked = null, confirms = true, rpcError = null } = {}) {
           app.calls.push({ fn, args });
           if (rpcError) return Promise.resolve({ data: null, error: new Error(rpcError) });
           if (fn === 'rt_duplicate_students') return Promise.resolve({ data: [GROUP], error: null });
+          if (fn === 'rt_student_merge_candidates') return Promise.resolve({ data: ROSTER, error: null });
           return Promise.resolve({
             data: { success: true, rows_moved: 31, rows_dropped: 1, took_login: true, orphan_auth_user: null },
             error: null,
@@ -90,11 +108,22 @@ function makeApp({ picked = null, confirms = true, rpcError = null } = {}) {
       },
     },
   };
-  global.document = { querySelector: () => (picked ? { value: picked } : null) };
+  const preview = { innerHTML: '' };
+  app._preview = preview;
+  app._mergeRoster = ROSTER;
+  global.document = {
+    querySelector: () => (picked ? { value: picked } : null),
+    getElementById: (id) => id === 'merge-keep' ? { value: keep }
+                          : id === 'merge-drop' ? { value: drop }
+                          : id === 'merge-preview' ? preview : null,
+  };
   global.confirm = (msg) => { app.confirmed = msg; return confirms; };
   app.showDuplicateStudents = extract('showDuplicateStudents');
   app._renderDuplicateStudents = extract('_renderDuplicateStudents');
   app.mergeDuplicateStudents = extract('mergeDuplicateStudents');
+  app._renderMergePreview = extract('_renderMergePreview');
+  app.mergePickedStudents = extract('mergePickedStudents');
+  app._runStudentMerge = extract('_runStudentMerge');
   return app;
 }
 
@@ -119,7 +148,8 @@ function makeApp({ picked = null, confirms = true, rpcError = null } = {}) {
     const app = makeApp();
     app._dupGroups = [];
     app._renderDuplicateStudents.call(app);
-    ok('no duplicates says so plainly', /No duplicates/.test(app.modal));
+    ok('no exact-name duplicates says so plainly', /No exact-name duplicates/.test(app.modal));
+    ok('  and points at the picker for the rest', /picker above/.test(app.modal));
   }
 
   console.log('\n== choosing, and being asked to confirm ==\n');
@@ -197,6 +227,91 @@ function makeApp({ picked = null, confirms = true, rpcError = null } = {}) {
     ok('the leftover sign-in is reported rather than hidden', /orphan_auth_user/.test(body));
   } else {
     console.log('skip  the backend repo is not checked out beside this one');
+  }
+
+  console.log('\n== picking any two ==\n');
+
+  {
+    const app = makeApp();
+    await app.showDuplicateStudents.call(app);
+    const out = app.modal;
+    ok('the picker is offered above the automatic list', /Merge any two profiles/.test(out));
+    ok('  with every student in both lists',
+      (out.match(/Killackey, Eli\b/g) || []).length === 2);
+    // A name alone cannot answer "which one has the history".
+    ok('  each option says what it carries', /88 records/.test(out) && /3 records/.test(out));
+    ok('  and which can sign in', /has login/.test(out));
+    ok('the picker says what it is for',
+      /Eli and Elijah/.test(out) && /cannot spot/.test(out));
+  }
+
+  {
+    // Eli / Elijah: same birthday, one row nearly empty. The case the automatic
+    // finder cannot see.
+    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    app._renderMergePreview.call(app);
+    const p = app._preview.innerHTML;
+    ok('the preview names both sides', /Keeping/.test(p) && /Removing/.test(p));
+    ok('  with their record counts', /88 records/.test(p) && /3 records/.test(p));
+    ok('  and their birthdays', /2014-03-02/.test(p));
+    check('  no warning when the keeper has more', /more records than/.test(p), false);
+    check('  and none about birthdays that agree', /different dates of birth/.test(p), false);
+  }
+
+  {
+    // Removing the row with the history is a real mistake, so say so.
+    const app = makeApp({ keep: 'elij', drop: 'eli' });
+    app._renderMergePreview.call(app);
+    ok('it warns when the removed row holds more',
+      /more records than the one being kept/.test(app._preview.innerHTML));
+  }
+
+  {
+    // Two siblings. Nothing in the names separates them; the birthdays do.
+    const app = makeApp({ keep: 'samh', drop: 'sama' });
+    app._renderMergePreview.call(app);
+    ok('different birthdays are called out as two different children',
+      /different dates of birth/.test(app._preview.innerHTML));
+  }
+
+  {
+    const app = makeApp({ keep: 'eli', drop: 'eli' });
+    app._renderMergePreview.call(app);
+    ok('the same profile twice is refused in the preview',
+      /same profile/.test(app._preview.innerHTML));
+    await app.mergePickedStudents.call(app);
+    check('  and writes nothing', app.calls.filter(c => c.fn === 'rt_merge_student'), []);
+  }
+
+  {
+    const app = makeApp({ keep: '', drop: 'elij' });
+    await app.mergePickedStudents.call(app);
+    check('half a choice writes nothing', app.calls.filter(c => c.fn === 'rt_merge_student'), []);
+    ok('  and asks for both', app.notices.some(n => /choose both/i.test(n)));
+  }
+
+  {
+    const app = makeApp({ keep: 'eli', drop: 'elij', confirms: false });
+    await app.mergePickedStudents.call(app);
+    ok('the prompt names both by name and count', /Keep Eli Killackey \(88 records\)/.test(app.confirmed));
+    ok('  and what is being removed', /Remove Elijah Killackey \(3 records\)/.test(app.confirmed));
+    check('declining writes nothing', app.calls.filter(c => c.fn === 'rt_merge_student'), []);
+  }
+
+  {
+    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    await app.mergePickedStudents.call(app);
+    const call = app.calls.find(c => c.fn === 'rt_merge_student');
+    check('it merges in the direction chosen', call.args, { p_keep: 'eli', p_drop: 'elij' });
+  }
+
+  {
+    // Both routes go through one call, so they cannot report differently.
+    const app = makeApp({ picked: 'old' });
+    await app.mergeDuplicateStudents.call(app, 0);
+    ok('the automatic list uses the same merge call',
+      app.calls.some(c => c.fn === 'rt_merge_student'));
+    ok('  and reports the same way', app.notices.some(n => /31 records moved/.test(n)));
   }
 
   console.log('\n== who is offered it ==\n');
