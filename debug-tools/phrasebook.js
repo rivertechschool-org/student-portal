@@ -48,6 +48,10 @@ global.localStorage = {
 
 const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe',
   '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance', '_rivenMatchClass',
+  // _extractEntities grew these after this harness was written, and a
+  // missing one is a run-time death, not a failing assertion. The full
+  // list is the transitive closure of its `this._x()` calls.
+  '_rivenMatchGroup', '_rivenGroupCanon', '_rivenParseClassRosterRef', '_rivenParseNewClassName',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_semanticExampleBank',
   '_rivenContentTokens', '_rivenSuggestionTemplates', '_rivenStatsKey', '_rivenPhrasebookKey',

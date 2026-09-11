@@ -331,16 +331,15 @@ ok('  then opens the widget over it', /this\.renderTeacherTerminal\(\)/.test(rou
 ok('  and stops there', /return;/.test(route));
 ok('#teacher-terminal is still a valid hash',
   (html.match(/'teacher-terminal', 'irl-purchases'/g) || []).length === 2);
-// The tab is gone from the portal, where the circle is, and kept in the main
-// app, where there is no circle to press.
+// Riven has no nav entry at all now. It is the circle, in both apps - from the
+// main app you reach it by going to the Portal, where it is already waiting.
 const destOf = (app) => PortalUI.navDestinations('teacher', app).map(i => i.label);
 check('no Riven tab in the portal nav', destOf('portal').includes('Riven'), false);
-check('  still one in the main app', destOf('main').includes('Riven'), true);
-// navDestinations returns every destination and leaves role filtering to
-// buildUnifiedNav, so the check that matters is the roles on the item itself.
-check('  and it is still teacher and admin only',
-  PortalUI.navDestinations('teacher', 'main').find(i => i.label === 'Riven').roles.slice().sort(),
-  ['admin', 'teacher']);
+check('none in the main app either', destOf('main').includes('Riven'), false);
+check('and no dead icon left behind it', /rivenIcon/.test(cfg), false);
+// The avatar is still referenced by the widget itself, just not by the nav.
+check('the avatar is still used where it belongs',
+  /riven-avatar\.jpg/.test(html), true);
 ok('the section route still resolves for the hash and old links',
   /case 'teacher-terminal':/.test(html));
 ok('navigating out of fullscreen docks Riven rather than closing the page over it',

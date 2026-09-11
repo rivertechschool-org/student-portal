@@ -101,6 +101,7 @@ for (const n of ['_rivenParseClassSpec', '_rivenParseNewClassName', '_rivenParse
                  '_rivenResolveFacility', '_rivenResolveClassRow', '_rivenCanManageClass',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenFindEnrollment',
                  '_showClassPicker', '_rivenQuantifiesClasses', '_rivenRequireClasses',
+                 '_levenshteinDistance', '_rivenNamesEachClass',
                  'terminalCreateClass', 'terminalUpdateClass', 'terminalEnrollGroup', 'terminalDeleteClass']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };

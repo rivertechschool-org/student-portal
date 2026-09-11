@@ -831,14 +831,11 @@ class PortalUI {
     // ones for the Portal page launcher. Move an item between the two by
     // toggling that one flag — there is no second list to keep in step.
     static navDestinations(userType, currentApp = 'main') {
-        const sharedPath = currentApp === 'portal' ? '../shared' : './shared';
         // The two assessment tools are their own pages under portal/, so the
         // prefix depends on which app is asking.
         const toolPath = currentApp === 'portal' ? '' : 'portal/';
-        // .jpg, not .png - there is no PNG in shared/, and referencing one 404s
-        // on every page render. The crop and border match how Riven is framed
-        // everywhere else.
-        const rivenIcon = `<span style="display: inline-flex; width: 18px; height: 18px; border-radius: 50%; overflow: hidden; vertical-align: middle; border: 1px solid #d97a3a;"><img src="${sharedPath}/riven-avatar.jpg" alt="" style="width: 100%; height: 100%; object-fit: cover; object-position: 53% 17%; transform: scale(1.8); transform-origin: 53% 17%;"></span>`;
+        // Riven has no entry here. It is the floating launcher in the corner of
+        // the portal, reached by pressing it rather than by navigating to it.
         return [
             { icon: '🏠', label: 'Home', app: 'main', section: 'dashboard', roles: ['student', 'parent', 'teacher', 'admin'] },
             { icon: '🎮', label: 'Games', app: 'main', section: 'games', roles: ['student'] },
@@ -859,13 +856,6 @@ class PortalUI {
             // tool already had.
             { icon: '🏃', label: 'PE Assessment', app: 'portal', section: 'pe-assessment', url: `${toolPath}pe-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
             { icon: '🤖', label: 'Tech Projects', app: 'portal', section: 'tech-assessment', url: `${toolPath}tech-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
-            // Riven is the floating launcher in the corner of the portal now, so
-            // it does not need a nav tab there as well. The main app has no such
-            // launcher - the widget only exists in portal/index.html - so from
-            // there it stays a link across, which is the only one-click way in.
-            ...(currentApp === 'portal' ? [] : [
-              { icon: rivenIcon, label: 'Riven', app: 'portal', section: 'teacher-terminal', roles: ['teacher', 'admin'] },
-            ]),
             { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
         ];
