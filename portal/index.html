@@ -39962,6 +39962,16 @@
         // so it opens already reflecting what the office was told. It fills
         // gaps only - a student who turned up anyway and was marked present
         // stays present, however many times this runs.
+        // Per-child saves need the date the roster is showing, which is not
+        // always today - the roster can be opened for an earlier day.
+        this._dailyDate = today;
+        this._dailyPending = new Set();
+        this._dailyNoteTimers = {};
+        // Other phones' marks, picked up without anyone pressing anything.
+        // Cleared first so reopening the roster cannot stack a second timer.
+        clearInterval(this._dailyRefreshTimer);
+        this._dailyRefreshTimer = setInterval(() => this.refreshDailyAttendance(), 20000);
+
         const plannedApplied = await this.applyPlannedAbsences(today);
         const { data: plannedRows } = await this.auth.supabase
           .from('planned_absences')
@@ -40123,13 +40133,13 @@
                             <div class="period-details" data-student-id="${student.id}" style="display: ${['late', 'left_early', 'late_left_early'].includes(att.status) ? 'flex' : 'none'}; gap: 10px; justify-content: center;">
                               <div class="arrived-period" style="display: ${['late', 'late_left_early'].includes(att.status) ? 'block' : 'none'};">
                                 <label style="font-size: 11px; color: var(--muted);">Arrived:</label>
-                                <select class="arrived-at-period" data-student-id="${student.id}" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                                <select class="arrived-at-period" data-student-id="${student.id}" onchange="app.saveOneAttendance('${student.id}')" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
                                   ${[1,2,3,4,5,6,7,8,9,10].map(p => `<option value="${p}" ${att.arrived_at_period === p ? 'selected' : ''}>P${p}</option>`).join('')}
                                 </select>
                               </div>
                               <div class="left-period" style="display: ${['left_early', 'late_left_early'].includes(att.status) ? 'block' : 'none'};">
                                 <label style="font-size: 11px; color: var(--muted);">Left:</label>
-                                <select class="left-at-period" data-student-id="${student.id}" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+                                <select class="left-at-period" data-student-id="${student.id}" onchange="app.saveOneAttendance('${student.id}')" style="padding: 4px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
                                   ${[1,2,3,4,5,6,7,8,9,10].map(p => `<option value="${p}" ${att.left_at_period === p ? 'selected' : ''}>P${p}</option>`).join('')}
                                 </select>
                               </div>
@@ -40138,7 +40148,7 @@
                           <td style="padding: 12px; text-align: center;">
                             <div class="excused-section" data-student-id="${student.id}" style="display: ${att.status === 'absent' ? 'block' : 'none'};">
                               <label style="display: flex; align-items: center; gap: 8px; justify-content: center;">
-                                <input type="checkbox" class="excused-checkbox" data-student-id="${student.id}" ${att.excused ? 'checked' : ''}>
+                                <input type="checkbox" class="excused-checkbox" data-student-id="${student.id}" onchange="app.saveOneAttendance('${student.id}')" ${att.excused ? 'checked' : ''}>
                                 <span style="font-size: 12px;">Excused</span>
                               </label>
                             </div>
@@ -40147,6 +40157,7 @@
                         <tr class="excuse-note-row" data-student-id="${student.id}" style="display: ${att.excused ? 'table-row' : 'none'};">
                           <td colspan="5" style="padding: 0 12px 12px 12px;">
                             <input type="text" class="excuse-note" data-student-id="${student.id}"
+                                   oninput="app.queueOneAttendance('${student.id}')"
                                    placeholder="Excuse note (optional)"
                                    value="${att.excuse_note || ''}"
                                    style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
@@ -40175,9 +40186,14 @@
     }
 
 
-    onAttendanceStatusChange(select) {
+    // `save` is false when the value came from the server rather than from a
+    // person - the refresh only wants the show/hide half of this.
+    onAttendanceStatusChange(select, save = true) {
       const studentId = select.dataset.studentId;
       const status = select.value;
+      // Save this one child, now. See saveOneAttendance for why the whole
+      // roster is no longer written at once.
+      if (save && studentId) setTimeout(() => this.saveOneAttendance(studentId), 0);
 
       // Show/hide period details based on status
       const periodDetails = document.querySelector(`.period-details[data-student-id="${studentId}"]`);
@@ -40208,6 +40224,137 @@
       }
     }
 
+    // ---- One child at a time -----------------------------------------------
+    //
+    // Daily attendance used to save by sweeping every row in the table and
+    // bulk-upserting the lot. That loses other people's work, and it does it
+    // silently. Two phones at the door on a wet morning: the second one opens
+    // the roster AFTER the first has saved, so its dropdowns are pre-filled
+    // with the first phone's marks. The first phone then corrects a child from
+    // present to late. The second phone saves - and writes all of those rows
+    // back from the snapshot it loaded, quietly reverting the correction.
+    //
+    // Nothing warns anyone, because from the database's side it is a perfectly
+    // ordinary upsert of values somebody's browser really was showing.
+    //
+    // So a change to a child writes that child and nothing else. Two phones can
+    // work the same register, and the only row either can affect is one
+    // somebody just touched on that device.
+
+    _dailyAttendanceRecord(studentId) {
+      const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
+      if (!row) return null;
+      const statusSelect = row.querySelector('.attendance-status');
+      const status = statusSelect?.value;
+      if (!status) return null;
+
+      const record = {
+        student_id: studentId,
+        date: this._dailyDate,
+        status,
+        marked_by: this.userInfo.user.id,
+        arrived_at_period: null,
+        left_at_period: null,
+        excused: false,
+        excuse_note: null
+      };
+      if (['late', 'late_left_early'].includes(status)) {
+        const a = document.querySelector(`.arrived-at-period[data-student-id="${studentId}"]`);
+        if (a) record.arrived_at_period = parseInt(a.value);
+      }
+      if (['left_early', 'late_left_early'].includes(status)) {
+        const l = document.querySelector(`.left-at-period[data-student-id="${studentId}"]`);
+        if (l) record.left_at_period = parseInt(l.value);
+      }
+      if (status === 'absent') {
+        const ex = document.querySelector(`.excused-checkbox[data-student-id="${studentId}"]`);
+        record.excused = ex?.checked || false;
+        if (record.excused) {
+          const note = document.querySelector(`.excuse-note[data-student-id="${studentId}"]`);
+          record.excuse_note = note?.value || null;
+        }
+      }
+      return record;
+    }
+
+    // A note is typed a character at a time; only the pause matters.
+    queueOneAttendance(studentId) {
+      this._dailyNoteTimers = this._dailyNoteTimers || {};
+      clearTimeout(this._dailyNoteTimers[studentId]);
+      this._dailyNoteTimers[studentId] = setTimeout(() => this.saveOneAttendance(studentId), 700);
+    }
+
+    _markDailyRow(studentId, state, text) {
+      const row = document.querySelector(`tr[data-student-id="${studentId}"]`);
+      if (!row) return;
+      let tag = row.querySelector('.daily-row-state');
+      if (!tag) {
+        const cell = row.querySelector('td');
+        if (!cell) return;
+        tag = document.createElement('div');
+        tag.className = 'daily-row-state';
+        tag.style.cssText = 'font-size:11px;margin-top:2px;';
+        cell.appendChild(tag);
+      }
+      tag.style.color = state === 'error' ? 'var(--danger, #d9534f)'
+                      : state === 'saved' ? 'var(--success, #4caf50)' : 'var(--muted)';
+      tag.textContent = text;
+      if (state === 'saved') setTimeout(() => { if (tag.textContent === text) tag.textContent = ''; }, 2500);
+    }
+
+    async saveOneAttendance(studentId) {
+      const record = this._dailyAttendanceRecord(studentId);
+      if (!record) return;
+      this._dailyPending = this._dailyPending || new Set();
+      this._dailyPending.add(studentId);
+      this._markDailyRow(studentId, 'saving', 'Saving\u2026');
+      try {
+        const { error } = await this.auth.supabase
+          .from('daily_attendance')
+          .upsert([record], { onConflict: 'student_id,date' });
+        if (error) throw error;
+        this._dailyPending.delete(studentId);
+        this._markDailyRow(studentId, 'saved', 'Saved');
+        this.sendAttendanceAlertNotifications([record], 'daily');
+      } catch (err) {
+        console.error('saveOneAttendance failed:', err);
+        // Stays pending, so Save Attendance picks it up as a retry.
+        this._markDailyRow(studentId, 'error', 'Not saved \u2014 tap Save Attendance');
+      }
+    }
+
+    // Another phone's marks, brought in without touching anything this device
+    // is still holding. Rows with an unsaved edit are left exactly as they are:
+    // pulling the server's value over someone's half-finished change is the
+    // same bug in the other direction.
+    async refreshDailyAttendance() {
+      if (!this._dailyDate) return;
+      const open = document.querySelector('tr[data-student-id] .attendance-status');
+      if (!open) {
+        // The roster has been closed. Stop the timer here rather than hooking
+        // the modal's close, so no path can leave it running.
+        clearInterval(this._dailyRefreshTimer);
+        this._dailyRefreshTimer = null;
+        return;
+      }
+      try {
+        const { data, error } = await this.auth.supabase
+          .from('daily_attendance').select('*').eq('date', this._dailyDate);
+        if (error) throw error;
+        (data || []).forEach(rec => {
+          if (this._dailyPending?.has(rec.student_id)) return;
+          if (document.activeElement?.dataset?.studentId === rec.student_id) return;
+          const sel = document.querySelector(`.attendance-status[data-student-id="${rec.student_id}"]`);
+          if (sel && sel.value !== rec.status) {
+            sel.value = rec.status || '';
+            this.onAttendanceStatusChange(sel, false);
+          }
+        });
+      } catch (e) {
+        console.warn('refreshDailyAttendance:', e);
+      }
+    }
+
     async saveDailyAttendance(date) {
       const rows = document.querySelectorAll('tr[data-student-id]');
       const attendanceRecords = [];
@@ -40215,6 +40362,13 @@
       rows.forEach(row => {
         const studentId = row.dataset.studentId;
         if (!studentId) return;
+
+        // Only rows this device edited and has not managed to save. Every
+        // change already writes itself the moment it is made, so this button
+        // is the retry for whatever the network swallowed - not a second way
+        // to write the whole register from one phone's snapshot, which is the
+        // thing that was quietly reverting other people's marks.
+        if (this._dailyPending && !this._dailyPending.has(studentId)) return;
 
         const statusSelect = row.querySelector('.attendance-status');
         if (!statusSelect || !statusSelect.value) return;
@@ -40260,7 +40414,7 @@
       });
 
       if (attendanceRecords.length === 0) {
-        this.showNotification('No attendance records to save', 'info');
+        this.showNotification('Everything is already saved.', 'success');
         return;
       }
 
@@ -40272,7 +40426,11 @@
 
         if (error) throw error;
 
-        this.showNotification(`Saved attendance for ${attendanceRecords.length} students`, 'success');
+        attendanceRecords.forEach(r => {
+          this._dailyPending?.delete(r.student_id);
+          this._markDailyRow(r.student_id, 'saved', 'Saved');
+        });
+        this.showNotification(`Saved ${attendanceRecords.length} outstanding change${attendanceRecords.length === 1 ? '' : 's'}`, 'success');
 
         // Send notifications for late/left_early students (async, don't block)
         this.sendAttendanceAlertNotifications(attendanceRecords, 'daily');
