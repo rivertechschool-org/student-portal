@@ -49414,8 +49414,14 @@
       // "my"/"I" is the SPEAKER — "show me my classes" is never a follow-up
       // about the last student we discussed
       const firstPerson = /\bmy\b|\bdo i\b|\bam i\b/.test(resolvedInput);
+      // A sentence that names a whole-group target already has its target.
+      // "give the class 2 rtc" is not a follow-up about whoever was last
+      // discussed, and injecting them turns a class-wide award into a single
+      // silent one on the wrong child - the same failure groupPronoun exists
+      // to stop, reached by naming the group instead of pointing at it.
+      const groupTarget = /\b(the (whole |entire )?class|everyone|everybody|all (of )?(my |the )?(students|kids)|the (whole|entire) (group|roster))\b/.test(resolvedInput);
       if (!entities.student && this._nlpContext?.lastStudent && !this._isAggregateQuery(normalized)
-          && !entities.classMatch && !groupPronoun && !firstPerson) {
+          && !entities.classMatch && !groupPronoun && !firstPerson && !groupTarget) {
         // Check if this looks like a follow-up command (an explicitly named
         // class means the request is class-scoped, not about the last student)
         if (this._isFollowUpCommand(normalized)) {
@@ -50466,7 +50472,7 @@
       // trailing "?" flags the utterance as a question so the RTC mutators
       // (ADD/SUBTRACT/TRANSFER/GROUP/BUY) drop out and it falls through to a
       // read/clarification instead of silently mutating.
-      const isQuestion = /^(should|shall|did|does|do|has|have|had|is|are|was|were|would|could|can|may|might|will|am)\b/.test(normalized.trim())
+      let isQuestion = /^(should|shall|did|does|do|has|have|had|is|are|was|were|would|could|can|may|might|will|am)\b/.test(normalized.trim())
         || /\?\s*$/.test(normalized.trim());
 
       // ── Speculative-write cues ────────────────────────────────────────────
@@ -50523,6 +50529,35 @@
       // command and "give noah 5 rtc when i see him" is not read as deferred.
       const isConditionalAction = /^(if|when|once|after|unless)\b/.test(normalized.trim())
         || /\b(once|after|when|if|unless|as soon as)\s+(he|she|they|it|\w+)\s+(finishes?|finished|turns?|turned|hands?|handed|completes?|completed|does|did|gets?|got|comes?|came|shows?|showed|brings?|brought|passes?|passed|improves?|improved)\b/.test(normalized);
+
+      // ...but a courtesy wrapper is not a question.
+      //
+      // "can you give charlotte 5 rtc please" asks nothing about anyone's
+      // ability. It is how most people phrase an instruction, and the leading
+      // auxiliary is exactly what isQuestion looks for - so every write intent
+      // dropped out and the most natural way to award RTC landed on
+      // SPECULATIVE_WRITE instead of doing it.
+      //
+      // Only the leading-auxiliary half is cancelled. A trailing "?" still
+      // marks a question: "can you give her 5?" is genuinely ambiguous, and
+      // over-deferral costs a rephrase while over-firing costs a balance.
+      // The wrapper must be followed by a bare command verb, so "can you tell
+      // me who deserves 5 rtc" is untouched - `tell` there is the question.
+      //
+      // And only SOME verbs may ride a courtesy wrapper into a write. This is
+      // deliberately not the whole WRITE_VERB list: a mistaken award is undone
+      // with a word, while a mistaken penalty has already landed on a child.
+      // "could you dock eli 3 rtc" keeps the question treatment, which does not
+      // refuse - it answers "I don't change data on a maybe; if you do want it
+      // done, say it straight". One extra sentence, on exactly the actions
+      // where being wrong costs the most. Same reasoning excludes transfers
+      // (someone loses RTC) and anything that leaves the building (announce,
+      // notify), which should never go out on a politely-phrased maybe.
+      const POLITE_VERB = 'give|award|grant|add|credit|mark|set|enroll|assign|create';
+      const politeImperative = new RegExp(
+        '^(?:can|could|would|will)\\s+(?:you|we)\\s+(?:please\\s+)?(?:' + POLITE_VERB + ')\\b'
+      ).test(normalized.trim()) && !/\?\s*$/.test(normalized.trim());
+      if (politeImperative) isQuestion = false;
 
       // A write must be an instruction, not a musing, a refusal, or a promise.
       const blockSpeculativeWrite = isDeliberative || isNegatedAction || isConditionalAction;
@@ -53407,7 +53442,7 @@
         // Frustration / exclamations with no prior undo context
         ['exclaim', /^(hmm|hm|huh|ah|oh|oh well|meh|sigh|lol|ha|haha)[\s!.]*$/],
         // Clarification requests about last output
-        ['explain', /^(what was that|explain that|what does that mean|how did you get that|what just happened|why did you do that|where did that come from|what are you (referring to|talking about)|what do you mean( by that)?|can you explain( that)?|what was the (last|previous) (thing|action|result)|what does that show|what did (i|you) just do|what (have|did) (i|you) (do|change|changed)|recap that|what happened just now)[\s!.?]*$/],
+        ['explain', /^(what was that|explain that|what does that mean|how did you get that|what just happened|why did you do that|where did that come from|what are you (referring to|talking about)|what do you mean( by that)?|can you explain( that)?|what was the (last|previous) (thing|action|result)|what does that show|recap that|what happened just now)[\s!.?]*$/],
         // "Tell me more" — request to expand on last result
         ['more', /^((tell|show|give) me more( (detail|info|information|context))?|more (detail|details|info|information|context)|elaborate( on that)?|expand( on that)?|more please|what else|and(\?)*)[\s!.?]*$/],
         // Wrong entity signal — teacher wants to redirect to different student/class
@@ -61119,6 +61154,21 @@
 
     // ---- BUY_PRIVILEGE ----
     async terminalBuyPrivilege(entities) {
+      // One student at a time. Everything below - the atomic RPC, the fallback
+      // deduction, the grant, the undo entry - is written for a single buyer,
+      // so a sentence naming two ("charlotte and noah are buying a privilege
+      // for 2 gold") used to charge whichever one the matcher happened to
+      // resolve and leave the other with neither the cost nor the privilege.
+      // Say so instead: a purchase that half-happened is worse than one that
+      // did not.
+      const named = entities.students?.filter(s => s?.student) || [];
+      if (named.length >= 2) {
+        const who = named.map(s => s.student.full_name);
+        this._showRivenMessage(
+          `I can only put a privilege through for one student at a time \u2014 ${this.escapeHtml(who.join(' and '))} ` +
+          `would each need their own grant. Say it once for each, and I'll do both.`, true);
+        return;
+      }
       const student = entities.student?.student;
       if (!student) { this.terminalPrintError('Which student? Try "Jordan bought the homework pass privilege".'); return; }
       await this._ensureTerminalPrivileges();

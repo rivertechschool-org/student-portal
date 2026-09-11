@@ -86,7 +86,11 @@ function run(input) {
   const grpCtx = app._nlpContext?.lastGroup;
   const groupPronoun = grpCtx && grpCtx.timestamp >= (app._nlpContext.timestamp || 0) && /\b(they|them|these|those)\b/.test(resolved);
   const firstPerson = /\bmy\b|\bdo i\b|\bam i\b/.test(resolved);
-  if (!entities.student && app._nlpContext?.lastStudent && !app._isAggregateQuery(normalized) && !groupPronoun && !firstPerson && app._isFollowUpCommand(normalized)) {
+  // Mirrors the groupTarget guard in _executeNaturalLanguage: a sentence that
+  // names the whole class already has its target and must not be handed the
+  // last student discussed.
+  const groupTarget = /\b(the (whole |entire )?class|everyone|everybody|all (of )?(my |the )?(students|kids)|the (whole|entire) (group|roster))\b/.test(resolved);
+  if (!entities.student && app._nlpContext?.lastStudent && !app._isAggregateQuery(normalized) && !groupPronoun && !firstPerson && !groupTarget && app._isFollowUpCommand(normalized)) {
     entities.student = { student: app._nlpContext.lastStudent, score: 0.95, ambiguous: false, fromContext: true };
   }
   if ((!entities.students || entities.students.length < 2) && /\bboth\b/.test(normalized) && app._nlpContext?.lastPair?.length >= 2) {
@@ -173,6 +177,18 @@ const T = [
 // Aggressive / messy natural language (round 2)
 const T2 = [
   ['can you give charlotte 5 rtc please', 'ADD_RTC', 'Charlotte Tebow', true],
+  ['could you add 3 rtc to noah', 'ADD_RTC', 'Noah Williams', true],
+  ['would you mark noah absent today', 'MARK_ATTENDANCE', 'Noah Williams', true],
+  // ...but only the leading auxiliary is forgiven. A question mark, a
+  // deliberation and a refusal all still block the write.
+  ['can you give charlotte 5 rtc?', 'SPECULATIVE_WRITE', null, true],
+  // ...and a penalty is not forgiven its wrapper at all. An award said politely
+  // goes through; a deduction said politely is asked about first, because the
+  // cost of being wrong is not symmetrical.
+  ['could you dock eli 3 rtc', 'SPECULATIVE_WRITE', null, true],
+  ['could you take 3 rtc from eli', 'SPECULATIVE_WRITE', null, true],
+  ['should i give charlotte 5 rtc', 'SPECULATIVE_WRITE', null, true],
+  ["don't give charlotte 5 rtc", 'SPECULATIVE_WRITE', null, true],
   ['please add 10 to evelyn', 'ADD_RTC', 'Evelyn Hegelund', true],
   ['could you show me sam carter', 'VIEW_STUDENT', 'Sam Carter', true],
   ['i want to give olivia 3 coins', 'ADD_RTC', 'Olivia Brown', true],
@@ -352,7 +368,11 @@ const T6 = [
   ['Give charlotte 30 gold in the bank', 'CAPABILITY', null, true],
   ["Let's add charlotte to a math class.", 'ENROLL_STUDENT', 'Charlotte Tebow', true],
   ['enroll noah in filmmaking', 'ENROLL_STUDENT', 'Noah Williams', true],
-  ['email her parents about it', 'UNKNOWN_ACTION', null, true],
+  // Was UNKNOWN_ACTION, from before Riven could message anyone. There is a
+  // SEND_MESSAGE capability now, and with nobody resolvable it answers "Who do
+  // you want to message? Try ..." - which is the honest decline this block is
+  // for, named rather than generic.
+  ['email her parents about it', 'SEND_MESSAGE', null, true],
   // aggregates must not reuse the context student
   ['Ok what students have had spotty attendance recently', 'ATTENDANCE_ISSUES', null, true],
   ['Which students have had recent bad attendance?', 'ATTENDANCE_ISSUES', null, true],
@@ -782,8 +802,16 @@ const ps1 = run('show me charlottes grades');
 t17(`"charlottes" (no apostrophe) -> exact-score match, no hedge (got ${ps1.intent} ${ps1.student} score path)`, ps1.intent === 'VIEW_GRADES' && ps1.student === 'Charlotte Tebow');
 const ps2 = app._fuzzyFindStudent('charlottes grades', 'charlottes grades');
 t17(`bare possessive scores >= 0.95 (got ${ps2 && ps2.score})`, !!ps2 && ps2.score >= 0.95);
-const rf1 = app._matchIntent('hook charlotte up with some rtc', { student: { student: { full_name: 'Charlotte Tebow' } } });
-t17(`"hook X up with some rtc" is a weak win (score<=15) the semantic layer may pre-empt (got ${rf1 && rf1.intent} score=${rf1 && rf1.score})`, !!rf1 && rf1.intent === 'VIEW_STUDENT' && rf1.score <= 15);
+// "hook X up with some rtc" used to be the example here, because it fell
+// through to the generic VIEW_STUDENT catch-all - and the weak-win band exists
+// so the semantic layer can re-read a guess. It is an explicit ADD_RTC pattern
+// now ("a student card loses the request"), so the band needs an example that
+// is still genuinely a guess. Both halves are asserted: the band still works,
+// and the phrase that left it stayed left.
+const rf1 = app._matchIntent('check on charlotte', { student: { student: { full_name: 'Charlotte Tebow' } } });
+t17(`a generic-pattern win is weak (score<=15), so the semantic layer may pre-empt it (got ${rf1 && rf1.intent} score=${rf1 && rf1.score})`, !!rf1 && rf1.intent === 'VIEW_STUDENT' && rf1.score <= 15);
+const rf1b = app._matchIntent('hook charlotte up with some rtc', { student: { student: { full_name: 'Charlotte Tebow' } } });
+t17(`"hook X up with some rtc" is an award, not a student card (got ${rf1b && rf1b.intent})`, !!rf1b && rf1b.intent === 'ADD_RTC');
 const rf2 = run('give charlotte 5 rtc');
 t17(`writes always score above the pre-empt band (ADD_RTC executes) (got ${rf2.intent})`, rf2.intent === 'ADD_RTC');
 console.log(`round 17: ${p17} pass, ${f17} fail`);
@@ -916,8 +944,11 @@ const wv1 = run('show me all my classes');
 t23(`"show me all my classes" -> LIST_CLASSES (got ${wv1.intent})`, wv1.intent === 'LIST_CLASSES');
 const wv1i = app._matchIntent('show me all my classes', {});
 t23(`...with topical weight w=5, OUTSIDE the semantic pre-empt band (got w=${wv1i && wv1i.w})`, !!wv1i && wv1i.w >= 4);
-const wv2 = app._matchIntent('hook charlotte up with some rtc', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const wv2 = app._matchIntent('check on charlotte', { student: { student: { full_name: 'Charlotte Tebow' } } });
 t23(`generic catch-all match stays IN the band (got ${wv2 && wv2.intent} w=${wv2 && wv2.w})`, !!wv2 && wv2.intent === 'VIEW_STUDENT' && wv2.w <= 3);
+// ...and a phrase promoted to its own pattern is out of the band for good.
+const wv2b = app._matchIntent('hook charlotte up with some rtc', { student: { student: { full_name: 'Charlotte Tebow' } } });
+t23(`an explicit pattern sits OUTSIDE the band (got ${wv2b && wv2b.intent} w=${wv2b && wv2b.w})`, !!wv2b && wv2b.intent === 'ADD_RTC' && wv2b.w >= 4);
 const wv3 = run('can you understand me?');
 t23(`"can you understand me?" -> HELP (got ${wv3.intent})`, wv3.intent === 'HELP');
 const wv4 = run('show me my classes');
@@ -982,8 +1013,14 @@ const bo1 = run('remove 5 gold from both of them for a spoon');
 t26(`"remove 5 from both of them" -> SUBTRACT pair (got ${bo1.intent} pair=${JSON.stringify(bo1.pair)})`, bo1.intent === 'SUBTRACT_RTC' && Array.isArray(bo1.pair) && bo1.pair.length === 2);
 // purchases are deductions
 app._nlpContext = {};
+// This expected SUBTRACT_RTC from before the privilege catalogue existed, when
+// a purchase was only ever a deduction. It is BUY_PRIVILEGE now, which deducts
+// AND records the grant. What this round still has to protect is that BOTH
+// names reach the executor: terminalBuyPrivilege handles one buyer, and until
+// it was guarded a named pair silently charged whichever one resolved first.
+// The decline itself is asserted in tests/riven-pair-purchase.test.js.
 const pu1 = run('charlotte and noah are buying a privilege for 2 gold');
-t26(`"X and Y are buying ... for 2 gold" -> SUBTRACT pair (got ${pu1.intent} pair=${JSON.stringify(pu1.pair)})`, pu1.intent === 'SUBTRACT_RTC' && Array.isArray(pu1.pair) && pu1.pair.length === 2);
+t26(`"X and Y are buying a privilege" -> BUY_PRIVILEGE, both names kept (got ${pu1.intent} pair=${JSON.stringify(pu1.pair)})`, pu1.intent === 'BUY_PRIVILEGE' && Array.isArray(pu1.pair) && pu1.pair.length === 2);
 const pu2 = run('charlotte bought a snack for 3');
 t26(`"X bought a snack for 3" -> SUBTRACT (got ${pu2.intent})`, pu2.intent === 'SUBTRACT_RTC');
 const pu3 = run('give charlotte 5 for buying supplies');
