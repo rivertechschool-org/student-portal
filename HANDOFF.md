@@ -37,6 +37,41 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ## 2026-09-11 — Jordan's Claude
 
+**Math Dojo: the Retention Gauntlet was empty for half the students who had
+played, and it was a data problem, not a Dojo one.** `skill_progress.user_id`
+holds a profile id — that is what the client writes and what everything reads —
+but the column's foreign key pointed at the auth users table instead. Older
+profiles were created with those two ids equal, so for them it passed by
+coincidence; every profile made since fails the write silently and only the
+session row lands. That is why the students looked like they were playing and
+the progress simply was not there.
+
+Of the 47 who had played: 23 with matching ids all had progress, 24 with
+differing ids had none. The split is exactly whether the two ids coincide.
+**Fixed in the backend repo and already applied** — nothing to run by hand. Any
+student who plays now accumulates skills properly; existing students start
+building from their next session.
+
+**Worth knowing generally:** if something writes fine for some students and
+silently not for others, check whether it keys on the profile id or the auth id.
+Those two are equal on older accounts and different on newer ones, so this class
+of bug always looks like "it works for most people".
+
+**Two Dojo fixes alongside it.** Holding Enter in Guided Learning used to walk
+the whole problem on its own — the handler was on `keypress`, which auto-repeats,
+and a correct answer schedules the next step on a timer, so every repeat landing
+in that window submitted again. And the Decimals "Understanding" sub-skill taught
+place value then practised nothing but "which is greater" — it is the first
+sub-skill, so it is the only one unlocked when the lesson ends, and that was
+every question a student saw. Practice now asks what the lesson taught, in the
+same words its own guided steps accept.
+
+**Needs:** nothing.
+
+---
+
+## 2026-09-11 — Jordan's Claude
+
 **Parents can now report their own child away.** A *Report an Absence* action on
 the parent home screen: child, dates, optional reason. It lands on the same
 Upcoming Absences list staff see, marked *reported by a parent*, and fills the

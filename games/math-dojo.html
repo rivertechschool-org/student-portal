@@ -8639,9 +8639,18 @@ const generators = {
             }
         },
         "Decimal Operations": () => {
-            // Map sub-skill IDs to operations
+            // Map sub-skill IDs to operations.
+            //
+            // 'understanding' used to map to 'compare', so the one sub-skill
+            // whose lesson teaches PLACE VALUE - tenths, hundredths, the value
+            // of a digit, decimals as fractions - practised none of it. And
+            // because it is the first sub-skill, it is the only one unlocked
+            // when the lesson ends: a student finished "Place value after the
+            // decimal" and then answered "which is greater" every single time.
+            // Practice now asks what the lesson just taught, in the same words
+            // its own guided steps accept ("tenths", "0.06", "6/100").
             const subSkillToOp = {
-                'understanding': 'compare',
+                'understanding': 'understand',
                 'add': '+',
                 'subtract': '-',
                 'multiply': '×'
@@ -8653,12 +8662,49 @@ const generators = {
             const op = pick(availableOps);
             const a = (rand(10, 99) / 10).toFixed(1), b = (rand(10, 99) / 10).toFixed(1);
 
-            if (op === 'compare') {
-                const aVal = parseFloat(a), bVal = parseFloat(b);
-                const bigger = aVal > bVal ? a : aVal < bVal ? b : "They're equal";
-                return { question: `Which is greater: ${a} or ${b}?`, answer: bigger, type: "procedural",
-                    options: [a, b, "They're equal"].filter((v,i,arr) => arr.indexOf(v) === i),
-                    explanation: aVal === bVal ? `${a} and ${b} are equal.` : `Compare place by place: ${a} vs ${b}. ${bigger} is greater.` };
+            if (op === 'understand') {
+                const PLACES = ['tenths', 'hundredths', 'thousandths'];
+                // A three-decimal number with no zero digits after the point, so
+                // "which digit is in the hundredths place" always has one answer
+                // and the value of that digit is never 0.
+                const whole = rand(1, 9);
+                const digits = [rand(1, 9), rand(1, 9), rand(1, 9)];
+                const num = `${whole}.${digits.join('')}`;
+                const idx = rand(0, 2);
+                const place = PLACES[idx];
+                const digit = digits[idx];
+                const value = (digit / Math.pow(10, idx + 1)).toFixed(idx + 1);
+                const denom = Math.pow(10, idx + 1);
+
+                switch (rand(1, 5)) {
+                    case 1:
+                        return { question: `In ${num}, which place is the ${digit} in?`, answer: place, type: "conceptual",
+                            options: PLACES,
+                            explanation: `Counting right from the decimal point: tenths, hundredths, thousandths. The ${digit} is ${idx + 1} place${idx ? 's' : ''} along, so it is in the ${place} place.` };
+                    case 2:
+                        return { question: `In ${num}, which digit is in the ${place} place?`, answer: digit, type: "conceptual",
+                            explanation: `The ${place} place is ${idx + 1} place${idx ? 's' : ''} right of the decimal point. In ${num} that digit is ${digit}.` };
+                    case 3:
+                        return { question: `What is the value of the ${digit} in ${num}?`, answer: parseFloat(value), type: "conceptual",
+                            acceptableAnswers: [value, String(parseFloat(value)), `${digit}/${denom}`, `${digit} ${place}`],
+                            explanation: `The ${digit} sits in the ${place} place, so it is worth ${digit}/${denom} = ${value}.` };
+                    case 4: {
+                        // A single decimal place keeps the fraction readable.
+                        const t = rand(1, 9);
+                        return { question: `Write 0.${t} as a fraction.`, answer: `${t}/10`, type: "conceptual",
+                            acceptableAnswers: [`${t}/10`, `${t} / 10`, `${t}\u204410`],
+                            explanation: `One place after the decimal point is tenths, so 0.${t} = ${t}/10.` };
+                    }
+                    default: {
+                        // Comparison stays in the mix - reading place by place is
+                        // the same skill - but as one shape of five rather than all.
+                        const aVal = parseFloat(a), bVal = parseFloat(b);
+                        const bigger = aVal > bVal ? a : aVal < bVal ? b : "They're equal";
+                        return { question: `Which is greater: ${a} or ${b}?`, answer: bigger, type: "procedural",
+                            options: [a, b, "They're equal"].filter((v, i, arr) => arr.indexOf(v) === i),
+                            explanation: aVal === bVal ? `${a} and ${b} are equal.` : `Compare place by place: ${a} vs ${b}. ${bigger} is greater.` };
+                    }
+                }
             }
 
             let answer;
@@ -44716,7 +44762,7 @@ function renderGuidedStep() {
             </div>` : '';
         document.getElementById('guided-input-area').innerHTML = `
             ${symbolButtons}
-            <input type="text" class="guided-input" id="guided-answer-input" placeholder="${placeholderText}" onkeypress="if(event.key==='Enter')checkGuidedStepAnswer()">
+            <input type="text" class="guided-input" id="guided-answer-input" placeholder="${placeholderText}" onkeydown="if(event.key==='Enter'&&!event.repeat)checkGuidedStepAnswer()">
             <button class="btn btn-emerald guided-submit" onclick="checkGuidedStepAnswer()">Check</button>
         `;
     }
@@ -44817,9 +44863,26 @@ function insertTestSymbol(symbol) {
 }
 
 function checkGuidedStepAnswer() {
+    // Holding Enter used to walk the whole problem on its own.
+    //
+    // Two things let it. The handler was on `keypress`, which auto-repeats
+    // while the key is held - that is now `keydown` with an `event.repeat`
+    // guard. And a correct answer schedules the next step on a timer, so every
+    // repeat that landed inside that window submitted again, against whichever
+    // step had just been drawn. The key was released four steps later.
+    //
+    // This latch closes the window itself, so a held key, a double-click and a
+    // stray second call are all the same harmless no-op. It is released when
+    // the next step is drawn, or immediately if this answer was wrong.
+    if (state.guidedAdvancing) return;
+
     const step = state.guidedSteps[state.guidedCurrentStep];
     const input = document.getElementById('guided-answer-input').value.trim();
     const fb = document.getElementById('guided-feedback');
+
+    // An empty box is not an answer. Every other typed-answer surface in the
+    // Dojo already refuses one; this is what made a held key cheap to submit.
+    if (!input) return;
 
     state.guidedAttempts++;
 
@@ -44851,6 +44914,7 @@ function checkGuidedStepAnswer() {
         addCompletedStep(step, input);
 
         // Move to next step or complete
+        state.guidedAdvancing = true;
         setTimeout(() => {
             state.guidedCurrentStep++;
             state.guidedAttempts = 0;
