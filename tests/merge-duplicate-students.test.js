@@ -199,6 +199,18 @@ function makeApp({ picked = null, confirms = true, rpcError = null } = {}) {
     console.log('skip  the backend repo is not checked out beside this one');
   }
 
+  console.log('\n== who is offered it ==\n');
+
+  // The screen is reachable by a teacher through the section hash, and the
+  // database refuses the merge to anyone but an admin. A button that answers
+  // "Admins only" is worse than no button at all.
+  ok('the button is admin-only',
+    /\$\{isAdmin \? `<button class="btn btn-secondary" onclick="app\.showDuplicateStudents\(\)">/.test(html));
+  ok('  with isAdmin read from the profile',
+    /const isAdmin = this\.userInfo\.profile\?\.user_type === 'admin';/.test(html));
+  ok('it sits on the Student Records screen',
+    html.indexOf('showDuplicateStudents()') > html.indexOf('async renderAdminStudentRecords()'));
+
   console.log(`\n${pass} passed, ${fail} failed\n`);
   process.exit(fail ? 1 : 0);
 })();
