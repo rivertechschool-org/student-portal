@@ -173,5 +173,48 @@ ok('PLAN_ABSENCE refuses "today" outright', (intents.match(/\(\?!\.\*\\b\(?today
 ok('  and needs a student', /requiresStudent: true/.test(intents));
 ok('"this week" is not a cue for the upcoming list', !/\bthis\|coming\|soon\|week\b/.test(intents));
 
+// ---- a parent reporting their own child --------------------------------
+console.log('\n== a parent reports their own child ==\n');
+
+// The parent path deliberately does NOT insert. Two things have to happen and
+// only one of them is the parent's to do: the row is theirs, the notifications
+// are addressed to staff, and letting a parent write rows into other people's
+// inboxes is a spam primitive however polite the screen is. The database checks
+// the parent-child link and does both halves.
+const parent = html.slice(html.indexOf('    async showParentAbsenceModal() {'),
+                          html.indexOf('    // ==================== PLANNED ABSENCES ===================='));
+ok('the parent flow was located', parent.length > 1500);
+check('it never inserts into the table directly',
+  /from\('planned_absences'\)\s*\.?\s*\n?\s*\.insert/.test(parent), false);
+ok('it goes through the function instead', /rpc\('rt_submit_planned_absence'/.test(parent));
+ok('  which is the same one the staff form uses',
+  /rpc\('rt_submit_planned_absence'/.test(
+    html.slice(html.indexOf('    async savePlannedAbsence() {'),
+               html.indexOf('    async deletePlannedAbsence('))));
+
+ok('only their own children are offered', /this\.children \|\| \[\]/.test(parent));
+ok('  and no children is said, not crashed', /No children are linked/.test(parent));
+ok('the date inputs cannot be set to the past', (parent.match(/min="\$\{today\}"/g) || []).length === 2);
+ok('the last day follows the first', /_syncParentAbsenceEnd/.test(parent));
+
+// A slow connection double-tap would report the same trip twice and notify
+// every teacher twice for it.
+ok('the send button locks while it is sending', /btn\.disabled = true/.test(parent));
+ok('  and unlocks if it failed', /btn\.disabled = false/.test(parent));
+ok('what is already reported is shown before the form', /Already reported/.test(parent));
+ok('  and a failure to load it does not block reporting', /the form still works without the list/.test(parent));
+ok('the confirmation says how many staff were told', /notified/.test(parent));
+
+ok('the parent has a way in from their home screen',
+  /onclick="app\.showParentAbsenceModal\(\)"/.test(html));
+
+// Staff need to see which entries came from a family.
+const panel = html.slice(html.indexOf('    async renderPlannedAbsencesPanel() {'),
+                         html.indexOf('    async showAddPlannedAbsenceModal() {'));
+ok('the staff list marks parent submissions', /reported by a parent/.test(panel));
+ok('  and reads the column that carries it', /r\.source === 'parent'/.test(panel));
+ok('the fetch asks for that column',
+  /select\('id, student_id, start_date, end_date, excused, reason, source, created_at'\)/.test(html));
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

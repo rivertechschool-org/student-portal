@@ -37,6 +37,39 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ## 2026-09-11 — Jordan's Claude
 
+**Parents can now report their own child away.** A *Report an Absence* action on
+the parent home screen: child, dates, optional reason. It lands on the same
+Upcoming Absences list staff see, marked *reported by a parent*, and fills the
+register in on the day like any other.
+
+**Staff get an in-app notification** — every admin, plus the teachers of the
+classes that child is actively enrolled in. Deliberately not the whole staff
+list: a message that goes to everyone is read by nobody, and the people who will
+notice an empty seat are the ones teaching the child. For the most-enrolled
+student in the school that comes to seven people.
+
+**There is no approval step, on purpose.** A parent saying their child will be
+away is the authoritative source for that fact, and making someone rubber-stamp
+it would leave the register wrong until they got round to it. Staff can see
+which rows came from a family and delete any of them — that is the control.
+Parents can withdraw their own submissions, and can see the ones the office
+entered for their children, so a family is never surprised by a change to their
+own register.
+
+**Backend:** a `source` column on `planned_absences` and an
+`rt_submit_planned_absence` function, both already applied and committed to the
+backend repo. The staff form goes through that same function, so its range
+checks — nothing ending in the past, nothing longer than 180 days — apply to
+whoever is typing.
+
+**Needs:** an eye on the notification volume once families start using it. If
+seven people per absence turns out to be six too many, the audience is one query
+in that function and easy to narrow to admins only.
+
+---
+
+## 2026-09-11 — Jordan's Claude
+
 **Absences you know about in advance.** The office is told on Friday that a
 student is away Monday to Wednesday; there was nowhere to put that. Now there is
 an **Upcoming Absences** panel at the top of the Attendance screen, and Riven

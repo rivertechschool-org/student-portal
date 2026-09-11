@@ -7753,6 +7753,9 @@
               <button class="btn btn-primary" onclick="app.showSection('messaging')">
                 💬 Messages
               </button>
+              <button class="btn btn-primary" onclick="app.showParentAbsenceModal()">
+                📅 Report an Absence
+              </button>
               <button class="btn btn-secondary" onclick="app.showSection('profile')">
                 ⚙️ Account Settings
               </button>
@@ -39515,6 +39518,114 @@
       }
     }
 
+    // ---- A parent reporting their own child away ----------------------------
+    //
+    // Goes through rt_submit_planned_absence rather than an insert, because two
+    // things have to happen and only one of them is the parent's to do: the row
+    // is theirs, the notifications are addressed to staff, and a parent writing
+    // rows into other people's inboxes is a spam primitive however polite this
+    // screen is. The database checks the parent-child link and does both halves.
+    async showParentAbsenceModal() {
+      const kids = this.children || [];
+      if (!kids.length) {
+        this.showNotification('No children are linked to your account yet.', 'info');
+        return;
+      }
+      const today = this._localDateStr(new Date());
+      const options = kids.map(k =>
+        `<option value="${this.jsAttr(k.id)}">${this.escapeHtml(`${k.first_name || ''} ${k.last_name || ''}`.trim())}</option>`
+      ).join('');
+
+      // What is already on the list, so a family can see the office's entries
+      // as well as their own and does not report the same trip twice.
+      let existing = '';
+      try {
+        const rows = await this._fetchPlannedAbsences();
+        if (rows.length) {
+          existing = `
+            <div style="border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;">
+              <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">Already reported</div>
+              ${rows.map(r => `<div style="font-size: 12px; color: var(--muted);">
+                ${this.escapeHtml(r.student_name)} \u00b7 ${this.escapeHtml(r.start_date === r.end_date ? r.start_date : r.start_date + ' to ' + r.end_date)}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}
+              </div>`).join('')}
+            </div>`;
+        }
+      } catch (_) { /* the form still works without the list */ }
+
+      this.showModal('parent-absence', '\u{1F4C5} Report an absence', `
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div style="font-size: 13px; color: var(--muted);">
+            Let the school know your child will be away. Staff are told straight away, and the
+            register is filled in on the day.
+          </div>
+          ${existing}
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Child</label>
+            <select id="pab-student" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">${options}</select>
+          </div>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">First day away</label>
+              <input type="date" id="pab-start" value="${today}" min="${today}" onchange="app._syncParentAbsenceEnd()"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            </div>
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Last day away</label>
+              <input type="date" id="pab-end" value="${today}" min="${today}"
+                style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+            </div>
+          </div>
+          <div style="font-size: 12px; color: var(--muted); margin-top: -8px;">
+            Away one day? Leave both the same. Weekends inside a range look after themselves.
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Reason <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <input type="text" id="pab-reason" placeholder="Family trip, appointment, unwell\u2026" maxlength="200"
+              style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+          </div>
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('parent-absence')">Cancel</button>
+            <button class="btn btn-primary" id="pab-send" onclick="app.submitParentAbsence()">Tell the school</button>
+          </div>
+        </div>
+      `);
+    }
+
+    _syncParentAbsenceEnd() {
+      const a = document.getElementById('pab-start');
+      const b = document.getElementById('pab-end');
+      if (a && b && (!b.value || b.value < a.value)) b.value = a.value;
+    }
+
+    async submitParentAbsence() {
+      const studentId = document.getElementById('pab-student')?.value;
+      const start = document.getElementById('pab-start')?.value;
+      const end = document.getElementById('pab-end')?.value;
+      const reason = document.getElementById('pab-reason')?.value.trim() || null;
+      if (!studentId || !start || !end) { this.showNotification('A child and both dates are needed', 'warning'); return; }
+      if (end < start) { this.showNotification('The last day is before the first day', 'warning'); return; }
+
+      // Double submission on a slow connection would report the same trip twice
+      // and notify every teacher twice for it.
+      const btn = document.getElementById('pab-send');
+      if (btn) { if (btn.disabled) return; btn.disabled = true; btn.textContent = 'Sending\u2026'; }
+
+      const { data, error } = await this.auth.supabase.rpc('rt_submit_planned_absence', {
+        p_student_id: studentId, p_start: start, p_end: end, p_reason: reason
+      });
+      if (error) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Tell the school'; }
+        this.showNotification('Could not send it: ' + error.message, 'error');
+        return;
+      }
+      const res = typeof data === 'string' ? JSON.parse(data) : (data || {});
+      this.closeModal('parent-absence');
+      this.showNotification(
+        `Thank you \u2014 ${res.student || 'your child'} is down as away ${res.span || ''}.` +
+        (res.notified ? ` ${res.notified} staff member${res.notified === 1 ? '' : 's'} told.` : ''),
+        'success');
+    }
+
     // ==================== PLANNED ABSENCES ====================
     //
     // An absence the office hears about before it happens: "Noah is away Monday
@@ -39532,7 +39643,7 @@
       const today = this._localDateStr(new Date());
       let q = this.auth.supabase
         .from('planned_absences')
-        .select('id, student_id, start_date, end_date, excused, reason, created_at')
+        .select('id, student_id, start_date, end_date, excused, reason, source, created_at')
         .order('start_date');
       if (!includePast) q = q.gte('end_date', today);
       const { data, error } = await q;
@@ -39593,7 +39704,7 @@
             <div style="flex: 1 1 200px; min-width: 0;">
               <div style="font-weight: 600;">${this.escapeHtml(r.student_name)}${isNow ? ' <span style="font-size: 11px; font-weight: 600; color: #d97a3a;">today</span>' : ''}</div>
               <div style="font-size: 12px; color: var(--muted); overflow-wrap: anywhere;">
-                ${this.escapeHtml(span)}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}${r.excused ? '' : ' \u00b7 unexcused'}
+                ${this.escapeHtml(span)}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}${r.excused ? '' : ' \u00b7 unexcused'}${r.source === 'parent' ? ' \u00b7 <span style="color: #2f6b6d; font-weight: 600;">reported by a parent</span>' : ''}
               </div>
             </div>
             <button class="btn btn-secondary small" onclick="app.deletePlannedAbsence('${this.jsAttr(r.id)}')"
@@ -39671,11 +39782,18 @@
       if (!start || !end) { this.showNotification('Both dates are needed', 'warning'); return; }
       if (end < start) { this.showNotification('The last day is before the first day', 'warning'); return; }
 
-      const { error } = await this.auth.supabase.from('planned_absences').insert({
-        student_id: studentId, start_date: start, end_date: end,
-        excused, reason, created_by: this.userInfo.user.id
+      // Through the same function a parent uses, so the range checks - not in
+      // the past, not longer than a term - apply to whoever is typing.
+      const { error } = await this.auth.supabase.rpc('rt_submit_planned_absence', {
+        p_student_id: studentId, p_start: start, p_end: end, p_reason: reason
       });
       if (error) { this.showNotification('Could not save it: ' + error.message, 'error'); return; }
+      if (!excused) {
+        // The function records every submission as excused, which is what a
+        // planned absence almost always is. Staff can say otherwise.
+        await this.auth.supabase.from('planned_absences').update({ excused: false })
+          .eq('student_id', studentId).eq('start_date', start).eq('end_date', end);
+      }
 
       this.closeModal('add-planned-absence');
       this.showNotification('Planned absence saved', 'success');
@@ -47405,7 +47523,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-11·b';
+      const RIVEN_BUILD = '2026-09-11·c';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
