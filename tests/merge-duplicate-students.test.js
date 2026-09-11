@@ -82,6 +82,25 @@ const ROSTER = [
     date_of_birth: '2012-07-21', created_at: '2025-11-13T00:00:00Z', records: 227 },
 ];
 
+// Two genuine conflicts, one field only the removed profile has, and a couple
+// of tables of records.
+const PREVIEW = {
+  a: { id: 'eli', first_name: 'Eli', last_name: 'Killackey', login_email: null, records: 88 },
+  b: { id: 'elij', first_name: 'Elijah', last_name: 'Killackey', login_email: 'eli@x.com', records: 3 },
+  fields: [
+    { column: 'email', a: 'office@x.com', b: 'eli@x.com', status: 'conflict',
+      a_label: 'office@x.com', b_label: 'eli@x.com' },
+    { column: 'first_name', a: 'Eli', b: 'Elijah', status: 'conflict',
+      a_label: 'Eli', b_label: 'Elijah' },
+    { column: 'auth_user_id', a: null, b: 'auth-2', status: 'only_b',
+      a_label: null, b_label: 'eli@x.com' },
+  ],
+  tables: [
+    { table: 'daily_attendance', column: 'student_id', a_rows: 76, b_rows: 2 },
+    { table: 'skill_progress', column: 'user_id', a_rows: 0, b_rows: 28 },
+  ],
+};
+
 function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', drop = '' } = {}) {
   const app = {
     calls: [], notices: [], modal: '', confirmed: '',
@@ -100,6 +119,7 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
           if (rpcError) return Promise.resolve({ data: null, error: new Error(rpcError) });
           if (fn === 'rt_duplicate_students') return Promise.resolve({ data: [GROUP], error: null });
           if (fn === 'rt_student_merge_candidates') return Promise.resolve({ data: ROSTER, error: null });
+          if (fn === 'rt_merge_preview') return Promise.resolve({ data: PREVIEW, error: null });
           return Promise.resolve({
             data: { success: true, rows_moved: 31, rows_dropped: 1, took_login: true, orphan_auth_user: null },
             error: null,
@@ -124,6 +144,12 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   app._renderMergePreview = extract('_renderMergePreview');
   app.mergePickedStudents = extract('mergePickedStudents');
   app._runStudentMerge = extract('_runStudentMerge');
+  app.openMergeReview = extract('openMergeReview');
+  app._renderMergeReview = extract('_renderMergeReview');
+  app._mergeFieldLabel = extract('_mergeFieldLabel');
+  app._setMergeChoice = extract('_setMergeChoice');
+  app.submitReviewedMerge = extract('submitReviewedMerge');
+  app.jsAttr = (t) => String(t == null ? '' : t).replace(/'/g, "\\'");
   return app;
 }
 
@@ -162,27 +188,12 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   }
 
   {
-    const app = makeApp({ picked: 'old', confirms: false });
-    await app.mergeDuplicateStudents.call(app, 0);
-    // The confirmation is the last place to notice you are about to delete the
-    // row with the history on it.
-    ok('the prompt names the keeper\'s record count', /Keep the profile with 6 records/.test(app.confirmed));
-    ok('  and what the removed row is carrying', /removing a profile with 32 records/.test(app.confirmed));
-    ok('  and that it cannot be undone', /cannot be undone/.test(app.confirmed));
-    check('declining writes nothing', app.calls, []);
-  }
-
-  console.log('\n== merging ==\n');
-
-  {
+    // The chosen keeper decides the DIRECTION of the review, and the review is
+    // where the irreversible step now lives.
     const app = makeApp({ picked: 'old' });
     await app.mergeDuplicateStudents.call(app, 0);
-    check('it merges into the chosen row', app.calls[0].args, { p_keep: 'old', p_drop: 'new' });
-    check('  once per other profile', app.calls.filter(c => c.fn === 'rt_merge_student').length, 1);
-    const said = app.notices.join(' ');
-    ok('it reports what moved', /31 records moved/.test(said));
-    ok('  including what was dropped as duplicate', /1 duplicate dropped/.test(said));
-    ok('  and that the login came across', /login carried over/.test(said));
+    check('the choice sets which way round it is reviewed',
+      app.calls[0].args, { p_a: 'old', p_b: 'new' });
   }
 
   {
@@ -190,13 +201,39 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
     // has to follow the choice rather than the dates.
     const app = makeApp({ picked: 'new' });
     await app.mergeDuplicateStudents.call(app, 0);
-    check('the other direction works the same', app.calls[0].args, { p_keep: 'new', p_drop: 'old' });
+    check('the other direction works the same', app.calls[0].args, { p_a: 'new', p_b: 'old' });
+  }
+
+  console.log('\n== merging ==\n');
+
+  {
+    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    await app.openMergeReview.call(app, 'eli', 'elij');
+    await app.submitReviewedMerge.call(app);
+    const call = app.calls.find(c => c.fn === 'rt_merge_student');
+    check('it merges in the reviewed direction', [call.args.p_keep, call.args.p_drop], ['eli', 'elij']);
+    const said = app.notices.join(' ');
+    ok('it reports what moved', /31 records moved/.test(said));
+    ok('  including what was dropped as duplicate', /1 duplicate dropped/.test(said));
+    ok('  and that the login came across', /login carried over/.test(said));
   }
 
   {
-    const app = makeApp({ picked: 'old', rpcError: 'boom' });
-    await app.mergeDuplicateStudents.call(app, 0);
-    ok('a failure says nothing was changed',
+    const app = makeApp({ keep: 'eli', drop: 'elij', rpcError: 'boom' });
+    await app.openMergeReview.call(app, 'eli', 'elij');
+    ok('a preview that fails says so', app.notices.some(n => /Couldn't compare them/.test(n)));
+  }
+
+  {
+    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    await app.openMergeReview.call(app, 'eli', 'elij');
+    // Fail only the merge, after the preview has already been fetched.
+    app.auth.supabase.rpc = (fn, args) => {
+      app.calls.push({ fn, args });
+      return Promise.resolve({ data: null, error: new Error('boom') });
+    };
+    await app.submitReviewedMerge.call(app);
+    ok('a failed merge says nothing was changed',
       app.notices.some(n => /nothing was changed/i.test(n)));
   }
 
@@ -291,27 +328,74 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   }
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij', confirms: false });
+    // Picking no longer merges: it opens the review.
+    const app = makeApp({ keep: 'eli', drop: 'elij' });
     await app.mergePickedStudents.call(app);
-    ok('the prompt names both by name and count', /Keep Eli Killackey \(88 records\)/.test(app.confirmed));
-    ok('  and what is being removed', /Remove Elijah Killackey \(3 records\)/.test(app.confirmed));
-    check('declining writes nothing', app.calls.filter(c => c.fn === 'rt_merge_student'), []);
+    check('picking two opens the review, it does not merge', app.calls.map(c => c.fn), ['rt_merge_preview']);
+  }
+
+  {
+    // The automatic list goes through the same review, because a pair found by
+    // name still has fields that disagree.
+    const app = makeApp({ picked: 'old' });
+    await app.mergeDuplicateStudents.call(app, 0);
+    check('the automatic list reviews too', app.calls.map(c => c.fn), ['rt_merge_preview']);
+  }
+
+  console.log('\n== the review ==\n');
+
+  {
+    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    await app.openMergeReview.call(app, 'eli', 'elij');
+    const out = app.modal;
+    ok('both sides are named', /KEEPING/.test(out) && /REMOVING/.test(out));
+    // Only the fields that actually disagree are questions.
+    ok('it counts what needs deciding', /2 things to decide/.test(out));
+    ok('  and shows each side of a conflict', /office@x\.com/.test(out) && /eli@x\.com/.test(out));
+    ok('  labelling the sign-in by address, not by id', /Sign-in/.test(out));
+    ok('the kept profile is the default', /value="keep" checked/.test(out));
+    ok('fields only one side has are settled, not asked',
+      /1 settled without asking/.test(out) && /from the removed profile/.test(out));
+    ok('the records that just combine are counted', /Records that just combine/.test(out));
+    ok('  with the collision rule stated', /kept profile's is the one that stays/.test(out));
+    ok('  and each table listed', /daily_attendance/.test(out));
   }
 
   {
     const app = makeApp({ keep: 'eli', drop: 'elij' });
-    await app.mergePickedStudents.call(app);
+    await app.openMergeReview.call(app, 'eli', 'elij');
+    // Nothing chosen: the survivor keeps everything it already has.
+    await app.submitReviewedMerge.call(app);
     const call = app.calls.find(c => c.fn === 'rt_merge_student');
-    check('it merges in the direction chosen', call.args, { p_keep: 'eli', p_drop: 'elij' });
+    check('submitting with no changes sends no field choices', call.args.p_fields, {});
+
+    const app2 = makeApp({ keep: 'eli', drop: 'elij' });
+    await app2.openMergeReview.call(app2, 'eli', 'elij');
+    app2._setMergeChoice.call(app2, 'auth_user_id', 'drop');
+    app2._setMergeChoice.call(app2, 'first_name', 'drop');
+    await app2.submitReviewedMerge.call(app2);
+    const call2 = app2.calls.find(c => c.fn === 'rt_merge_student');
+    check('choosing the removed profile\'s values sends them',
+      call2.args.p_fields, { auth_user_id: 'drop', first_name: 'drop' });
+
+    // Switching back is a removal, not a 'keep' entry: the function only ever
+    // receives the columns it should take from the removed row.
+    const app3 = makeApp({ keep: 'eli', drop: 'elij' });
+    await app3.openMergeReview.call(app3, 'eli', 'elij');
+    app3._setMergeChoice.call(app3, 'first_name', 'drop');
+    app3._setMergeChoice.call(app3, 'first_name', 'keep');
+    await app3.submitReviewedMerge.call(app3);
+    check('changing your mind removes the choice',
+      app3.calls.find(c => c.fn === 'rt_merge_student').args.p_fields, {});
   }
 
   {
-    // Both routes go through one call, so they cannot report differently.
-    const app = makeApp({ picked: 'old' });
-    await app.mergeDuplicateStudents.call(app, 0);
-    ok('the automatic list uses the same merge call',
-      app.calls.some(c => c.fn === 'rt_merge_student'));
-    ok('  and reports the same way', app.notices.some(n => /31 records moved/.test(n)));
+    const app = makeApp({ keep: 'eli', drop: 'elij', confirms: false });
+    await app.openMergeReview.call(app, 'eli', 'elij');
+    await app.submitReviewedMerge.call(app);
+    check('declining at the last step writes nothing',
+      app.calls.filter(c => c.fn === 'rt_merge_student'), []);
+    ok('  and the prompt says it cannot be undone', /cannot be undone/.test(app.confirmed));
   }
 
   console.log('\n== who is offered it ==\n');

@@ -10487,6 +10487,157 @@
         `);
       }
 
+      // ---- Review, then submit ----------------------------------------------
+      //
+      // Two profiles hold two kinds of thing. A COLLECTION just combines -
+      // enrolments, attendance, grades - and needs no decision. A FIELD holds
+      // one value, and when the two disagree something has to be chosen: a
+      // pre-added row often carries a parent's email and the office's spelling
+      // of a name, while the row the student made carries their own address and
+      // what they call themselves. Either can be right, and only a person knows
+      // which, so the merge asks instead of guessing.
+      //
+      // Fields where only ONE side has anything are not questions. They are
+      // listed as already settled rather than put in front of someone, so the
+      // decisions on screen are only the real ones.
+      async openMergeReview(keepId, dropId) {
+        try {
+          this.showNotification('Comparing the two profiles...', 'info');
+          const { data, error } = await this.auth.supabase
+            .rpc('rt_merge_preview', { p_a: keepId, p_b: dropId });
+          if (error) throw error;
+          this._mergeReview = (typeof data === 'string' ? JSON.parse(data) : data) || null;
+          this._mergeReview.keepId = keepId;
+          this._mergeReview.dropId = dropId;
+          this._mergeChoices = {};
+          this._renderMergeReview();
+        } catch (e) {
+          console.error('openMergeReview failed:', e);
+          this.showNotification(
+            /function .* does not exist/i.test(e.message || '')
+              ? 'The merge-review migration has not been run yet.'
+              : `Couldn't compare them: ${e.message}`, 'error');
+        }
+      }
+
+      _mergeFieldLabel(col) {
+        if (col === 'auth_user_id') return 'Sign-in';
+        return col.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+      }
+
+      _renderMergeReview() {
+        const rv = this._mergeReview;
+        if (!rv) return;
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+        const shown = (v) => (v === null || v === undefined || v === '') ? '\u2014' : esc(v);
+        const nameOf = (p) => `${p.first_name || ''} ${p.last_name || ''}`.trim();
+
+        const fields = rv.fields || [];
+        const conflicts = fields.filter(f => f.status === 'conflict');
+        const settled = fields.filter(f => f.status !== 'conflict');
+        const tables = (rv.tables || []).filter(t => t.b_rows > 0 || t.a_rows > 0);
+        const movingRows = tables.reduce((n, t) => n + (t.b_rows || 0), 0);
+
+        const choiceRow = (f) => `
+          <div style="padding:10px; border:1px solid var(--border); border-radius:8px; margin-bottom:6px;">
+            <div style="font-weight:600; font-size:13px; margin-bottom:6px;">${esc(this._mergeFieldLabel(f.column))}</div>
+            <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer; margin-bottom:4px;">
+              <input type="radio" name="mf-${esc(f.column)}" value="keep" checked
+                     onchange="app._setMergeChoice('${this.jsAttr(f.column)}','keep')">
+              <span style="font-size:13px;">${shown(f.a_label)}
+                <span style="color:var(--muted); font-size:11px;">(kept profile)</span></span>
+            </label>
+            <label style="display:flex; gap:8px; align-items:flex-start; cursor:pointer;">
+              <input type="radio" name="mf-${esc(f.column)}" value="drop"
+                     onchange="app._setMergeChoice('${this.jsAttr(f.column)}','drop')">
+              <span style="font-size:13px;">${shown(f.b_label)}
+                <span style="color:var(--muted); font-size:11px;">(removed profile)</span></span>
+            </label>
+          </div>`;
+
+        this.showModal('merge-review', 'Review this merge', `
+          <div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+              <div style="flex:1; min-width:200px; border:1px solid var(--success, #4caf50); border-radius:8px; padding:10px;">
+                <div style="font-size:11px; color:var(--muted); font-weight:600;">KEEPING</div>
+                <div style="font-weight:700;">${esc(nameOf(rv.a))}</div>
+                <div style="font-size:12px; color:var(--muted);">${rv.a.records} records${rv.a.login_email ? ' \u00b7 ' + esc(rv.a.login_email) : ' \u00b7 no sign-in'}</div>
+              </div>
+              <div style="flex:1; min-width:200px; border:1px solid var(--danger, #d9534f); border-radius:8px; padding:10px;">
+                <div style="font-size:11px; color:var(--muted); font-weight:600;">REMOVING</div>
+                <div style="font-weight:700;">${esc(nameOf(rv.b))}</div>
+                <div style="font-size:12px; color:var(--muted);">${rv.b.records} records${rv.b.login_email ? ' \u00b7 ' + esc(rv.b.login_email) : ' \u00b7 no sign-in'}</div>
+              </div>
+            </div>
+
+            <div style="font-weight:700; margin-bottom:4px;">
+              ${conflicts.length ? `${conflicts.length} thing${conflicts.length === 1 ? '' : 's'} to decide` : 'Nothing to decide'}
+            </div>
+            <div style="font-size:12px; color:var(--muted); margin-bottom:8px;">
+              ${conflicts.length
+                ? 'These hold one value each and the two profiles disagree. Choose which survives.'
+                : 'The two profiles do not disagree on anything that holds a single value.'}
+            </div>
+            ${conflicts.map(choiceRow).join('')}
+
+            ${settled.length ? `
+              <details style="margin-top:10px;">
+                <summary style="cursor:pointer; font-size:13px; font-weight:600;">
+                  ${settled.length} settled without asking
+                </summary>
+                <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+                  Only one profile has a value for these, so there is nothing to choose between.
+                </div>
+                ${settled.map(f => `
+                  <div style="font-size:12px; padding:4px 0;">
+                    ${esc(this._mergeFieldLabel(f.column))}: <strong>${shown(f.status === 'only_b' ? f.b_label : f.a_label)}</strong>
+                    <span style="color:var(--muted);">(${f.status === 'only_b' ? 'from the removed profile' : 'from the kept profile'})</span>
+                  </div>`).join('')}
+              </details>` : ''}
+
+            <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border);">
+              <div style="font-weight:700; margin-bottom:4px;">Records that just combine</div>
+              <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
+                ${movingRows} row${movingRows === 1 ? '' : 's'} move across. Where both profiles hold a record of the
+                same thing \u2014 the same class, the same day \u2014 the kept profile's is the one that stays.
+              </div>
+              <div style="max-height:150px; overflow-y:auto; font-size:12px;">
+                ${tables.map(t => `<div style="padding:2px 0;">
+                  ${esc(t.table)}: <strong>${t.a_rows}</strong> kept + <strong>${t.b_rows}</strong> moving
+                </div>`).join('')}
+              </div>
+            </div>
+
+            <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:16px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('merge-review')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.submitReviewedMerge()">Merge \u2014 this cannot be undone</button>
+            </div>
+          </div>
+        `, true);
+      }
+
+      _setMergeChoice(column, side) {
+        this._mergeChoices = this._mergeChoices || {};
+        // Only the columns taken from the REMOVED profile are sent; anything
+        // else stays as the survivor already has it.
+        if (side === 'drop') this._mergeChoices[column] = 'drop';
+        else delete this._mergeChoices[column];
+      }
+
+      async submitReviewedMerge() {
+        const rv = this._mergeReview;
+        if (!rv) return;
+        const choices = this._mergeChoices || {};
+        const taking = Object.keys(choices).length;
+        if (!confirm(
+          `Merge now?\n\n` +
+          `${taking} field${taking === 1 ? '' : 's'} will be taken from the removed profile.\n` +
+          `Everything else stays as the kept profile has it.\n\nThis cannot be undone.`)) return;
+
+        this.closeModal('merge-review');
+        await this._runStudentMerge(rv.keepId, rv.dropId, choices);
+      }
+
       // What the two chosen rows are carrying, before anything is done to them.
       // A name is not enough to choose by: the whole question is which row has
       // the history on it, and that is invisible in a dropdown label until you
@@ -10560,24 +10711,18 @@
         if (!keep || !drop) { this.showNotification('Choose both profiles first.', 'warning'); return; }
         if (keep.id === drop.id) { this.showNotification('Those are the same profile.', 'warning'); return; }
 
-        const name = (p) => `${p.first_name || ''} ${p.last_name || ''}`.trim();
-        if (!confirm(
-          `Keep ${name(keep)} (${keep.records} record${keep.records === 1 ? '' : 's'}).\n` +
-          `Remove ${name(drop)} (${drop.records} record${drop.records === 1 ? '' : 's'}).\n\n` +
-          `Everything on the removed profile moves across first. This cannot be undone.`)) return;
-
-        await this._runStudentMerge(keep.id, drop.id);
+        await this.openMergeReview(keep.id, drop.id);
       }
 
       // One merge call, shared by the picker and the automatic list, so the two
       // can never report differently or drift apart.
-      async _runStudentMerge(keepId, dropIds) {
+      async _runStudentMerge(keepId, dropIds, fieldChoices = null) {
         const losers = Array.isArray(dropIds) ? dropIds : [dropIds];
         try {
           let moved = 0, dropped = 0, tookLogin = false, orphan = null;
           for (const id of losers) {
             const { data, error } = await this.auth.supabase
-              .rpc('rt_merge_student', { p_keep: keepId, p_drop: id });
+              .rpc('rt_merge_student', { p_keep: keepId, p_drop: id, p_fields: fieldChoices });
             if (error) throw error;
             const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
             moved += res.rows_moved || 0;
@@ -10588,7 +10733,8 @@
           this.showNotification(
             `Merged. ${moved} record${moved === 1 ? '' : 's'} moved` +
             `${dropped ? `, ${dropped} duplicate${dropped === 1 ? '' : 's'} dropped` : ''}` +
-            `${tookLogin ? ', login carried over' : ''}.` +
+            `${tookLogin ? ', login carried over' : ''}` +
+            `${fieldChoices && Object.keys(fieldChoices).length ? `, ${Object.keys(fieldChoices).length} field${Object.keys(fieldChoices).length === 1 ? '' : 's'} taken from the removed profile` : ''}.` +
             `${orphan ? ' The removed sign-in still exists and now points at nothing - delete it in Supabase Auth.' : ''}`,
             'success');
           await this.showDuplicateStudents();
@@ -10608,17 +10754,12 @@
         if (!picked) { this.showNotification('Choose which profile to keep first.', 'warning'); return; }
 
         const losers = (g.profiles || []).filter(p => p.id !== picked);
-        const keeper = (g.profiles || []).find(p => p.id === picked);
-        // Naming the numbers in the prompt, because "merge" hides the one thing
-        // worth checking: whether the row about to be removed is the one with
-        // the history on it.
-        const summary = losers.map(l => `\u2022 removing a profile with ${l.records} record${l.records === 1 ? '' : 's'}`).join('\n');
-        if (!confirm(
-          `Keep the profile with ${keeper.records} record${keeper.records === 1 ? '' : 's'}` +
-          `${keeper.has_login ? ' (has login)' : ''}.\n${summary}\n\n` +
-          `Everything on the removed profile moves across first. This cannot be undone.`)) return;
-
-        await this._runStudentMerge(picked, losers.map(l => l.id));
+        // Straight to the same review the picker uses. A pair found automatically
+        // still has fields that disagree, and they are the same question.
+        if (losers.length > 1) {
+          this.showNotification('Merge these two at a time so each pair can be reviewed.', 'info');
+        }
+        await this.openMergeReview(picked, losers[0].id);
       }
 
       async markStudentAsPast(studentId) {
