@@ -6,21 +6,22 @@
 // short list, All Groups sits beside it for reaching a cohort with nobody in
 // today.
 //
-// What "today" can mean here is fixed by the data: student_groups has a name
-// and members and no day of its own, so the only honest test of relevance is
-// whether the cohort has anyone on the roster already on screen - which is
-// built from student_schedule for this weekday. Two consequences worth
-// stating, because both fail quietly:
+// "Today" is decided by student_groups.meets_days, the weekdays a cohort was
+// told it meets. Friday Art is in Friday's list and absent from Thursday's,
+// however many of its students are in the building on Thursday.
 //
-//   * FULL-TIME STUDENTS ARE IN. They are scheduled every day, so a cohort
-//     holding them is relevant every day. Deriving "today" from homeschool
-//     scheduling alone would drop the students who are there every time the
-//     roster is opened.
+// That column exists because membership cannot answer the question. The first
+// version of this list inferred "today" from whether any member was on today's
+// roster, and full-time students are scheduled every weekday, so every cohort
+// holding one passed on every day - the list showed everything, which is what
+// it was built to stop. That inference survives only as the fallback for a
+// cohort whose days have never been set, so an untagged cohort stays reachable
+// instead of vanishing.
 //
-//   * THE COUNT IS OF ROWS, NOT OF MEMBERS. Both lists count students on THIS
-//     roster, so the number always says how many rows the choice will leave
-//     showing. An All Groups entry reading (0) is correct and useful: picking
-//     it empties the roster, and the number said so first.
+// Also guarded here: THE COUNT IS OF ROWS, NOT OF MEMBERS. Both lists count
+// students on THIS roster, so the number always says how many rows the choice
+// will leave showing. An entry reading (0) is correct and useful: picking it
+// empties the roster, and the number said so first.
 //
 // Run: node tests/attendance-todays-groups.test.js
 
@@ -51,77 +52,91 @@ function method(name, indent = '    ') {
 
 const cohortsForRoster = method('_cohortsForRoster');
 
+const MON = 1, TUE = 2, THU = 4, FRI = 5;
+
 const GROUPS = [
-  { id: 'g-jh', name: 'Junior High' },
-  { id: 'g-choir', name: 'Choir' },
-  { id: 'g-mon', name: 'Monday Robotics' },
-  { id: 'g-empty', name: 'Nobody' },
+  { id: 'g-jh', name: 'Junior High', meets_days: [MON, THU] },
+  { id: 'g-choir', name: 'Choir', meets_days: [THU] },
+  { id: 'g-art', name: 'Friday Art', meets_days: [FRI] },
+  { id: 'g-untagged', name: 'Untagged Cohort' },
 ];
 
-// Who is on the roster is decided before this runs: it is today's scheduled
-// students, full-time and homeschool alike.
 const MEMBERS = {
-  ann: ['g-jh'],               // full-time, in today every day
-  ben: ['g-jh', 'g-choir'],    // homeschool, in today
-  cal: [],                     // in no cohort at all
-  dee: ['g-choir'],            // homeschool, in today
-  eve: ['g-mon'],              // homeschool, NOT scheduled today
+  ann: ['g-jh', 'g-art', 'g-untagged'],  // full-time: on the roster every day
+  ben: ['g-jh', 'g-choir'],
+  cal: [],
+  dee: ['g-choir', 'g-art'],
 };
 
 const roster = (...ids) => ids.map(id => ({ id }));
-const run = (...ids) => cohortsForRoster(roster(...ids), GROUPS, MEMBERS);
+const EVERYONE = roster('ann', 'ben', 'cal', 'dee');
+const on = (day, students = EVERYONE, groups = GROUPS) =>
+  cohortsForRoster(students, groups, MEMBERS, day);
 const names = list => list.map(g => `${g.name} (${g.n})`);
 
-console.log('\n== today is derived from who is on the roster ==\n');
+console.log('\n== the day a cohort meets decides the list ==\n');
 
-let r = run('ann', 'ben', 'cal', 'dee');
-check('all lists every cohort in the school',
-  names(r.all), ['Junior High (2)', 'Choir (2)', 'Monday Robotics (0)', 'Nobody (0)']);
-check('today lists only the ones with someone on the roster',
-  names(r.today), ['Junior High (2)', 'Choir (2)']);
-ok('and the Monday cohort is still reachable from the full list',
-  r.all.some(g => g.id === 'g-mon'));
+let r = on(THU);
+check('Thursday shows Thursday cohorts', names(r.today).sort(),
+  ['Choir (2)', 'Junior High (2)', 'Untagged Cohort (1)']);
+check("  and not Friday's", r.today.some(g => g.id === 'g-art'), false);
 
-// eve is a member of Monday Robotics but is not on today's roster, so the
-// cohort is still absent from today's list - membership alone is not presence.
-r = run('ann', 'ben');
-check('a cohort whose members are not scheduled today is left out',
-  names(r.today), ['Junior High (2)', 'Choir (1)']);
+r = on(FRI);
+check('Friday shows the Friday cohort', r.today.some(g => g.id === 'g-art'), true);
+check('  and drops the Thursday-only one', r.today.some(g => g.id === 'g-choir'), false);
 
-console.log('\n== full-time students count as relevant today ==\n');
+r = on(MON);
+check('a cohort meeting twice a week appears on both days',
+  r.today.some(g => g.id === 'g-jh'), true);
+check('Tuesday has only the untagged cohort', names(on(TUE).today), ['Untagged Cohort (1)']);
 
-// The roster on a day only one full-time student attends. Junior High must be
-// in today's list on the strength of that student alone.
-r = run('ann');
-check('a cohort held up by a full-time student is in today', names(r.today), ['Junior High (1)']);
-check('  and nothing else is', r.today.length, 1);
+check('every cohort stays in the full list whatever the day',
+  on(TUE).all.map(g => g.id), ['g-jh', 'g-choir', 'g-art', 'g-untagged']);
 
-// Deriving "today" from homeschool students alone would produce this instead,
-// which is the bug the test above exists to catch.
-ok('the full-time student is not skipped when counting',
-  r.all.find(g => g.id === 'g-jh').n === 1);
+console.log('\n== a full-time student no longer drags a cohort into every day ==\n');
+
+// ann is full-time and in Friday Art, so she is on Thursday's roster and the
+// cohort has a member present. Under the old rule that alone put Friday Art in
+// Thursday's list. The day now overrules it.
+check('ann is on Thursday\'s roster', on(THU).all.find(g => g.id === 'g-art').n > 0, true);
+check('  and Friday Art is still absent from Thursday', on(THU).today.some(g => g.id === 'g-art'), false);
+
+// The same cohort on a day nobody is in: the day still decides, so it shows
+// with a count of zero rather than being hidden.
+check('a tagged cohort shows on its day even with nobody in',
+  names(on(FRI, roster('cal')).today), ['Friday Art (0)']);
+
+console.log('\n== an untagged cohort falls back to who is in ==\n');
+
+check('untagged with a member present shows', on(TUE, roster('ann')).today.map(g => g.id), ['g-untagged']);
+check('untagged with nobody present does not', on(TUE, roster('cal')).today, []);
+check('an empty days array is treated as untagged, not as "no day"',
+  cohortsForRoster(roster('ann'), [{ id: 'g-e', name: 'E', meets_days: [] }], { ann: ['g-e'] }, THU).today.length, 1);
+check('a null days column is treated as untagged',
+  cohortsForRoster(roster('ann'), [{ id: 'g-n', name: 'N', meets_days: null }], { ann: ['g-n'] }, THU).today.length, 1);
 
 console.log('\n== the counts describe the roster, not the group ==\n');
 
-r = run('ann', 'ben', 'cal', 'dee');
-check('a cohort nobody on the roster is in reads zero',
-  r.all.find(g => g.id === 'g-empty').n, 0);
-check('a student in two cohorts is counted in both',
+r = on(THU);
+check('a student in two of the day\'s cohorts is counted in both',
   [r.all.find(g => g.id === 'g-jh').n, r.all.find(g => g.id === 'g-choir').n], [2, 2]);
 check('a student in no cohort inflates nothing',
-  r.all.reduce((t, g) => t + g.n, 0), 4);
+  r.all.find(g => g.id === 'g-untagged').n, 1);
 check('order follows the group list, which arrives sorted by name',
-  r.all.map(g => g.id), ['g-jh', 'g-choir', 'g-mon', 'g-empty']);
+  r.all.map(g => g.id), ['g-jh', 'g-choir', 'g-art', 'g-untagged']);
 
 console.log('\n== nothing to show does not throw ==\n');
 
-check('an empty roster leaves today empty', names(run().today), []);
-check('  but still lists the cohorts', run().all.length, 4);
-check('no cohorts at all', cohortsForRoster(roster('ann'), [], MEMBERS), { all: [], today: [] });
-check('a missing group list', cohortsForRoster(roster('ann'), null, MEMBERS), { all: [], today: [] });
+check('an empty roster still lists tagged cohorts for the day',
+  names(on(THU, []).today).sort(), ['Choir (0)', 'Junior High (0)']);
+check('no cohorts at all', cohortsForRoster(roster('ann'), [], MEMBERS, THU), { all: [], today: [] });
+check('a missing group list', cohortsForRoster(roster('ann'), null, MEMBERS, THU), { all: [], today: [] });
 check('a missing membership index',
-  names(cohortsForRoster(roster('ann'), GROUPS, null).today), []);
-check('a missing roster', names(cohortsForRoster(null, GROUPS, MEMBERS).today), []);
+  cohortsForRoster(roster('ann'), GROUPS, null, TUE).today.length, 0);
+check('a missing roster', cohortsForRoster(null, GROUPS, MEMBERS, THU).today.length, 2);
+check('a day nobody meets on', cohortsForRoster(EVERYONE, GROUPS.slice(0, 3), MEMBERS, 3).today, []);
+check('an unusable day leaves only the fallback',
+  cohortsForRoster(roster('ann'), GROUPS, MEMBERS, undefined).today.map(g => g.id), ['g-untagged']);
 
 console.log('\n== the page wires both pickers up ==\n');
 
@@ -132,6 +147,15 @@ ok('today\'s picker routes through setAttendanceGroup',
 ok('the all-groups picker routes through setAttendanceGroup',
   /id="daily-attendance-group-all"[\s\S]{0,240}setAttendanceGroup\('daily-attendance', 'all'\)/.test(html));
 ok('the old single picker is gone', !/id="daily-attendance-group"/.test(html));
+
+// The days are worthless if nothing reads or writes them.
+ok('the group load asks for meets_days', /select\('id, name, meets_days'\)/.test(html));
+ok('  and survives a database that has not got the column yet',
+  /meets_days/i.test(html) && /select\('id, name'\)\.order\('name'\)/.test(html));
+ok('the groups screen can set the days', /setStudentGroupDays/.test(html));
+ok('  writing them to the column', /meets_days: days\.length \? days : null/.test(html));
+ok('  and offers one checkbox per school day',
+  /\[\[1,'M'\],\[2,'Tu'\],\[3,'W'\],\[4,'Th'\],\[5,'F'\]\]/.test(html));
 
 // An empty today list must say so rather than presenting a picker that looks
 // broken when opened.

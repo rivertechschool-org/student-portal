@@ -34983,8 +34983,15 @@
           const counts = {};
           (members || []).forEach(m => { counts[m.group_id] = (counts[m.group_id] || 0) + 1; });
 
+          // Whether this database has the meeting-days column yet. select('*')
+          // returns the key on every row once it exists, so one row settles it;
+          // without it the day controls are not offered at all rather than
+          // being offered and failing to save.
+          const hasDays = (groups || []).some(g => 'meets_days' in g);
+
           body.innerHTML = `
             <p style="color:var(--muted);font-size:12px;">Groups are a filter axis for rosters. They do not affect enrollment or account access.</p>
+            ${hasDays ? `<p style="color:var(--muted);font-size:12px;">Tick the days a group meets. Today's Groups on the attendance roster then shows only that day's groups. A group with no days ticked falls back to showing whenever one of its students is in.</p>` : ''}
 
             <div style="display:flex;gap:8px;margin:14px 0;">
               <input type="text" id="new-group-name" placeholder="New group name"
@@ -34996,7 +35003,7 @@
 
             ${(groups || []).length ? `
               <table style="width:100%;">
-                <thead><tr><th>Group</th><th>Students</th><th>Actions</th></tr></thead>
+                <thead><tr><th>Group</th>${hasDays ? '<th>Meets</th>' : ''}<th>Students</th><th>Actions</th></tr></thead>
                 <tbody>
                   ${groups.map(g => `
                     <tr>
@@ -35004,6 +35011,17 @@
                         <strong>${this.escapeHtml(g.name)}</strong>
                         ${g.description ? `<div style="color:var(--muted);font-size:11px;">${this.escapeHtml(g.description)}</div>` : ''}
                       </td>
+                      ${hasDays ? `<td>
+                        <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                          ${[[1,'M'],[2,'Tu'],[3,'W'],[4,'Th'],[5,'F']].map(([d, label]) => `
+                            <label title="${['','Monday','Tuesday','Wednesday','Thursday','Friday'][d]}"
+                                   style="display:inline-flex;align-items:center;gap:3px;font-size:12px;color:var(--muted);">
+                              <input type="checkbox" class="group-day" data-group="${g.id}" value="${d}"
+                                     ${(g.meets_days || []).map(Number).includes(d) ? 'checked' : ''}
+                                     onchange="app.setStudentGroupDays('${g.id}')">${label}
+                            </label>`).join('')}
+                        </div>
+                      </td>` : ''}
                       <td>${counts[g.id] || 0}</td>
                       <td>
                         <button class="btn btn-secondary small" onclick="app.showManageGroupMembers('${g.id}')">Manage Students</button>
@@ -35038,6 +35056,36 @@
           // The unique index is on lower(name), so a near-duplicate collides.
           const dup = e.code === '23505' || /duplicate|unique/i.test(e.message || '');
           this.showNotification(dup ? `A group called "${name}" already exists` : `Failed to create group: ${e.message}`, 'error');
+        }
+      }
+
+      // Which weekdays a group meets. Saved on every tick rather than behind a
+      // Save button: there is one row of checkboxes per group and a button per
+      // row is more to miss than it is to press.
+      //
+      // No days ticked is stored as NULL, not an empty array, so "not set yet"
+      // and "set to nothing" cannot drift apart - the roster treats both as the
+      // fall back to guessing from who is in, and only one of them should exist.
+      async setStudentGroupDays(groupId) {
+        const days = [...document.querySelectorAll(`.group-day[data-group="${groupId}"]`)]
+          .filter(b => b.checked)
+          .map(b => Number(b.value))
+          .sort((a, b) => a - b);
+
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('student_groups')
+            .update({ meets_days: days.length ? days : null })
+            .eq('id', groupId));
+          if (error) throw error;
+
+          const names = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+          this.showNotification(days.length
+            ? `Meets ${days.map(d => names[d]).join(', ')}`
+            : 'Days cleared - this group shows whenever one of its students is in', 'success');
+        } catch (e) {
+          console.error('Error saving group days:', e);
+          this.showNotification(`Could not save the days: ${e.message}`, 'error');
         }
       }
 
@@ -39207,10 +39255,24 @@
     // need both the dropdown and the per-row membership.
     async _loadStudentGroupIndex() {
       try {
-        const [{ data: groupRows, error }, { data: memberRows }] = await Promise.all([
-          this.auth.supabase.from('student_groups').select('id, name').order('name'),
+        // meets_days is the weekday or weekdays a cohort actually meets, and it
+        // is the only thing that can tell a Friday group from a Monday one -
+        // membership cannot, because a full-time student is on the roster every
+        // day of the week.
+        //
+        // It is read defensively because PostgREST fails the WHOLE select on an
+        // unknown column rather than ignoring it. A deployment whose database
+        // has not had the column added yet would otherwise lose its groups
+        // entirely, and a missing filter is a far worse outcome than a filter
+        // that falls back to guessing from the roster.
+        let [{ data: groupRows, error }, { data: memberRows }] = await Promise.all([
+          this.auth.supabase.from('student_groups').select('id, name, meets_days').order('name'),
           this.auth.supabase.from('student_group_members').select('group_id, student_id')
         ]);
+        if (error && /meets_days/i.test(error.message || '')) {
+          ({ data: groupRows, error } = await this.auth.supabase
+            .from('student_groups').select('id, name').order('name'));
+        }
         if (error) throw error;
         const byStudent = {};
         (memberRows || []).forEach(m => {
@@ -39225,23 +39287,40 @@
 
     // Split the school's cohorts into the two lists the daily roster offers.
     //
-    // "Relevant today" can only mean "has someone on today's roster": a group
-    // carries no day of its own, only members. Full-time students are
-    // scheduled every day, so a cohort containing them is always in today's
-    // list - which is the point, they are the students on the roster every
-    // single time it is opened.
+    // A cohort that has been given its meeting days is judged on those days
+    // and nothing else: Friday Art is a Friday group on Friday and absent from
+    // Thursday's list, however many of its students happen to be in the
+    // building on Thursday.
+    //
+    // A cohort with no days set falls back to "has someone on today's roster".
+    // That guess is why the days column exists: full-time students attend
+    // every day, so any cohort holding one passes the fallback on every day of
+    // the week, which is exactly the "it still shows everything" complaint.
+    // The fallback is kept only so an untagged cohort stays reachable rather
+    // than disappearing until somebody fills the days in.
     //
     // The count on both lists is of rows on THIS roster, not of the group, so
     // it always says how many students the choice will leave on screen. That
-    // is why an entry in the full list can honestly read (0): picking it
-    // empties the roster, and the number said so first.
-    _cohortsForRoster(students, groups, groupsOfStudent) {
-      const all = (groups || []).map(g => ({
-        id: g.id,
-        name: g.name,
-        n: (students || []).filter(s => ((groupsOfStudent || {})[s.id] || []).includes(g.id)).length,
-      }));
-      return { all, today: all.filter(g => g.n > 0) };
+    // is why an entry can honestly read (0): picking it empties the roster,
+    // and the number said so first.
+    _cohortsForRoster(students, groups, groupsOfStudent, dayOfWeek) {
+      const day = Number(dayOfWeek);
+      const all = (groups || []).map(g => {
+        // Postgres hands a smallint[] back as an array; a null column, an empty
+        // array and a column that does not exist at all all mean "not set".
+        const days = (Array.isArray(g.meets_days) ? g.meets_days : [])
+          .map(Number).filter(d => Number.isInteger(d));
+        return {
+          id: g.id,
+          name: g.name,
+          days,
+          n: (students || []).filter(s => ((groupsOfStudent || {})[s.id] || []).includes(g.id)).length,
+        };
+      });
+      return {
+        all,
+        today: all.filter(g => (g.days.length ? g.days.includes(day) : g.n > 0)),
+      };
     }
 
     // ==================== DAILY ATTENDANCE MANAGEMENT ====================
@@ -39378,7 +39457,7 @@
         const { groups: studentGroups, byStudent: groupsOfStudent } = await this._loadStudentGroupIndex();
 
         const { all: groupsOnRoster, today: todaysGroups } =
-          this._cohortsForRoster(students, studentGroups, groupsOfStudent);
+          this._cohortsForRoster(students, studentGroups, groupsOfStudent, dayOfWeek);
 
         // Get existing attendance for this date
         const { data: attendanceData, error: attError } = await this.auth.supabase
