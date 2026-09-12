@@ -431,6 +431,18 @@ const T6 = [
   // And the line none of them may cross: marking the register today is
   // still MARK_ATTENDANCE, not an excuse and not a pickup.
   ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
+  // Classes and the calendar. Handing a class over is the same SHAPE as
+  // enrolling somebody into it - "give" is normalised to "add" before any
+  // pattern sees it - so the lines that must NOT move are as much a part of
+  // this batch as the ones that must.
+  ['maths teacher is now caitlin', 'SET_CLASS_TEACHER', null, true],
+  ['reopen math', 'REOPEN_CLASS', null, true],
+  // Sam Carter is on this roster and "quarter" is one edit from "Carter",
+  // so these resolve a student incidentally. That is the point: a quarter
+  // question must still be a quarter question.
+  ['what quarter are we in', 'VIEW_QUARTERS', 'Sam Carter', true],
+  ['set the current quarter to quarter 2', 'SET_CURRENT_QUARTER', 'Sam Carter', true],
+  ['list the quarters', 'VIEW_QUARTERS', null, true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

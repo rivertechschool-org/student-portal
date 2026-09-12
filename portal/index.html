@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·a';
+      const RIVEN_BUILD = '2026-09-12·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -51630,7 +51630,14 @@
         'hey','hi','hello','hiya','yo','howdy','heya','sup','yeah','yep','nope','nah',
         'okay','okey','cool','nice','great','good','sure','please','thanks','thank','sorry',
         'today','tomorrow','tonight','now','just','like','some','and','but','for',
-        'from','out','not','are','was','been','doing','going','things','stuff','over','off'
+        'from','out','not','are','was','been','doing','going','things','stuff','over','off',
+        // School vocabulary that is also one edit away from a surname. This
+        // school has a Carter on the roll, so "what quarter are we in" resolved
+        // to that student and every quarter question was answered with their
+        // card. These are words the school says constantly; none of them is a
+        // name, and treating them as one is always wrong.
+        'quarter','quarters','semester','term','grade','grades','class','classes',
+        'roster','register','report','reports','schedule','period','periods'
       ]));
     }
 
@@ -52124,6 +52131,7 @@
         'RENAME_STUDENT', 'LINK_PARENT', 'UNLINK_PARENT',
         'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
         'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'CANCEL_CLASS', 'UNCANCEL_CLASS',
+        'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53375,6 +53383,76 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- Classes and the calendar ------------------------------------
+        //
+        // Who teaches a class and which quarter the school is in are both
+        // school-wide facts: the first decides whose register it is and who can
+        // mark it, the second decides where every grade written from now on
+        // lands. Admin only, and the quarter one hands to the page's own
+        // switcher rather than reimplementing it - changing quarter snapshots
+        // the outgoing one's grades, and a second copy of that would eventually
+        // disagree with the first.
+        {
+          intent: 'SET_CLASS_TEACHER',
+          // notIfStudent and notIfFromTo matter more than the patterns here.
+          // "move eli from math to robotics" and "move chess to room chapel"
+          // are the same SHAPE as handing a class to somebody, and both belong
+          // to other intents - the first names a student, the second says from
+          // and to. Without those two guards this stole both.
+          // classMatchBoost because VIEW_ROSTER carries it: without the same
+          // footing, "give chess to caitlin" scores lower than simply showing
+          // the chess roster, and the sentence is not a question about who is
+          // in it. Safe here only because the patterns above are narrow.
+          w: 9, requiresClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          notIfStudent: true, notIfFromTo: true, notIfGroup: true, classMatchBoost: true,
+          patterns: [
+            /\b(teacher|teaches|teaching|taught by)\b[\s\S]{0,24}\b(is now|should be|to|=)\b/,
+            /\b(is|are)\s+now\s+(the\s+)?teacher\b/,
+            /\b(takes? over|taking over)\b[\s\S]{0,24}\b(class|from|it)\b/,
+            // "give chess to caitlin". _normalizeInput rewrites give -> add
+            // before any of this runs, which is the same opening as "add eli to
+            // chess" - enrolling a student. Three things keep them apart:
+            // notIfStudent above (enrolling names a student), the class having
+            // to match, and the name being the LAST thing in the sentence, so
+            // "add eli to chess" cannot reach it even when the student fails to
+            // resolve. Determiners are excluded so "add them to the chess
+            // class" stays out.
+            /^(add|give|hand)\b[^,]{0,40}\bto\s+(?!the\b|a\b|an\b|all\b|every\b|both\b|class\b|group\b)[a-z][a-z'\-]*\s*$/,
+          ]
+        },
+        {
+          intent: 'REOPEN_CLASS',
+          w: 9, requiresClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(reopen|re-?open|reactivate|un-?archive|bring back)\b/,
+          ]
+        },
+        {
+          intent: 'SET_CURRENT_QUARTER',
+          // NOT notIfStudent. "quarter" is one edit from "Carter", this school
+          // has a Carter on the roll, and the typo gate only applies to
+          // sentences with no command verb - so "set the current quarter to
+          // quarter 2" resolves a student incidentally and would knock itself
+          // out. No quarter command is ever about one student, so the resolved
+          // student is simply ignored by the executor.
+          w: 9, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(set|make|switch|move|change|start)\b[\s\S]{0,24}\b(current\s+)?quarter\b/,
+            /\b(current\s+)?quarter\b[\s\S]{0,16}\b(is now|to)\b/,
+            /\bwe(?:'re| are)\s+(now\s+)?in\s+quarter\b/,
+          ]
+        },
+        {
+          intent: 'VIEW_QUARTERS',
+          // Same reason as above.
+          w: 8,
+          patterns: [
+            /\b(what|which)\s+quarter\b/,
+            /\bquarter\s+are\s+we\s+in\b/,
+            /\b(list|show)\b[\s\S]{0,16}\bquarters?\b/,
+            /\bquarter\s+dates?\b/,
+          ]
+        },
         // ---- The day itself ----------------------------------------------
         //
         // Teachers, not admins. Excusing an absence, ticking a child off at
@@ -53797,6 +53875,9 @@
         if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
         if (pattern.requiresClassOrGroup && !entities.classMatch && !entities.groupMatch) continue;
         if (pattern.notIfStudent && entities.student) continue;
+        // A cohort named outright is never the TARGET of handing a class
+        // over: "add the lower ms group to chess" enrols them.
+        if (pattern.notIfGroup && entities.groupMatch) continue;
         if (pattern.requiresGroupContext && !entities.classMatch && !entities.groupMatch && !this._nlpContext?.lastGroup) continue;
         // A cohort named outright. Unlike requiresClassOrGroup this will NOT
         // settle for a class, because the daily register is a cohort fact: a
@@ -54403,6 +54484,14 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'SET_CLASS_TEACHER':
+          return await this.terminalSetClassTeacher(entities);
+        case 'REOPEN_CLASS':
+          return await this.terminalReopenClass(entities);
+        case 'SET_CURRENT_QUARTER':
+          return await this.terminalSetCurrentQuarter(entities);
+        case 'VIEW_QUARTERS':
+          return await this.terminalViewQuarters(entities);
         case 'EXCUSE_ABSENCE':
           return await this.terminalExcuseAbsence(entities);
         case 'MARK_PICKED_UP':
@@ -55310,6 +55399,9 @@
         RENAME_STUDENT: 'correct a student\'s name',
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
+        SET_CLASS_TEACHER: 'change who teaches a class',
+        REOPEN_CLASS: 'reopen a closed class',
+        SET_CURRENT_QUARTER: 'change the current quarter',
         EXCUSE_ABSENCE: 'excuse an absence',
         MARK_PICKED_UP: 'tick a student off at pickup',
         CANCEL_CLASS: 'cancel a class session',
@@ -58185,6 +58277,188 @@
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
         });
+    }
+
+    // ---- Classes and the calendar ------------------------------------------
+
+    // "give chess to caitlin"
+    //
+    // The teacher of a class decides whose register it is, who may mark it and
+    // whose "my classes" it appears in. The outgoing teacher loses all three
+    // the moment this runs, so both names are in the confirmation.
+    async terminalSetClassTeacher(entities) {
+      if (!this._rivenRequireAdmin('change who teaches a class')) return;
+      const { row, asked } = await this._rivenRequireClass(entities);
+      if (asked) return;
+      if (!row) { this.terminalPrintError('Which class? Try "give chess to caitlin".'); return; }
+
+      const sb = this.auth.supabase;
+      const esc = (t) => this.escapeHtml(String(t));
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+
+      const { data: staff, error } = await sb.from('user_profiles')
+        .select('id, first_name, last_name, email, user_type')
+        .in('user_type', ['teacher', 'admin']);
+      if (error) { this.terminalPrintError('Could not read the staff list: ' + error.message); return; }
+
+      // The class name is in the sentence too, so a teacher is only a match on
+      // a name that is not part of it - otherwise "give Art to Dan" matches a
+      // teacher called Art.
+      const classWords = new Set((row.name || '').toLowerCase().split(/\s+/));
+      const hits = (staff || []).filter(p => {
+        const first = (p.first_name || '').toLowerCase();
+        const full = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
+        if (full.length > 3 && raw.includes(full)) return true;
+        return first.length > 2 && !classWords.has(first) && new RegExp('\\b' + first + '\\b').test(raw);
+      });
+
+      if (!hits.length) {
+        this.terminalPrintError('Which teacher? Give their name, e.g. "give chess to caitlin".');
+        return;
+      }
+      if (hits.length > 1) {
+        this.terminalPrintError(
+          `More than one matches: ${hits.map(p => `${p.first_name} ${p.last_name}`).join(', ')}. Use their full name.`);
+        return;
+      }
+
+      const teacher = hits[0];
+      const name = `${teacher.first_name || ''} ${teacher.last_name || ''}`.trim();
+      if (row.teacher_id === teacher.id) {
+        this._showRivenMessage(`<b>${esc(name)}</b> already teaches ${esc(row.name)}.`, true);
+        return;
+      }
+
+      const before = row.teacher_id;
+      const outgoing = (staff || []).find(p => p.id === before);
+      const outName = outgoing ? `${outgoing.first_name || ''} ${outgoing.last_name || ''}`.trim() : null;
+
+      this._requestConfirmation(
+        `Make <b>${esc(name)}</b> the teacher of <b>${esc(row.name)}</b>?` +
+        (outName ? `<br><span style="font-size: 12px;">${esc(outName)} stops being able to mark its register ` +
+                   `and it leaves their class list.</span>` : ''),
+        async () => {
+          const { error: e } = await sb.from('classes')
+            .update({ teacher_id: teacher.id }).eq('id', row.id);
+          if (e) throw this._rivenPolicyError(e);
+          this._pushUndo(`the teacher of ${row.name}`, async () => {
+            const { error: r } = await sb.from('classes')
+              .update({ teacher_id: before }).eq('id', row.id);
+            if (r) throw r;
+          });
+          row.teacher_id = teacher.id;
+          this._naturalSuccess([`${name} now teaches ${row.name}.`]);
+        });
+    }
+
+    async terminalReopenClass(entities) {
+      if (!this._rivenRequireAdmin('reopen a closed class')) return;
+      const { row, asked } = await this._rivenRequireClass(entities);
+      if (asked) return;
+      if (!row) { this.terminalPrintError('Which class? Try "reopen chess".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      if (row.is_active) {
+        this._showRivenMessage(`<b>${esc(row.name)}</b> is already open.`, true);
+        return;
+      }
+
+      this._requestConfirmation(
+        `Reopen <b>${esc(row.name)}</b>?` +
+        `<br><span style="font-size: 12px;">It comes back into the active lists. Enrolments archived when ` +
+        `it closed are NOT restored \u2014 enrol students again.</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('classes')
+            .update({ is_active: true }).eq('id', row.id);
+          if (error) throw this._rivenPolicyError(error);
+          this._pushUndo(`reopening ${row.name}`, async () => {
+            const { error: r } = await this.auth.supabase.from('classes')
+              .update({ is_active: false }).eq('id', row.id);
+            if (r) throw r;
+          });
+          row.is_active = true;
+          this._naturalSuccess([`${row.name} is open again. Its old enrolments are still archived.`]);
+        });
+    }
+
+    // Which quarter the school is in.
+    //
+    // Hands to the page's own switcher on purpose: changing quarter snapshots
+    // the outgoing quarter's grades, and a second implementation of that would
+    // eventually disagree with the first about what got saved.
+    async terminalSetCurrentQuarter(entities) {
+      if (!this._rivenRequireAdmin('change the current quarter')) return;
+
+      const raw = entities.original || entities._rawInput || '';
+      const { data: quarters, error } = await this.auth.supabase
+        .from('quarters').select('id, name, is_current, is_archived, start_date, end_date')
+        .order('start_date', { ascending: true });
+      if (error) { this.terminalPrintError('Could not read the quarters: ' + error.message); return; }
+
+      const match = this._rivenMatchQuarter(raw, quarters || []);
+      const esc = (t) => this.escapeHtml(String(t));
+      if (!match) {
+        const names = (quarters || []).map(q => q.name).join(', ');
+        this.terminalPrintError(`Which quarter? ${names ? 'We have: ' + names + '.' : 'None are set up yet.'}`);
+        return;
+      }
+      if (match.is_current) {
+        this._showRivenMessage(`We are already in <b>${esc(match.name)}</b>.`, true);
+        return;
+      }
+
+      const current = (quarters || []).find(q => q.is_current);
+      this._requestConfirmation(
+        `Make <b>${esc(match.name)}</b> the current quarter?` +
+        (current ? `<br><span style="font-size: 12px;">${esc(current.name)}'s grades are saved off first, and ` +
+                   `every grade entered from now on lands in ${esc(match.name)}.</span>` : ''),
+        async () => {
+          if (typeof this.setCurrentQuarter !== 'function') {
+            throw new Error('the quarter switcher is not available on this page');
+          }
+          await this.setCurrentQuarter(match.id);
+          this._naturalSuccess([`${match.name} is the current quarter.`]);
+        });
+    }
+
+    // "quarter 2", "q2", "second quarter", or the name as it is written.
+    _rivenMatchQuarter(raw, quarters) {
+      const t = (raw || '').toLowerCase();
+      const byName = quarters.find(q => (q.name || '').length > 2 && t.includes((q.name || '').toLowerCase()));
+      if (byName) return byName;
+      const ORD = { first: 1, second: 2, third: 3, fourth: 4, one: 1, two: 2, three: 3, four: 4 };
+      let n = null;
+      const m = t.match(/\bq(?:uarter)?\s*([1-4])\b/) || t.match(/\b([1-4])(?:st|nd|rd|th)\s+quarter\b/);
+      if (m) n = parseInt(m[1], 10);
+      if (n === null) {
+        const w = t.match(/\b(first|second|third|fourth|one|two|three|four)\s+quarter\b/);
+        if (w) n = ORD[w[1]];
+      }
+      if (n === null) return null;
+      // Position in the school year, which is what "quarter 2" means, rather
+      // than a number inside the name - "Quarter 2 (Fall)" and "Fall Term" both
+      // sit second.
+      return quarters[n - 1] || quarters.find(q => new RegExp('\\b' + n + '\\b').test(q.name || '')) || null;
+    }
+
+    async terminalViewQuarters(entities) {
+      const { data: quarters, error } = await this.auth.supabase
+        .from('quarters').select('name, is_current, is_archived, start_date, end_date')
+        .order('start_date', { ascending: true });
+      if (error) { this.terminalPrintError('Could not read the quarters: ' + error.message); return; }
+      if (!quarters || !quarters.length) {
+        this._showRivenMessage('No quarters are set up yet.', true);
+        return;
+      }
+
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const lines = quarters.map(q =>
+        `\u2022 <b>${esc(q.name)}</b> ${esc(q.start_date)} \u2192 ${esc(q.end_date)}` +
+        (q.is_current ? ' <b>(current)</b>' : '') + (q.is_archived ? ' \u00b7 archived' : ''));
+      const now = quarters.find(q => q.is_current);
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">\u{1F4C6} ${now ? 'We are in ' + esc(now.name) : 'No current quarter is set'}</div>` +
+        `<div style="font-size: 13px; line-height: 1.8;">${lines.join('<br>')}</div>`, true);
     }
 
     // ---- The day itself ----------------------------------------------------
