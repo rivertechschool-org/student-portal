@@ -596,6 +596,23 @@ the per-class cases.
   the signature to the first `{`, which is inside the parameter list for
   `_rivenCanManageClass`. Twelve test files carried the same copy.
 
-**Still to do:** grading a submission · enrolment applications (approve, deny,
-waitlist) · staff (invite, promote, deactivate) · strikes · facility bookings ·
-materials requests · activities.
+**All of that is now done**, plus: grading a submission, enrolment applications,
+staff roles and accounts, strikes, and both approval queues. `/help` lists the
+new commands in two sections - The Day, and Admin Only - so they are
+discoverable without reading this file.
+
+**What is deliberately NOT in Riven:**
+
+- **Inviting a teacher.** It sends an email and creates a login; the invite
+  screen asks things a sentence does not carry.
+- **Deleting anything permanently** - `hardDeleteUserAccount`, `hardDeleteClass`.
+  Riven can close, archive and withdraw. Permanent deletion stays somewhere you
+  have to navigate to on purpose.
+- **Activities** (create/edit/delete). Enrolling in one already works; the rest
+  is a scheduling form.
+- **Documents, sheets, discussions, themes, Drive.** Editing surfaces rather
+  than decisions.
+
+**Still worth doing, in rough order of value:** grading a whole class at once
+("everyone got full marks on the warm-up") · activity management · a "what
+changed today" digest · teacher invitations if you want them in here after all.
