@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·b';
+      const RIVEN_BUILD = '2026-09-12·c';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -51637,7 +51637,9 @@
         // card. These are words the school says constantly; none of them is a
         // name, and treating them as one is always wrong.
         'quarter','quarters','semester','term','grade','grades','class','classes',
-        'roster','register','report','reports','schedule','period','periods'
+        'roster','register','report','reports','schedule','period','periods',
+        'chapter','chapters','assignment','assignments','homework','lesson','lessons',
+        'points','page','pages','unit','units','quiz','test','tests','exam','exams'
       ]));
     }
 
@@ -51783,7 +51785,20 @@
           if (word.length < 3) continue;
           // Block ONLY the fuzzy/typo passes below for common-word typos that
           // lack command context (exact & prefix matches are unaffected).
-          const _fuzzyBlocked = !_cmdSignal && this._isCommonWordTypo(word);
+          // Two different cases wearing one flag before this:
+          //
+          //   a word that IS an ordinary English word ("quarter", "chapter",
+          //   "report") is never a name, whatever else the sentence says. This
+          //   school has a Carter on the roll, and "what quarter are we in" and
+          //   "delete the chapter 4 assignment" were both resolving to that
+          //   student, because the block only applied when the sentence had no
+          //   command verb - and both of those have one.
+          //
+          //   a word that is merely one edit FROM a common word ("ther" ->
+          //   Theo) still needs the command-context test, or a real name that
+          //   happens to sit next to a common word stops resolving.
+          const _exactCommon = this._commonWords().has(word);
+          const _fuzzyBlocked = _exactCommon || (!_cmdSignal && this._isCommonWordTypo(word));
 
           // Exact word match to first or last name
           if (word === firstName || word === lastName) {
@@ -52132,6 +52147,7 @@
         'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
         'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'CANCEL_CLASS', 'UNCANCEL_CLASS',
         'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER',
+        'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53383,6 +53399,29 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- Assignments -------------------------------------------------
+        //
+        // Riven could set one and list them, and could not touch one after.
+        // Both of these belong to the teacher of the class, not to admins -
+        // _rivenCanManageClass decides, the same as it does for the register.
+        {
+          intent: 'DELETE_ASSIGNMENT',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(delete|remove|get rid of|scrap|bin)\b[\s\S]{0,32}\b(assignment|homework|task)\b/,
+            /\b(assignment|homework)\b[\s\S]{0,20}\b(delete|deleted|removed|gone)\b/,
+          ]
+        },
+        {
+          intent: 'EDIT_ASSIGNMENT',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(assignment|homework)\b[\s\S]{0,40}\b(due|worth|points?|publish|unpublish|hide)\b/,
+            /\b(make|move|change|set|push)\b[\s\S]{0,40}\bdue\b[\s\S]{0,24}\b(mon|tues?|wed|thur?s?|fri|sat|sun|today|tomorrow|\d)/,
+            /\b(worth|out of)\s+\d+\s*(points?|pts?)?\b/,
+            /\b(publish|unpublish|hide|unhide)\b[\s\S]{0,32}\b(assignment|homework)\b/,
+          ]
+        },
         // ---- Classes and the calendar ------------------------------------
         //
         // Who teaches a class and which quarter the school is in are both
@@ -54484,6 +54523,10 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'DELETE_ASSIGNMENT':
+          return await this.terminalDeleteAssignment(entities);
+        case 'EDIT_ASSIGNMENT':
+          return await this.terminalEditAssignment(entities);
         case 'SET_CLASS_TEACHER':
           return await this.terminalSetClassTeacher(entities);
         case 'REOPEN_CLASS':
@@ -55399,6 +55442,8 @@
         RENAME_STUDENT: 'correct a student\'s name',
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
+        DELETE_ASSIGNMENT: 'delete an assignment',
+        EDIT_ASSIGNMENT: 'change an assignment\'s due date or points',
         SET_CLASS_TEACHER: 'change who teaches a class',
         REOPEN_CLASS: 'reopen a closed class',
         SET_CURRENT_QUARTER: 'change the current quarter',
@@ -58276,6 +58321,188 @@
             if (r) throw r;
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
+        });
+    }
+
+    // ---- Assignments -------------------------------------------------------
+
+    // Find the assignment a sentence is talking about.
+    //
+    // Not _rtResolveAssignment: that one takes a structured spec and insists on
+    // an exact title, which is right for a scripted call and useless for "get
+    // rid of the chapter 4 problems". This matches the way people refer to
+    // them - part of the title, in a class they teach - and refuses rather than
+    // guesses when more than one fits, because the next step deletes it.
+    async _rivenFindAssignment(entities) {
+      const sb = this.auth.supabase;
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+
+      // Narrow to a class if one was named; otherwise search the classes this
+      // person can manage, so a teacher cannot reach another teacher's work.
+      let classIds = null;
+      const cm = entities.classMatch;
+      if (cm) {
+        const { row } = await this._rivenRequireClass(entities);
+        if (row) classIds = [row.id];
+      }
+      if (!classIds) {
+        const mine = (this._terminalAllClasses || []).filter(c => this._rivenCanManageClass(c));
+        classIds = mine.map(c => c.id);
+      }
+      if (!classIds.length) return { error: 'no_classes' };
+
+      let q = sb.from('assignments').select('id, title, class_id, due_date, max_points, is_published');
+      q = q.in('class_id', classIds);
+      const { data, error } = await q;
+      if (error) return { error: 'read', message: error.message };
+
+      const rows = data || [];
+      // Longest title that appears in the sentence wins: "chapter 4" and
+      // "chapter 4 problems" both match, and the fuller one is what was meant.
+      const hits = rows.filter(a => {
+        const t = (a.title || '').toLowerCase();
+        return t.length >= 3 && raw.includes(t);
+      }).sort((a, b) => (b.title || '').length - (a.title || '').length);
+
+      if (hits.length === 1) return { row: hits[0] };
+      if (hits.length > 1) {
+        const top = (hits[0].title || '').length;
+        const tied = hits.filter(h => (h.title || '').length === top);
+        if (tied.length === 1) return { row: tied[0] };
+        return { error: 'ambiguous', candidates: tied };
+      }
+
+      // Nothing matched a whole title: try the distinctive words, so a partial
+      // reference still finds it, but only when exactly one assignment fits.
+      const words = raw.split(/[^a-z0-9]+/).filter(w => w.length >= 4);
+      const scored = rows.map(a => {
+        const t = (a.title || '').toLowerCase();
+        return { a, n: words.filter(w => t.includes(w)).length };
+      }).filter(x => x.n > 0).sort((x, y) => y.n - x.n);
+      if (scored.length === 1 || (scored.length > 1 && scored[0].n > scored[1].n)) return { row: scored[0].a };
+      if (scored.length > 1) return { error: 'ambiguous', candidates: scored.map(x => x.a) };
+      return { error: 'not_found' };
+    }
+
+    _rivenAssignmentError(res) {
+      if (res.error === 'no_classes') {
+        this.terminalPrintError('You do not have any classes I can look in.');
+      } else if (res.error === 'ambiguous') {
+        const list = res.candidates.slice(0, 5).map(a => a.title).join(', ');
+        this.terminalPrintError(`More than one matches: ${list}. Say the full title.`);
+      } else if (res.error === 'read') {
+        this.terminalPrintError('Could not read the assignments: ' + res.message);
+      } else {
+        this.terminalPrintError('I could not find that assignment. Say its title, e.g. "delete the chapter 4 problems assignment".');
+      }
+    }
+
+    // Deleting takes the grades with it.
+    //
+    // assignment_submissions rows hang off the assignment, so every mark any
+    // student has for it goes at the same time. The count is in the
+    // confirmation because "delete the assignment" does not sound like
+    // "delete twenty grades", which is what it often is.
+    async terminalDeleteAssignment(entities) {
+      const res = await this._rivenFindAssignment(entities);
+      if (res.error) { this._rivenAssignmentError(res); return; }
+      const a = res.row;
+
+      const cls = (this._terminalAllClasses || []).find(c => c.id === a.class_id);
+      if (cls && !this._rivenCanManageClass(cls)) {
+        this.terminalPrintError(`That assignment belongs to ${cls.name}, which you don't teach.`);
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const esc = (t) => this.escapeHtml(String(t));
+      const { data: subs } = await sb.from('assignment_submissions')
+        .select('id, grade').eq('assignment_id', a.id);
+      const n = (subs || []).length;
+      const graded = (subs || []).filter(x => x.grade !== null && x.grade !== undefined).length;
+
+      this._requestConfirmation(
+        `Delete <b>${esc(a.title)}</b>${cls ? ` from ${esc(cls.name)}` : ''}?` +
+        (n ? `<br><span style="font-size: 12px; color: var(--danger, #ff6a6a);">${n} submission${n === 1 ? '' : 's'}` +
+             `${graded ? `, ${graded} of them graded,` : ''} will be deleted with it.</span>`
+           : `<br><span style="font-size: 12px;">Nobody has submitted to it.</span>`) +
+        `<br><span style="font-size: 12px;">This cannot be undone.</span>`,
+        async () => {
+          await sb.from('assignment_submissions').delete().eq('assignment_id', a.id);
+          const { error } = await sb.from('assignments').delete().eq('id', a.id);
+          if (error) throw this._rivenPolicyError(error);
+          // No undo: the submissions are gone and an undo that restored the
+          // assignment without them would be a lie about what it put back.
+          this._naturalSuccess([
+            `${a.title} is deleted${n ? ` along with ${n} submission${n === 1 ? '' : 's'}` : ''}.`
+          ]);
+        });
+    }
+
+    // Due date, points, and whether students can see it.
+    async terminalEditAssignment(entities) {
+      const res = await this._rivenFindAssignment(entities);
+      if (res.error) { this._rivenAssignmentError(res); return; }
+      const a = res.row;
+
+      const cls = (this._terminalAllClasses || []).find(c => c.id === a.class_id);
+      if (cls && !this._rivenCanManageClass(cls)) {
+        this.terminalPrintError(`That assignment belongs to ${cls.name}, which you don't teach.`);
+        return;
+      }
+
+      const raw = entities.original || entities._rawInput || '';
+      const esc = (t) => this.escapeHtml(String(t));
+      const updates = {};
+      const lines = [];
+
+      const due = typeof this._rivenParseDueDate === 'function' ? this._rivenParseDueDate(raw) : null;
+      if (due && due.iso) {
+        updates.due_date = new Date(due.iso + 'T23:59:00').toISOString();
+        lines.push(`due: ${esc(String(a.due_date || '').slice(0, 10) || '\u2014')} \u2192 <b>${esc(due.iso)}</b>`);
+      }
+
+      const pts = raw.match(/\b(?:worth|out of|for)\s+(\d{1,4})\s*(?:points?|pts?)?\b/i)
+        || raw.match(/\b(\d{1,4})\s*(?:points?|pts?)\b/i);
+      if (pts) {
+        const n = parseInt(pts[1], 10);
+        if (Number.isFinite(n) && n >= 0) {
+          updates.max_points = n;
+          lines.push(`points: ${esc(a.max_points ?? '\u2014')} \u2192 <b>${n}</b>`);
+        }
+      }
+
+      if (/\b(unpublish|hide|unhide)\b/i.test(raw)) {
+        const hiding = /\b(unpublish|hide)\b/i.test(raw) && !/\bunhide\b/i.test(raw);
+        updates.is_published = !hiding;
+        lines.push(hiding ? 'hidden from students' : 'visible to students');
+      } else if (/\bpublish\b/i.test(raw)) {
+        updates.is_published = true;
+        lines.push('visible to students');
+      }
+
+      if (!Object.keys(updates).length) {
+        this.terminalPrintError(
+          'What should change? I can set the due date, the points, or whether students can see it \u2014 ' +
+          'e.g. "make chapter 4 due friday" or "chapter 4 is worth 50 points".');
+        return;
+      }
+
+      const before = {};
+      Object.keys(updates).forEach(k => { before[k] = a[k]; });
+
+      this._requestConfirmation(
+        `Change <b>${esc(a.title)}</b>?<br>${lines.join('<br>')}`,
+        async () => {
+          const { error } = await this.auth.supabase.from('assignments')
+            .update(updates).eq('id', a.id);
+          if (error) throw this._rivenPolicyError(error);
+          this._pushUndo(`the change to ${a.title}`, async () => {
+            const { error: r } = await this.auth.supabase.from('assignments')
+              .update(before).eq('id', a.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${a.title} updated.`]);
         });
     }
 

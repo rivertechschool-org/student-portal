@@ -437,12 +437,20 @@ const T6 = [
   // this batch as the ones that must.
   ['maths teacher is now caitlin', 'SET_CLASS_TEACHER', null, true],
   ['reopen math', 'REOPEN_CLASS', null, true],
-  // Sam Carter is on this roster and "quarter" is one edit from "Carter",
-  // so these resolve a student incidentally. That is the point: a quarter
-  // question must still be a quarter question.
-  ['what quarter are we in', 'VIEW_QUARTERS', 'Sam Carter', true],
-  ['set the current quarter to quarter 2', 'SET_CURRENT_QUARTER', 'Sam Carter', true],
+  // "quarter" is one edit from "Carter", who is on this roster. An ordinary
+  // English word is never a name, whatever else the sentence says, so these
+  // resolve nobody - before that rule they resolved the student and answered
+  // with their card.
+  ['what quarter are we in', 'VIEW_QUARTERS', null, true],
+  ['set the current quarter to quarter 2', 'SET_CURRENT_QUARTER', null, true],
   ['list the quarters', 'VIEW_QUARTERS', null, true],
+  // Assignments. Creating one already worked; changing or removing one did
+  // not. The line that must hold is that setting one is still CREATE.
+  ['delete the chapter 4 assignment', 'DELETE_ASSIGNMENT', null, true],
+  ['make chapter 4 due friday', 'EDIT_ASSIGNMENT', null, true],
+  ['chapter 4 is worth 50 points', 'EDIT_ASSIGNMENT', null, true],
+  ['unpublish the chapter 4 assignment', 'EDIT_ASSIGNMENT', null, true],
+  ['assign chapter 5 to math due friday', 'CREATE_ASSIGNMENT', null, true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],
