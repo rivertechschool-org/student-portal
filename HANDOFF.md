@@ -320,3 +320,47 @@ application at `/enrollment/` is untouched.
 
 `tests/no-student-self-signup.test.js` — 81 assertions, covering both the doors being shut
 and the parent's door leading where the office's does.
+
+---
+
+## 2026-09-11 — Jordan's Claude (audit)
+
+**Audited every path that creates a student or parent account, and every path
+that links a parent to a child.** Two mistakes ran through several of them.
+
+**A flag is not a login.** `can_login` and `account_status` are claims;
+`auth_user_id` is the fact, and rows exist where they disagree. The old Activate
+button set the flag and created nothing; approving an enrolment set `can_login`
+true on the strength of a comment saying an admin would create the auth user
+"separately", which no caller has ever done. Every screen reading the flag
+showed those students as finished and hid the button that fixes them. One live
+student was in exactly that state and did not appear on the Inactive Students
+list. `isActivated()` (portal) and the new `childHasLogin()` (sign-in page) are
+now the one rule, used by both parent-facing buttons and by that list.
+
+**Two kinds of id in one column.** `parent_child_links.parent_id` holds an auth
+id. A parent who signed themselves up has the same value for both ids, so
+passing either worked and nobody noticed — but a parent created by approving an
+enrolment gets a fresh uuid and no login, and the same code then failed on the
+constraint. Inside the enrolment function's exception handler that rolled the
+whole approval back: no student, no medical record, no waivers, and an error
+message naming a constraint. **Every genuinely new family hit this.** The admin
+parents table now resolves the id, offers a parent with no login the *account*
+rather than a link that cannot be written, and `linkChildToParent` refuses an
+unresolvable parent with a sentence instead of a constraint name.
+
+**Approval stops overstating itself.** The confirm no longer promises "a login
+account will be created with their email", the approval email no longer tells
+the family the same, and the admin is shown what is still outstanding.
+
+**Not fixed, deliberately — all outside account creation:**
+
+- `app.editRubric(...)` is a button with no method behind it (Rubrics screen).
+- `teacher_purchase_privilege` is called from the client and does not exist.
+- `shared/arcade/FirebaseManager.js` calls a `firebase-token` function that is
+  not deployed.
+- One login exists with no profile behind it, from the old Activate flow.
+  Removing it deletes an auth user, so it is Jordan's call, not mine.
+
+Backend changes are in the private repo and are already applied. Suite green;
+`tests/account-paths-audit.test.js` (24) and `tests/no-student-self-signup.test.js` (84).
