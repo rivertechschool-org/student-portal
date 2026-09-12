@@ -444,3 +444,41 @@ is not.
 
 `tests/class-register-day-roster.test.js` — 23 assertions, the sharpest being
 that a student with an existing mark survives the filter.
+
+---
+
+## 2026-09-11 — Jordan's Claude (Riven: enrolment)
+
+**"Is Jonathan a full time or homeschool student?" answered with a class
+picker.** "Homeschool" is two things here at once: the enrolment type of 36 of
+the 138 students on the roll, and a cohort qualifier inside four class names
+("Creative Writing - Older Homeschool"). Class matching takes any distinctive
+word of four letters or more as partial evidence, so the bare word matched all
+of them, and a picker is what ambiguity looks like.
+
+Two halves:
+
+- **The bare word no longer names a class.** It joins `grade`, `class` and the
+  rest in `genericWords`, so it is dropped from class *name* words. Nothing
+  becomes unreachable: "older homeschool" still resolves on "older", "Film -
+  Homeschoolers" on "film", and "creative writing" on its own two words. It
+  only stops the word alone standing in for a class nobody named. As a
+  side-effect, "the older homeschool class" now resolves to exactly that class
+  — before, it was ambiguous across all three.
+- **The question has an answer.** `ENROLLMENT_TYPE` reads the type off the
+  profile and pairs it with the days the student actually comes in, since that
+  is what the label means in practice. `ENROLLMENT_COUNTS` answers the same
+  question about the whole school ("how many homeschool students do we have"),
+  which was giving the identical picker before.
+
+Neither guesses. An empty `enrollment_type` is reported as empty rather than
+assumed full-time — the difference is a fee arrangement, and a wrong number
+here gets quoted to a parent.
+
+**The harness roster now carries the real class names.** Without three classes
+named "… Homeschool" in `debug-tools/nlp-stress.js`, this whole class of bug is
+invisible to it. If you add vocabulary that doubles as both a class name and a
+student property, put a class carrying it in that list.
+
+RIVEN_BUILD → 2026-09-11·e. nlp-stress green, frontdoor-precision 100%.
+`tests/riven-enrolment-type.test.js` — 26 assertions.

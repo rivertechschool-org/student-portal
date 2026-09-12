@@ -48711,7 +48711,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-11·d';
+      const RIVEN_BUILD = '2026-09-11·e';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -53279,6 +53279,41 @@
           requiresSince: true
         },
         // VIEW_ENROLLMENTS — "what classes is jordan in"
+        // ENROLLMENT_COUNTS - the same question about the whole school.
+        //
+        // It used to reach the class matcher too and come back with a picker,
+        // for the same reason. notIfStudent keeps it off "is jonathan full time
+        // or homeschool", which is the one below.
+        {
+          intent: 'ENROLLMENT_COUNTS',
+          w: 8, notIfStudent: true, notIfNoteCommand: true,
+          patterns: [
+            /\bhow many\b[\s\S]{0,24}\b(homeschool(er|ers|ed)?|full[\s-]?time|part[\s-]?time)\b/,
+            /\b(homeschool(er|ers|ed)?|full[\s-]?time)\s+students?\b[\s\S]{0,20}\b(count|total|do we have|are there)\b/,
+            /\b(breakdown|split)\b[\s\S]{0,24}\benrol?lment\b/,
+            /\benrol?lment\s+(breakdown|split|counts?|numbers?)\b/,
+          ]
+        },
+        // ENROLLMENT_TYPE - "is jonathan full time or homeschool?"
+        //
+        // A question about the STUDENT, and it used to reach the class matcher
+        // on the word "homeschool" and come back with a list of classes to
+        // choose from. Above VIEW_ENROLLMENTS deliberately: "what classes is he
+        // in" and "is he homeschool" are different questions, and the second
+        // one is the one with the enrolment words in it.
+        {
+          intent: 'ENROLLMENT_TYPE',
+          w: 8, requiresStudent: true, notIfNoteCommand: true,
+          patterns: [
+            // The question as people ask it, either way round.
+            /\b(full[\s-]?time|part[\s-]?time)\b[\s\S]{0,12}\bor\b[\s\S]{0,12}\bhomeschool(er|ers|ed)?\b/,
+            /\bhomeschool(er|ers|ed)?\b[\s\S]{0,12}\bor\b[\s\S]{0,12}\b(full[\s-]?time|part[\s-]?time)\b/,
+            // A plain yes/no about one of them.
+            /^(is|are|was|were)\b[\s\S]{0,40}\b(full[\s-]?time|part[\s-]?time|homeschool(er|ers|ed)?)\b/,
+            /\benrol?lment\s+(type|status)\b/,
+            /\b(what|which)\s+(kind|type)\s+of\s+(student|enrol?lment)\b/,
+          ]
+        },
         {
           intent: 'VIEW_ENROLLMENTS',
           w: 4,
@@ -54092,6 +54127,10 @@
           await this.terminalStudentBriefing(entities);
           break;
 
+        case 'ENROLLMENT_COUNTS':
+          return await this.terminalEnrollmentCounts();
+        case 'ENROLLMENT_TYPE':
+          return await this.terminalEnrollmentType(entities);
         case 'PLAN_ABSENCE':
           await this.terminalPlanAbsence(entities);
           break;
@@ -54965,6 +55004,8 @@
         RENAME_CLASS: 'rename a class', UPDATE_CONTACT: 'change contact info',
         GRANT_PRIVILEGE: 'grant a privilege', REVOKE_PRIVILEGE: 'revoke a privilege',
         BUY_ITEM: 'log a purchase', BUY_PRIVILEGE: 'buy a privilege',
+        ENROLLMENT_COUNTS: 'count how many students are full-time or homeschool',
+        ENROLLMENT_TYPE: 'say whether a student is full-time or homeschool',
         PLAN_ABSENCE: 'note an upcoming absence',
       };
       const what = ACTION[intent.blockedIntent] || 'make that change';
@@ -57510,6 +57551,94 @@
           ]);
           this.renderPlannedAbsencesPanel?.().catch(() => {});
         });
+    }
+
+    // "How many homeschool students do we have?"
+    //
+    // Counted over students still on the roll, because a count that includes
+    // everyone who has ever left answers a question nobody asked. Anything with
+    // no type recorded is reported separately rather than folded into
+    // full-time: the difference is a fee arrangement, and guessing it in an
+    // answer is how a wrong number gets quoted to a parent.
+    async terminalEnrollmentCounts() {
+      const { data, error } = await this.auth.supabase
+        .from('user_profiles')
+        .select('enrollment_type, student_status')
+        .eq('user_type', 'student');
+
+      if (error) { this.terminalPrintError('Could not count the roster: ' + error.message); return; }
+
+      const live = (data || []).filter(r => (r.student_status || 'active') !== 'past');
+      const tally = {};
+      for (const r of live) {
+        const k = (r.enrollment_type || '').toLowerCase().replace('_', '-') || '(not set)';
+        tally[k] = (tally[k] || 0) + 1;
+      }
+
+      const order = ['full-time', 'homeschool', 'part-time'];
+      const keys = order.filter(k => tally[k]).concat(
+        Object.keys(tally).filter(k => !order.includes(k)).sort());
+
+      if (!keys.length) { this._showRivenMessage('No students on the roll.', true); return; }
+
+      const lines = keys.map(k =>
+        `\u2022 <b>${tally[k]}</b> ${this.escapeHtml(k === '(not set)' ? 'with no type recorded' : k)}`);
+
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">Enrolment \u2014 ${live.length} on the roll</div>` +
+        `<div style="font-size: 13px; line-height: 1.8;">${lines.join('<br>')}</div>`, true);
+    }
+
+    // "Is Jonathan full time or homeschool?"
+    //
+    // Read straight off the profile, and paired with the days they actually
+    // come in, because at this school that is what the label means in practice
+    // - and a label with no days behind it is the thing the office needs to
+    // know about. enrollment_type is not on the terminal roster (it holds the
+    // handful of columns every command needs), so this fetches the one row.
+    async terminalEnrollmentType(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) {
+        this.terminalPrintError('Which student? Try "is jonathan full time or homeschool".');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const [{ data: p, error }, { data: sched }] = await Promise.all([
+        sb.from('user_profiles').select('enrollment_type, grade_level').eq('id', student.id).single(),
+        sb.from('student_schedule').select('day_of_week').eq('student_id', student.id),
+      ]);
+
+      if (error || !p) {
+        this.terminalPrintError(`Couldn't read the enrolment for ${student.full_name}.`);
+        return;
+      }
+
+      const LABEL = { 'full-time': 'full-time', 'full_time': 'full-time', 'homeschool': 'homeschool',
+                      'part-time': 'part-time', 'part_time': 'part-time' };
+      const type = LABEL[(p.enrollment_type || '').toLowerCase()] || p.enrollment_type || null;
+
+      const names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const days = [...new Set((sched || []).map(r => r.day_of_week))].sort((a, b) => a - b).map(d => names[d]);
+      const dayList = days.length === 0 ? null
+        : days.length === 5 && days.every(d => d !== 'Sunday' && d !== 'Saturday') ? 'every weekday'
+        : days.join(', ');
+
+      const esc = (t) => this.escapeHtml(t);
+      if (!type) {
+        // Saying "full-time" because the column is empty would be a guess about
+        // a fee-paying arrangement.
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> has no enrolment type set \u2014 the office has not recorded ` +
+          `whether they are full-time or homeschool.` +
+          (dayList ? ` They are down to come in ${esc(dayList)}.` : ''), true);
+        return;
+      }
+
+      this._showRivenMessage(
+        `<b>${esc(student.full_name)}</b> is <b>${esc(type)}</b>` +
+        (dayList ? `, in ${esc(dayList)}.` : `. No attending days are set for them, which is worth a look.`),
+        true);
     }
 
     async terminalShowPlannedAbsences(entities) {
@@ -60518,7 +60647,19 @@
       // word (>=4 chars). Full matches outrank partial ones. Name tokens are
       // stripped of punctuation, and generic words ("grade" in "Lower
       // Elementary (1-2nd grade)") never count as class evidence.
-      const genericWords = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with', '1-2nd', '3-5th']);
+      // homeschool is ENROLMENT vocabulary at this school - 36 students are
+      // homeschool and 102 full-time - and it also appears in four class names
+      // as a cohort qualifier ("Creative Writing - Older Homeschool"). Left as
+      // evidence it matched on its own: "is jonathan full time or homeschool"
+      // pulled up three classes and a picker, because a 10-letter word passes
+      // the partial-match test by itself.
+      //
+      // Dropping it from the name words does not make those classes
+      // unreachable - "older homeschool" still matches on "older", "creative
+      // writing" on both its own words, "Film - Homeschoolers" on "film". It
+      // only stops the bare word standing in for a class nobody named.
+      const genericWords = new Set(['grade', 'grades', 'class', 'classes', 'the', 'and', 'for', 'with', '1-2nd', '3-5th',
+                                    'homeschool', 'homeschooler', 'homeschoolers', 'homeschooled']);
       const nameWords = (row) => (row.name || '').toLowerCase().split(/\s+/)
         .map(w => w.replace(/[^a-z0-9&°:-]/g, ''))
         .map(w => nameNums[w] || w)

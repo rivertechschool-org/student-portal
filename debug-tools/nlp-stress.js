@@ -70,6 +70,13 @@ app._terminalAllClasses = [
   { id: 'c2', name: 'Robotics', subject: 'Science', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
   { id: 'c3', name: 'Filmmaking - Freshman', subject: 'Art', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
   { id: 'c4', name: 'World History', subject: 'History', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
+  // Real names. "Homeschool" is a cohort qualifier in four class names AND the
+  // enrolment type of 36 students, and a bare "homeschool" used to match all of
+  // these at once - so any question containing the word came back as a class
+  // picker. Without classes named like this the harness cannot see it.
+  { id: 'c5', name: 'Creative Writing - Older Homeschool', subject: 'Creative Writing', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
+  { id: 'c6', name: 'Creative Writing - Younger Homeschool', subject: 'Creative Writing', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
+  { id: 'c7', name: 'Critical Thinking & Debate - Younger Homeschool', subject: 'Creative Writing', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
 ];
 
 // Run the front of the pipeline exactly like _executeNaturalLanguage
@@ -372,6 +379,20 @@ const T6 = [
   ['noah has a dentist appointment on friday', 'PLAN_ABSENCE', 'Noah Williams', true],
   ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
   ['charlotte wont be in tomorrow', 'PLAN_ABSENCE', 'Charlotte Tebow', true],
+  // Enrolment is a property of the STUDENT. Reported from the phone: this
+  // came back as "I found 3 classes that could match" and a picker, because
+  // "homeschool" is ten letters long and every partial class match takes any
+  // distinctive word on its own.
+  ['Is Noah a full time or homeschool student?', 'ENROLLMENT_TYPE', 'Noah Williams', true],
+  ['is charlotte homeschool', 'ENROLLMENT_TYPE', 'Charlotte Tebow', true],
+  ['what enrollment type is noah', 'ENROLLMENT_TYPE', 'Noah Williams', true],
+  // Same question, whole school. Also a picker before.
+  ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
+  ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],
+  // And the lines that must not move: naming a class still names a class,
+  // and the cohort word still narrows one when it is part of a real name.
+  ['what classes is charlotte in', 'VIEW_ENROLLMENTS', 'Charlotte Tebow', true],
+  ['add charlotte to creative writing older homeschool', 'ENROLL_STUDENT', 'Charlotte Tebow', true],
   // Asking WHICH DAYS someone is away is a read of the same list, and it used
   // to be refused instead: "are ... missing" is a PLAN_ABSENCE phrasing, so
   // notIfQuestion fired and Riven answered "that's phrased as a question, so I
