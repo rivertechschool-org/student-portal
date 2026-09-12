@@ -558,3 +558,44 @@ receivers and missed `gradebook.x()` entirely.
 
 `tests/student-hub-record-gate.test.js` — 19 assertions holding the manual route
 and Riven to the same rule.
+
+---
+
+## 2026-09-12 (overnight) — Jordan's Claude (Riven build-out)
+
+Working through the portal's actions and giving Riven the ones an admin or a
+teacher would want, with the gates each needs. Committed in batches; each one
+has its own test file and its own nlp-stress cases.
+
+**Done so far:** the student record (name, grade level, enrolment type, days,
+parents) · the student lifecycle (withdraw, reinstate, PIN, parent link code,
+unlink) · the day itself (excuse, pickup, cancel/uncancel a session, report
+card, transcript) · classes and the calendar (who teaches a class, reopen,
+current quarter) · assignments (edit, delete) · student groups (create, delete,
+meeting days, membership).
+
+**The gating rule that emerged.** Reads stay with teachers — they ask constantly
+and none of it is theirs to change. Writes split by *what the fact is*: anything
+about the student RECORD or the school's shape is admin (name, year group,
+enrolment type, attending days, parents, cohorts, who teaches what, the
+quarter); anything about the DAY is the teacher's, because they are standing
+there (attendance, excusing, pickup, cancelling their own session, their own
+assignments). `_rivenRequireAdmin` says it once; `_rivenCanManageClass` handles
+the per-class cases.
+
+**Three bugs found underneath, all worth knowing:**
+
+- **An ordinary English word was being resolved as a student name.** This school
+  has a *Carter*, so "what quarter are we in" and "delete the chapter 4
+  assignment" both resolved to that student — the guard only applied to
+  sentences with no command verb, and both have one. An exact common word is
+  now never a name; a near-miss still needs command context.
+- **A group's own name was read as a meeting day.** "Thursday Lab meets friday"
+  parsed Thursday *and* Friday, so there was no way to say it meets Friday.
+- **The shared test extractor never bound destructured parameters.** It sliced
+  the signature to the first `{`, which is inside the parameter list for
+  `_rivenCanManageClass`. Twelve test files carried the same copy.
+
+**Still to do:** grading a submission · enrolment applications (approve, deny,
+waitlist) · staff (invite, promote, deactivate) · strikes · facility bookings ·
+materials requests · activities.
