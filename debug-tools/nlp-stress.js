@@ -461,6 +461,12 @@ const T6 = [
   ['noah got 18 out of 20 on chapter 4', 'GRADE_SUBMISSION', 'Noah Williams', true],
   ['give charlotte 45/50 on the essay', 'GRADE_SUBMISSION', 'Charlotte Tebow', true],
   ["set noah's final grade in math to 95", 'SET_GRADE', 'Noah Williams', true],
+  // Enrolment applications. Siblings share surnames, so these must survive a
+  // roster match on a student who is not the applicant.
+  ['approve the application for the smith family', 'APPROVE_APPLICATION', null, true],
+  ['deny that application because no space', 'DENY_APPLICATION', null, true],
+  ['waitlist the smith application', 'WAITLIST_APPLICATION', null, true],
+  ['any applications waiting', 'VIEW_APPLICATIONS', null, true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

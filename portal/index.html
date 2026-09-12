@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·e';
+      const RIVEN_BUILD = '2026-09-12·f';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52149,7 +52149,7 @@
         'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER',
         'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
-        'GRADE_SUBMISSION',
+        'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53401,6 +53401,53 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- Enrolment applications --------------------------------------
+        //
+        // A family applies, an admin decides. Approving is the one that
+        // CREATES things - the student record, the medical details, the
+        // waivers, the parent profile - so it is treated as a write of that
+        // size, not as ticking a queue item.
+        //
+        // NOT notIfStudent, though the first draft had it. The applicant is not
+        // on the roster, so the reasoning was that a student who resolves must
+        // be somebody else - but siblings share surnames, and "approve the
+        // application for the smith family" resolved an existing Smith and
+        // knocked the command out entirely. The executor finds the application
+        // by the name on the FORM and ignores whoever the roster matched, and
+        // the confirmation names the applicant before anything happens.
+        {
+          intent: 'APPROVE_APPLICATION',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(approve|accept|admit)\b[\s\S]{0,32}\b(application|enrol?ment|applicant)\b/,
+            /\b(application|enrol?ment)\b[\s\S]{0,20}\b(approved|accepted)\b/,
+          ]
+        },
+        {
+          intent: 'DENY_APPLICATION',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(deny|denied|decline|reject|turn down)\b[\s\S]{0,32}\b(application|enrol?ment|applicant)\b/,
+            /\b(application|enrol?ment)\b[\s\S]{0,20}\b(denied|declined|rejected)\b/,
+          ]
+        },
+        {
+          intent: 'WAITLIST_APPLICATION',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\bwait-?list(ed|ing)?\b/,
+            /\b(hold|holding)\b[\s\S]{0,24}\b(application|enrol?ment)\b/,
+          ]
+        },
+        {
+          intent: 'VIEW_APPLICATIONS',
+          w: 8,
+          patterns: [
+            /\b(applications?|applicants?)\b[\s\S]{0,24}\b(waiting|pending|outstanding|to review|in the queue)\b/,
+            /\b(any|how many|list|show|what)\b[\s\S]{0,24}\b(applications?|applicants?)\b/,
+            /\benrol?ment\s+(queue|applications?)\b/,
+          ]
+        },
         // GRADE_SUBMISSION - "give noah 18 out of 20 on chapter 4"
         //
         // Marking one student's work on one assignment. Distinct from SET_GRADE,
@@ -54590,6 +54637,14 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'APPROVE_APPLICATION':
+          return await this.terminalDecideApplication(entities, 'approve');
+        case 'DENY_APPLICATION':
+          return await this.terminalDecideApplication(entities, 'deny');
+        case 'WAITLIST_APPLICATION':
+          return await this.terminalDecideApplication(entities, 'waitlist');
+        case 'VIEW_APPLICATIONS':
+          return await this.terminalViewApplications(entities);
         case 'GRADE_SUBMISSION':
           return await this.terminalGradeSubmission(entities);
         case 'CREATE_GROUP':
@@ -55522,6 +55577,9 @@
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
         GRADE_SUBMISSION: 'mark a student\'s work on an assignment',
+        APPROVE_APPLICATION: 'approve an enrolment application',
+        DENY_APPLICATION: 'deny an enrolment application',
+        WAITLIST_APPLICATION: 'waitlist an enrolment application',
         CREATE_GROUP: 'create a student group',
         DELETE_GROUP: 'delete a student group',
         SET_GROUP_DAYS: 'set which days a group meets',
@@ -58407,6 +58465,150 @@
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
         });
+    }
+
+    // ---- Enrolment applications --------------------------------------------
+
+    // Applications are not students yet, so they are found by the name on the
+    // form rather than through the roster matcher.
+    async _rivenFindApplication(entities) {
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      const { data, error } = await this.auth.supabase
+        .from('enrollment_applications')
+        .select('id, application_number, status, school_year, student_first_name, student_last_name, student_grade_applying, parent1_first_name, parent1_last_name, parent1_email, created_at')
+        .order('created_at', { ascending: false });
+      if (error) return { error: 'read', message: error.message };
+
+      const open = (data || []).filter(a => !['approved', 'denied', 'withdrawn'].includes(a.status));
+      const byNumber = (data || []).find(a =>
+        a.application_number && raw.includes(String(a.application_number).toLowerCase()));
+      if (byNumber) return { row: byNumber };
+
+      const named = open.filter(a => {
+        const full = `${a.student_first_name || ''} ${a.student_last_name || ''}`.trim().toLowerCase();
+        const first = (a.student_first_name || '').toLowerCase();
+        return (full.length > 3 && raw.includes(full))
+          || (first.length > 2 && new RegExp('\\b' + first + '\\b').test(raw));
+      });
+
+      if (named.length === 1) return { row: named[0] };
+      if (named.length > 1) return { error: 'ambiguous', candidates: named };
+      // One open application and nobody named is unambiguous enough to offer,
+      // because the confirmation names it before anything happens.
+      if (!named.length && open.length === 1) return { row: open[0] };
+      return { error: open.length ? 'not_found' : 'none_open', open };
+    }
+
+    async terminalDecideApplication(entities, decision) {
+      const what = decision === 'approve' ? 'approve an enrolment application'
+        : decision === 'deny' ? 'deny an enrolment application' : 'waitlist an enrolment application';
+      if (!this._rivenRequireAdmin(what)) return;
+
+      const res = await this._rivenFindApplication(entities);
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      if (res.error === 'none_open') {
+        this._showRivenMessage('There are no applications waiting.', true);
+        return;
+      }
+      if (res.error === 'ambiguous') {
+        const list = res.candidates.map(a => `${a.student_first_name} ${a.student_last_name}`).join(', ');
+        this.terminalPrintError(`More than one matches: ${list}. Use the application number.`);
+        return;
+      }
+      if (res.error) {
+        this.terminalPrintError(res.error === 'read'
+          ? 'Could not read the applications: ' + res.message
+          : 'I could not find that application. Name the student, or give the application number.');
+        return;
+      }
+
+      const a = res.row;
+      const name = `${a.student_first_name || ''} ${a.student_last_name || ''}`.trim();
+      const sb = this.auth.supabase;
+
+      if (decision === 'approve') {
+        this._requestConfirmation(
+          `Approve <b>${esc(name)}</b>${a.student_grade_applying ? `, grade ${esc(a.student_grade_applying)}` : ''}?` +
+          `<br><span style="font-size: 12px;">This creates their school record, medical details, waivers and ` +
+          `the parent profile. Sign-ins are opened afterwards from the roster \u2014 nothing is emailed yet.</span>`,
+          async () => {
+            const { data, error } = await sb.rpc('create_enrollment_profile', {
+              p_application_id: a.id,
+              p_create_auth_user: false,
+              p_account_status: 'active',
+              p_admin_user_id: this.userInfo.user.id,
+            });
+            if (error) throw this._rivenPolicyError(error);
+            const r = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+            if (r.error) throw new Error(r.error);
+
+            // What the approval could NOT finish, in the function's own words.
+            const left = [];
+            if (r.student_needs_login) left.push(`${a.student_first_name} needs their account opened`);
+            if (r.parent_needs_login) left.push(`${a.parent1_first_name || 'the parent'} needs a login before they can be linked`);
+            this._naturalSuccess([
+              `${name} is enrolled.` + (left.length ? ` Still to do: ${left.join('; ')}.` : '')
+            ]);
+          });
+        return;
+      }
+
+      const status = decision === 'deny' ? 'denied' : 'waitlisted';
+      const raw = entities.original || entities._rawInput || '';
+      const rm = raw.match(/\b(?:because|reason|due to)\s+(.{3,120}?)\s*[.!?]?$/i);
+      const reason = rm ? rm[1].trim() : null;
+
+      if (decision === 'deny' && !reason) {
+        // The page asks for one and will not proceed without it; a denial with
+        // no recorded reason is one nobody can explain to the family later.
+        this.terminalPrintError(
+          `Why? A denial needs a reason on the record \u2014 say e.g. "deny ${esc(name)}'s application because no space in that year group".`);
+        return;
+      }
+
+      this._requestConfirmation(
+        `${decision === 'deny' ? 'Deny' : 'Waitlist'} <b>${esc(name)}</b>'s application?` +
+        (reason ? `<br><span style="font-size: 12px;">Reason: ${esc(reason)}</span>` : '') +
+        `<br><span style="font-size: 12px;">No records are created. The application stays on file.</span>`,
+        async () => {
+          const patch = {
+            status,
+            reviewed_by: this.userInfo.user.id,
+            reviewed_at: new Date().toISOString(),
+          };
+          if (decision === 'deny') patch.denial_reason = reason;
+          const { error } = await sb.from('enrollment_applications').update(patch).eq('id', a.id);
+          if (error) throw this._rivenPolicyError(error);
+
+          const before = { status: a.status, reviewed_by: null, reviewed_at: null };
+          this._pushUndo(`${status === 'denied' ? 'denying' : 'waitlisting'} ${name}'s application`, async () => {
+            const { error: r } = await sb.from('enrollment_applications').update(before).eq('id', a.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${name}'s application is ${status}.`]);
+        });
+    }
+
+    async terminalViewApplications(entities) {
+      const { data, error } = await this.auth.supabase
+        .from('enrollment_applications')
+        .select('application_number, status, school_year, student_first_name, student_last_name, student_grade_applying, created_at')
+        .order('created_at', { ascending: false });
+      if (error) { this.terminalPrintError('Could not read the applications: ' + error.message); return; }
+
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const open = (data || []).filter(a => !['approved', 'denied', 'withdrawn'].includes(a.status));
+      if (!open.length) {
+        this._showRivenMessage('No applications are waiting.', true);
+        return;
+      }
+      const lines = open.map(a =>
+        `\u2022 <b>${esc(`${a.student_first_name || ''} ${a.student_last_name || ''}`.trim())}</b>` +
+        `${a.student_grade_applying ? ` \u00b7 grade ${esc(a.student_grade_applying)}` : ''}` +
+        ` \u00b7 ${esc(a.status)}${a.application_number ? ` \u00b7 ${esc(a.application_number)}` : ''}`);
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">\u{1F4DD} ${open.length} application${open.length === 1 ? '' : 's'} waiting</div>` +
+        `<div style="font-size: 13px; line-height: 1.8;">${lines.join('<br>')}</div>`, true);
     }
 
     // ---- Grading one piece of work -----------------------------------------
