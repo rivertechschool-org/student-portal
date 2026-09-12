@@ -230,17 +230,30 @@ function fakeDom(fields) {
 
   console.log('\n== a parent opens their own child\'s account ==\n');
 
+  // "Needs their account opening" is decided by whether a LOGIN exists, which
+  // is account_status together with auth_user_id - the same rule the office's
+  // isActivated() applies. can_login on its own gets three of these four right
+  // and the fourth badly wrong, which is why the rule is shared rather than
+  // re-guessed on each screen.
   const CHILDREN = [
     // The real case: linked, on the roster, no login yet.
     { id: 'c1', first_name: 'Ruthie', last_name: 'Argon', email: null, grade_level: '7',
-      account_status: 'inactive', can_login: false },
+      account_status: 'inactive', can_login: false, auth_user_id: null },
     // Already signed in once - nothing to offer.
     { id: 'c2', first_name: 'Eli', last_name: 'Argon', email: 'eli@example.com', grade_level: '9',
-      account_status: 'activated', can_login: true },
-    // Signs in with a PIN, so the address on file is the synthetic one.
+      account_status: 'activated', can_login: true, auth_user_id: 'auth-eli' },
+    // Signs in with a PIN: there IS an auth user, but account_status stays
+    // 'inactive', so the portal itself is still shut to them.
     { id: 'c3', first_name: 'Mae', last_name: 'Argon', email: 'pin-abc@pin.rivertech.me',
-      grade_level: '5', account_status: 'inactive', can_login: false },
+      grade_level: '5', account_status: 'inactive', can_login: false, auth_user_id: 'auth-pin' },
   ];
+
+  // What approving an enrolment produces: flagged active, carrying can_login,
+  // and nothing to sign in with. Reading the flag shows this child as finished
+  // and hides the one button that would fix it.
+  const ENROLLED_NO_LOGIN = { id: 'c4', first_name: 'Probe', last_name: 'Newfamily',
+    email: 'probe@example.com', grade_level: '6',
+    account_status: 'activated', can_login: true, auth_user_id: null };
 
   function rootParent({ status = 200, body = { success: true, emailSent: true }, throws = null } = {}) {
     const app = {
@@ -462,6 +475,7 @@ function fakeDom(fields) {
     const app = {
       auth: { supabase: { from: table } },
       initCalendar() {},
+      childHasLogin: fromRoot('childHasLogin'),
     };
     global.document = { getElementById: () => null };
     await loadParentDashboard.call(app, section, { user: { id: 'p-auth' }, profile: { id: 'p1' } }, 'Mary');
@@ -485,6 +499,14 @@ function fakeDom(fields) {
     const { html } = await runParentDashboard([CHILDREN[1]]);
     check('a family with nothing to do sees no activation at all',
       (html.match(/showActivateChildModal/g) || []).length, 0);
+  }
+
+  {
+    // The regression the shared rule exists for.
+    const { html } = await runParentDashboard([ENROLLED_NO_LOGIN]);
+    ok('a child approved by enrolment is still offered an account',
+      /Open Probe's account/.test(html));
+    check('  exactly once', (html.match(/showActivateChildModal/g) || []).length, 1);
   }
 
   console.log('\n== the portal parent page does the same thing ==\n');
@@ -564,6 +586,7 @@ function fakeDom(fields) {
       messageThreads: [],
       supabaseQuery: () => Promise.resolve({ count: 0 }),
       _renderMoreSectionsCard: () => '',
+      isActivated: fromPortal('isActivated'),
     };
     global.document = { getElementById: () => null };
     const html = getParentHomeContent.call(app);
@@ -578,10 +601,25 @@ function fakeDom(fields) {
   {
     const getParentHomeContent = fromPortal('getParentHomeContent');
     const app = {
+      children: [{ ...ENROLLED_NO_LOGIN, classes: [] }],
+      messageThreads: [],
+      supabaseQuery: () => Promise.resolve({ count: 0 }),
+      _renderMoreSectionsCard: () => '',
+      isActivated: fromPortal('isActivated'),
+    };
+    global.document = { getElementById: () => null };
+    check('the portal agrees about the enrolment case',
+      (getParentHomeContent.call(app).match(/showActivateChildModal/g) || []).length, 1);
+  }
+
+  {
+    const getParentHomeContent = fromPortal('getParentHomeContent');
+    const app = {
       children: [{ ...CHILDREN[1], classes: [] }],
       messageThreads: [],
       supabaseQuery: () => Promise.resolve({ count: 0 }),
       _renderMoreSectionsCard: () => '',
+      isActivated: fromPortal('isActivated'),
     };
     global.document = { getElementById: () => null };
     const html = getParentHomeContent.call(app);

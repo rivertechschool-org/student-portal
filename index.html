@@ -2362,12 +2362,16 @@
                     const childIds = links.map(l => l.child_id);
                     console.log('Looking for child profiles with IDs:', childIds);
                     
-                    // can_login is what decides whether the "open their account"
-                    // button appears. A parent may read it on a linked child - the
-                    // link is the policy - and it is the same flag the office sees.
+                    // Whether a login EXISTS is what decides the "open their
+                    // account" button, not the can_login flag on its own:
+                    // approving an enrolment used to set that flag true on a
+                    // profile with no auth user behind it, so a child who could
+                    // not sign in would have looked finished. A parent may read
+                    // both columns on a linked child - the link is the policy -
+                    // and childHasLogin() below is the same check the office uses.
                     const { data: childProfiles, error: profileError } = await this.auth.supabase
                         .from('user_profiles')
-                        .select('id, first_name, last_name, email, grade_level, account_status, can_login')
+                        .select('id, first_name, last_name, email, grade_level, account_status, can_login, auth_user_id')
                         .in('id', childIds);
                     
                     console.log('Child profiles found:', childProfiles);
@@ -2446,7 +2450,7 @@
                                     <div style="padding: 10px; border-bottom: 1px solid var(--border);">
                                         <strong>${child.first_name} ${child.last_name}</strong><br>
                                         <small>Grade ${child.grade_level || 'N/A'} • ${enrType} • ${classCount} class${classCount !== 1 ? 'es' : ''}</small>
-                                        ${child.can_login ? '' : `
+                                        ${this.childHasLogin(child) ? '' : `
                                         <div style="margin-top: 8px; padding: 8px; background: rgba(255, 203, 107, 0.08); border: 1px solid var(--border); border-radius: 8px;">
                                             <div style="color: var(--muted); font-size: 12px; margin-bottom: 8px; line-height: 1.45;">
                                                 ${child.first_name} has no sign-in yet — games work with their PIN, but the
@@ -2825,6 +2829,24 @@
                     console.error('linkChildByCode failed:', e);
                     window.PortalUI?.showNotification('An error occurred. Please try again.', 'error');
                 }
+            }
+
+            // "Can this child sign in?" - the same three-part answer the portal's
+            // isActivated() gives, kept in step with it deliberately.
+            //
+            // The flag alone is not enough. Rows exist that read 'activated' with
+            // no auth user behind them: the old Activate button set the flag and
+            // created nothing, and approving an enrolment did the same while also
+            // setting can_login. Either would have hidden the one button that
+            // fixes it.
+            childHasLogin(child) {
+                const s = child?.account_status;
+                const flagged = s === 'activated' || s === 'active';
+                if (!flagged) return false;
+                if (child && Object.prototype.hasOwnProperty.call(child, 'auth_user_id')) {
+                    return !!child.auth_user_id;
+                }
+                return !!child.can_login;
             }
 
             // Opening a linked child's account

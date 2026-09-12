@@ -6215,13 +6215,16 @@
 
           // Get child profiles
           const childIds = links.map(l => l.child_id);
-          // can_login decides whether the child still needs their account
-          // opening. A parent may read it on a linked child; the link is the
-          // policy, and it is the same flag the office sees on the roster.
+          // auth_user_id is what decides whether the child still needs their
+          // account opening - isActivated() reads it, and so does the office.
+          // can_login alone is not enough: approving an enrolment used to set
+          // it true on a profile with no login behind it, so a child who could
+          // not sign in would have been shown as already done. A parent may
+          // read both on a linked child; the link is the policy.
           const { data: childProfiles, error: profileError } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('user_profiles')
-              .select('id, first_name, last_name, email, grade_level, enrollment_type, account_status, can_login')
+              .select('id, first_name, last_name, email, grade_level, enrollment_type, account_status, can_login, auth_user_id')
               .in('id', childIds));
 
           if (profileError) {
@@ -7688,7 +7691,7 @@
                 <div class="list-item-meta">
                   Grade ${child.grade_level || 'N/A'} • ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'} • ${child.classes?.length || 0} class${child.classes?.length !== 1 ? 'es' : ''}
                 </div>
-                ${child.can_login ? '' : `
+                ${this.isActivated(child) ? '' : `
                 <div style="margin-top: 6px;">
                   <span style="font-size: 11px; color: var(--warning); font-weight: 600;">No sign-in yet</span>
                   <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; margin-left: 8px;"
@@ -8086,7 +8089,13 @@
           // The button hangs off can_login, so the cached child row has to be
           // refreshed before the home page is drawn again.
           const child = (this.children || []).find(c => c.id === childId);
-          if (child) { child.can_login = true; child.email = email; child.account_status = 'activated'; }
+          if (child) {
+            // isActivated() wants all three, and the row is not re-fetched.
+            child.can_login = true;
+            child.email = email;
+            child.account_status = 'activated';
+            child.auth_user_id = child.auth_user_id || 'pending-refresh';
+          }
           if (this.currentSection === 'home') this.setupHomeContent();
         } catch (e) {
           console.error('confirmActivateChild failed:', e);
@@ -33781,7 +33790,16 @@
         const accountStatus = asInactive ? 'inactive' : 'active';
         const createAuthUser = !!app.student_email;
 
-        if (!confirm(`Approve ${app.student_first_name} ${app.student_last_name} as ${accountStatus}? ${createAuthUser ? 'A login account will be created with their email.' : 'Profile only (no login) — no email provided.'}`)) return;
+        // This used to promise "a login account will be created with their
+        // email". Nothing in the approval creates one - the function's own
+        // comment said an admin would do it "separately via the admin API",
+        // which no caller has ever done. Approval makes the RECORDS; the
+        // logins are opened afterwards from the roster, the same way as for
+        // every other student.
+        if (!confirm(
+          `Approve ${app.student_first_name} ${app.student_last_name} as ${accountStatus}?\n\n` +
+          `This creates their school record, medical details, waivers and the parent profile.\n` +
+          `Sign-ins are opened afterwards from the roster — nothing is emailed to the family yet.`)) return;
 
         try {
           // Save review notes first
@@ -33805,6 +33823,11 @@
           if (error) throw error;
           if (data?.error) throw new Error(data.error);
 
+          // What is still outstanding, in the words of the function that knows.
+          const outstanding = [];
+          if (data?.student_needs_login) outstanding.push(`${app.student_first_name} needs their account opened`);
+          if (data?.parent_needs_login) outstanding.push(`${app.parent1_first_name} needs a parent login before they can be linked`);
+
           // Send approval email to parent
           try {
             await this.auth.supabase.functions.invoke('send-notification-email', {
@@ -33818,7 +33841,9 @@
                   enrollmentType: app.student_enrollment_type,
                   schoolYear: app.school_year,
                   accountStatus: accountStatus,
-                  hasLogin: createAuthUser,
+                  // Approval never creates a login. Telling the family it did
+                  // sent them looking for an email that was never sent.
+                  hasLogin: false,
                   studentEmail: app.student_email || ''
                 }
               }
@@ -33827,7 +33852,11 @@
             console.error('Failed to send approval email:', emailErr);
           }
 
-          window.PortalUI?.showNotification(`${app.student_first_name} ${app.student_last_name} approved successfully!`, 'success');
+          window.PortalUI?.showNotification(
+            outstanding.length
+              ? `${app.student_first_name} ${app.student_last_name} approved. Still to do: ${outstanding.join('; ')}.`
+              : `${app.student_first_name} ${app.student_last_name} approved successfully!`,
+            'success', outstanding.length ? 14000 : undefined);
 
           // Close modal and refresh
           document.getElementById('enrollment-detail-modal')?.remove();
@@ -34867,18 +34896,30 @@
                       </thead>
                       <tbody>
                         ${parents.map(parent => {
-                          const children = parentChildrenMap[parent.id] || [];
+                          // parent_child_links.parent_id holds the AUTH id. It
+                          // equals the profile id for every parent who signed
+                          // themselves up - create_signup_profile sets id = the
+                          // auth user id - but NOT for one created by approving
+                          // an enrolment, which mints a fresh uuid. Reading both
+                          // keeps the screen right either way.
+                          const linkId = parent.auth_user_id || parent.id;
+                          const children = parentChildrenMap[linkId]
+                            || parentChildrenMap[parent.id] || [];
+                          const hasLogin = this.isActivated(parent);
                           return `
                             <tr>
                               <td>${parent.first_name} ${parent.last_name}</td>
-                              <td>${parent.email || 'N/A'}</td>
+                              <td>
+                                ${parent.email || 'N/A'}
+                                ${hasLogin ? '' : '<div style="font-size:11px; color:var(--warning); font-weight:600;">No sign-in yet</div>'}
+                              </td>
                               <td>
                                 ${children.length > 0 ? `
                                   <div style="display: flex; flex-wrap: wrap; gap: 5px;">
                                     ${children.map(child => `
                                       <span style="background: rgba(139, 255, 176, 0.2); color: var(--accent-2); padding: 2px 8px; border-radius: 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
                                         ${child.first_name} ${child.last_name}
-                                        <button onclick="app.unlinkChildFromParent('${parent.id}', '${child.id}', '${parent.first_name}', '${child.first_name}')"
+                                        <button onclick="app.unlinkChildFromParent('${linkId}', '${child.id}', '${parent.first_name}', '${child.first_name}')"
                                                 style="background: none; border: none; color: var(--danger); cursor: pointer; padding: 0 2px; font-size: 14px;"
                                                 title="Remove link">×</button>
                                       </span>
@@ -34887,9 +34928,20 @@
                                 ` : '<span style="color: var(--muted); font-size: 12px;">No children linked</span>'}
                               </td>
                               <td style="display: flex; gap: 5px; flex-wrap: wrap;">
-                                <button class="btn btn-secondary small" onclick="app.showLinkChildToParentModal('${parent.id}', '${this.jsAttr((parent.first_name || '') + ' ' + (parent.last_name || ''))}')">
-                                  ➕ Link Child
-                                </button>
+                                ${hasLogin ? `
+                                  <button class="btn btn-secondary small" onclick="app.showLinkChildToParentModal('${linkId}', '${this.jsAttr((parent.first_name || '') + ' ' + (parent.last_name || ''))}')">
+                                    ➕ Link Child
+                                  </button>
+                                ` : `
+                                  ${/* Approving an enrolment creates the parent profile but no
+                                        login, and a link keyed on an auth user that does not
+                                        exist cannot be written at all - the insert fails on the
+                                        foreign key. Opening the account is genuinely the first
+                                        step, so it is the only one offered. */''}
+                                  <button class="btn btn-primary small" onclick="app.showActivationForm('${parent.id}', '${this.jsAttr(parent.first_name || '')}', '${this.jsAttr(parent.last_name || '')}')">
+                                    ✉️ Open account
+                                  </button>
+                                `}
                                 <button class="btn btn-danger small" style="background: #8b0000;" onclick="app.hardDeleteUserAccount('${parent.id}', '${this.jsAttr((parent.first_name || '') + ' ' + (parent.last_name || ''))}', 'parent')">
                                   Delete
                                 </button>
@@ -35088,8 +35140,19 @@
         });
       }
 
+      // parentId here is the parent's AUTH id, because that is what
+      // parent_child_links.parent_id references and what every policy on the
+      // table compares against auth.uid(). Passing a profile id for a parent
+      // whose two ids differ writes nothing and fails on the foreign key, so
+      // the caller resolves it and this refuses anything that looks unresolved.
       async linkChildToParent(parentId, childId, parentName, childName) {
         try {
+          if (!parentId) {
+            this.showNotification(
+              `${parentName} has no sign-in yet, so there is nothing to link them by. ` +
+              `Open their account first.`, 'error');
+            return;
+          }
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('parent_child_links')
             .insert({
@@ -39818,10 +39881,16 @@
         `;
         
         try {
-            const { data: students, error } = await this.supabaseQuery(() => this.auth.supabase
+            // account_status alone is the wrong question and this list was the
+            // last place still asking it. A profile can read 'activated' with
+            // no auth user behind it - the old Activate button set the flag and
+            // created nothing, and approving an enrolment did the same - so a
+            // student who genuinely cannot sign in was missing from the one
+            // screen built to find them. isActivated() below is the same check
+            // the Students roster uses.
+            const { data: allStudents, error } = await this.supabaseQuery(() => this.auth.supabase
                 .from('user_profiles')
                 .select('*')
-                .eq('account_status', 'inactive')
                 .eq('user_type', 'student')
                 .order('last_name', { ascending: true })
                 .order('first_name', { ascending: true }));
@@ -39832,7 +39901,13 @@
                 listDiv.innerHTML = '<p style="color: var(--danger);">Error loading students</p>';
                 return;
             }
-            
+
+            // Still on the roll, and cannot sign in. A student who has left is
+            // not waiting to be activated, so they do not belong on this list
+            // either - the old query caught them whenever the flag matched.
+            const students = (allStudents || []).filter(
+                st => this.isEnrolled(st) && !this.isActivated(st));
+
             if (!students || students.length === 0) {
                 listDiv.innerHTML = '<p style="color: var(--muted-color);">No inactive students found</p>';
                 return;
