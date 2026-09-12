@@ -455,6 +455,12 @@ const T6 = [
   // these are admin commands. The line that must hold: adding a cohort to a
   // CLASS is still ENROLL_GROUP, not a new group being made.
   ['create a group called thursday lab', 'CREATE_GROUP', null, true],
+  // Marking one piece of work. Distinct from SET_GRADE, which sets a
+  // student's standing in a CLASS for a quarter - that one takes a letter and
+  // a subject, this one takes points and an assignment.
+  ['noah got 18 out of 20 on chapter 4', 'GRADE_SUBMISSION', 'Noah Williams', true],
+  ['give charlotte 45/50 on the essay', 'GRADE_SUBMISSION', 'Charlotte Tebow', true],
+  ["set noah's final grade in math to 95", 'SET_GRADE', 'Noah Williams', true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

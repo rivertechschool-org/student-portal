@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·d';
+      const RIVEN_BUILD = '2026-09-12·e';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52149,6 +52149,7 @@
         'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER',
         'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
+        'GRADE_SUBMISSION',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53400,6 +53401,21 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // GRADE_SUBMISSION - "give noah 18 out of 20 on chapter 4"
+        //
+        // Marking one student's work on one assignment. Distinct from SET_GRADE,
+        // which sets their standing in a CLASS for a quarter: that one takes a
+        // letter and a subject, this one takes points and an assignment. The
+        // patterns insist on an assignment reference for exactly that reason.
+        {
+          intent: 'GRADE_SUBMISSION',
+          w: 10, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b\d{1,4}\s*(?:\/|out of)\s*\d{1,4}\b/,
+            /\b(grade|mark|score)\b[\s\S]{0,40}\bon\b[\s\S]{0,40}\b(assignment|homework|quiz|test|chapter|worksheet|essay|project)\b/,
+            /\b(got|scored|earned)\b[\s\S]{0,16}\b\d{1,4}\b[\s\S]{0,24}\bon\b/,
+          ]
+        },
         // ---- Student groups ----------------------------------------------
         //
         // Cohorts are how this school takes its daily register, so Riven reads
@@ -54574,6 +54590,8 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'GRADE_SUBMISSION':
+          return await this.terminalGradeSubmission(entities);
         case 'CREATE_GROUP':
           return await this.terminalCreateGroup(entities);
         case 'DELETE_GROUP':
@@ -55503,6 +55521,7 @@
         RENAME_STUDENT: 'correct a student\'s name',
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
+        GRADE_SUBMISSION: 'mark a student\'s work on an assignment',
         CREATE_GROUP: 'create a student group',
         DELETE_GROUP: 'delete a student group',
         SET_GROUP_DAYS: 'set which days a group meets',
@@ -58387,6 +58406,133 @@
             if (r) throw r;
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
+        });
+    }
+
+    // ---- Grading one piece of work -----------------------------------------
+
+    // The letter that goes with a score.
+    //
+    // A submission needs BOTH a letter and points - the gradebook refuses one
+    // without the other - and the letter comes from the rubric, not from a
+    // scale invented here. This reads the assignment's rubric if it has one,
+    // otherwise the school default, and picks the band the percentage falls in.
+    // If there is no rubric at all it returns null and the caller refuses,
+    // because a made-up letter is a grade on a child's record that nobody set.
+    async _rivenLetterForScore(assignment, percent) {
+      const sb = this.auth.supabase;
+      let rubricId = assignment.rubric_id || null;
+      if (!rubricId) {
+        const { data: def } = await sb.from('rubrics').select('id').eq('is_default', true).limit(1);
+        rubricId = (def || [])[0]?.id || null;
+      }
+      if (!rubricId) return null;
+
+      const { data: criteria } = await sb.from('rubric_criteria')
+        .select('letter_grade, point_percentage').eq('rubric_id', rubricId);
+      const bands = (criteria || [])
+        .filter(c => c.letter_grade && c.point_percentage != null)
+        .sort((a, b) => b.point_percentage - a.point_percentage);
+      if (!bands.length) return null;
+
+      // The highest band the score reaches; below them all, the lowest band.
+      const hit = bands.find(b => percent >= Number(b.point_percentage));
+      return (hit || bands[bands.length - 1]).letter_grade;
+    }
+
+    async terminalGradeSubmission(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "noah got 18 out of 20 on chapter 4".'); return; }
+
+      const res = await this._rivenFindAssignment(entities);
+      if (res.error) { this._rivenAssignmentError(res); return; }
+      const a = res.row;
+
+      const cls = (this._terminalAllClasses || []).find(c => c.id === a.class_id);
+      if (cls && !this._rivenCanManageClass(cls)) {
+        this.terminalPrintError(`That assignment belongs to ${cls.name}, which you don't teach.`);
+        return;
+      }
+
+      const raw = entities.original || entities._rawInput || '';
+      const esc = (t) => this.escapeHtml(String(t));
+
+      // "18 out of 20", "18/20", or a bare score against the assignment's max.
+      let earned = null, outOf = a.max_points ?? null;
+      const m = raw.match(/\b(\d{1,4}(?:\.\d+)?)\s*(?:\/|out of)\s*(\d{1,4})\b/i);
+      if (m) { earned = parseFloat(m[1]); outOf = parseInt(m[2], 10); }
+      else {
+        const g = raw.match(/\b(?:got|scored|earned|grade[ds]?|marks?)\b[^0-9]{0,16}(\d{1,4}(?:\.\d+)?)\b/i);
+        if (g) earned = parseFloat(g[1]);
+      }
+
+      if (earned === null || !Number.isFinite(earned)) {
+        this.terminalPrintError(`What score? Say e.g. "noah got 18 out of 20 on ${a.title}".`);
+        return;
+      }
+      if (!outOf || !Number.isFinite(outOf) || outOf <= 0) {
+        this.terminalPrintError(`${a.title} has no points set, so I don't know what to mark it out of.`);
+        return;
+      }
+      if (earned < 0 || earned > outOf) {
+        this.terminalPrintError(`${earned} is not a score out of ${outOf}.`);
+        return;
+      }
+      // The assignment's own maximum is the record; a sentence saying otherwise
+      // is a typo often enough that it is worth stopping on.
+      if (a.max_points != null && outOf !== a.max_points) {
+        this.terminalPrintError(
+          `${a.title} is out of ${a.max_points}, not ${outOf}. Say it out of ${a.max_points}, ` +
+          `or change the assignment first.`);
+        return;
+      }
+
+      const percent = Math.round((earned / outOf) * 1000) / 10;
+      const letter = await this._rivenLetterForScore(a, percent);
+      if (!letter) {
+        this.terminalPrintError(
+          'There is no rubric behind that assignment, so I cannot work out the letter grade. ' +
+          'Grade it from the gradebook, where you can pick one.');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data: subs } = await sb.from('assignment_submissions')
+        .select('id, grade, points_earned, status')
+        .eq('assignment_id', a.id).eq('student_id', student.id);
+      const sub = (subs || [])[0];
+      if (!sub) {
+        // Creating the submission row here would record work that was never
+        // handed in. The page has a path for marking a non-submission, and it
+        // asks questions this does not.
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> has nothing submitted for <b>${esc(a.title)}</b>. ` +
+          `Open it in the gradebook to mark a non-submission \u2014 that decides whether it counts as ` +
+          `missing or excused, which I should not guess.`, true);
+        return;
+      }
+
+      const was = sub.points_earned != null ? `${sub.points_earned}/${outOf} (${esc(sub.grade || '\u2014')})` : 'ungraded';
+
+      this._requestConfirmation(
+        `Mark <b>${esc(student.full_name)}</b>'s <b>${esc(a.title)}</b>?<br>` +
+        `${esc(was)} \u2192 <b>${earned}/${outOf}</b> \u00b7 ${percent}% \u00b7 <b>${esc(letter)}</b>` +
+        `<br><span style="font-size: 12px;">The letter comes from the rubric behind this assignment.</span>`,
+        async () => {
+          const before = { grade: sub.grade, points_earned: sub.points_earned, status: sub.status };
+          const { error } = await sb.from('assignment_submissions').update({
+            grade: letter,
+            points_earned: earned,
+            status: 'graded',
+            graded_at: new Date().toISOString(),
+          }).eq('id', sub.id);
+          if (error) throw this._rivenPolicyError(error);
+
+          this._pushUndo(`${student.full_name}'s mark on ${a.title}`, async () => {
+            const { error: r } = await sb.from('assignment_submissions').update(before).eq('id', sub.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${student.full_name}: ${earned}/${outOf} (${letter}) on ${a.title}.`]);
         });
     }
 
