@@ -523,3 +523,38 @@ dylans parents" was being answered with a phone number.
 
 RIVEN_BUILD → 2026-09-11·f. nlp-stress green, frontdoor-precision 100%.
 `tests/riven-student-record.test.js` — 54 assertions.
+
+---
+
+## 2026-09-12 — Jordan's Claude (correction + the manual routes)
+
+**Correction to yesterday's entry.** I wrote that `changeStudentGrade`,
+`changeEnrollmentType` and `editStudentProfile` had no call sites and that Riven
+was therefore the only route to them. The first half is true; the conclusion was
+wrong. **The Student Hub's Profile tab already edits all of those fields** via
+`saveStudentHubProfile`, and the Attendance tab already edits the attending
+days. Those three methods are superseded leftovers, not missing features.
+
+That mattered, because the admin-only trigger I added yesterday protects exactly
+those columns and **the Profile tab is open to every teacher**. A teacher filling
+that form in and pressing Save would have got a policy error out of the
+database. Fixed: the protected inputs are disabled for non-admins with a line
+saying who does set them, and the save now sends only the fields that person may
+change — a disabled input still has a value, and sending it is still an UPDATE
+as far as the database is concerned.
+
+The Attendance tab's "Save Schedule" got the same treatment. That one was **not**
+a regression — RLS has never let a teacher write `student_schedule`, so the
+button could only ever have failed for them. It just said nothing about it.
+
+**There are no missing manual routes.** I swept both directions — methods called
+but never defined, and methods defined but never called — across the portal.
+32 came back unreferenced, and every one is either superseded (the Student Hub
+covers the student record, its tabs cover emergency contacts, medical, waivers
+and attendance; RTC Management absorbed the Bank Helper and IRL Store as tabs;
+the `gradebook` object owns the gradebook cluster) or an unused helper. The
+first sweep over-reported because it only looked for `app.` and `this.`
+receivers and missed `gradebook.x()` entirely.
+
+`tests/student-hub-record-gate.test.js` — 19 assertions holding the manual route
+and Riven to the same rule.

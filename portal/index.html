@@ -36471,19 +36471,37 @@
         const studentId = this._studentHubId;
         const content = document.getElementById('student-hub-tab-content');
 
+        // Name, year group and enrolment type are the office's to change - a
+        // rename ripples through every screen, search and report at once, and
+        // the enrolment type is a fee arrangement. The database enforces it;
+        // this makes the screen agree, so a teacher is told the rule instead of
+        // filling a form in and being handed a policy error on save.
+        //
+        // Email stays editable: correcting an address a parent gave at pickup
+        // is the teacher's job, and it is not one of the protected columns.
+        const canEditRecord = this.userInfo?.profile?.user_type === 'admin';
+        const lockedNote = canEditRecord ? '' :
+          `<div style="font-size: 12px; color: var(--muted); margin-bottom: 14px;">
+             Name, grade level and enrolment type are set by the office. You can still
+             update the contact details here.
+           </div>`;
+        const lock = canEditRecord ? '' : 'disabled';
+        const lockStyle = canEditRecord ? '' : 'opacity: .6; cursor: not-allowed;';
+
         content.innerHTML = `
           <h3 style="margin: 0 0 20px 0;">✏️ Edit Profile</h3>
+          ${lockedNote}
           <form onsubmit="event.preventDefault(); app.saveStudentHubProfile();">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
               <div>
                 <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">First Name *</label>
-                <input type="text" id="hub-first-name" value="${student.first_name}" required
-                       style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <input type="text" id="hub-first-name" value="${student.first_name}" required ${lock}
+                       style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); ${lockStyle}">
               </div>
               <div>
                 <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Last Name *</label>
-                <input type="text" id="hub-last-name" value="${student.last_name}" required
-                       style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <input type="text" id="hub-last-name" value="${student.last_name}" required ${lock}
+                       style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); ${lockStyle}">
               </div>
               <div>
                 <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Email</label>
@@ -36497,7 +36515,7 @@
               </div>
               <div>
                 <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Grade Level</label>
-                <select id="hub-grade-level" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <select id="hub-grade-level" ${lock} style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); ${lockStyle}">
                   <option value="">N/A</option>
                   ${['K', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'].map(g =>
                     `<option value="${g}" ${student.grade_level == g ? 'selected' : ''}>Grade ${g}</option>`
@@ -36506,7 +36524,7 @@
               </div>
               <div>
                 <label style="display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px;">Enrollment Type</label>
-                <select id="hub-enrollment-type" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+                <select id="hub-enrollment-type" ${lock} style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); ${lockStyle}">
                   <option value="full-time" ${student.enrollment_type !== 'homeschool' ? 'selected' : ''}>Full-Time</option>
                   <option value="homeschool" ${student.enrollment_type === 'homeschool' ? 'selected' : ''}>Homeschool</option>
                 </select>
@@ -37863,6 +37881,7 @@
         const email = document.getElementById('hub-email').value.trim();
         const gradeLevel = document.getElementById('hub-grade-level').value;
         const enrollmentType = document.getElementById('hub-enrollment-type').value;
+        const canEditRecord = this.userInfo?.profile?.user_type === 'admin';
 
         if (!firstName || !lastName) {
           this.showNotification('First and last name are required', 'error');
@@ -37894,12 +37913,19 @@
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
-            .update({
+            // Only what this person may change. A disabled input still has a
+            // value, and sending an unchanged protected column is still an
+            // UPDATE of it as far as the database is concerned - the guard
+            // compares OLD to NEW, so an identical value passes, but a stale
+            // form would not. Not sending them at all is the honest version.
+            .update(canEditRecord ? {
               first_name: firstName,
               last_name: lastName,
               email: email || null,
               grade_level: gradeLevel || null,
               enrollment_type: enrollmentType
+            } : {
+              email: email || null
             })
             .eq('id', studentId));
 
@@ -37977,6 +38003,7 @@
             .order('date', { ascending: false });
 
           const scheduledDays = schedule?.map(s => s.day_of_week) || [];
+          const canSetDays = this.userInfo?.profile?.user_type === 'admin';
           const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
           const days = [
             { num: 0, short: 'Sun' }, { num: 1, short: 'Mon' }, { num: 2, short: 'Tue' },
@@ -38007,7 +38034,7 @@
                     border: 2px solid ${scheduledDays.includes(day.num) ? 'var(--accent)' : 'var(--border)'};
                     border-radius: 8px; cursor: pointer;
                     background: ${scheduledDays.includes(day.num) ? 'rgba(106, 169, 255, 0.1)' : 'transparent'};">
-                    <input type="checkbox" name="hub-schedule-day" value="${day.num}" ${scheduledDays.includes(day.num) ? 'checked' : ''}
+                    <input type="checkbox" name="hub-schedule-day" value="${day.num}" ${scheduledDays.includes(day.num) ? 'checked' : ''} ${canSetDays ? '' : 'disabled'}
                            style="margin-bottom: 6px;"
                            onchange="this.parentElement.style.borderColor = this.checked ? 'var(--accent)' : 'var(--border)'; this.parentElement.style.background = this.checked ? 'rgba(106, 169, 255, 0.1)' : 'transparent';">
                     <span style="font-weight: 600; font-size: 13px;">${day.short}</span>
@@ -38021,7 +38048,16 @@
                 <button class="btn btn-secondary" onclick="document.querySelectorAll('input[name=hub-schedule-day]').forEach(cb => { cb.checked = false; cb.parentElement.style.borderColor = 'var(--border)'; cb.parentElement.style.background = 'transparent'; })">
                   Clear All
                 </button>
-                <button class="btn btn-primary" onclick="app.saveStudentHubSchedule()">Save Schedule</button>
+                ${this.userInfo?.profile?.user_type === 'admin'
+                  ? `<button class="btn btn-primary" onclick="app.saveStudentHubSchedule()">Save Schedule</button>`
+                  : `${/* Not a new restriction: the database has always refused a
+                          teacher here, so the button could only ever produce a
+                          policy error. Saying it beats letting them tick boxes
+                          for nothing. Which days a child attends decides whose
+                          name is on every register, so it stays with the office. */''}
+                     <span style="font-size: 12px; color: var(--muted);">
+                       The office sets which days a student attends.
+                     </span>`}
               </div>
             </div>
 
