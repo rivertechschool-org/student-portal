@@ -131,7 +131,12 @@ function makeApp({ role = 'admin', profile = {}, schedule = [], links = [], pare
       },
     },
   };
-  for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenParseWeekdays', '_rivenDayList',
+  // Link and unlink now take the student from after the preposition, so the
+  // stub needs that helper and something for it to match against.
+  app._fuzzyFindStudent = (t) => (String(t).toLowerCase().includes('jonathan')
+    ? { student: STUDENT, ambiguous: false, score: 1 } : null);
+  for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenStudentAfterPreposition',
+                   '_rivenParseWeekdays', '_rivenDayList',
                    '_rivenDayPhrase', '_rivenDayNames', 'terminalShowSchedule', 'terminalShowParents']) {
     app[m] = extract(m);
   }

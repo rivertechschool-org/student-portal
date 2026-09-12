@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-11·f';
+      const RIVEN_BUILD = '2026-09-12·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52121,7 +52121,9 @@
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
         'UPDATE_CLASS', 'ENROLL_GROUP',
         'UPDATE_CONTACT', 'SET_ENROLLMENT_TYPE', 'SET_SCHEDULE', 'SET_GRADE_LEVEL',
-        'RENAME_STUDENT', 'LINK_PARENT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
+        'RENAME_STUDENT', 'LINK_PARENT', 'UNLINK_PARENT',
+        'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
+        'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
@@ -53372,6 +53374,60 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- The student lifecycle ---------------------------------------
+        //
+        // Withdrawing a student is the heaviest thing an admin does to a
+        // record: it archives their classes, clears their attending days and
+        // ends their activities, all at once. It reads as one sentence, so it
+        // gets one command - and the loudest confirmation in here.
+        {
+          intent: 'WITHDRAW_STUDENT',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(mark|set|make)\b[\s\S]{0,24}\b(as\s+)?(a\s+)?past\s+student\b/,
+            /\b(withdraw|withdrew|un-?enrol+ from school|left the school|leaving the school)\b/,
+            /\b(has|have)\s+left\s+(the\s+)?school\b/,
+            /\bno longer\s+(a\s+)?student\b/,
+          ]
+        },
+        {
+          intent: 'REINSTATE_STUDENT',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(reinstate|re-?enrol+|bring back|re-?activate)\b[\s\S]{0,24}\b(student|him|her|them)?\b/,
+            /\b(is|are)\s+(back|returning)\s+(to\s+)?(school|us)\b/,
+            /\bno longer\s+(a\s+)?past\s+student\b/,
+          ]
+        },
+        {
+          intent: 'REGENERATE_PIN',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(new|reset|regenerate|change|reissue)\b[\s\S]{0,20}\b(games?\s+)?pin\b/,
+            /\bpin\b[\s\S]{0,16}\b(reset|regenerated|changed|reissued)\b/,
+            /\b(forgot|lost|cannot remember|can't remember)\b[\s\S]{0,16}\bpin\b/,
+          ]
+        },
+        {
+          intent: 'REISSUE_PARENT_CODE',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(new|reissue|regenerate|reset)\b[\s\S]{0,24}\b(parent\s+)?link\s+code\b/,
+            /\b(parent\s+)?link\s+code\b[\s\S]{0,16}\b(again|new one|reissued)\b/,
+          ]
+        },
+        {
+          intent: 'UNLINK_PARENT',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            // "unlink sarah jones from jonathan" names nobody as a parent
+            // and still means exactly one thing - the word is not used
+            // anywhere else in here.
+            /\bunlink\b/,
+            /\b(disconnect|detach|remove|take off)\b[\s\S]{0,32}\b(as\s+)?(the\s+)?(parent|guardian|mum|mom|dad|father|mother)\b/,
+            /\b(parent|guardian)\b[\s\S]{0,16}\b(no longer|should not|shouldn't)\b/,
+          ]
+        },
         {
           intent: 'LINK_PARENT',
           w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
@@ -54277,6 +54333,16 @@
           return await this.terminalRenameStudent(entities);
         case 'LINK_PARENT':
           return await this.terminalLinkParent(entities);
+        case 'UNLINK_PARENT':
+          return await this.terminalUnlinkParent(entities);
+        case 'WITHDRAW_STUDENT':
+          return await this.terminalWithdrawStudent(entities);
+        case 'REINSTATE_STUDENT':
+          return await this.terminalReinstateStudent(entities);
+        case 'REGENERATE_PIN':
+          return await this.terminalRegeneratePin(entities);
+        case 'REISSUE_PARENT_CODE':
+          return await this.terminalReissueParentCode(entities);
         case 'VIEW_SCHEDULE':
           return await this.terminalShowSchedule(entities);
         case 'VIEW_PARENTS':
@@ -55163,6 +55229,11 @@
         SET_GRADE_LEVEL: 'change a student\'s grade level',
         RENAME_STUDENT: 'correct a student\'s name',
         LINK_PARENT: 'link a parent to a student',
+        UNLINK_PARENT: 'unlink a parent from a student',
+        WITHDRAW_STUDENT: 'mark a student as past',
+        REINSTATE_STUDENT: 'bring a past student back',
+        REGENERATE_PIN: 'issue a new games PIN',
+        REISSUE_PARENT_CODE: 'issue a new parent link code',
         ENROLLMENT_COUNTS: 'count how many students are full-time or homeschool',
         ENROLLMENT_TYPE: 'say whether a student is full-time or homeschool',
         PLAN_ABSENCE: 'note an upcoming absence',
@@ -57967,7 +58038,7 @@
     // key, so that is said plainly instead.
     async terminalLinkParent(entities) {
       if (!this._rivenRequireAdmin('link a parent to a student \u2014 it opens that child\'s records to them')) return;
-      const student = this._rivenResolvedStudent(entities);
+      const student = this._rivenStudentAfterPreposition(entities, 'to');
       if (!student) { this.terminalPrintError('Which student? Try "link sarah jones to jonathan as his parent".'); return; }
 
       const raw = (entities.original || entities._rawInput || '').toLowerCase();
@@ -58029,6 +58100,217 @@
             if (r) throw r;
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
+        });
+    }
+
+    // Which of two named people is the STUDENT.
+    //
+    // "link sarah jones to jonathan" and "unlink sarah jones from jonathan"
+    // both name two people, and the fuzzy matcher answers with whichever scores
+    // best - which is usually the first one, the parent. Getting this wrong on
+    // an unlink cuts the wrong family off a child.
+    //
+    // The preposition settles it: the student is the one after "to" or "from".
+    // Falls back to the ordinary resolution when the sentence has no such
+    // shape, which is most of them.
+    _rivenStudentAfterPreposition(entities, word) {
+      const raw = entities.original || entities._rawInput || '';
+      const m = new RegExp('\\b' + word + '\\s+(.{2,60})$', 'i').exec(raw.trim());
+      if (m) {
+        const tail = m[1].replace(/\b(as|his|her|their|the|a)\b.*$/i, '').trim();
+        if (tail.length >= 2 && typeof this._fuzzyFindStudent === 'function') {
+          const hit = this._fuzzyFindStudent(tail);
+          if (hit && hit.student && !hit.ambiguous) return hit.student;
+        }
+      }
+      return this._rivenResolvedStudent(entities);
+    }
+
+    // ---- The student lifecycle ---------------------------------------------
+
+    // Withdrawing a student.
+    //
+    // The heaviest single thing an admin does to a record: mark_student_as_past
+    // archives their classes, clears their attending days and ends their
+    // activities in one statement. The records stay - that is the whole point
+    // of "past" rather than delete - but they come off every register and every
+    // roster, so the confirmation names all three before anything happens, and
+    // the answer afterwards reports what actually moved rather than "done".
+    async terminalWithdrawStudent(entities) {
+      if (!this._rivenRequireAdmin('mark a student as past')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "mark jonathan as a past student".'); return; }
+
+      const raw = entities.original || entities._rawInput || '';
+      const esc = (t) => this.escapeHtml(String(t));
+      // A reason if one was given; never invented.
+      const rm = raw.match(/\b(?:because|reason|due to|they(?:'re| are)?)\s+(.{3,80}?)\s*[.!?]?$/i);
+      const reason = rm ? rm[1].trim() : null;
+
+      this._requestConfirmation(
+        `Mark <b>${esc(student.full_name)}</b> as a past student?` +
+        `<br><span style="font-size: 12px;">Their classes are archived, their attending days cleared and ` +
+        `their activities ended. Grades, attendance and notes are kept.</span>` +
+        (reason ? `<br><span style="font-size: 12px;">Reason: ${esc(reason)}</span>` : ''),
+        async () => {
+          const { data, error } = await this.auth.supabase.rpc('mark_student_as_past', {
+            p_student_id: student.id,
+            p_left_date: this._localDateStr(new Date()),
+            p_left_reason: reason,
+          });
+          if (error) throw this._rivenPolicyError(error);
+          const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+          if (res.success === false) throw new Error(res.error || 'the change was refused');
+
+          const bits = [];
+          if (res.classes_archived) bits.push(`${res.classes_archived} class${res.classes_archived === 1 ? '' : 'es'} archived`);
+          if (res.days_removed) bits.push(`${res.days_removed} attending day${res.days_removed === 1 ? '' : 's'} cleared`);
+          if (res.activities_ended) bits.push(`${res.activities_ended} activit${res.activities_ended === 1 ? 'y' : 'ies'} ended`);
+          // No undo: reinstating is its own command with its own decisions,
+          // and a silent reversal would not put the class enrolments back.
+          this._naturalSuccess([
+            `${student.full_name} is marked as past${bits.length ? ' \u2014 ' + bits.join(', ') : ''}. ` +
+            `Say "reinstate ${student.full_name.split(' ')[0]}" to bring them back.`
+          ]);
+          await this._loadTerminalStudents();
+        });
+    }
+
+    async terminalReinstateStudent(entities) {
+      if (!this._rivenRequireAdmin('bring a past student back')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "reinstate jonathan".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      this._requestConfirmation(
+        `Bring <b>${esc(student.full_name)}</b> back as a current student?` +
+        `<br><span style="font-size: 12px;">This reopens their account. Classes and attending days are ` +
+        `NOT restored \u2014 enrol them and set their days again.</span>`,
+        async () => {
+          const { data, error } = await this.auth.supabase
+            .rpc('reactivate_student', { p_student_id: student.id });
+          if (error) throw this._rivenPolicyError(error);
+          const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+          if (res.success === false) throw new Error(res.error || 'the change was refused');
+          this._naturalSuccess([
+            `${student.full_name} is a current student again. They have no classes or attending days yet.`
+          ]);
+          await this._loadTerminalStudents();
+        });
+    }
+
+    // A games PIN is a credential, so the old one stops working the moment this
+    // runs - said before, not after.
+    async terminalRegeneratePin(entities) {
+      if (!this._rivenRequireAdmin('issue a new games PIN')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "give jonathan a new pin".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      this._requestConfirmation(
+        `Issue a new games PIN for <b>${esc(student.full_name)}</b>?` +
+        `<br><span style="font-size: 12px;">Their current PIN stops working straight away.</span>`,
+        async () => {
+          const { data, error } = await this.auth.supabase
+            .rpc('staff_regenerate_student_pin', { p_user_id: student.id });
+          if (error) throw this._rivenPolicyError(error);
+          const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+          if (res.success === false) throw new Error(res.error || 'the PIN was not changed');
+          this._showRivenMessage(
+            `New PIN for <b>${esc(student.full_name)}</b>: ` +
+            `<b style="font-family: monospace; font-size: 16px; letter-spacing: 2px;">${esc(res.pin)}</b>` +
+            `<br><span style="font-size: 12px;">The old one no longer works.</span>`, true);
+        });
+    }
+
+    // The code a parent types to link themselves. Reissuing does NOT unlink
+    // anyone already connected - worth saying, because "new code" sounds like
+    // it should.
+    async terminalReissueParentCode(entities) {
+      if (!this._rivenRequireAdmin('issue a new parent link code')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "new parent code for jonathan".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      this._requestConfirmation(
+        `Issue a new parent link code for <b>${esc(student.full_name)}</b>?` +
+        `<br><span style="font-size: 12px;">Parents already linked stay linked. Any code handed out ` +
+        `earlier stops working.</span>`,
+        async () => {
+          const { data, error } = await this.auth.supabase
+            .rpc('rt_reissue_parent_link_code', { p_student_id: student.id });
+          if (error) throw this._rivenPolicyError(error);
+          const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+          if (res.success === false) throw new Error(res.error || 'the code was not changed');
+          const code = res.code || res.parent_link_code;
+          this._showRivenMessage(
+            `New link code for <b>${esc(student.full_name)}</b>: ` +
+            `<b style="font-family: monospace; font-size: 16px; letter-spacing: 2px;">${esc(code || '\u2014')}</b>`, true);
+        });
+    }
+
+    // Taking a parent off a child closes their view of that child's grades,
+    // attendance and medical notes. Same admin rule as linking, and the same
+    // insistence on knowing WHICH parent.
+    async terminalUnlinkParent(entities) {
+      if (!this._rivenRequireAdmin('unlink a parent from a student')) return;
+      const student = this._rivenStudentAfterPreposition(entities, 'from');
+      if (!student) { this.terminalPrintError('Which student? Try "unlink sarah jones from jonathan".'); return; }
+
+      const sb = this.auth.supabase;
+      const esc = (t) => this.escapeHtml(String(t));
+      const { data: links, error } = await sb.from('parent_child_links')
+        .select('parent_id').eq('child_id', student.id);
+      if (error) { this.terminalPrintError('Could not read the parent links: ' + error.message); return; }
+
+      const ids = (links || []).map(l => l.parent_id);
+      if (!ids.length) {
+        this._showRivenMessage(`No parent is linked to <b>${esc(student.full_name)}</b>.`, true);
+        return;
+      }
+
+      const { data: people } = await sb.from('user_profiles')
+        .select('id, first_name, last_name, email, auth_user_id')
+        .or(`id.in.(${ids.join(',')}),auth_user_id.in.(${ids.join(',')})`);
+
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      const named = (people || []).filter(p => {
+        const email = (p.email || '').toLowerCase();
+        if (email && raw.includes(email)) return true;
+        const full = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
+        return full.length > 3 && raw.includes(full);
+      });
+
+      // One linked parent and no name given is unambiguous; more than one is
+      // not, and guessing removes the wrong person's access.
+      const target = named.length === 1 ? named[0]
+        : (named.length === 0 && people && people.length === 1) ? people[0] : null;
+
+      if (!target) {
+        const list = (people || []).map(p => `${p.first_name} ${p.last_name}`).join(', ');
+        this.terminalPrintError(named.length > 1
+          ? `More than one of those matches. Use their email address.`
+          : `Which parent? ${esc(student.full_name)} is linked to: ${list}.`);
+        return;
+      }
+
+      const name = `${target.first_name || ''} ${target.last_name || ''}`.trim();
+      const linkId = ids.includes(target.auth_user_id) ? target.auth_user_id : target.id;
+
+      this._requestConfirmation(
+        `Unlink <b>${esc(name)}</b> from <b>${esc(student.full_name)}</b>?` +
+        `<br><span style="font-size: 12px;">They lose access to ${esc(student.full_name)}'s grades, ` +
+        `attendance and medical details.</span>`,
+        async () => {
+          const { error: e } = await sb.from('parent_child_links')
+            .delete().eq('parent_id', linkId).eq('child_id', student.id);
+          if (e) throw this._rivenPolicyError(e);
+          this._pushUndo(`the link between ${name} and ${student.full_name}`, async () => {
+            const { error: r } = await sb.from('parent_child_links')
+              .insert({ parent_id: linkId, child_id: student.id });
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${name} is no longer linked to ${student.full_name}.`]);
         });
     }
 

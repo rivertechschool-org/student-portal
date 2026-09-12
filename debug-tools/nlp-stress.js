@@ -403,6 +403,22 @@ const T6 = [
   // what something IS is never an instruction to change it.
   ["set noah's final grade in math to 95", 'SET_GRADE', 'Noah Williams', true],
   ['what grade is charlotte in math', 'VIEW_GRADES', 'Charlotte Tebow', true],
+  // The student lifecycle. Withdrawing is the heaviest thing an admin does to
+  // a record - classes archived, attending days cleared, activities ended -
+  // so it must be reachable by the sentences people actually say, and must
+  // never be reached by one of the reads beside it.
+  ['mark noah as a past student', 'WITHDRAW_STUDENT', 'Noah Williams', true],
+  ['charlotte has left the school', 'WITHDRAW_STUDENT', 'Charlotte Tebow', true],
+  ['reinstate noah', 'REINSTATE_STUDENT', 'Noah Williams', true],
+  ['give charlotte a new pin', 'REGENERATE_PIN', 'Charlotte Tebow', true],
+  ['noah forgot his pin', 'REGENERATE_PIN', 'Noah Williams', true],
+  ['new parent link code for charlotte', 'REISSUE_PARENT_CODE', 'Charlotte Tebow', true],
+  // Two people in one sentence. The matcher answers with whichever name
+  // scores best - here the parent, who happens to share a roster name -
+  // and terminalUnlinkParent then takes the student from after 'from'.
+  // This case pins the INTENT; riven-student-lifecycle.test.js pins which
+  // of the two ends up being unlinked.
+  ['unlink sarah jones from noah', 'UNLINK_PARENT', 'Sarah Jones', true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],
