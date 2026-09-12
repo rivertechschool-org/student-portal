@@ -408,3 +408,39 @@ login of their own and has left the school — so matching them would be exactly
 the guess that produced the duplicate students. Instead, **Staff & Parents now
 lists any sign-in with no account behind it**, with an explicit warning not to
 guess. Identifying this one needs somebody who knows the family.
+
+---
+
+## 2026-09-11 — Jordan's Claude (class register)
+
+**The class register now shows who is actually in that day.** A class roster is
+an enrolment list — it says who takes the subject, not which days they come in.
+That is `student_schedule`, the same timetable the morning register reads. So a
+Tuesday/Thursday child sat on every Monday register, and the only mark that fits
+them, absent, is false and then feeds the attendance reports.
+
+It is not a plain filter, because two kinds of student would lose a record:
+
+- **A mark that already exists.** `saveClassAttendance` deletes every row for the
+  class/date/period and re-inserts what the page is showing. A hidden student is
+  not merely invisible — their existing mark is destroyed by the next save
+  anybody makes. 31 marks this school year sit on an off-timetable day.
+- **A child with no timetable at all.** Five active students have none. That is
+  a gap in the office's records, not a child who stays home, and hiding them is
+  how somebody goes unmarked for a term.
+
+Both appear under the register in a second list, each labelled with which case
+they are, and the search box reaches them. Everyone else is simply gone, which
+is what was asked for.
+
+The row markup is now `_classAttendanceRowHtml()` — one template for both lists,
+because two copies of a block that size drift apart on the first change.
+
+**If you change the roster rule, change it in one place:** the morning register,
+Riven's cohort register and this all read `student_schedule` for the weekday. A
+student with no rows at all is excluded by the first two and *shown* by this
+one, deliberately — a missing daily row is noticeable, an empty class register
+is not.
+
+`tests/class-register-day-roster.test.js` — 23 assertions, the sharpest being
+that a student with an existing mark survives the filter.

@@ -40396,7 +40396,15 @@
       const group = document.getElementById(scope + '-group-today')?.value || 'all';
 
       const q = input.value.trim().toLowerCase();
-      const rows = [...box.querySelectorAll('tbody > tr[data-student-id]')];
+      // The class register draws a second, small list under the first for the
+      // few students shown despite not being in today. It is the same search:
+      // typing a name and having a row sit there unfiltered because it happens
+      // to live in a different table reads as a bug.
+      const extra = document.getElementById(scope + '-extra-rows');
+      const rows = [
+        ...box.querySelectorAll('tbody > tr[data-student-id]'),
+        ...(extra ? extra.querySelectorAll('tbody > tr[data-student-id]') : []),
+      ];
       const entryRows = rows.filter(r => !r.classList.contains('excuse-note-row'));
 
       // Each student may own two rows - the entry row and an excuse note row
@@ -41468,6 +41476,13 @@
             .from('user_profiles')
             .select('id, first_name, last_name, grade_level')
             .in('id', studentIds)
+            // Same belt-and-braces as the morning register: withdrawing a
+            // student drops their enrolments, so this should never matter,
+            // and a half-finished withdrawal would otherwise leave a child
+            // who has left sitting on the register waiting to be marked.
+            // NOT .neq(): student_status <> 'past' is NULL for a row that
+            // never set the column, and NULL is not true.
+            .or('student_status.is.null,student_status.neq.past')
             .order('last_name');
 
           students = studentData || [];
@@ -41527,6 +41542,48 @@
         attendanceData?.forEach(a => {
           attendanceMap[a.student_id] = a;
         });
+
+        // WHO IS ACTUALLY IN TODAY
+        //
+        // A class roster is an enrolment list. It says who takes the subject,
+        // not which days they come in - that is student_schedule, the same
+        // timetable the morning register reads. A Tuesday/Thursday child on a
+        // Monday register is a row the teacher has to decide about every week,
+        // and the only mark that fits, absent, is a lie that then feeds the
+        // attendance reports.
+        //
+        // Two things this must not do, both of which would lose a record:
+        //
+        //   * hide a mark that already exists. Timetables change, and children
+        //     turn up on days they are not down for. 31 marks this school year
+        //     are already on an off-timetable day; if the register stops
+        //     showing them, they cannot be corrected and the totals disagree
+        //     with the database for no visible reason.
+        //   * hide a child whose days were never set. That is a gap in the
+        //     office's records, not a child who stays home, and hiding them is
+        //     how somebody goes unmarked for a term. Five active students are
+        //     in that state today.
+        let scheduledToday = new Set();
+        let hasTimetable = new Set();
+        if (students.length) {
+          const { data: sched } = await this.auth.supabase
+            .from('student_schedule')
+            .select('student_id, day_of_week')
+            .in('student_id', students.map(x => x.id));
+          for (const r of (sched || [])) {
+            hasTimetable.add(r.student_id);
+            if (r.day_of_week === dayOfWeek) scheduledToday.add(r.student_id);
+          }
+        }
+
+        const expected = students.filter(x => scheduledToday.has(x.id));
+        // Everyone else is left out, EXCEPT the two cases above.
+        const alsoShown = students.filter(x =>
+          !scheduledToday.has(x.id) && (!hasTimetable.has(x.id) || attendanceMap[x.id]));
+        const offTimetableReason = (x) => hasTimetable.has(x.id)
+          ? 'not down for ' + dayName
+          : 'no attending days set';
+        const roster = expected.concat(alsoShown);
 
         // Present and absent are the two buttons. The rest are rarer marks and
         // live behind the three dots beside them; the class and daily registers
@@ -41594,7 +41651,7 @@
                   </button>
                 </div>
               </div>
-            ` : meetsThatDay && students.length > 0 ? `
+            ` : meetsThatDay && roster.length > 0 ? `
               <div style="background: rgba(255, 211, 106, 0.15); border: 1px solid var(--warning); border-radius: 8px; padding: 15px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                 <div>
                   <div style="font-weight: 600; color: var(--warning);">⏳ Attendance Not Yet Taken</div>
@@ -41625,6 +41682,16 @@
                 <div style="font-size: 48px; margin-bottom: 15px;">👥</div>
                 <p>No students enrolled in this class.</p>
               </div>
+            ` : roster.length === 0 ? `
+              ${/* Enrolled students, none of them in today. Says which, because
+                    "no students" would read as an enrolment problem. */''}
+              <div style="text-align: center; padding: 40px; color: var(--muted);">
+                <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
+                <p>Nobody on this roster attends on ${dayName}.</p>
+                <p style="font-size: 13px; margin-top: 10px;">
+                  ${students.length} enrolled — none of them come in today, so there is nothing to mark.
+                </p>
+              </div>
             ` : `
 
               <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
@@ -41632,7 +41699,7 @@
                        oninput="app.filterAttendanceRoster('class-attendance')"
                        autocomplete="off"
                        style="flex: 1; min-width: 180px; padding: 9px 12px; font-size: 15px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text);">
-                <span id="class-attendance-search-count" style="color: var(--muted); font-size: 12px; white-space: nowrap;">${students.length + ' students'}</span>
+                <span id="class-attendance-search-count" style="color: var(--muted); font-size: 12px; white-space: nowrap;">${roster.length + ' students'}</span>
               </div>
               <div id="class-attendance-rows" style="max-height: 50vh; overflow-y: auto;">
                 <table style="width: 100%; border-collapse: collapse;">
@@ -41645,57 +41712,39 @@
                     </tr>
                   </thead>
                   <tbody>
-                    ${students.map(student => {
-                      const att = attendanceMap[student.id] || {};
-                      return `
-                        <tr data-student-id="${student.id}"
-                            data-search="${this.escapeHtml(`${student.first_name} ${student.last_name} ${student.grade_level || 'N/A'}`)}"
-                            style="border-bottom: 1px solid var(--border);">
-                          <td style="padding: 12px;">
-                            <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
-                            ${this.dailyStatusChip(dailyByStudent[student.id])}
-                          </td>
-                          <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
-                          <td style="padding: 12px; text-align: center;">
-                            ${/* The mark lives in a hidden field because it can now come
-                                  from either button or the three dots, and everything that
-                                  reads a mark still reads .class-attendance-status. */''}
-                            <input type="hidden" class="class-attendance-status"
-                                   data-student-id="${student.id}" value="${att.status || ''}">
-                            <div class="att-mark">
-                              ${[
-                                { value: 'present', icon: '✅', label: 'Present' },
-                                { value: 'absent', icon: '❌', label: 'Not present' },
-                              ].map(opt => `
-                                <button type="button" data-status="${opt.value}"
-                                        aria-pressed="${att.status === opt.value ? 'true' : 'false'}"
-                                        aria-label="${opt.label}" title="${opt.label}"
-                                        onclick="app.setClassAttendanceStatus(this, '${opt.value}')">${opt.icon}</button>
-                              `).join('')}
-                              <span class="att-more" data-chosen="${extraStatusOptions.some(o => o.value === att.status) ? 'true' : 'false'}">
-                                <span class="att-more-glyph" aria-hidden="true">${(extraStatusOptions.find(o => o.value === att.status) || {}).icon || '⋯'}</span>
-                                <select aria-label="Other marks for this student"
-                                        onchange="app.setClassAttendanceStatus(this, this.value)">
-                                  <option value="">⋯ Other</option>
-                                  ${extraStatusOptions.map(opt => `
-                                    <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>
-                                  `).join('')}
-                                </select>
-                              </span>
-                            </div>
-                          </td>
-                          <td style="padding: 12px;">
-                            <input type="text" class="class-attendance-notes" data-student-id="${student.id}"
-                                   placeholder="Optional notes"
-                                   value="${att.notes || ''}"
-                                   style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
-                          </td>
-                        </tr>
-                      `;
-                    }).join('')}
+                    ${expected.map(student => this._classAttendanceRowHtml(
+                        student, attendanceMap[student.id] || {}, dailyByStudent[student.id],
+                        extraStatusOptions, null)).join('')}
                   </tbody>
                 </table>
               </div>
+
+              ${alsoShown.length ? `
+                ${/* Deliberately below the register and deliberately not hidden.
+                      Everyone here is one of two things: a child with a mark
+                      already against this session, who would otherwise have a
+                      record nobody can see or correct; or a child whose
+                      attending days were never set, which is the office's to
+                      fix and cannot be fixed if nobody notices. */''}
+                <div style="margin-top: 16px; border-top: 1px dashed var(--border); padding-top: 12px;">
+                  <div style="font-weight: 600; font-size: 13px; margin-bottom: 2px;">
+                    Not on today's timetable (${alsoShown.length})
+                  </div>
+                  <div style="color: var(--muted); font-size: 12px; margin-bottom: 8px;">
+                    Shown because there is already a mark against them today, or because nobody
+                    has set which days they attend. Leave them blank if they were not in.
+                  </div>
+                  <div id="class-attendance-extra-rows" style="max-height: 30vh; overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                      <tbody>
+                        ${alsoShown.map(student => this._classAttendanceRowHtml(
+                            student, attendanceMap[student.id] || {}, dailyByStudent[student.id],
+                            extraStatusOptions, offTimetableReason(student))).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ` : ''}
 
               <div style="display: flex; gap: 10px; margin-top: 20px;">
                 <button class="btn btn-secondary" onclick="app.matchClassToMaster()" style="flex: 1;">
@@ -41707,7 +41756,7 @@
 
           <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border);">
             <button class="btn btn-secondary" onclick="app.closeModal('class-attendance')">Close</button>
-            ${meetsThatDay && students.length > 0 ? `<button class="btn btn-primary" onclick="app.saveClassAttendance('${classId}', '${today}', ${currentPeriod})">Save Attendance</button>` : ''}
+            ${meetsThatDay && roster.length > 0 ? `<button class="btn btn-primary" onclick="app.saveClassAttendance('${classId}', '${today}', ${currentPeriod})">Save Attendance</button>` : ''}
           </div>
         `;
 
@@ -41718,6 +41767,58 @@
         console.error('Error loading class attendance:', error);
         this.showNotification('Error loading attendance: ' + error.message, 'error');
       }
+    }
+
+    // One row of a class register. Extracted because the register now draws two
+    // lists - who is in today, and the handful shown anyway - and two copies of
+    // a block this size drift apart on the first change to either.
+    _classAttendanceRowHtml(student, att, day, extraStatusOptions, aside) {
+      return `
+        <tr data-student-id="${student.id}"
+            data-search="${this.escapeHtml(`${student.first_name} ${student.last_name} ${student.grade_level || 'N/A'}`)}"
+            style="border-bottom: 1px solid var(--border);">
+          <td style="padding: 12px;">
+            <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
+            ${aside ? `<div style="font-size: 11px; color: var(--muted);">${this.escapeHtml(aside)}</div>` : ''}
+            ${this.dailyStatusChip(day)}
+          </td>
+          <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
+          <td style="padding: 12px; text-align: center;">
+            ${/* The mark lives in a hidden field because it can come from
+                  either button or the three dots, and everything that reads a
+                  mark still reads .class-attendance-status. */''}
+            <input type="hidden" class="class-attendance-status"
+                   data-student-id="${student.id}" value="${att.status || ''}">
+            <div class="att-mark">
+              ${[
+                { value: 'present', icon: '✅', label: 'Present' },
+                { value: 'absent', icon: '❌', label: 'Not present' },
+              ].map(opt => `
+                <button type="button" data-status="${opt.value}"
+                        aria-pressed="${att.status === opt.value ? 'true' : 'false'}"
+                        aria-label="${opt.label}" title="${opt.label}"
+                        onclick="app.setClassAttendanceStatus(this, '${opt.value}')">${opt.icon}</button>
+              `).join('')}
+              <span class="att-more" data-chosen="${extraStatusOptions.some(o => o.value === att.status) ? 'true' : 'false'}">
+                <span class="att-more-glyph" aria-hidden="true">${(extraStatusOptions.find(o => o.value === att.status) || {}).icon || '⋯'}</span>
+                <select aria-label="Other marks for this student"
+                        onchange="app.setClassAttendanceStatus(this, this.value)">
+                  <option value="">⋯ Other</option>
+                  ${extraStatusOptions.map(opt => `
+                    <option value="${opt.value}" ${att.status === opt.value ? 'selected' : ''}>${opt.icon} ${opt.label}</option>
+                  `).join('')}
+                </select>
+              </span>
+            </div>
+          </td>
+          <td style="padding: 12px;">
+            <input type="text" class="class-attendance-notes" data-student-id="${student.id}"
+                   placeholder="Optional notes"
+                   value="${att.notes || ''}"
+                   style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
+          </td>
+        </tr>
+      `;
     }
 
     changeClassAttendanceDate(direction, classId, currentDate, period = null) {
