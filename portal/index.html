@@ -27084,6 +27084,170 @@
         }
       }
       
+      // Editing a rubric
+      //
+      // The Edit button next to every custom rubric called app.editRubric(),
+      // which was never written - so it threw, and the only way to change a
+      // rubric was to delete it and build it again. Deleting is not a quiet
+      // equivalent: assignments carry rubric_id, so rebuilding hands every
+      // assignment that used it a rubric it has never heard of.
+      //
+      // The form is the one showCreateRubricForm() renders, prefilled, because
+      // two forms for one shape drift apart and addCriterionField() is already
+      // the thing that knows what a level looks like.
+      async editRubric(rubricId) {
+        try {
+          const { data: rubric, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('rubrics')
+            .select('id, name, description, is_default')
+            .eq('id', rubricId)
+            .single());
+          if (error) throw error;
+
+          if (rubric.is_default) {
+            this.showNotification('The default rubric is shared by the whole school \u2014 copy it instead.', 'error');
+            return;
+          }
+
+          const { data: criteria, error: critErr } = await this.supabaseQuery(() => this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', rubricId)
+            .order('sort_order'));
+          if (critErr) throw critErr;
+
+          const esc = (v) => this.escapeHtml(String(v ?? ''));
+          this.showModal('edit-rubric', `\u270F\uFE0F Edit ${esc(rubric.name)}`, `
+            <form id="edit-rubric-form" onsubmit="app.saveEditedRubric(event, '${this.jsAttr(rubricId)}')">
+              <div class="form-group">
+                <label for="rubric-name">Rubric Name:</label>
+                <input type="text" id="rubric-name" required value="${esc(rubric.name)}">
+              </div>
+
+              <div class="form-group">
+                <label for="rubric-description">Description:</label>
+                <textarea id="rubric-description" rows="2">${esc(rubric.description)}</textarea>
+              </div>
+
+              <div class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+                <h4 style="margin-bottom: 10px;">Grade Levels</h4>
+                <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
+                  Saving replaces the levels below. Assignments using this rubric keep using it \u2014
+                  they point at the rubric, not at a particular level.
+                </p>
+
+                <div id="criteria-container"></div>
+
+                <button type="button" class="btn btn-secondary" onclick="app.addCriterionField()">
+                  \u2795 Add Grade Level
+                </button>
+              </div>
+
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+                <button type="button" class="btn btn-secondary" onclick="app.closeModal('edit-rubric')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Save Changes</button>
+              </div>
+            </form>
+          `, true);
+
+          // Same fields the create form uses, filled in.
+          (criteria || []).forEach(c => {
+            this.addCriterionField();
+            const fields = document.querySelectorAll('.criterion-field');
+            const last = fields[fields.length - 1];
+            last.querySelector('.criterion-letter').value = c.letter_grade ?? '';
+            last.querySelector('.criterion-percentage').value = c.point_percentage ?? '';
+            last.querySelector('.criterion-summary').value = c.summary_level ?? '';
+            last.querySelector('.criterion-description').value = c.core_meaning ?? '';
+          });
+          if (!criteria || criteria.length === 0) this.addCriterionField();
+
+        } catch (e) {
+          console.error('editRubric failed:', e);
+          this.showNotification('Could not open that rubric: ' + e.message, 'error');
+        }
+      }
+
+      async saveEditedRubric(event, rubricId) {
+        event.preventDefault();
+        if (this.isProcessing) return;
+        this.isProcessing = true;
+
+        // Kept so a failed insert can put the rubric back the way it was. A
+        // rubric with no levels grades nothing, and an assignment is already
+        // pointing at it.
+        let previous = null;
+
+        try {
+          if (window.portalLoading) window.portalLoading.show('edit-rubric', 'Saving rubric...');
+
+          const name = document.getElementById('rubric-name').value.trim();
+          const description = document.getElementById('rubric-description').value.trim();
+
+          const criteria = [];
+          document.querySelectorAll('.criterion-field').forEach((field, index) => {
+            criteria.push({
+              rubric_id: rubricId,
+              letter_grade: field.querySelector('.criterion-letter').value.trim(),
+              descriptor: field.querySelector('.criterion-summary').value.trim(),
+              summary_level: field.querySelector('.criterion-summary').value.trim(),
+              core_meaning: field.querySelector('.criterion-description').value.trim(),
+              point_percentage: parseFloat(field.querySelector('.criterion-percentage').value),
+              sort_order: index + 1
+            });
+          });
+
+          if (!criteria.length) {
+            this.showNotification('A rubric needs at least one grade level.', 'error');
+            return;
+          }
+
+          const { error: nameErr } = await this.supabaseQuery(() => this.auth.supabase
+            .from('rubrics')
+            .update({ name, description })
+            .eq('id', rubricId));
+          if (nameErr) throw nameErr;
+
+          const { data: old } = await this.supabaseQuery(() => this.auth.supabase
+            .from('rubric_criteria')
+            .select('*')
+            .eq('rubric_id', rubricId));
+          previous = (old || []).map(({ id, created_at, ...rest }) => rest);
+
+          const { error: delErr } = await this.supabaseQuery(() => this.auth.supabase
+            .from('rubric_criteria')
+            .delete()
+            .eq('rubric_id', rubricId));
+          if (delErr) throw delErr;
+
+          const { error: insErr } = await this.supabaseQuery(() => this.auth.supabase
+            .from('rubric_criteria')
+            .insert(criteria));
+
+          if (insErr) {
+            // Put the old levels back rather than leaving an empty rubric
+            // behind a live assignment.
+            if (previous.length) {
+              await this.supabaseQuery(() => this.auth.supabase
+                .from('rubric_criteria').insert(previous));
+            }
+            throw insErr;
+          }
+
+          this.showNotification('Rubric updated.', 'success');
+          this.closeModal('edit-rubric');
+          this.manageRubrics();
+
+        } catch (e) {
+          console.error('saveEditedRubric failed:', e);
+          this.showNotification('Could not save the rubric: ' + e.message
+            + (previous && previous.length ? ' \u2014 the old levels were put back.' : ''), 'error');
+        } finally {
+          this.isProcessing = false;
+          if (window.portalLoading) window.portalLoading.hide('edit-rubric');
+        }
+      }
+
       async deleteRubric(rubricId) {
         if (!confirm('Delete this rubric? Assignments using this rubric will fall back to the default.')) {
           return;
@@ -34736,6 +34900,24 @@
             .from('parent_child_links')
             .select('parent_id, child_id'));
 
+          // Logins with no profile behind them. auth.users is not reachable
+          // from the browser, so without this RPC an account in that state is
+          // invisible to everyone - including the person signing in to it, who
+          // just gets a portal with nothing in it. One had been sitting here
+          // for a year with fourteen sign-ins against it.
+          //
+          // Tolerated as missing: the function is admin-only and this screen
+          // has other reasons to exist, so a teacher opening it (or a database
+          // without the migration) should see the rest rather than an error.
+          let orphanLogins = [];
+          try {
+            const { data: orphans } = await this.supabaseQuery(() =>
+              this.auth.supabase.rpc('rt_logins_without_profiles'));
+            orphanLogins = orphans || [];
+          } catch (e) {
+            console.warn('rt_logins_without_profiles unavailable:', e?.message);
+          }
+
           // Create a map of parent_id -> array of child profiles
           const parentChildrenMap = {};
           if (parentChildLinks) {
@@ -34767,6 +34949,39 @@
                 </div>
               </div>
               
+              ${orphanLogins.length ? `
+                <div class="card" style="margin-bottom: 20px; border-left: 3px solid var(--warning, #e67e22);">
+                  <h3 style="margin-bottom: 6px;">⚠️ Sign-ins with no account (${orphanLogins.length})</h3>
+                  <p style="color: var(--muted); font-size: 13px; margin-bottom: 12px;">
+                    These addresses can sign in and land on nothing — there is no profile
+                    behind them. They cannot fix it themselves: they already have a login, so
+                    signing up again is refused.
+                    <br>
+                    <strong>Do not guess who they are.</strong> If you know which person an
+                    address belongs to, open that person's account from the roster with
+                    <em>this</em> address — that moves the sign-in onto their record. If you
+                    do not recognise it, ask before doing anything.
+                  </p>
+                  <div style="max-height: 240px; overflow-y: auto;">
+                    <table style="width: 100%;">
+                      <thead>
+                        <tr><th>Email</th><th>Created</th><th>Last sign-in</th><th>Sign-ins</th></tr>
+                      </thead>
+                      <tbody>
+                        ${orphanLogins.map(o => `
+                          <tr>
+                            <td>${this.escapeHtml(o.email || '(none)')}</td>
+                            <td>${o.created_at ? new Date(o.created_at).toLocaleDateString() : '—'}</td>
+                            <td>${o.last_sign_in ? new Date(o.last_sign_in).toLocaleDateString() : 'never'}</td>
+                            <td>${o.sign_ins ?? 0}</td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ` : ''}
+
               <!-- Admins -->
               <div class="card" style="margin-bottom: 20px;">
                 <h3 style="margin-bottom: 15px;">🔑 Admins (${admins.length})</h3>

@@ -364,3 +364,47 @@ the family the same, and the admin is shown what is still outstanding.
 
 Backend changes are in the private repo and are already applied. Suite green;
 `tests/account-paths-audit.test.js` (24) and `tests/no-student-self-signup.test.js` (84).
+
+---
+
+## 2026-09-11 — Jordan's Claude (loose ends)
+
+**Riven answered a question with a refusal.** "What days are Jonathan missing?"
+was matching PLAN_ABSENCE — "are ... missing" is one of its patterns — so the
+question guard fired and Riven explained it does not change data on a maybe,
+while holding the answer. The write intent now stands down entirely for a
+which-days question instead of being suppressed and still winning, and the read
+intent learned the phrasings. Every new pattern insists on is/are/will, because
+"what days WAS she out" is a question about the register; the harness caught
+that the moment the tense guard was missing.
+
+**The rubric Edit button now edits.** It called a method nobody wrote, so the
+only way to change a rubric was delete-and-rebuild — and assignments carry
+`rubric_id`, so rebuilding hands every assignment that used it a rubric it has
+never heard of. It reuses the create form rather than growing a second one, and
+puts the old levels back if the save half-fails.
+
+**Privilege purchases are atomic again.** The Riven terminal has always called
+`teacher_purchase_privilege` with a sequential fallback behind it. The function
+existed only in the backend repo's `_archive` and had never been applied, so
+every purchase took the fallback: deduct in one statement, grant in another,
+which can charge a student for something they do not get. Applied, with its
+caller lookup fixed — it resolved the caller by profile id only, so a teacher
+whose ids differ was told they were not allowed.
+
+**Still blocked, needs you:** `shared/arcade/FirebaseManager.js` calls a
+`firebase-token` function that is written but not deployed, because it needs
+two secrets from a Firebase service-account JSON that do not exist on the
+project (`FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY`). Deploying without
+them turns a 404 into a runtime error and fixes nothing, so it is left alone.
+There is no anonymous fallback — arcade multiplayer identity is down until
+those are set.
+
+**The orphan login is not debris, and I did not touch it.** It has a confirmed
+address and fourteen sign-ins, the most recent six days after it was made:
+somebody has been trying to use the portal and landing on nothing. The roster
+holds a similarly-named person, but at a *different* address, who already has a
+login of their own and has left the school — so matching them would be exactly
+the guess that produced the duplicate students. Instead, **Staff & Parents now
+lists any sign-in with no account behind it**, with an explicit warning not to
+guess. Identifying this one needs somebody who knows the family.

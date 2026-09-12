@@ -196,12 +196,16 @@ const base = () => ({
 
   console.log('\n== the parents table offers the step that is actually possible ==\n');
 
-  async function adminUsers(users, links) {
+  async function adminUsers(users, links, orphans, rpcThrows) {
     const section = { innerHTML: '' };
     const app = Object.assign(base(), {
       userInfo: { user: { id: 'admin-auth' } },
       auth: {
         supabase: {
+          rpc: (name) => {
+            if (rpcThrows) return Promise.reject(new Error('function does not exist'));
+            return Promise.resolve({ data: orphans || [], error: null });
+          },
           from: (table) => {
             const q = {
               select() { return q; },
@@ -264,6 +268,41 @@ const base = () => ({
     ok('children are found when the two ids differ', /Ruthie Argon/.test(html));
     ok('  and unlink uses the id the row is keyed on',
       /unlinkChildFromParent\('auth-pat', 'c1'/.test(html));
+  }
+
+  console.log('\n== a login with no account behind it is visible ==\n');
+
+  {
+    // auth.users is unreachable from the browser, so before this the only
+    // evidence was somebody signing in and seeing an empty portal. One such
+    // account sat here for a year with fourteen sign-ins against it.
+    const html = await adminUsers([PARENT_SELF], [], [
+      { auth_user_id: 'orph-1', email: 'someone@example.com',
+        created_at: '2025-09-02T00:00:00Z', last_sign_in: '2025-09-08T00:00:00Z',
+        sign_ins: 14, confirmed: true },
+    ]);
+    ok('the card appears when there is one', html.includes('Sign-ins with no account (1)'));
+    ok('  naming the address', html.includes('someone@example.com'));
+    ok('  and how hard they tried', html.includes('14'));
+    ok('it says what the person cannot do for themselves',
+      html.includes('signing up again is refused'));
+    // The whole reason this is a report and not an action: matching an orphan
+    // to a profile by a similar name or address is the guess that produced the
+    // duplicate students this school spent a week merging.
+    ok('and it warns against guessing who they are', html.includes('Do not guess who they are'));
+  }
+
+  {
+    const html = await adminUsers([PARENT_SELF], [], []);
+    ok('no card when every login has an account', !html.includes('Sign-ins with no account'));
+  }
+
+  {
+    // Admin-only RPC on a screen teachers can also open, so a refusal must not
+    // take the rest of the page with it.
+    const html = await adminUsers([PARENT_SELF], [], null, true);
+    ok('a refused lookup still renders the screen', html.includes('Parents (1)'));
+    ok('  without the card', !html.includes('Sign-ins with no account'));
   }
 
   console.log('\n== the inactive list finds who cannot sign in ==\n');
