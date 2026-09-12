@@ -467,6 +467,11 @@ const T6 = [
   ['deny that application because no space', 'DENY_APPLICATION', null, true],
   ['waitlist the smith application', 'WAITLIST_APPLICATION', null, true],
   ['any applications waiting', 'VIEW_APPLICATIONS', null, true],
+  // Strikes. The one thing a teacher does about a child in the moment that is
+  // not attendance.
+  ['give noah a strike for throwing chalk', 'ISSUE_STRIKE', 'Noah Williams', true],
+  ['take charlottes strike off', 'REMOVE_STRIKE', 'Charlotte Tebow', true],
+  ['how many strikes does noah have', 'VIEW_STRIKES', 'Noah Williams', true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

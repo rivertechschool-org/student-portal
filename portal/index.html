@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·f';
+      const RIVEN_BUILD = '2026-09-12·g';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52150,6 +52150,7 @@
         'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
         'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
+        'ISSUE_STRIKE', 'REMOVE_STRIKE',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53401,6 +53402,38 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- Strikes -----------------------------------------------------
+        //
+        // Behaviour, and the one thing in here a teacher does about a child in
+        // the moment that is not attendance. Three is the ceiling and the
+        // system treats it as one, so both commands say the count out loud -
+        // "give him a strike" reads very differently when it is his third.
+        {
+          intent: 'ISSUE_STRIKE',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(give|issue|add|log|record)\b[\s\S]{0,32}\bstrike\b/,
+            /\bstrike\b[\s\S]{0,16}\b(for|because)\b/,
+            /\b(has|gets|earned)\b[\s\S]{0,16}\ba\s+strike\b/,
+          ]
+        },
+        {
+          intent: 'REMOVE_STRIKE',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(remove|delete|take away|clear|undo|drop|cancel)\b[\s\S]{0,32}\bstrike\b/,
+            /\bstrike\b[\s\S]{0,20}\b(removed|deleted|cleared|off)\b/,
+          ]
+        },
+        {
+          intent: 'VIEW_STRIKES',
+          w: 8, requiresStudent: true,
+          patterns: [
+            /\b(how many|any|what)\b[\s\S]{0,24}\bstrikes?\b/,
+            /\bstrikes?\b[\s\S]{0,16}\b(does|has|have|count)\b/,
+            /\bstrike\s+count\b/,
+          ]
+        },
         // ---- Enrolment applications --------------------------------------
         //
         // A family applies, an admin decides. Approving is the one that
@@ -54637,6 +54670,12 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'ISSUE_STRIKE':
+          return await this.terminalIssueStrike(entities);
+        case 'REMOVE_STRIKE':
+          return await this.terminalRemoveStrike(entities);
+        case 'VIEW_STRIKES':
+          return await this.terminalViewStrikes(entities);
         case 'APPROVE_APPLICATION':
           return await this.terminalDecideApplication(entities, 'approve');
         case 'DENY_APPLICATION':
@@ -55577,6 +55616,8 @@
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
         GRADE_SUBMISSION: 'mark a student\'s work on an assignment',
+        ISSUE_STRIKE: 'give a student a strike',
+        REMOVE_STRIKE: 'take a strike away',
         APPROVE_APPLICATION: 'approve an enrolment application',
         DENY_APPLICATION: 'deny an enrolment application',
         WAITLIST_APPLICATION: 'waitlist an enrolment application',
@@ -58465,6 +58506,108 @@
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
         });
+    }
+
+    // ---- Strikes -------------------------------------------------------------
+
+    // Three is the ceiling and the system treats it as one, so every answer in
+    // here says the count. "Give him a strike" means something different when
+    // it is his third, and the person saying it does not always know.
+
+    async terminalIssueStrike(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "give noah a strike for throwing chalk".'); return; }
+
+      const raw = entities.original || entities._rawInput || '';
+      const esc = (t) => this.escapeHtml(String(t));
+      const rm = raw.match(/\b(?:for|because(?:\s+of)?|reason)\s+(.{3,200}?)\s*[.!?]?$/i);
+      const reason = rm ? rm[1].trim() : null;
+      if (!reason) {
+        // The form requires one, and a strike with no reason is one nobody can
+        // defend to a parent later.
+        this.terminalPrintError(
+          `What for? A strike needs a reason on the record \u2014 say e.g. "give ${esc(student.full_name.split(' ')[0].toLowerCase())} a strike for throwing chalk".`);
+        return;
+      }
+
+      const { count } = await this.getStudentStrikes(student.id);
+      if (count >= 3) {
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> already has <b>3</b> strikes, which is the maximum. ` +
+          `Nothing was added.`, true);
+        return;
+      }
+
+      const next = count + 1;
+      this._requestConfirmation(
+        `Give <b>${esc(student.full_name)}</b> a strike?` +
+        `<br><span style="font-size: 12px;">Reason: ${esc(reason)}</span>` +
+        `<br><span style="font-size: 12px;${next >= 3 ? ' font-weight: 600;' : ''}">` +
+        `This is strike <b>${next} of 3</b>${next >= 3 ? ' \u2014 their last.' : '.'}</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('student_strikes').insert({
+            student_id: student.id,
+            issued_by: this.userInfo.user.id,
+            reason,
+          });
+          if (error) throw this._rivenPolicyError(error);
+          this._naturalSuccess([
+            `${student.full_name} has ${next} strike${next === 1 ? '' : 's'} \u2014 ${reason}.`
+          ]);
+        });
+    }
+
+    async terminalRemoveStrike(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "take noah\'s last strike off".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const { strikes, count } = await this.getStudentStrikes(student.id);
+      const list = (strikes || []).filter(x => !x.decayed);
+      if (!list.length) {
+        this._showRivenMessage(`<b>${esc(student.full_name)}</b> has no strikes.`, true);
+        return;
+      }
+
+      // The newest, because that is what "take it off" means after one has
+      // just been given - and the only one anybody asks to remove.
+      const target = list[0];
+      this._requestConfirmation(
+        `Take a strike off <b>${esc(student.full_name)}</b>?` +
+        `<br><span style="font-size: 12px;">Removing the most recent one${target.reason ? `: ${esc(target.reason)}` : ''}.</span>` +
+        `<br><span style="font-size: 12px;">They go from ${count} to ${count - 1}.</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('student_strikes')
+            .delete().eq('id', target.id);
+          if (error) throw this._rivenPolicyError(error);
+          this._naturalSuccess([
+            `${student.full_name} is on ${count - 1} strike${count - 1 === 1 ? '' : 's'}.`
+          ]);
+        });
+    }
+
+    async terminalViewStrikes(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "how many strikes does noah have".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const { strikes, count, nextDecayDate } = await this.getStudentStrikes(student.id);
+      const list = (strikes || []).filter(x => !x.decayed);
+      if (!count) {
+        this._showRivenMessage(`<b>${esc(student.full_name)}</b> has no strikes.`, true);
+        return;
+      }
+
+      const lines = list.map(x =>
+        `\u2022 ${esc(String(x.created_at || '').slice(0, 10))}${x.reason ? ` \u2014 ${esc(x.reason)}` : ''}` +
+        `${x.issuer_name ? ` <span style="color: var(--muted);">(${esc(x.issuer_name)})</span>` : ''}`);
+
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">` +
+        `${esc(student.full_name)} \u2014 <b>${count} of 3</b></div>` +
+        `<div style="font-size: 13px; line-height: 1.8;">${lines.join('<br>')}</div>` +
+        (nextDecayDate ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">` +
+          `The oldest drops off ${esc(String(nextDecayDate).slice(0, 10))}.</div>` : ''), true);
     }
 
     // ---- Enrolment applications --------------------------------------------
