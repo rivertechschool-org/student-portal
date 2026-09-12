@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·c';
+      const RIVEN_BUILD = '2026-09-12·d';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52148,6 +52148,7 @@
         'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'CANCEL_CLASS', 'UNCANCEL_CLASS',
         'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER',
         'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
+        'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53399,6 +53400,56 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- Student groups ----------------------------------------------
+        //
+        // Cohorts are how this school takes its daily register, so Riven reads
+        // them constantly and could change none of them. Admin only: which
+        // days a cohort meets decides whose name is on which morning list, and
+        // membership decides who a teacher is handed at 8am.
+        {
+          intent: 'CREATE_GROUP',
+          // notIfGroup: "add the lower ms group to chess" enrols a cohort into
+          // a class and matched this on the bare words "add ... group". A group
+          // that already resolves is not one being created.
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true, notIfGroup: true,
+          patterns: [
+            /\b(create|make|add|start|set up)\b[\s\S]{0,24}\b(new\s+)?(student\s+)?(group|cohort)\b/,
+            /\b(new|another)\s+(student\s+)?(group|cohort)\b/,
+          ]
+        },
+        {
+          intent: 'DELETE_GROUP',
+          w: 9, requiresGroup: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(delete|remove|get rid of|scrap)\b[\s\S]{0,24}\b(group|cohort)\b/,
+            /\b(group|cohort)\b[\s\S]{0,16}\b(deleted|removed|gone)\b/,
+          ]
+        },
+        {
+          intent: 'SET_GROUP_DAYS',
+          w: 9, requiresGroup: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(meets?|meeting|runs?|is on)\b[\s\S]{0,24}\b(mon|tues?|wed|thur?s?|fri|sat|sun)/,
+            /\b(group|cohort)\b[\s\S]{0,32}\bdays?\b[\s\S]{0,12}\b(to|are|is)\b/,
+            /\b(set|change)\b[\s\S]{0,32}\b(meeting|meets)\s+days?\b/,
+          ]
+        },
+        {
+          intent: 'ADD_TO_GROUP',
+          w: 9, requiresGroup: true, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(add|put|move)\b[\s\S]{0,40}\b(in|into|to)\b[\s\S]{0,24}\b(group|cohort)\b/,
+            /\b(joins?|joining)\b[\s\S]{0,24}\b(group|cohort)\b/,
+          ]
+        },
+        {
+          intent: 'REMOVE_FROM_GROUP',
+          w: 9, requiresGroup: true, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(remove|take|drop|pull)\b[\s\S]{0,40}\b(out of|from|off)\b[\s\S]{0,24}\b(group|cohort)\b/,
+            /\b(leaves?|leaving)\b[\s\S]{0,24}\b(group|cohort)\b/,
+          ]
+        },
         // ---- Assignments -------------------------------------------------
         //
         // Riven could set one and list them, and could not touch one after.
@@ -54523,6 +54574,16 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'CREATE_GROUP':
+          return await this.terminalCreateGroup(entities);
+        case 'DELETE_GROUP':
+          return await this.terminalDeleteGroup(entities);
+        case 'SET_GROUP_DAYS':
+          return await this.terminalSetGroupDays(entities);
+        case 'ADD_TO_GROUP':
+          return await this.terminalChangeGroupMembership(entities, true);
+        case 'REMOVE_FROM_GROUP':
+          return await this.terminalChangeGroupMembership(entities, false);
         case 'DELETE_ASSIGNMENT':
           return await this.terminalDeleteAssignment(entities);
         case 'EDIT_ASSIGNMENT':
@@ -55442,6 +55503,11 @@
         RENAME_STUDENT: 'correct a student\'s name',
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
+        CREATE_GROUP: 'create a student group',
+        DELETE_GROUP: 'delete a student group',
+        SET_GROUP_DAYS: 'set which days a group meets',
+        ADD_TO_GROUP: 'add a student to a group',
+        REMOVE_FROM_GROUP: 'take a student out of a group',
         DELETE_ASSIGNMENT: 'delete an assignment',
         EDIT_ASSIGNMENT: 'change an assignment\'s due date or points',
         SET_CLASS_TEACHER: 'change who teaches a class',
@@ -58321,6 +58387,170 @@
             if (r) throw r;
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
+        });
+    }
+
+    // ---- Student groups ----------------------------------------------------
+
+    // Cohorts decide who is on which morning register, so every one of these is
+    // an admin job. Membership goes through set_student_group_members, the same
+    // RPC the Student Groups screen uses, because it replaces the whole list in
+    // one statement - two calls to add and remove would leave a window where a
+    // child is on no register at all.
+
+    async terminalCreateGroup(entities) {
+      if (!this._rivenRequireAdmin('create a student group')) return;
+
+      const raw = entities.original || entities._rawInput || '';
+      // The name is whatever was said after "group"/"cohort", or in quotes.
+      let name = null;
+      const q = raw.match(/["\u201c']([^"\u201d']{2,60})["\u201d']/);
+      if (q) name = q[1].trim();
+      if (!name) {
+        const m = raw.match(/\b(?:group|cohort)\s+(?:called\s+|named\s+|for\s+)?(.{2,60}?)\s*[.!?]?$/i)
+          || raw.match(/\b(?:called|named)\s+(.{2,60}?)\s*[.!?]?$/i);
+        if (m) name = m[1].trim();
+      }
+      if (!name) {
+        this.terminalPrintError('What should it be called? Try \'create a group called "Thursday Lab"\'.');
+        return;
+      }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const existing = (this._terminalAllGroups || [])
+        .find(g => (g.name || '').toLowerCase() === name.toLowerCase());
+      if (existing) {
+        this._showRivenMessage(`A group called <b>${esc(name)}</b> already exists.`, true);
+        return;
+      }
+
+      this._requestConfirmation(
+        `Create a student group called <b>${esc(name)}</b>?` +
+        `<br><span style="font-size: 12px;">It starts empty and meets on no days \u2014 add students and set ` +
+        `its days after.</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('student_groups')
+            .insert({ name, description: null, created_by: this.userInfo.user.id });
+          if (error) throw this._rivenPolicyError(error);
+          await this._loadTerminalGroups?.();
+          this._naturalSuccess([`Group "${name}" created. It is empty until you add students.`]);
+        });
+    }
+
+    async terminalDeleteGroup(entities) {
+      if (!this._rivenRequireAdmin('delete a student group')) return;
+      const g = entities.groupMatch;
+      if (!g) { this.terminalPrintError('Which group? Try "delete the thursday lab group".'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const n = (g.studentIds || []).length;
+
+      this._requestConfirmation(
+        `Delete the group <b>${esc(g.name)}</b>?` +
+        `<br><span style="font-size: 12px;">${n ? `${n} student${n === 1 ? '' : 's'} are in it. They keep ` +
+        `their classes and records \u2014 they just stop being a cohort, and stop appearing on its register.`
+        : 'It is empty.'}</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('student_groups').delete().eq('id', g.id);
+          if (error) throw this._rivenPolicyError(error);
+          await this._loadTerminalGroups?.();
+          this._naturalSuccess([`The ${g.name} group is gone. Nobody lost a class or a record.`]);
+        });
+    }
+
+    async terminalSetGroupDays(entities) {
+      if (!this._rivenRequireAdmin('set which days a group meets')) return;
+      const g = entities.groupMatch;
+      if (!g) { this.terminalPrintError('Which group? Try "the thursday lab meets thursday".'); return; }
+
+      // The group's NAME is in the sentence, and at this school names carry
+      // weekdays - "Thursday Lab", "Friday Art". Parsing the whole sentence
+      // makes the name a meeting day: "thursday lab meets friday" came back as
+      // Thursday AND Friday, and there is no way to say "meets friday only"
+      // about a group called Thursday Lab. Take the name out first.
+      const raw = entities.original || entities._rawInput || '';
+      const withoutName = (g.name || '')
+        ? raw.replace(new RegExp((g.name || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ')
+        : raw;
+      const days = this._rivenParseWeekdays(withoutName);
+      if (!days.length) {
+        this.terminalPrintError('Which days? Say e.g. "the thursday lab meets tuesday".');
+        return;
+      }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const before = this._rivenDayList(g.meets_days || []);
+
+      this._requestConfirmation(
+        `Set the days <b>${esc(g.name)}</b> meets?<br>` +
+        `${esc(before.length ? this._rivenDayPhrase(before) : 'not set')} \u2192 <b>${esc(this._rivenDayPhrase(days))}</b>` +
+        `<br><span style="font-size: 12px;">This decides which mornings the group appears on the ` +
+        `register. It does not change any student's own attending days.</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('student_groups')
+            .update({ meets_days: days.length ? days : null }).eq('id', g.id);
+          if (error) throw this._rivenPolicyError(error);
+          this._pushUndo(`the days ${g.name} meets`, async () => {
+            const { error: r } = await this.auth.supabase.from('student_groups')
+              .update({ meets_days: before.length ? before : null }).eq('id', g.id);
+            if (r) throw r;
+          });
+          g.meets_days = days;
+          this._naturalSuccess([`${g.name} meets ${this._rivenDayPhrase(days)}.`]);
+        });
+    }
+
+    // One path for both directions, because both are the same write: the RPC
+    // takes the WHOLE membership list, so adding and removing differ only in
+    // what goes into that list.
+    async terminalChangeGroupMembership(entities, adding) {
+      if (!this._rivenRequireAdmin(adding ? 'add a student to a group' : 'take a student out of a group')) return;
+      const g = entities.groupMatch;
+      const student = this._rivenResolvedStudent(entities);
+      if (!g) { this.terminalPrintError('Which group? Name it, e.g. "add noah to the thursday lab group".'); return; }
+      if (!student) { this.terminalPrintError('Which student?'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const before = [...(g.studentIds || [])];
+      const isIn = before.includes(student.id);
+
+      if (adding && isIn) {
+        this._showRivenMessage(`<b>${esc(student.full_name)}</b> is already in ${esc(g.name)}.`, true);
+        return;
+      }
+      if (!adding && !isIn) {
+        this._showRivenMessage(`<b>${esc(student.full_name)}</b> is not in ${esc(g.name)}.`, true);
+        return;
+      }
+
+      const after = adding ? [...before, student.id] : before.filter(id => id !== student.id);
+
+      this._requestConfirmation(
+        adding
+          ? `Add <b>${esc(student.full_name)}</b> to <b>${esc(g.name)}</b>?` +
+            `<br><span style="font-size: 12px;">They appear on that group's register from the next morning it meets.</span>`
+          : `Take <b>${esc(student.full_name)}</b> out of <b>${esc(g.name)}</b>?` +
+            `<br><span style="font-size: 12px;">They stop appearing on that group's register. Their classes ` +
+            `and records are untouched.</span>`,
+        async () => {
+          const { data, error } = await this.auth.supabase.rpc('set_student_group_members', {
+            p_group_id: g.id, p_student_ids: after,
+          });
+          if (error) throw this._rivenPolicyError(error);
+          const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+          if (res.success === false) throw new Error(res.error || 'the change was refused');
+
+          this._pushUndo(`${adding ? 'adding' : 'removing'} ${student.full_name} ${adding ? 'to' : 'from'} ${g.name}`,
+            async () => {
+              const { error: r } = await this.auth.supabase.rpc('set_student_group_members', {
+                p_group_id: g.id, p_student_ids: before,
+              });
+              if (r) throw r;
+            });
+          g.studentIds = after;
+          this._naturalSuccess([adding
+            ? `${student.full_name} is in ${g.name}.`
+            : `${student.full_name} is out of ${g.name}.`]);
         });
     }
 

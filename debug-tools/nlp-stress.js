@@ -451,6 +451,10 @@ const T6 = [
   ['chapter 4 is worth 50 points', 'EDIT_ASSIGNMENT', null, true],
   ['unpublish the chapter 4 assignment', 'EDIT_ASSIGNMENT', null, true],
   ['assign chapter 5 to math due friday', 'CREATE_ASSIGNMENT', null, true],
+  // Student groups. The cohort IS the morning register at this school, so
+  // these are admin commands. The line that must hold: adding a cohort to a
+  // CLASS is still ENROLL_GROUP, not a new group being made.
+  ['create a group called thursday lab', 'CREATE_GROUP', null, true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],
