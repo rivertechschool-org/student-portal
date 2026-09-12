@@ -271,3 +271,52 @@ Projects. The buttons came out of the class action grid but do not appear to hav
 the launcher. Not touched, since it looks like work still in flight rather than a break.
 
 **Needs:** Jordan — finish or revert, whichever was intended.
+
+---
+
+## 2026-09-11 — Jordan's Claude
+
+**Students no longer open their own accounts.** Register and Activate are both gone from
+the sign-in page. Register is now a parent-only form (no account type, no grade, no
+enrolment type); Activate is deleted outright, along with `handleActivate` and
+`showActivateForm`.
+
+Why, because the diff looks like a feature being taken away: every pupil is already on the
+roster before they see the site, and that profile is where the attendance, grades, skills
+and RTC live. Neither self-service route could find it — neither asked for anything a
+stranger would not also know — so a student who used one got a SECOND profile with none of
+the history, and that is the one they then signed in to. Three such pairs were merged by
+hand this week; one had 28 skill records stranded on the self-made row. Activate could not
+have worked in any case: it called `student_username_unclaimed()`, which does not exist on
+this database, and asked for usernames (`ruthie.argon`, a misspelt `Malea`, `Samantha H.`)
+that the students holding them could not type.
+
+**What replaces it.** Someone who already knows the child sends an address:
+
+- teacher or admin, from the roster or the student hub — unchanged, already worked;
+- **a parent, for a child linked to them** — new. The button appears on the parent
+  dashboard (sign-in page) and the parent home (portal) for any linked child with
+  `can_login = false`.
+
+Both go through the same `admin-activate-student` edge function, which opens the login on
+the existing profile and mails a set-password link. A parent's entitlement is the LINK
+itself, which costs either the code the school printed for that child or a request an admin
+approved by hand — both already put a person between a stranger and a pupil.
+
+**Applied to the backend already** (both live, nothing for anyone to run):
+
+- `create_signup_profile` refuses `user_type = 'student'`. This page is public and served
+  verbatim, so a removed `<option>` stops nobody; the refusal has to be server-side.
+- `admin-activate-student` redeployed (v8) admitting a linked parent. It reads the request
+  body before deciding, because a parent's permission depends on which child they named.
+
+**One thing to know about edge functions.** A deploy that carries `--no-verify-jwt` STICKS.
+A later deploy without the flag does not put it back — only an entry in `supabase/config.toml`
+does. `admin-activate-student` is pinned there now for that reason.
+
+**Left alone deliberately.** Parent self-registration stays open: a parent needs an account
+before they can link a child, and that link is what lets them activate. The enrolment
+application at `/enrollment/` is untouched.
+
+`tests/no-student-self-signup.test.js` — 81 assertions, covering both the doors being shut
+and the parent's door leading where the office's does.

@@ -875,8 +875,10 @@ class PortalUI {
         const userType = userInfo.profile?.user_type || 'student';
         // "PIN-only" mode: an unclaimed inactive student profile that signed
         // in via the games PIN. They get games + skills + RTC only — no
-        // grades, classes, messaging, dashboard, etc. They can upgrade to a
-        // full account later via the regular Activate Account flow.
+        // grades, classes, messaging, dashboard, etc. A parent or a member of
+        // staff opens the full account for them, on this same profile; there
+        // is no self-service route, because every one of those made a second,
+        // empty profile beside the real one.
         const isPinOnlyStudent = userType === 'student'
             && userInfo.profile?.account_status === 'inactive';
 

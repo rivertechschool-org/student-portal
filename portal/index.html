@@ -6215,10 +6215,13 @@
 
           // Get child profiles
           const childIds = links.map(l => l.child_id);
+          // can_login decides whether the child still needs their account
+          // opening. A parent may read it on a linked child; the link is the
+          // policy, and it is the same flag the office sees on the roster.
           const { data: childProfiles, error: profileError } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('user_profiles')
-              .select('id, first_name, last_name, email, grade_level, enrollment_type')
+              .select('id, first_name, last_name, email, grade_level, enrollment_type, account_status, can_login')
               .in('id', childIds));
 
           if (profileError) {
@@ -7685,6 +7688,14 @@
                 <div class="list-item-meta">
                   Grade ${child.grade_level || 'N/A'} • ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'} • ${child.classes?.length || 0} class${child.classes?.length !== 1 ? 'es' : ''}
                 </div>
+                ${child.can_login ? '' : `
+                <div style="margin-top: 6px;">
+                  <span style="font-size: 11px; color: var(--warning); font-weight: 600;">No sign-in yet</span>
+                  <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 10px; margin-left: 8px;"
+                          onclick="event.stopPropagation(); app.showActivateChildModal('${child.id}')">
+                    ✉️ Open their account
+                  </button>
+                </div>`}
               </div>
               <div style="display: flex; align-items: center; gap: 10px;">
                 <span id="child-strikes-${child.id}" style="font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--accent-2); color: white;">-</span>
@@ -7963,6 +7974,124 @@
         `;
 
         this.showModal('child-details', `👦 ${child.first_name}'s Progress`, modalContent);
+      }
+
+      // Opening a linked child's account
+      //
+      // The same edge function the office calls from the roster, and the same
+      // one the sign-in page's parent dashboard calls. It creates the login
+      // against the profile the school already holds - the one carrying the
+      // attendance and the grades - marks it activated, and mails a link for
+      // setting a password.
+      //
+      // What entitles a parent to call it is the LINK, which costs either the
+      // code the school printed for that child or a request an admin approved
+      // by hand. Students have no self-service route of their own any more:
+      // every one of them made a second, empty profile beside the real one.
+      showActivateChildModal(childId) {
+        const child = (this.children || []).find(c => c.id === childId);
+        if (!child) {
+          this.showNotification('That child is not linked to your account.', 'error');
+          return;
+        }
+
+        const onRecord = (child.email || '').trim();
+        // Offer an address already on the profile, but never the placeholder
+        // PIN sign-in invents - those have no inbox behind them.
+        const usable = onRecord && !/@pin\.rivertech\.me$/i.test(onRecord);
+
+        this.showModal('activate-child', `✉️ Open ${this.escapeHtml(child.first_name)}'s account`, `
+          <div>
+            <p style="color: var(--muted); font-size: 13px; line-height: 1.5; margin-bottom: 16px;">
+              This creates the sign-in on ${this.escapeHtml(child.first_name)}'s existing school record and
+              emails a link for setting a password. Their classes, grades and skills are already on it.
+            </p>
+
+            <div class="form-group">
+              <label for="activate-child-email">Send the link to</label>
+              <input type="email" id="activate-child-email" value="${this.escapeHtml(usable ? onRecord : '')}"
+                placeholder="name@example.com" autocomplete="off"
+                style="width:100%; padding:8px; border:1px solid var(--border); border-radius:6px; background:var(--card); color:var(--text);">
+              <small style="color: var(--muted); font-size: 11px;">
+                An address ${this.escapeHtml(child.first_name)} can open. It cannot be the one you sign in with.
+              </small>
+            </div>
+
+            <label style="display:flex; gap:8px; align-items:flex-start; margin:14px 0; font-size:13px; cursor:pointer;">
+              <input type="checkbox" id="activate-child-confirm" style="margin-top:3px;">
+              <span>I've checked this address is right for ${this.escapeHtml(child.first_name)}.</span>
+            </label>
+
+            <div id="activate-child-error" style="display:none; color:var(--danger, #ff6a6a); font-size:13px; margin-bottom:10px;"></div>
+
+            <div style="display:flex; gap:10px; justify-content:flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('activate-child')">Cancel</button>
+              <button class="btn btn-primary" id="activate-child-go"
+                onclick="app.confirmActivateChild('${childId}')">Send the link</button>
+            </div>
+          </div>
+        `);
+      }
+
+      async confirmActivateChild(childId) {
+        const emailEl = document.getElementById('activate-child-email');
+        const confirmEl = document.getElementById('activate-child-confirm');
+        const errEl = document.getElementById('activate-child-error');
+        const btn = document.getElementById('activate-child-go');
+
+        const fail = (msg) => {
+          if (errEl) { errEl.textContent = msg; errEl.style.display = 'block'; }
+          if (btn) { btn.disabled = false; btn.textContent = 'Send the link'; }
+        };
+
+        const email = (emailEl?.value || '').trim();
+        if (!email) return fail('Enter the address to send the link to.');
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail('That does not look like a valid email address.');
+        if (!confirmEl?.checked) return fail('Tick the box to confirm the address.');
+
+        if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+        if (errEl) errEl.style.display = 'none';
+
+        try {
+          const sessionResult = await this.supabaseQuery(() => this.auth.supabase.auth.getSession());
+          const session = sessionResult?.data?.session;
+          if (!session) return fail('Your session expired. Sign in again and retry.');
+
+          const resp = await fetch(
+            'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/admin-activate-student',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+              // Sent twice on purpose: the server refuses if the two disagree,
+              // so a stale screen cannot mail a link to an address nobody read.
+              body: JSON.stringify({ studentId: childId, email, confirmedEmail: email })
+            }
+          );
+
+          const result = await resp.json().catch(() => ({}));
+          if (!resp.ok || !result.success) {
+            return fail(result.error || 'The account was not opened.');
+          }
+
+          this.closeModal('activate-child');
+          this.showNotification(
+            result.emailSent
+              ? `Done. A link to set a password was sent to ${email}.`
+              : `The account is open, but no email went out. ${result.warning || ''}`,
+            result.emailSent ? 'success' : 'warning');
+
+          // The button hangs off can_login, so the cached child row has to be
+          // refreshed before the home page is drawn again.
+          const child = (this.children || []).find(c => c.id === childId);
+          if (child) { child.can_login = true; child.email = email; child.account_status = 'activated'; }
+          if (this.currentSection === 'home') this.setupHomeContent();
+        } catch (e) {
+          console.error('confirmActivateChild failed:', e);
+          fail(e.message || 'Something went wrong. Please try again.');
+        }
       }
 
       showLinkChildModal() {
@@ -14357,7 +14486,8 @@
 
       // PIN-only students sign in against a synthetic pin-<uuid>@pin.rivertech.me
       // auth user, not a real mailbox. There's nowhere to send a confirmation link,
-      // so they get pointed at Activate Account instead.
+      // and no self-service way to attach one any more - a parent or a member of
+      // staff opens the account for them - so the card says who to ask.
       _isPlaceholderEmail(email) {
         return /@pin\.rivertech\.me$/i.test(String(email || ''));
       }
@@ -14379,8 +14509,9 @@
           card.innerHTML = `
             <h3>✉️ Change Email</h3>
             <p style="color: var(--muted); margin: 0;">
-              This account signs in with a PIN and has no email address yet. Use
-              <strong>Activate Account</strong> on the sign-in page to attach one.
+              This account signs in with a PIN and has no email address yet. Ask a parent
+              or a teacher to open your full account — they send an address, and you get
+              a link to set a password.
             </p>
           `;
           return;
