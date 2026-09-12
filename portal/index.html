@@ -52123,6 +52123,7 @@
         'UPDATE_CONTACT', 'SET_ENROLLMENT_TYPE', 'SET_SCHEDULE', 'SET_GRADE_LEVEL',
         'RENAME_STUDENT', 'LINK_PARENT', 'UNLINK_PARENT',
         'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
+        'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'CANCEL_CLASS', 'UNCANCEL_CLASS',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53374,6 +53375,73 @@
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
           ]
         },
+        // ---- The day itself ----------------------------------------------
+        //
+        // Teachers, not admins. Excusing an absence, ticking a child off at
+        // pickup and calling off a session are all things that happen while the
+        // day is running, by whoever is standing there.
+        {
+          intent: 'EXCUSE_ABSENCE',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\bexcuse[ds]?\b[\s\S]{0,30}\b(absence|absent|today|yesterday|monday|tuesday|wednesday|thursday|friday)\b/,
+            /\b(mark|make|set)\b[\s\S]{0,30}\babsence\b[\s\S]{0,12}\bexcused\b/,
+            /\b(absence|absent)\b[\s\S]{0,16}\bis\s+excused\b/,
+            /^excuse\s+/,
+          ]
+        },
+        {
+          intent: 'MARK_PICKED_UP',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(picked up|pick(ed)? him up|pick(ed)? her up|pick(ed)? them up|collected)\b/,
+            /\b(has|have|was|were|got)\s+(been\s+)?(picked up|collected)\b/,
+            /\b(gone home|went home|left with)\b/,
+          ]
+        },
+        {
+          intent: 'CANCEL_CLASS',
+          w: 9, requiresClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            // requiresClass already insists a real class was named, so the
+            // word "class" itself is not needed: "cancel math today" is the
+            // way anybody actually says it.
+            /^cancel\b/,
+            /\b(cancel|cancelling|canceling|call(ing)? off)\b/,
+            /\b(class|lesson|session)\b[\s\S]{0,16}\b(is\s+)?off\b/,
+            /\b(class|lesson|session)\b[\s\S]{0,16}\b(is\s+)?cancell?ed\b/,
+            /\bnot\s+(meeting|running|happening)\b/,
+          ]
+        },
+        {
+          intent: 'UNCANCEL_CLASS',
+          w: 9, requiresClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            // Same as cancelling: requiresClass has already insisted on a real
+            // class, so naming it is enough. REINSTATE_STUDENT shares the word
+            // "reinstate" and cannot collide - that one requires a student.
+            /\bun-?cancel\b/,
+            /\b(restore|reinstate|put back)\b[\s\S]{0,24}\b(class|lesson|session)\b/,
+            /\bis\s+back\s+on\b/,
+            /\b(class|lesson|session)\b[\s\S]{0,20}\bis\s+(back\s+)?on\b/,
+          ]
+        },
+        // Reports are reads, but heavy ones - they open a document.
+        {
+          intent: 'REPORT_CARD',
+          w: 8, requiresStudent: true, notIfNoteCommand: true,
+          patterns: [
+            /\breport\s+card\b/,
+            /\b(print|generate|make|pull|get)\b[\s\S]{0,20}\breport\b/,
+          ]
+        },
+        {
+          intent: 'TRANSCRIPT',
+          w: 8, requiresStudent: true, notIfNoteCommand: true,
+          patterns: [
+            /\btranscript\b/,
+          ]
+        },
         // ---- The student lifecycle ---------------------------------------
         //
         // Withdrawing a student is the heaviest thing an admin does to a
@@ -54335,6 +54403,18 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'EXCUSE_ABSENCE':
+          return await this.terminalExcuseAbsence(entities);
+        case 'MARK_PICKED_UP':
+          return await this.terminalMarkPickedUp(entities);
+        case 'CANCEL_CLASS':
+          return await this.terminalCancelClass(entities);
+        case 'UNCANCEL_CLASS':
+          return await this.terminalUncancelClass(entities);
+        case 'REPORT_CARD':
+          return await this.terminalReportCard(entities);
+        case 'TRANSCRIPT':
+          return await this.terminalTranscript(entities);
         case 'WITHDRAW_STUDENT':
           return await this.terminalWithdrawStudent(entities);
         case 'REINSTATE_STUDENT':
@@ -55230,6 +55310,10 @@
         RENAME_STUDENT: 'correct a student\'s name',
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
+        EXCUSE_ABSENCE: 'excuse an absence',
+        MARK_PICKED_UP: 'tick a student off at pickup',
+        CANCEL_CLASS: 'cancel a class session',
+        UNCANCEL_CLASS: 'put a cancelled session back',
         WITHDRAW_STUDENT: 'mark a student as past',
         REINSTATE_STUDENT: 'bring a past student back',
         REGENERATE_PIN: 'issue a new games PIN',
@@ -58101,6 +58185,207 @@
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
         });
+    }
+
+    // ---- The day itself ----------------------------------------------------
+
+    // "excuse noah today"
+    //
+    // Excused is a flag ON an absence, not a status of its own: the register
+    // still says the child was not here, and the excuse is what stops it
+    // counting against them. So this refuses to invent a row - if nobody has
+    // marked them absent yet, there is nothing to excuse, and quietly creating
+    // an absence would be marking a child absent by implication.
+    async terminalExcuseAbsence(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "excuse noah today".'); return; }
+
+      const raw = entities.original || entities._rawInput || '';
+      const date = entities.sinceDate || this._rivenPhraseToDate?.(raw) || this._localDateStr(new Date());
+      const esc = (t) => this.escapeHtml(String(t));
+
+      const sb = this.auth.supabase;
+      const { data: rows, error } = await sb.from('daily_attendance')
+        .select('id, status, excused').eq('student_id', student.id).eq('date', date);
+      if (error) { this.terminalPrintError('Could not read the register: ' + error.message); return; }
+
+      const rec = (rows || [])[0];
+      if (!rec) {
+        this._showRivenMessage(
+          `Nothing is recorded for <b>${esc(student.full_name)}</b> on ${esc(date)}, so there is no absence ` +
+          `to excuse. Mark them absent first, or say <em>${esc(student.full_name.split(' ')[0].toLowerCase())} ` +
+          `is out ${esc(date)}</em> to note it in advance.`, true);
+        return;
+      }
+      if (rec.status !== 'absent') {
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> is down as <b>${esc(rec.status)}</b> on ${esc(date)}, not absent. ` +
+          `Only an absence can be excused.`, true);
+        return;
+      }
+      if (rec.excused) {
+        this._showRivenMessage(`That absence is already excused.`, true);
+        return;
+      }
+
+      // A reason if the sentence carries one.
+      const rm = raw.match(/\b(?:because|reason|for|due to)\s+(.{3,80}?)\s*[.!?]?$/i);
+      const note = rm ? rm[1].trim() : null;
+
+      this._requestConfirmation(
+        `Excuse <b>${esc(student.full_name)}</b>'s absence on ${esc(date)}?` +
+        (note ? `<br><span style="font-size: 12px;">Reason: ${esc(note)}</span>` : ''),
+        async () => {
+          const patch = { excused: true };
+          if (note) patch.excuse_note = note;
+          const { error: e } = await sb.from('daily_attendance').update(patch).eq('id', rec.id);
+          if (e) throw this._rivenPolicyError(e);
+          this._pushUndo(`the excuse on ${student.full_name}'s ${date} absence`, async () => {
+            const { error: r } = await sb.from('daily_attendance')
+              .update({ excused: false }).eq('id', rec.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${student.full_name}'s absence on ${date} is excused.`]);
+        });
+    }
+
+    // "noah has been picked up"
+    //
+    // The same rt_set_dismissed the pickup board calls, so a child ticked off
+    // here is ticked off there. No confirmation: it is the lightest write in
+    // Riven, it is reversible by saying the opposite, and somebody is holding a
+    // car door open.
+    async terminalMarkPickedUp(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "noah has been picked up".'); return; }
+
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      const undoing = /\b(not|hasn'?t|haven'?t|wasn'?t|no longer|un-?pick)\b/.test(raw);
+      const esc = (t) => this.escapeHtml(String(t));
+
+      try {
+        await this._pickupRpc('rt_set_dismissed', {
+          p_student_ids: [student.id], p_dismissed: !undoing,
+        });
+      } catch (e) {
+        this.terminalPrintError(`Not saved: ${e.message}`);
+        return;
+      }
+
+      // The board may be open on another phone; refresh ours if it is showing.
+      if (typeof this.loadPickupHereToday === 'function' && this._pickupHere) {
+        this.loadPickupHereToday().catch(() => {});
+      }
+      this._pushUndo(`marking ${student.full_name} as ${undoing ? 'not picked up' : 'picked up'}`, async () => {
+        await this._pickupRpc('rt_set_dismissed', { p_student_ids: [student.id], p_dismissed: undoing });
+      });
+      this._naturalSuccess(undoing
+        ? [`${student.full_name} is back on the pickup list.`]
+        : [`${student.full_name} is ticked off \u2014 picked up.`]);
+    }
+
+    // Calling off a session.
+    //
+    // DESTRUCTIVE, and not obviously so: cancelling deletes the attendance
+    // marks already taken for that class, date and period. That is right - a
+    // session that did not happen has no register - but a teacher who cancels
+    // the wrong period loses real marks, so the confirmation counts them first.
+    async terminalCancelClass(entities) {
+      const { row, asked } = await this._rivenRequireClass(entities);
+      if (asked) return;
+      if (!row) { this.terminalPrintError('Which class? Try "cancel chess today".'); return; }
+      if (!this._rivenCanManageClass(row, { attendance: true })) {
+        this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't cancel it.`);
+        return;
+      }
+
+      const raw = entities.original || entities._rawInput || '';
+      const date = entities.sinceDate || this._rivenPhraseToDate?.(raw) || this._localDateStr(new Date());
+      const esc = (t) => this.escapeHtml(String(t));
+      const sb = this.auth.supabase;
+
+      const { data: marks } = await sb.from('class_attendance')
+        .select('id').eq('class_id', row.id).eq('date', date);
+      const n = (marks || []).length;
+
+      const rm = raw.match(/\b(?:because|reason|due to)\s+(.{3,80}?)\s*[.!?]?$/i);
+      const reason = rm ? rm[1].trim() : null;
+
+      this._requestConfirmation(
+        `Cancel <b>${esc(row.name)}</b> on ${esc(date)}?` +
+        (n ? `<br><span style="font-size: 12px; color: var(--danger, #ff6a6a);">This deletes ${n} attendance ` +
+             `mark${n === 1 ? '' : 's'} already taken for that session.</span>`
+           : `<br><span style="font-size: 12px;">No attendance has been taken for it.</span>`) +
+        (reason ? `<br><span style="font-size: 12px;">Reason: ${esc(reason)}</span>` : ''),
+        async () => {
+          await sb.from('class_attendance_sessions').delete()
+            .eq('class_id', row.id).eq('date', date);
+          const { error } = await sb.from('class_attendance_sessions').insert({
+            class_id: row.id, date, period: null, status: 'canceled',
+            cancel_reason: reason, taken_by: this.userInfo.user.id,
+          });
+          if (error) throw this._rivenPolicyError(error);
+          await sb.from('class_attendance').delete().eq('class_id', row.id).eq('date', date);
+          // No undo: the marks are gone, and an undo that restored the session
+          // without them would be a lie about what it put back.
+          this._naturalSuccess([
+            `${row.name} is cancelled for ${date}${n ? ` \u2014 ${n} mark${n === 1 ? '' : 's'} removed` : ''}.`
+          ]);
+        });
+    }
+
+    async terminalUncancelClass(entities) {
+      const { row, asked } = await this._rivenRequireClass(entities);
+      if (asked) return;
+      if (!row) { this.terminalPrintError('Which class? Try "chess is back on today".'); return; }
+      if (!this._rivenCanManageClass(row, { attendance: true })) {
+        this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't change it.`);
+        return;
+      }
+
+      const raw = entities.original || entities._rawInput || '';
+      const date = entities.sinceDate || this._rivenPhraseToDate?.(raw) || this._localDateStr(new Date());
+      const esc = (t) => this.escapeHtml(String(t));
+      const sb = this.auth.supabase;
+
+      const { data: sess } = await sb.from('class_attendance_sessions')
+        .select('id, status').eq('class_id', row.id).eq('date', date);
+      const canceled = (sess || []).find(x => x.status === 'canceled');
+      if (!canceled) {
+        this._showRivenMessage(`<b>${esc(row.name)}</b> is not cancelled on ${esc(date)}.`, true);
+        return;
+      }
+
+      const { error } = await sb.from('class_attendance_sessions').delete().eq('id', canceled.id);
+      if (error) { this.terminalPrintError('Could not restore it: ' + error.message); return; }
+      this._naturalSuccess([
+        `${row.name} is back on for ${date}. The register is empty \u2014 the marks taken before it was cancelled are gone.`
+      ]);
+    }
+
+    // Reports open a document rather than answering in the chat, so these hand
+    // straight to the page's own generators - one implementation, whichever way
+    // it was asked for.
+    async terminalReportCard(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "report card for noah".'); return; }
+      if (typeof this.generateReportCard !== 'function') {
+        this.terminalPrintError('Report cards are not available on this page.');
+        return;
+      }
+      this._showRivenMessage(`Opening ${this.escapeHtml(student.full_name)}'s report card\u2026`, true);
+      await this.generateReportCard(student.id);
+    }
+
+    async terminalTranscript(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "transcript for noah".'); return; }
+      if (typeof this.generateTranscript !== 'function') {
+        this.terminalPrintError('Transcripts are not available on this page.');
+        return;
+      }
+      this._showRivenMessage(`Opening ${this.escapeHtml(student.full_name)}'s transcript\u2026`, true);
+      await this.generateTranscript(student.id);
     }
 
     // Which of two named people is the STUDENT.

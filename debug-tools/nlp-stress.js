@@ -419,6 +419,18 @@ const T6 = [
   // This case pins the INTENT; riven-student-lifecycle.test.js pins which
   // of the two ends up being unlinked.
   ['unlink sarah jones from noah', 'UNLINK_PARENT', 'Sarah Jones', true],
+  // The day itself. These are teacher commands, said while something is
+  // happening, so they have to work in the words people use standing up.
+  ['excuse noah today', 'EXCUSE_ABSENCE', 'Noah Williams', true],
+  ['charlotte has been picked up', 'MARK_PICKED_UP', 'Charlotte Tebow', true],
+  ['noah went home', 'MARK_PICKED_UP', 'Noah Williams', true],
+  ['cancel math today', 'CANCEL_CLASS', null, true],
+  ['math is back on today', 'UNCANCEL_CLASS', null, true],
+  ['report card for noah', 'REPORT_CARD', 'Noah Williams', true],
+  ['transcript for charlotte', 'TRANSCRIPT', 'Charlotte Tebow', true],
+  // And the line none of them may cross: marking the register today is
+  // still MARK_ATTENDANCE, not an excuse and not a pickup.
+  ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

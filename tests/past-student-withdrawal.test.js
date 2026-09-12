@@ -43,6 +43,7 @@ function extract(name) {
     if (c === '(') pd++;
     else if (c === ')') { pd--; if (pd === 0) { i++; break; } }
   }
+  const closeParen = i;
   i = html.indexOf('{', i);
   let depth = 0;
   const start = i;
@@ -51,7 +52,7 @@ function extract(name) {
     if (c === '{') depth++;
     else if (c === '}') { depth--; if (depth === 0) { i++; break; } }
   }
-  const sig = html.slice(m.index + 1, html.indexOf('{', m.index)).trim();
+  const sig = html.slice(m.index + 1, closeParen).trim();
   const args = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
   const Ctor = Object.getPrototypeOf(async function () {}).constructor;
   return new Ctor(args, html.slice(start + 1, i - 1));
