@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·g';
+      const RIVEN_BUILD = '2026-09-12·h';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52151,6 +52151,7 @@
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
         'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
         'ISSUE_STRIKE', 'REMOVE_STRIKE',
+        'PROMOTE_STAFF', 'DEMOTE_STAFF', 'DEACTIVATE_STAFF', 'REACTIVATE_STAFF',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53400,6 +53401,49 @@
             /\b(change|correct|fix|update|set)\b[\s\S]{0,24}\b(first|last|sur)?\s?name\b[\s\S]{0,12}\b(to|=)\b/,
             /\b(spells?|spelt|spelled)\b[\s\S]{0,24}\bname\b/,
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
+          ]
+        },
+        // ---- Staff -------------------------------------------------------
+        //
+        // Who is an admin, and who still works here. The first is the only
+        // command in Riven that changes what somebody else is allowed to do,
+        // so it says what it grants in full before doing it.
+        //
+        // notIfStudent throughout: these are about colleagues, and a student
+        // resolving from the sentence means the name matched the wrong person.
+        {
+          intent: 'PROMOTE_STAFF',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(make|promote|turn)\b[\s\S]{0,32}\b(an?\s+)?admin\b/,
+            /\b(admin|administrator)\s+(rights|access)\b/,
+            /\bis\s+now\s+an?\s+admin\b/,
+          ]
+        },
+        {
+          intent: 'DEMOTE_STAFF',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(demote|step down|remove)\b[\s\S]{0,32}\badmin\b/,
+            /\b(back to|just)\s+(a\s+)?teacher\b/,
+            /\bno longer\s+an?\s+admin\b/,
+          ]
+        },
+        {
+          intent: 'DEACTIVATE_STAFF',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(deactivate|disable|turn off|close)\b[\s\S]{0,32}\b(teacher|staff|account)\b/,
+            /\b(has|have)\s+left\b[\s\S]{0,24}\b(staff|school|us)\b/,
+            /\bno longer\s+(works|teaches|teaching)\b/,
+          ]
+        },
+        {
+          intent: 'REACTIVATE_STAFF',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(reactivate|re-?enable|turn back on|restore)\b[\s\S]{0,32}\b(teacher|staff|account)\b/,
+            /\bis\s+back\b[\s\S]{0,24}\b(on staff|teaching|with us)\b/,
           ]
         },
         // ---- Strikes -----------------------------------------------------
@@ -54670,6 +54714,14 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'PROMOTE_STAFF':
+          return await this.terminalChangeStaffRole(entities, 'admin');
+        case 'DEMOTE_STAFF':
+          return await this.terminalChangeStaffRole(entities, 'teacher');
+        case 'DEACTIVATE_STAFF':
+          return await this.terminalSetStaffActive(entities, false);
+        case 'REACTIVATE_STAFF':
+          return await this.terminalSetStaffActive(entities, true);
         case 'ISSUE_STRIKE':
           return await this.terminalIssueStrike(entities);
         case 'REMOVE_STRIKE':
@@ -55616,6 +55668,10 @@
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
         GRADE_SUBMISSION: 'mark a student\'s work on an assignment',
+        PROMOTE_STAFF: 'make somebody an admin',
+        DEMOTE_STAFF: 'take admin rights away',
+        DEACTIVATE_STAFF: 'close a staff account',
+        REACTIVATE_STAFF: 'reopen a staff account',
         ISSUE_STRIKE: 'give a student a strike',
         REMOVE_STRIKE: 'take a strike away',
         APPROVE_APPLICATION: 'approve an enrolment application',
@@ -58505,6 +58561,134 @@
             if (r) throw r;
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
+        });
+    }
+
+    // ---- Staff ---------------------------------------------------------------
+
+    // Find the colleague a sentence names. Full name or email only: a first
+    // name alone is not enough to hand somebody the keys to the school, and
+    // "make sam an admin" with two Sams on staff must stop rather than pick.
+    async _rivenFindStaff(entities) {
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      const { data, error } = await this.auth.supabase.from('user_profiles')
+        .select('id, first_name, last_name, email, user_type, account_status')
+        .in('user_type', ['teacher', 'admin']);
+      if (error) return { error: 'read', message: error.message };
+
+      const hits = (data || []).filter(p => {
+        const email = (p.email || '').toLowerCase();
+        if (email && raw.includes(email)) return true;
+        const full = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
+        return full.length > 3 && raw.includes(full);
+      });
+
+      if (hits.length === 1) return { row: hits[0] };
+      if (hits.length > 1) return { error: 'ambiguous', candidates: hits };
+
+      // A first name on its own is only enough when exactly one person on
+      // staff answers to it.
+      const byFirst = (data || []).filter(p => {
+        const first = (p.first_name || '').toLowerCase();
+        return first.length > 2 && new RegExp('\\b' + first + '\\b').test(raw);
+      });
+      if (byFirst.length === 1) return { row: byFirst[0] };
+      if (byFirst.length > 1) return { error: 'ambiguous', candidates: byFirst };
+      return { error: 'not_found' };
+    }
+
+    _rivenStaffError(res) {
+      if (res.error === 'ambiguous') {
+        const list = res.candidates.map(p => `${p.first_name} ${p.last_name}`).join(', ');
+        this.terminalPrintError(`More than one matches: ${list}. Use their full name or email.`);
+      } else if (res.error === 'read') {
+        this.terminalPrintError('Could not read the staff list: ' + res.message);
+      } else {
+        this.terminalPrintError('Which member of staff? Give their full name or email address.');
+      }
+    }
+
+    // The only command in Riven that changes what somebody ELSE is allowed to
+    // do, so it says what that means in full.
+    async terminalChangeStaffRole(entities, role) {
+      if (!this._rivenRequireAdmin(role === 'admin' ? 'make somebody an admin' : 'take admin rights away')) return;
+      const res = await this._rivenFindStaff(entities);
+      if (res.error) { this._rivenStaffError(res); return; }
+      const p = res.row;
+      const name = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+      const esc = (t) => this.escapeHtml(String(t));
+
+      if (p.user_type === role) {
+        this._showRivenMessage(`<b>${esc(name)}</b> is already ${role === 'admin' ? 'an admin' : 'a teacher'}.`, true);
+        return;
+      }
+      // Taking your own admin rights away locks you out of the screen you
+      // would need to put them back.
+      if (role === 'teacher' && (p.id === this.userInfo.profile?.id || p.id === this.userInfo.user?.id)) {
+        this.terminalPrintError('That is you. Ask another admin to do it, or you will not be able to undo it.');
+        return;
+      }
+
+      const before = p.user_type;
+      this._requestConfirmation(
+        role === 'admin'
+          ? `Make <b>${esc(name)}</b> an admin?` +
+            `<br><span style="font-size: 12px;">Admins see and change every student's record, every class and ` +
+            `every account, not only their own.</span>`
+          : `Take admin rights from <b>${esc(name)}</b>?` +
+            `<br><span style="font-size: 12px;">They stay a teacher and keep their own classes.</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('user_profiles')
+            .update({ user_type: role }).eq('id', p.id);
+          if (error) throw this._rivenPolicyError(error);
+          this._pushUndo(`${name}'s role`, async () => {
+            const { error: r } = await this.auth.supabase.from('user_profiles')
+              .update({ user_type: before }).eq('id', p.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${name} is ${role === 'admin' ? 'an admin' : 'a teacher'}.`]);
+        });
+    }
+
+    async terminalSetStaffActive(entities, active) {
+      if (!this._rivenRequireAdmin(active ? 'reopen a staff account' : 'close a staff account')) return;
+      const res = await this._rivenFindStaff(entities);
+      if (res.error) { this._rivenStaffError(res); return; }
+      const p = res.row;
+      const name = `${p.first_name || ''} ${p.last_name || ''}`.trim();
+      const esc = (t) => this.escapeHtml(String(t));
+
+      const isActive = p.account_status !== 'inactive';
+      if (isActive === active) {
+        this._showRivenMessage(
+          `<b>${esc(name)}</b>'s account is already ${active ? 'open' : 'closed'}.`, true);
+        return;
+      }
+      if (!active && (p.id === this.userInfo.profile?.id || p.id === this.userInfo.user?.id)) {
+        this.terminalPrintError('That is you. Closing your own account would sign you out of the school.');
+        return;
+      }
+
+      this._requestConfirmation(
+        active
+          ? `Reopen <b>${esc(name)}</b>'s account?<br><span style="font-size: 12px;">They can sign in again.</span>`
+          : `Close <b>${esc(name)}</b>'s account?` +
+            `<br><span style="font-size: 12px;">They stop being able to sign in. Their classes, marks and ` +
+            `history stay exactly as they are \u2014 nothing is deleted.</span>`,
+        async () => {
+          const { error } = await this.auth.supabase.from('user_profiles')
+            .update({ account_status: active ? 'activated' : 'inactive' }).eq('id', p.id);
+          if (error) throw this._rivenPolicyError(error);
+          const before = p.account_status;
+          this._pushUndo(`${name}'s account status`, async () => {
+            const { error: r } = await this.auth.supabase.from('user_profiles')
+              .update({ account_status: before }).eq('id', p.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([
+            active ? `${name} can sign in again.`
+                   : `${name}'s account is closed. Their classes and history are untouched.`
+          ]);
         });
     }
 

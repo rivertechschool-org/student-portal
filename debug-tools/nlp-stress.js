@@ -472,6 +472,11 @@ const T6 = [
   ['give noah a strike for throwing chalk', 'ISSUE_STRIKE', 'Noah Williams', true],
   ['take charlottes strike off', 'REMOVE_STRIKE', 'Charlotte Tebow', true],
   ['how many strikes does noah have', 'VIEW_STRIKES', 'Noah Williams', true],
+  // Staff. Promoting is the only command that changes what somebody ELSE is
+  // allowed to do.
+  ['make caitlin pennock an admin', 'PROMOTE_STAFF', null, true],
+  ['demote dan pike from admin', 'DEMOTE_STAFF', null, true],
+  ['deactivate dan pikes teacher account', 'DEACTIVATE_STAFF', null, true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],
