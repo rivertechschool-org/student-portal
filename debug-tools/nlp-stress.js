@@ -477,6 +477,11 @@ const T6 = [
   ['make caitlin pennock an admin', 'PROMOTE_STAFF', null, true],
   ['demote dan pike from admin', 'DEMOTE_STAFF', null, true],
   ['deactivate dan pikes teacher account', 'DEACTIVATE_STAFF', null, true],
+  // The two waiting queues. Enrolment applications are a THIRD queue with
+  // its own command, and the general 'what is waiting' must not swallow it.
+  ['approve the chapel booking', 'DECIDE_BOOKING', null, true],
+  ['decline the whiteboard markers request because we have plenty', 'DECIDE_MATERIAL', null, true],
+  ['whats waiting for approval', 'VIEW_QUEUES', null, true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

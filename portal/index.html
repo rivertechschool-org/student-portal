@@ -48747,7 +48747,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·h';
+      const RIVEN_BUILD = '2026-09-12·i';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52152,6 +52152,7 @@
         'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
         'ISSUE_STRIKE', 'REMOVE_STRIKE',
         'PROMOTE_STAFF', 'DEMOTE_STAFF', 'DEACTIVATE_STAFF', 'REACTIVATE_STAFF',
+        'DECIDE_BOOKING', 'DECIDE_MATERIAL',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
@@ -53401,6 +53402,47 @@
             /\b(change|correct|fix|update|set)\b[\s\S]{0,24}\b(first|last|sur)?\s?name\b[\s\S]{0,12}\b(to|=)\b/,
             /\b(spells?|spelt|spelled)\b[\s\S]{0,24}\bname\b/,
             /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
+          ]
+        },
+        // ---- The two waiting queues --------------------------------------
+        //
+        // A room booking and a materials request are both somebody waiting on
+        // an admin, and both sit unread until someone opens the right screen.
+        // Riven can tell you what is waiting and settle it from here.
+        {
+          intent: 'DECIDE_BOOKING',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(approve|deny|decline|reject|cancel)\b[\s\S]{0,32}\b(booking|room|facility|reservation)\b/,
+            /\b(booking|reservation)\b[\s\S]{0,20}\b(approved|denied|declined|cancelled|canceled)\b/,
+          ]
+        },
+        {
+          intent: 'DECIDE_MATERIAL',
+          w: 9, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(approve|order|deny|decline|reject)\b[\s\S]{0,32}\b(material|materials|supply|supplies)\b/,
+            // A request is named by its ITEM - "whiteboard markers", "card
+            // stock" - which is any noun at all, so the word "request" is what
+            // makes the sentence about this queue rather than about anything
+            // else with a noun in it.
+            /\b(approve|order|deny|decline|reject)\b[\s\S]{0,48}\brequests?\b/,
+            /\b(material|supplies)\s+request\b[\s\S]{0,20}\b(approved|ordered|denied|declined)\b/,
+          ]
+        },
+        {
+          intent: 'VIEW_QUEUES',
+          // w:9 to clear VIEW_ROSTER, which otherwise answers "what's waiting
+          // for approval" with a class list.
+          w: 9,
+          patterns: [
+            // Enrolment applications are their own queue with their own
+            // command, and "any applications waiting" was landing here.
+            // whats, not what - the normaliser leaves the contraction alone.
+            /^(?!.*\bapplications?\b)[\s\S]*\b(whats?|anything|any)\b[\s\S]{0,24}\b(waiting|pending)\b[\s\S]{0,24}\b(approv|to approve)/,
+            /^(?!.*\bapplications?\b)[\s\S]*\b(whats?|anything|any)\b[\s\S]{0,16}\b(needs? approval|for approval|to approve)\b/,
+            /\b(booking|material|supplies)\s+requests?\b[\s\S]{0,20}\b(waiting|pending|outstanding)\b/,
+            /\bapproval\s+queue\b/,
           ]
         },
         // ---- Staff -------------------------------------------------------
@@ -54714,6 +54756,12 @@
           return await this.terminalLinkParent(entities);
         case 'UNLINK_PARENT':
           return await this.terminalUnlinkParent(entities);
+        case 'DECIDE_BOOKING':
+          return await this.terminalDecideBooking(entities);
+        case 'DECIDE_MATERIAL':
+          return await this.terminalDecideMaterial(entities);
+        case 'VIEW_QUEUES':
+          return await this.terminalViewQueues(entities);
         case 'PROMOTE_STAFF':
           return await this.terminalChangeStaffRole(entities, 'admin');
         case 'DEMOTE_STAFF':
@@ -55668,6 +55716,8 @@
         LINK_PARENT: 'link a parent to a student',
         UNLINK_PARENT: 'unlink a parent from a student',
         GRADE_SUBMISSION: 'mark a student\'s work on an assignment',
+        DECIDE_BOOKING: 'approve or deny a room booking',
+        DECIDE_MATERIAL: 'approve or deny a materials request',
         PROMOTE_STAFF: 'make somebody an admin',
         DEMOTE_STAFF: 'take admin rights away',
         DEACTIVATE_STAFF: 'close a staff account',
@@ -58562,6 +58612,177 @@
           });
           this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
         });
+    }
+
+    // ---- The two waiting queues ----------------------------------------------
+
+    // Both queues sit unread until somebody opens the right screen, which is
+    // the whole reason for answering them from here.
+
+    _rivenDecisionWord(raw) {
+      if (/\b(approve[sd]?|approving|accept(ed)?|order(ed)?|yes)\b/i.test(raw)) return 'approve';
+      if (/\b(deny|denied|decline[d]?|reject(ed)?|no)\b/i.test(raw)) return 'deny';
+      if (/\b(cancel|cancelled|canceled)\b/i.test(raw)) return 'cancel';
+      return null;
+    }
+
+    async terminalDecideBooking(entities) {
+      if (!this._rivenRequireAdmin('approve or deny a room booking')) return;
+
+      const raw = entities.original || entities._rawInput || '';
+      const decision = this._rivenDecisionWord(raw);
+      if (!decision) { this.terminalPrintError('Approve it or deny it? Say which.'); return; }
+
+      const sb = this.auth.supabase;
+      const { data, error } = await sb.from('facility_bookings')
+        .select('id, status, purpose, room_name, booking_date, start_time, end_time, requested_by_name')
+        .order('booking_date', { ascending: true });
+      if (error) { this.terminalPrintError('Could not read the bookings: ' + error.message); return; }
+
+      const waiting = (data || []).filter(b => (b.status || 'pending') === 'pending');
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const lower = raw.toLowerCase();
+      const named = waiting.filter(b =>
+        (b.room_name && lower.includes(String(b.room_name).toLowerCase()))
+        || (b.requested_by_name && lower.includes(String(b.requested_by_name).toLowerCase()))
+        || (b.purpose && String(b.purpose).length > 4 && lower.includes(String(b.purpose).toLowerCase())));
+
+      const target = named.length === 1 ? named[0] : (named.length === 0 && waiting.length === 1 ? waiting[0] : null);
+      if (!target) {
+        if (!waiting.length) { this._showRivenMessage('No bookings are waiting.', true); return; }
+        this.terminalPrintError(named.length > 1
+          ? 'More than one booking matches. Name the room or who asked.'
+          : `${waiting.length} bookings are waiting. Name the room or who asked.`);
+        return;
+      }
+
+      const when = `${esc(target.booking_date || '')} ${esc(target.start_time || '')}`.trim();
+      const status = decision === 'approve' ? 'approved' : decision === 'deny' ? 'denied' : 'cancelled';
+
+      this._requestConfirmation(
+        `${decision === 'approve' ? 'Approve' : decision === 'deny' ? 'Deny' : 'Cancel'} the booking of ` +
+        `<b>${esc(target.room_name || 'that room')}</b>${when ? ` on ${when}` : ''}` +
+        `${target.requested_by_name ? `, asked for by ${esc(target.requested_by_name)}` : ''}?` +
+        `${target.purpose ? `<br><span style="font-size: 12px;">${esc(target.purpose)}</span>` : ''}`,
+        async () => {
+          const { error: e } = await sb.from('facility_bookings').update({
+            status,
+            reviewed_by: this.userInfo.user.id,
+            reviewed_at: new Date().toISOString(),
+          }).eq('id', target.id);
+          if (e) throw this._rivenPolicyError(e);
+          const before = target.status || 'pending';
+          this._pushUndo(`the decision on that booking`, async () => {
+            const { error: r } = await sb.from('facility_bookings')
+              .update({ status: before, reviewed_by: null, reviewed_at: null }).eq('id', target.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`That booking is ${status}.`]);
+        });
+    }
+
+    async terminalDecideMaterial(entities) {
+      if (!this._rivenRequireAdmin('approve or deny a materials request')) return;
+
+      const raw = entities.original || entities._rawInput || '';
+      const decision = this._rivenDecisionWord(raw);
+      if (!decision || decision === 'cancel') {
+        this.terminalPrintError('Approve it or decline it? Say which.');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data, error } = await sb.from('material_requests')
+        .select('id, status, item_name, quantity, requested_by_name, notes, created_at')
+        .order('created_at', { ascending: true });
+      if (error) { this.terminalPrintError('Could not read the requests: ' + error.message); return; }
+
+      const waiting = (data || []).filter(r => ['pending', 'submitted', 'under_review'].includes(r.status || 'pending'));
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const lower = raw.toLowerCase();
+      const named = waiting.filter(r =>
+        (r.item_name && String(r.item_name).length > 3 && lower.includes(String(r.item_name).toLowerCase()))
+        || (r.requested_by_name && lower.includes(String(r.requested_by_name).toLowerCase())));
+
+      const target = named.length === 1 ? named[0] : (named.length === 0 && waiting.length === 1 ? waiting[0] : null);
+      if (!target) {
+        if (!waiting.length) { this._showRivenMessage('No materials requests are waiting.', true); return; }
+        this.terminalPrintError(named.length > 1
+          ? 'More than one request matches. Name the item or who asked.'
+          : `${waiting.length} requests are waiting. Name the item or who asked.`);
+        return;
+      }
+
+      // The page refuses to decline without a note, and a constraint enforces
+      // it - declining with nothing to act on just means they ask again.
+      const rm = raw.match(/\b(?:because|reason|note|due to)\s+(.{3,200}?)\s*[.!?]?$/i);
+      const note = rm ? rm[1].trim() : null;
+      if (decision === 'deny' && !note) {
+        this.terminalPrintError(
+          'Why? A decline is sent to whoever asked, and one with no reason just means they ask again \u2014 ' +
+          'say e.g. "decline the whiteboard markers because we have three boxes in the cupboard".');
+        return;
+      }
+
+      const status = decision === 'approve' ? 'approved' : 'rejected';
+      this._requestConfirmation(
+        `${decision === 'approve' ? 'Approve' : 'Decline'} <b>${esc(target.item_name || 'that request')}</b>` +
+        `${target.quantity ? ` \u00d7${esc(target.quantity)}` : ''}` +
+        `${target.requested_by_name ? `, asked for by ${esc(target.requested_by_name)}` : ''}?` +
+        (note ? `<br><span style="font-size: 12px;">They are sent: ${esc(note)}</span>` : ''),
+        async () => {
+          const patch = {
+            status,
+            reviewed_by: this.userInfo.user.id,
+            reviewed_at: new Date().toISOString(),
+          };
+          if (note) patch.admin_notes = note;
+          const { error: e } = await sb.from('material_requests').update(patch).eq('id', target.id);
+          if (e) throw this._rivenPolicyError(e);
+          const before = target.status;
+          this._pushUndo(`the decision on ${target.item_name || 'that request'}`, async () => {
+            const { error: r } = await sb.from('material_requests')
+              .update({ status: before, reviewed_by: null, reviewed_at: null }).eq('id', target.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${target.item_name || 'That request'} is ${status}.`]);
+        });
+    }
+
+    // "what's waiting?" - both queues at once, because nobody thinks of them
+    // as two separate screens when they ask.
+    async terminalViewQueues(entities) {
+      const sb = this.auth.supabase;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const [bk, mt] = await Promise.all([
+        sb.from('facility_bookings').select('status, room_name, booking_date, requested_by_name'),
+        sb.from('material_requests').select('status, item_name, quantity, requested_by_name'),
+      ]);
+
+      const bookings = (bk.data || []).filter(b => (b.status || 'pending') === 'pending');
+      const materials = (mt.data || []).filter(r => ['pending', 'submitted', 'under_review'].includes(r.status || 'pending'));
+
+      if (!bookings.length && !materials.length) {
+        this._showRivenMessage('Nothing is waiting for approval.', true);
+        return;
+      }
+
+      const parts = [];
+      if (bookings.length) {
+        parts.push(`<div style="font-weight: 600; margin-top: 4px;">\u{1F3E2} ${bookings.length} booking${bookings.length === 1 ? '' : 's'}</div>` +
+          bookings.slice(0, 8).map(b =>
+            `<div style="font-size: 13px;">\u2022 ${esc(b.room_name || 'a room')}` +
+            `${b.booking_date ? ` \u00b7 ${esc(b.booking_date)}` : ''}` +
+            `${b.requested_by_name ? ` \u00b7 ${esc(b.requested_by_name)}` : ''}</div>`).join(''));
+      }
+      if (materials.length) {
+        parts.push(`<div style="font-weight: 600; margin-top: 8px;">\u{1F4E6} ${materials.length} materials request${materials.length === 1 ? '' : 's'}</div>` +
+          materials.slice(0, 8).map(r =>
+            `<div style="font-size: 13px;">\u2022 ${esc(r.item_name || 'an item')}` +
+            `${r.quantity ? ` \u00d7${esc(r.quantity)}` : ''}` +
+            `${r.requested_by_name ? ` \u00b7 ${esc(r.requested_by_name)}` : ''}</div>`).join(''));
+      }
+      this._showRivenMessage(parts.join(''), true);
     }
 
     // ---- Staff ---------------------------------------------------------------
