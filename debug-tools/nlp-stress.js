@@ -386,6 +386,23 @@ const T6 = [
   ['Is Noah a full time or homeschool student?', 'ENROLLMENT_TYPE', 'Noah Williams', true],
   ['is charlotte homeschool', 'ENROLLMENT_TYPE', 'Charlotte Tebow', true],
   ['what enrollment type is noah', 'ENROLLMENT_TYPE', 'Noah Williams', true],
+  // The student RECORD. Riven could read most of it and change almost none
+  // of it; these are the commands that closed that, and the reads beside
+  // them that they must not swallow.
+  ['what days does noah attend', 'VIEW_SCHEDULE', 'Noah Williams', true],
+  ['when does charlotte come in', 'VIEW_SCHEDULE', 'Charlotte Tebow', true],
+  ['who are noahs parents', 'VIEW_PARENTS', 'Noah Williams', true],
+  ['how do i contact charlottes parents', 'VIEW_PARENTS', 'Charlotte Tebow', true],
+  ['make noah homeschool', 'SET_ENROLLMENT_TYPE', 'Noah Williams', true],
+  ['set charlotte to full time', 'SET_ENROLLMENT_TYPE', 'Charlotte Tebow', true],
+  ['noah attends monday wednesday friday', 'SET_SCHEDULE', 'Noah Williams', true],
+  ['change charlottes days to tuesday and thursday', 'SET_SCHEDULE', 'Charlotte Tebow', true],
+  ['move noah to 8th grade', 'SET_GRADE_LEVEL', 'Noah Williams', true],
+  ['change charlottes last name to tebowe', 'RENAME_STUDENT', 'Charlotte Tebow', true],
+  // The lines these must not cross. A mark is not a year group, and asking
+  // what something IS is never an instruction to change it.
+  ["set noah's final grade in math to 95", 'SET_GRADE', 'Noah Williams', true],
+  ['what grade is charlotte in math', 'VIEW_GRADES', 'Charlotte Tebow', true],
   // Same question, whole school. Also a picker before.
   ['how many homeschool students do we have', 'ENROLLMENT_COUNTS', null, true],
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],

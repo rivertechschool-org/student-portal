@@ -48711,7 +48711,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-11·e';
+      const RIVEN_BUILD = '2026-09-11·f';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52084,7 +52084,8 @@
         'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
         'UPDATE_CLASS', 'ENROLL_GROUP',
-        'UPDATE_CONTACT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
+        'UPDATE_CONTACT', 'SET_ENROLLMENT_TYPE', 'SET_SCHEDULE', 'SET_GRADE_LEVEL',
+        'RENAME_STUDENT', 'LINK_PARENT', 'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
@@ -53279,6 +53280,109 @@
           requiresSince: true
         },
         // VIEW_ENROLLMENTS — "what classes is jordan in"
+        // ---- Changing the student record itself --------------------------
+        //
+        // Riven could read most of a student's record and change almost none of
+        // it: contact details were the only writable part. These five close
+        // that, and they all sit ABOVE the reads that share their vocabulary -
+        // "make jonathan homeschool" must not be answered with what he already
+        // is, and "move jonathan to 8th grade" was landing on VIEW_GRADES,
+        // which shows his marks and changes nothing.
+        //
+        // Every one of them confirms first and pushes an undo, because they are
+        // facts other screens depend on: the attending days now decide who
+        // appears on a class register, and the enrolment type is a fee
+        // arrangement.
+        {
+          intent: 'SET_ENROLLMENT_TYPE',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(make|set|change|switch|move|mark|turn)\b[\s\S]{0,32}\b(to\s+)?(full[\s-]?time|part[\s-]?time|homeschool(er|ers|ed)?)\b/,
+            // Must name the destination. "what enrollment type is noah" ends
+            // in an "is" too, and that is the read.
+            /\benrol?lment\s+(type|status)\b[\s\S]{0,16}\b(to|=)\s*(full[\s-]?time|part[\s-]?time|homeschool(er|ers|ed)?)\b/,
+            /\bis\s+now\s+(a\s+)?(full[\s-]?time|part[\s-]?time|homeschool(er|ers|ed)?)\b/,
+          ]
+        },
+        {
+          intent: 'SET_SCHEDULE',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(attends|comes? in|is in|will be in)\b[\s\S]{0,24}\b(mon|tues?|wed|thur?s?|fri|sat|sun)/,
+            /\b(set|change|update|make)\b[\s\S]{0,32}\b(days?|schedule)\b[\s\S]{0,16}\b(to|=)\b/,
+            /\b(attending|attendance)\s+days?\b[\s\S]{0,16}\b(to|=|are|is)\b/,
+            /\b(only\s+)?(comes?|attends?)\s+(in\s+)?on\b[\s\S]{0,24}\b(mon|tues?|wed|thur?s?|fri|sat|sun)/,
+          ]
+        },
+        {
+          intent: 'SET_GRADE_LEVEL',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            // "grade level" is unambiguous; a bare "grade" is a MARK, and
+            // SET_GRADE owns that. The ordinal forms are the everyday way of
+            // saying it and carry no mark vocabulary.
+            /\bgrade\s+level\b[\s\S]{0,16}\b(to|=|is)\b/,
+            /\b(move|moving|promote|bump|put)\b[\s\S]{0,24}\b(in)?to\s+(the\s+)?(\d{1,2}(st|nd|rd|th)|k|kindergarten)\b/,
+            /\b(is|goes)\s+(in|into)\s+(the\s+)?(\d{1,2}(st|nd|rd|th)|k|kindergarten)\s+grade\b/,
+            /\b(is|are)\s+now\s+(in\s+)?(the\s+)?(\d{1,2}(st|nd|rd|th)|k|kindergarten)\b/,
+          ]
+        },
+        {
+          intent: 'RENAME_STUDENT',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(change|correct|fix|update|set)\b[\s\S]{0,24}\b(first|last|sur)?\s?name\b[\s\S]{0,12}\b(to|=)\b/,
+            /\b(spells?|spelt|spelled)\b[\s\S]{0,24}\bname\b/,
+            /\bname\s+is\s+(actually|really|spelt|spelled)\b/,
+          ]
+        },
+        {
+          intent: 'LINK_PARENT',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(link|connect|attach|add)\b[\s\S]{0,32}\b(as\s+)?(the\s+)?(parent|guardian|mum|mom|dad|father|mother)\b/,
+            /\bis\s+(the\s+)?(parent|guardian|mum|mom|dad|father|mother)\s+of\b/,
+            /\b(parent|guardian)\s+(is|=)\b/,
+          ]
+        },
+        // VIEW_SCHEDULE - "what days does jonathan attend?"
+        //
+        // The days a student comes in are their own fact, kept in
+        // student_schedule, and they decide who appears on the morning register
+        // and now on every class register too. Asking used to land on the
+        // student card, or on a "did you mean flag attendance problems?"
+        // clarify - which is what happens when nothing owns the question.
+        //
+        // Deliberately NOT claiming a bare "X's schedule": at this school that
+        // more often means their classes, and VIEW_ENROLLMENTS already answers
+        // it. This wants the phrasings that are unambiguously about DAYS.
+        {
+          intent: 'VIEW_SCHEDULE',
+          w: 8, requiresStudent: true, notIfNoteCommand: true,
+          patterns: [
+            /\b(what|which)\s+days?\b[\s\S]{0,30}\b(attend|come in|comes in|coming in|in school|on campus|here)\b/,
+            /\b(attend|attends|attending)\b[\s\S]{0,16}\b(what|which)\s+days?\b/,
+            /\bwhen\s+does\b[\s\S]{0,24}\b(attend|come in|comes in)\b/,
+            /\b(attending|attendance)\s+(days?|schedule)\b/,
+            /\b(days?\s+(attending|attended|enrolled|enroled|in school|on campus))\b/,
+            /\bwhat\s+days?\s+(is|are)\b[\s\S]{0,24}\b(in|enrolled|enroled|scheduled)\b/,
+          ]
+        },
+        // VIEW_PARENTS - "who are jonathan's parents?"
+        {
+          intent: 'VIEW_PARENTS',
+          w: 8, requiresStudent: true, notIfNoteCommand: true,
+          patterns: [
+            /\b(who (is|are)|show me|list)\b[\s\S]{0,24}\b(parents?|guardians?|mum|mom|dad|father|mother)\b/,
+            /\b(parents?|guardians?)('?s)?\s+(contact|details|email|phone|info|information)\b/,
+            // Interrogative on purpose: "remind me to call dylans parents" is
+            // a reminder, not a lookup, and answering it with a phone number
+            // is Riven deciding it heard a different sentence.
+            /\b(how|who|what)\b[\s\S]{0,24}\b(contact|reach|email|phone|number for)\b[\s\S]{0,16}\b(parents?|guardians?)\b/,
+            /\b(parents?|guardians?)\s+(linked|on file|on record|attached)\b/,
+            /\bwho\s+do\s+(i|we)\s+(contact|call|email)\b/,
+          ]
+        },
         // ENROLLMENT_COUNTS - the same question about the whole school.
         //
         // It used to reach the class matcher too and come back with a picker,
@@ -54127,6 +54231,20 @@
           await this.terminalStudentBriefing(entities);
           break;
 
+        case 'SET_ENROLLMENT_TYPE':
+          return await this.terminalSetEnrollmentType(entities);
+        case 'SET_SCHEDULE':
+          return await this.terminalSetSchedule(entities);
+        case 'SET_GRADE_LEVEL':
+          return await this.terminalSetGradeLevel(entities);
+        case 'RENAME_STUDENT':
+          return await this.terminalRenameStudent(entities);
+        case 'LINK_PARENT':
+          return await this.terminalLinkParent(entities);
+        case 'VIEW_SCHEDULE':
+          return await this.terminalShowSchedule(entities);
+        case 'VIEW_PARENTS':
+          return await this.terminalShowParents(entities);
         case 'ENROLLMENT_COUNTS':
           return await this.terminalEnrollmentCounts();
         case 'ENROLLMENT_TYPE':
@@ -55004,6 +55122,11 @@
         RENAME_CLASS: 'rename a class', UPDATE_CONTACT: 'change contact info',
         GRANT_PRIVILEGE: 'grant a privilege', REVOKE_PRIVILEGE: 'revoke a privilege',
         BUY_ITEM: 'log a purchase', BUY_PRIVILEGE: 'buy a privilege',
+        SET_ENROLLMENT_TYPE: 'change a student between full-time and homeschool',
+        SET_SCHEDULE: 'set which days a student attends',
+        SET_GRADE_LEVEL: 'change a student\'s grade level',
+        RENAME_STUDENT: 'correct a student\'s name',
+        LINK_PARENT: 'link a parent to a student',
         ENROLLMENT_COUNTS: 'count how many students are full-time or homeschool',
         ENROLLMENT_TYPE: 'say whether a student is full-time or homeschool',
         PLAN_ABSENCE: 'note an upcoming absence',
@@ -57551,6 +57674,461 @@
           ]);
           this.renderPlannedAbsencesPanel?.().catch(() => {});
         });
+    }
+
+    // ---- Changing the student record ---------------------------------------
+    //
+    // All five follow terminalUpdateContact's shape: read what is there now,
+    // show old -> new, confirm, write, push an undo that puts the old value
+    // back. None of them guess - if the sentence does not say what to change
+    // it to, they ask rather than picking something.
+
+    // Weekday words -> day numbers. Shared by the parser and the reader, so a
+    // day typed one way cannot be echoed back as another.
+    _rivenParseWeekdays(text) {
+      const t = (text || '').toLowerCase();
+      const out = new Set();
+      if (/\b(every ?day|all week|monday\s*(-|to|through)\s*friday|weekdays?|full week)\b/.test(t)) {
+        [1, 2, 3, 4, 5].forEach(d => out.add(d));
+      }
+      const WORDS = [
+        [0, /\bsun(day)?s?\b/], [1, /\bmon(day)?s?\b/], [2, /\btues?(day)?s?\b/],
+        [3, /\bweds?(nesday)?s?\b/], [4, /\bthur?s?(day)?s?\b/], [5, /\bfri(day)?s?\b/],
+        [6, /\bsat(urday)?s?\b/],
+      ];
+      for (const [d, re] of WORDS) if (re.test(t)) out.add(d);
+      return [...out].sort((a, b) => a - b);
+    }
+
+    // "make jonathan homeschool", "set her to full time"
+    async terminalSetEnrollmentType(entities) {
+      if (!this._rivenRequireAdmin('change a student between full-time and homeschool')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "make jonathan homeschool".'); return; }
+
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      const want = /\bhomeschool(er|ers|ed)?\b/.test(raw) ? 'homeschool'
+        : /\bpart[\s-]?time\b/.test(raw) ? 'part-time'
+        : /\bfull[\s-]?time\b/.test(raw) ? 'full-time' : null;
+      if (!want) {
+        this.terminalPrintError('Full-time or homeschool? Say e.g. "make jonathan homeschool".');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data: prev, error } = await sb.from('user_profiles')
+        .select('enrollment_type').eq('id', student.id).single();
+      if (error) { this.terminalPrintError('Could not read their profile: ' + error.message); return; }
+
+      const before = prev.enrollment_type || null;
+      const esc = (t) => this.escapeHtml(String(t));
+      if ((before || '').toLowerCase().replace('_', '-') === want) {
+        this._showRivenMessage(`<b>${esc(student.full_name)}</b> is already ${esc(want)}. Nothing to change.`, true);
+        return;
+      }
+
+      this._requestConfirmation(
+        `Change <b>${esc(student.full_name)}</b>'s enrolment?<br>` +
+        `enrolment type: ${esc(before || '\u2014')} \u2192 <b>${esc(want)}</b>` +
+        `<br><span style="font-size: 11px;">This is the fee arrangement, not the days they attend.</span>`,
+        async () => {
+          const { error: e } = await sb.from('user_profiles')
+            .update({ enrollment_type: want }).eq('id', student.id);
+          if (e) throw this._rivenPolicyError(e);
+          this._pushUndo(`${student.full_name}'s enrolment type`, async () => {
+            const { error: r } = await sb.from('user_profiles')
+              .update({ enrollment_type: before }).eq('id', student.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${student.full_name} is now ${want}.`]);
+        });
+    }
+
+    // "jonathan attends monday wednesday friday"
+    //
+    // These days decide who appears on the morning register AND, since the
+    // class register started following the timetable, who a teacher sees in
+    // their room. Changing them changes tomorrow's lists, so the confirmation
+    // says so - and it says explicitly that marks already taken are untouched,
+    // because the obvious worry is that a day removed erases a record.
+    async terminalSetSchedule(entities) {
+      if (!this._rivenRequireAdmin('change which days a student attends')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "jonathan attends monday wednesday friday".'); return; }
+
+      const raw = entities.original || entities._rawInput || '';
+      const days = this._rivenParseWeekdays(raw);
+      if (!days.length) {
+        this.terminalPrintError('Which days? Say e.g. "jonathan attends monday, wednesday and friday".');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data: prevRows, error } = await sb.from('student_schedule')
+        .select('day_of_week').eq('student_id', student.id);
+      if (error) { this.terminalPrintError('Could not read their current days: ' + error.message); return; }
+
+      const before = this._rivenDayList(prevRows || []);
+      const esc = (t) => this.escapeHtml(String(t));
+      if (before.length === days.length && before.every((d, i) => d === days[i])) {
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> is already down for ${esc(this._rivenDayPhrase(days))}.`, true);
+        return;
+      }
+
+      this._requestConfirmation(
+        `Set the days <b>${esc(student.full_name)}</b> attends?<br>` +
+        `${esc(before.length ? this._rivenDayPhrase(before) : 'nothing set')} \u2192 <b>${esc(this._rivenDayPhrase(days))}</b>` +
+        `<br><span style="font-size: 11px;">This decides which registers they appear on from now on. ` +
+        `Attendance already taken is not changed.</span>`,
+        async () => {
+          const { error: delErr } = await sb.from('student_schedule').delete().eq('student_id', student.id);
+          if (delErr) throw this._rivenPolicyError(delErr);
+          if (days.length) {
+            const { error: insErr } = await sb.from('student_schedule')
+              .insert(days.map(d => ({ student_id: student.id, day_of_week: d })));
+            if (insErr) {
+              // Put the old days back rather than leave a child on no register
+              // at all, which is silent and lasts until somebody notices.
+              if (before.length) {
+                await sb.from('student_schedule')
+                  .insert(before.map(d => ({ student_id: student.id, day_of_week: d })));
+              }
+              throw this._rivenPolicyError(insErr);
+            }
+          }
+          this._pushUndo(`${student.full_name}'s attending days`, async () => {
+            await sb.from('student_schedule').delete().eq('student_id', student.id);
+            if (before.length) {
+              const { error: r } = await sb.from('student_schedule')
+                .insert(before.map(d => ({ student_id: student.id, day_of_week: d })));
+              if (r) throw r;
+            }
+          });
+          this._naturalSuccess([`${student.full_name} attends ${this._rivenDayPhrase(days)}.`]);
+        });
+    }
+
+    // "move jonathan to 8th grade"
+    async terminalSetGradeLevel(entities) {
+      if (!this._rivenRequireAdmin("change a student's grade level")) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "move jonathan to 8th grade".'); return; }
+
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      let want = null;
+      if (/\b(k|kindergarten|kinder)\b/.test(raw)) want = 'K';
+      else {
+        const m = raw.match(/\b(\d{1,2})\s*(st|nd|rd|th)?\s*grade\b/) || raw.match(/\bgrade\s*level\b[^\d]{0,12}(\d{1,2})\b/)
+          || raw.match(/\b(?:to|into)\s+(?:the\s+)?(\d{1,2})\s*(?:st|nd|rd|th)\b/);
+        if (m) want = String(parseInt(m[1], 10));
+      }
+      if (!want || (want !== 'K' && (Number(want) < 1 || Number(want) > 12))) {
+        this.terminalPrintError('Which grade level? Say e.g. "move jonathan to 8th grade" (K through 12).');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data: prev, error } = await sb.from('user_profiles')
+        .select('grade_level').eq('id', student.id).single();
+      if (error) { this.terminalPrintError('Could not read their profile: ' + error.message); return; }
+
+      const before = prev.grade_level || null;
+      const esc = (t) => this.escapeHtml(String(t));
+      if (String(before) === want) {
+        this._showRivenMessage(`<b>${esc(student.full_name)}</b> is already in grade ${esc(want)}.`, true);
+        return;
+      }
+
+      this._requestConfirmation(
+        `Change <b>${esc(student.full_name)}</b>'s grade level?<br>` +
+        `grade level: ${esc(before || '\u2014')} \u2192 <b>${esc(want)}</b>` +
+        `<br><span style="font-size: 11px;">This is the year group, not a mark.</span>`,
+        async () => {
+          const { error: e } = await sb.from('user_profiles')
+            .update({ grade_level: want }).eq('id', student.id);
+          if (e) throw this._rivenPolicyError(e);
+          this._pushUndo(`${student.full_name}'s grade level`, async () => {
+            const { error: r } = await sb.from('user_profiles')
+              .update({ grade_level: before }).eq('id', student.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${student.full_name} is now in grade ${want}.`]);
+        });
+    }
+
+    // "change jonathan's last name to smithe"
+    //
+    // A name is how every other screen and every search finds this child, so
+    // the cached roster is refreshed afterwards - otherwise Riven keeps
+    // matching the old spelling for the rest of the session and the teacher
+    // thinks the change did not take.
+    async terminalRenameStudent(entities) {
+      if (!this._rivenRequireAdmin("correct a student's name")) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "change jonathan\'s last name to Smithe".'); return; }
+
+      const raw = entities.original || entities._rawInput || '';
+      const updates = {};
+      let m = raw.match(/\b(?:first\s*name|forename)\b[^a-z0-9]{0,12}(?:to|=|is)?\s*['"]?([A-Za-z][A-Za-z'\-]{0,40})/i);
+      if (m) updates.first_name = m[1];
+      m = raw.match(/\b(?:last\s*name|surname|family\s*name)\b[^a-z0-9]{0,12}(?:to|=|is)?\s*['"]?([A-Za-z][A-Za-z'\- ]{0,40}?)(?:[.,!?]|$)/i);
+      if (m) updates.last_name = m[1].trim();
+      if (!updates.first_name && !updates.last_name) {
+        // A bare "change X's name to Y Z" - take the whole thing.
+        m = raw.match(/\bname\b[^a-z0-9]{0,12}(?:to|=|is)\s*['"]?([A-Za-z][A-Za-z'\-]{0,40})(?:\s+([A-Za-z][A-Za-z'\- ]{0,40}?))?(?:[.,!?]|$)/i);
+        if (m) {
+          updates.first_name = m[1];
+          if (m[2]) updates.last_name = m[2].trim();
+        }
+      }
+
+      const fields = Object.keys(updates);
+      if (!fields.length) {
+        this.terminalPrintError('What should the name be? Say e.g. "change jonathan\'s last name to Smithe".');
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data: prev, error } = await sb.from('user_profiles')
+        .select('first_name, last_name').eq('id', student.id).single();
+      if (error) { this.terminalPrintError('Could not read their profile: ' + error.message); return; }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const changeList = fields.map(f =>
+        `${f.replace('_', ' ')}: ${esc(prev[f] ?? '\u2014')} \u2192 <b>${esc(updates[f])}</b>`).join('<br>');
+
+      this._requestConfirmation(
+        `Correct <b>${esc(student.full_name)}</b>'s name?<br>${changeList}`,
+        async () => {
+          const { error: e } = await sb.from('user_profiles').update(updates).eq('id', student.id);
+          if (e) throw this._rivenPolicyError(e);
+          const restore = {};
+          fields.forEach(f => { restore[f] = prev[f]; });
+          this._pushUndo(`${student.full_name}'s name`, async () => {
+            const { error: r } = await sb.from('user_profiles').update(restore).eq('id', student.id);
+            if (r) throw r;
+            await this._loadTerminalStudents();
+          });
+          // Every later sentence resolves names against this list.
+          await this._loadTerminalStudents();
+          const now = `${updates.first_name || prev.first_name || ''} ${updates.last_name || prev.last_name || ''}`.trim();
+          this._naturalSuccess([`Name corrected \u2014 ${student.full_name} is now ${now}.`]);
+        });
+    }
+
+    // "link sarah jones to jonathan as his parent"
+    //
+    // Admin only, and not because of the write: a parent link opens that
+    // child's grades, attendance and medical information to whoever is on the
+    // other end. The old self-service version of this checked only who the
+    // PARENT was and never which child, which is how any parent could have
+    // claimed any pupil.
+    //
+    // parent_child_links.parent_id references auth.users, so the link is made
+    // with the parent's auth id - never their profile id. A parent with no
+    // login has nothing to link BY, and the insert would fail on the foreign
+    // key, so that is said plainly instead.
+    async terminalLinkParent(entities) {
+      if (!this._rivenRequireAdmin('link a parent to a student \u2014 it opens that child\'s records to them')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? Try "link sarah jones to jonathan as his parent".'); return; }
+
+      const raw = (entities.original || entities._rawInput || '').toLowerCase();
+      const sb = this.auth.supabase;
+      const { data: parents, error } = await sb.from('user_profiles')
+        .select('id, first_name, last_name, email, auth_user_id').eq('user_type', 'parent');
+      if (error) { this.terminalPrintError('Could not read the parent list: ' + error.message); return; }
+
+      // Match on the address if one was typed, otherwise on a full name - a
+      // first name alone is not enough to hand somebody a child's record.
+      const hits = (parents || []).filter(p => {
+        const email = (p.email || '').toLowerCase();
+        if (email && raw.includes(email)) return true;
+        const full = `${p.first_name || ''} ${p.last_name || ''}`.trim().toLowerCase();
+        return full.length > 3 && raw.includes(full);
+      });
+
+      const esc = (t) => this.escapeHtml(String(t));
+      if (!hits.length) {
+        this.terminalPrintError(
+          'I could not tell which parent you mean. Give their full name or their email address \u2014 ' +
+          'a first name on its own is not enough to open a child\'s records to somebody.');
+        return;
+      }
+      if (hits.length > 1) {
+        this.terminalPrintError(
+          `More than one parent matches: ${hits.map(p => `${p.first_name} ${p.last_name}`).join(', ')}. Use their email address.`);
+        return;
+      }
+
+      const parent = hits[0];
+      const parentName = `${parent.first_name || ''} ${parent.last_name || ''}`.trim();
+      const linkId = parent.auth_user_id;
+      if (!linkId) {
+        this._showRivenMessage(
+          `<b>${esc(parentName)}</b> has no sign-in yet, and a link is keyed to the login \u2014 ` +
+          `there is nothing to link them by. Open their account first, from Staff &amp; Parents.`, true);
+        return;
+      }
+
+      const { data: already } = await sb.from('parent_child_links')
+        .select('child_id').eq('child_id', student.id).eq('parent_id', linkId).maybeSingle();
+      if (already) {
+        this._showRivenMessage(`<b>${esc(parentName)}</b> is already linked to ${esc(student.full_name)}.`, true);
+        return;
+      }
+
+      this._requestConfirmation(
+        `Link <b>${esc(parentName)}</b> to <b>${esc(student.full_name)}</b>?<br>` +
+        `<span style="font-size: 11px;">They will be able to see ${esc(student.full_name)}'s grades, attendance, ` +
+        `and medical and contact details.</span>`,
+        async () => {
+          const { error: e } = await sb.from('parent_child_links')
+            .insert({ parent_id: linkId, child_id: student.id });
+          if (e) throw this._rivenPolicyError(e);
+          this._pushUndo(`the link between ${parentName} and ${student.full_name}`, async () => {
+            const { error: r } = await sb.from('parent_child_links')
+              .delete().eq('parent_id', linkId).eq('child_id', student.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${parentName} is linked to ${student.full_name}.`]);
+        });
+    }
+
+    // Changing the student RECORD is an admin job; reading it is not.
+    //
+    // A teacher needs to see a child's days, parents and year group to do their
+    // job, and asks Riven constantly. Changing them is roster administration:
+    // the enrolment type is a fee arrangement, the attending days decide whose
+    // name is on every register, a parent link opens a child's medical notes to
+    // somebody, and a name is how every other screen finds them. One person
+    // owning those is the difference between a correction and a discrepancy
+    // nobody can trace.
+    //
+    // This is an affordance, not the control. RLS decides what the database
+    // will actually accept, and _rivenPolicyError below turns its refusal into
+    // a sentence. This exists so a teacher gets told plainly instead of being
+    // walked through a confirmation that was always going to be rejected.
+    _rivenRequireAdmin(what) {
+      if (this.userInfo?.profile?.user_type === 'admin') return true;
+      this.terminalPrintError(
+        `Only an admin can ${what}. Ask the office \u2014 you can still look it up here any time.`);
+      return false;
+    }
+
+    // A refusal from RLS reads as a database error unless it is translated.
+    _rivenPolicyError(error) {
+      if (/policy|permission|denied|row-level/i.test(error?.message || '')) {
+        return new Error('the database refused \u2014 you may not have rights to change that student\'s record.');
+      }
+      return error;
+    }
+
+    // The days a student is down to come in.
+    //
+    // One row per weekday in student_schedule, which is also what the morning
+    // register and every class register read - so this answers "why is she not
+    // on my Monday list" without anyone opening a modal.
+    async terminalShowSchedule(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) {
+        this.terminalPrintError('Which student? Try "what days does jonathan attend".');
+        return;
+      }
+
+      const { data, error } = await this.auth.supabase
+        .from('student_schedule').select('day_of_week').eq('student_id', student.id);
+      if (error) {
+        this.terminalPrintError(`Couldn't read the attending days for ${student.full_name}: ` + error.message);
+        return;
+      }
+
+      const esc = (t) => this.escapeHtml(t);
+      const days = this._rivenDayList(data || []);
+      if (!days.length) {
+        // Not "no days" as a fact about the child - nobody has said yet.
+        this._showRivenMessage(
+          `No attending days are set for <b>${esc(student.full_name)}</b>. Until they are, ` +
+          `they will not appear on the daily register or on a class register. ` +
+          `Say <em>${esc(student.full_name.split(' ')[0].toLowerCase())} attends monday wednesday friday</em> to set them.`, true);
+        return;
+      }
+
+      this._showRivenMessage(
+        `<b>${esc(student.full_name)}</b> attends <b>${esc(this._rivenDayPhrase(days))}</b>.`, true);
+    }
+
+    // Weekday helpers, shared by the read and the write so a day named one way
+    // cannot come back phrased another.
+    _rivenDayNames() {
+      return ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    }
+
+    _rivenDayList(rows) {
+      return [...new Set((rows || []).map(r => (typeof r === 'number' ? r : r.day_of_week)))]
+        .filter(d => d >= 0 && d <= 6).sort((a, b) => a - b);
+    }
+
+    _rivenDayPhrase(days) {
+      const names = this._rivenDayNames();
+      if (days.length === 5 && days.every(d => d >= 1 && d <= 5)) return 'every weekday';
+      return days.map(d => names[d]).join(', ');
+    }
+
+    // Who the school contacts about this child.
+    //
+    // parent_child_links.parent_id holds an AUTH id, so the parent profile is
+    // found by auth_user_id - matching on the profile id as well, because a
+    // parent who signed themselves up has the same value in both and one who
+    // did not has only the first.
+    async terminalShowParents(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) {
+        this.terminalPrintError("Which student? Try \"who are jonathan's parents\".");
+        return;
+      }
+
+      const sb = this.auth.supabase;
+      const { data: links, error } = await sb
+        .from('parent_child_links').select('parent_id').eq('child_id', student.id);
+      if (error) {
+        this.terminalPrintError('Could not read the parent links: ' + error.message);
+        return;
+      }
+
+      const esc = (t) => this.escapeHtml(t);
+      const ids = (links || []).map(l => l.parent_id);
+      if (!ids.length) {
+        this._showRivenMessage(
+          `No parent is linked to <b>${esc(student.full_name)}</b> yet. ` +
+          `A parent links themselves with the code on the student's record, or the office links them by hand.`, true);
+        return;
+      }
+
+      const { data: people } = await sb.from('user_profiles')
+        .select('id, first_name, last_name, email, phone, auth_user_id')
+        .or(`id.in.(${ids.join(',')}),auth_user_id.in.(${ids.join(',')})`);
+
+      const rows = people || [];
+      if (!rows.length) {
+        // A link whose parent profile has gone is worth saying out loud rather
+        // than reporting as "no parents".
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> has ${ids.length} parent link${ids.length === 1 ? '' : 's'}, ` +
+          `but no profile behind ${ids.length === 1 ? 'it' : 'them'} \u2014 worth telling the office.`, true);
+        return;
+      }
+
+      const lines = rows.map(p => {
+        const name = `${p.first_name || ''} ${p.last_name || ''}`.trim() || 'Parent';
+        const bits = [p.email, p.phone].filter(Boolean).map(esc).join(' \u00b7 ');
+        return `\u2022 <b>${esc(name)}</b>${bits ? ` \u2014 ${bits}` : ' \u2014 no contact details on file'}`;
+      });
+
+      this._showRivenMessage(
+        `<div style="font-weight: 600; margin-bottom: 6px;">\u{1F46A} ${esc(student.full_name)}'s parents</div>` +
+        `<div style="font-size: 13px; line-height: 1.8;">${lines.join('<br>')}</div>`, true);
     }
 
     // "How many homeschool students do we have?"
@@ -60549,6 +61127,9 @@
         ${verdict ? `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">${this.escapeHtml(verdict)}</div>` : ''}`, true);
     }
 
+    // Deliberately NOT admin-gated, unlike the record changes above: a phone
+    // number corrected at pickup is the teacher's to fix, and RLS already
+    // scopes this to students in their own classes.
     async terminalUpdateContact(entities) {
       const student = entities.student?.student;
       if (!student) { this.terminalPrintError('Whose contact info? Tell me a student name.'); return; }

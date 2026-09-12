@@ -482,3 +482,44 @@ student property, put a class carrying it in that list.
 
 RIVEN_BUILD → 2026-09-11·e. nlp-stress green, frontdoor-precision 100%.
 `tests/riven-enrolment-type.test.js` — 26 assertions.
+
+---
+
+## 2026-09-11 — Jordan's Claude (Riven: the student record)
+
+**Riven could read most of a student's record and change almost none of it.**
+Contact details were the only writable part. It now reads and writes the rest.
+
+**Reads (teachers):** `VIEW_SCHEDULE` ("what days does Jonathan attend") and
+`VIEW_PARENTS` ("who are his parents"). The first was the reported bug — it was
+landing on the student card, or on a "did you mean flag attendance problems?"
+clarify, which is what happens when nothing owns a question.
+
+**Writes (admins only):** enrolment type, attending days, grade level, name, and
+parent linking. All confirm, all push an undo. `move X to 8th grade` used to
+land on VIEW_GRADES, which shows marks and changes nothing.
+
+**The gate is real, not cosmetic.** A `BEFORE UPDATE` trigger on `user_profiles`
+protects `first_name`, `last_name`, `grade_level` and `enrollment_type` on
+student rows. Checked against the live database first: RLS gave a teacher the
+whole row, so they could already rename a student or move their year group.
+Now 42501 for a teacher, unchanged for admins, unchanged for anything with no
+JWT (the service role and edge functions both write profiles that way).
+
+Phone, email, address and DOB are deliberately **not** protected — those are the
+corrections a teacher makes from the classroom, and RLS already scopes them to
+their own students. `student_schedule` and `parent_child_links` needed nothing;
+RLS already refused teachers on both.
+
+**Nothing in the portal lost a button:** `changeStudentGrade`,
+`changeEnrollmentType` and `editStudentProfile` exist in `portal/index.html`
+with **no call sites at all**. Riven is now the only route to any of them,
+which is worth knowing before anyone wires those buttons up — they would fail
+for a teacher.
+
+Two patterns had to be tightened after the harness caught them: "what enrollment
+type is noah" was being read as a command to set it, and "remind me to call
+dylans parents" was being answered with a phone number.
+
+RIVEN_BUILD → 2026-09-11·f. nlp-stress green, frontdoor-precision 100%.
+`tests/riven-student-record.test.js` — 54 assertions.
