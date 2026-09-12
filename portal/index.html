@@ -48395,7 +48395,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-11·c';
+      const RIVEN_BUILD = '2026-09-11·d';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52596,6 +52596,7 @@
         {
           intent: 'PLAN_ABSENCE',
           w: 8, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          notIfWhichDays: true,
           // Every pattern opens with the same guard: NOT TODAY. "jordan is out
           // today" is a register mark being dictated, not a note about the
           // future, and MARK_ATTENDANCE owns it. Without this, the most common
@@ -52624,6 +52625,17 @@
             /\banyone\s+(?:out|away|absent|off)\b.{0,20}\b(next week|next month|coming up|upcoming|tomorrow)\b/,
             /\bwho\s+will be\s+(?:out|away|missing|absent)\b/,
             /\bwho(?:'?s| is)\s+(?:going to be\s+)?(?:out|away|absent)\s+(?:next|tomorrow)\b/,
+            // Asking about ONE person's dates. terminalShowPlannedAbsences
+            // already narrows to a resolved student, so these answer with just
+            // their stretches rather than the whole school's.
+            // Every one of these insists on is/are/will. "what days HAS noah
+            // BEEN absent" and "what days WAS she out" ask about the register -
+            // what already happened - and belong to the attendance reads. Only
+            // the present and future tenses point at this list.
+            /\b(what|which)\s+(days?|dates?)\b[\s\S]{0,24}\b(is|are|will)\b[\s\S]{0,24}\b(out|away|absent|missing|gone|off)\b/,
+            /^when\s+(is|are|will)\b[\s\S]{0,40}\b(out|away|absent|missing|gone|off|back)\b/,
+            /\bhow many days\b[\s\S]{0,30}\b(is|are|will)\b[\s\S]{0,30}\b(out|away|absent|missing|gone|off)\b/,
+            /\babsences?\s+(?:coming up|upcoming|planned|on the list)\b/,
           ]
         },
         // BRIEFING — "anything I should know?", "catch me up", "what's new"
@@ -53098,6 +53110,18 @@
       // to MOVE_STUDENT, never a bare enroll/unenroll half of it.
       const isNoteCommand = /(\b(add|write|leave|make|create|log|record|take|save)\s+(\w+\s+)?(a\s+|an\s+)?(quick\s+|new\s+|private\s+|staff\s+)?note\b|^note\b|\bnote that\b|\b(log|record|document|jot down|write down|remember)\s+that\b)/.test(normalized);
       const isBank = /\bbank(ed|ing)?\b/.test(normalized);
+      // "what days is eli out?" / "when is he away?" / "how many days is she
+      // missing?" - someone asking WHICH DATES are already on the list.
+      //
+      // These read as PLAN_ABSENCE ("are ... missing" is one of its patterns),
+      // and notIfQuestion then refuses them with "that's phrased as a question,
+      // so I left everything alone" - which is a refusal to do something the
+      // teacher never asked for, in place of an answer Riven already has.
+      // Refusing is right when a question hits a write with no read behind it;
+      // here there IS one, so the write candidate stands down instead.
+      const asksWhichDays = /\b(what|which)\s+(day|days|date|dates)\b/.test(normalized)
+        || /^when\s+(is|are|was|were|will)\b/.test(normalized)
+        || /\bhow many days\b/.test(normalized);
       const isFromTo = /\bfrom\b\s+\S.*\bto\b/.test(normalized);
       const leadingVerb = /^(was|is|were|did|does|has|have|who|when)\b/.test(normalized);
       // Read queries that happen to end with "too/as well" must not be stolen by RELAY_ACTION
@@ -53132,6 +53156,11 @@
         if (pattern.notIfLeadingVerb && leadingVerb) continue;
         if (pattern.notIfNoteCommand && isNoteCommand) continue;
         if (pattern.notIfBank && isBank) continue;
+        // Skipped outright rather than suppressed: a suppressed write still
+        // wins the bidding and answers with the refusal, which is exactly the
+        // wrong answer when the sentence is a plain question with a read intent
+        // waiting behind it.
+        if (pattern.notIfWhichDays && asksWhichDays) continue;
         if (pattern.notIfFromTo && isFromTo) continue;
         // Required entities — missing pieces knock the intent out entirely
         if (pattern.requiresStudent && !entities.student && !(entities.students?.length >= 2)) continue;

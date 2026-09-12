@@ -372,6 +372,24 @@ const T6 = [
   ['noah has a dentist appointment on friday', 'PLAN_ABSENCE', 'Noah Williams', true],
   ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
   ['charlotte wont be in tomorrow', 'PLAN_ABSENCE', 'Charlotte Tebow', true],
+  // Asking WHICH DAYS someone is away is a read of the same list, and it used
+  // to be refused instead: "are ... missing" is a PLAN_ABSENCE phrasing, so
+  // notIfQuestion fired and Riven answered "that's phrased as a question, so I
+  // left everything alone" - declining to do something nobody had asked for,
+  // while sitting on the answer. Reported from the phone, verbatim.
+  // Verbatim from the report. This roster has no Jonathan, so the student
+  // comes back unresolved - the point here is the INTENT, and the named-student
+  // cases below prove the list gets narrowed to one child.
+  ['What days are Jonathan missing?', 'VIEW_PLANNED_ABSENCES', null, true],
+  ['what days is noah out', 'VIEW_PLANNED_ABSENCES', 'Noah Williams', true],
+  ['which dates is charlotte away', 'VIEW_PLANNED_ABSENCES', 'Charlotte Tebow', true],
+  ['when is noah out', 'VIEW_PLANNED_ABSENCES', 'Noah Williams', true],
+  ['how many days is charlotte going to be out', 'VIEW_PLANNED_ABSENCES', 'Charlotte Tebow', true],
+  // The lines the tense guard defends: same shape, past tense, and they belong
+  // to the register rather than to the upcoming list. Both answered this way
+  // before the read patterns existed, and must keep answering this way.
+  ['how many days has noah been absent', 'VIEW_ATTENDANCE', 'Noah Williams', true],
+  ['what days was charlotte absent', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
   ['Put 30 gold in the bank', 'CAPABILITY', null, true],
   ['Give charlotte 30 gold in the bank', 'CAPABILITY', null, true],
   ["Let's add charlotte to a math class.", 'ENROLL_STUDENT', 'Charlotte Tebow', true],
