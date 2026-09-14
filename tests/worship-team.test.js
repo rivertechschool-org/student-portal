@@ -1,4 +1,4 @@
-// The Worship Team page: where it is reached from, and the two rules that make
+// The Worship & Band page: where it is reached from, and the two rules that make
 // it work for a student as well as for the person who runs the team.
 //
 //   * ONE ENTRY, BOTH PORTALS. It is a page, not a section, so it hangs off
@@ -22,6 +22,9 @@ const fs = require('fs');
 const path = require('path');
 
 const PortalUI = require('./portalui.js');
+// The section is named for both jobs it does: worship, and band work that has
+// nothing to do with a service. The file and the tables keep the older name.
+const LABEL = 'Worship & Band';
 const page = fs.readFileSync(path.join(__dirname, '..', 'portal', 'worship.html'), 'utf8');
 
 let pass = 0;
@@ -48,7 +51,7 @@ function fn(name) {
 // 1. The way in
 // ======================================================================
 const find = (userType, app = 'portal') =>
-  PortalUI.navDestinations(userType, app).find(i => i.label === 'Worship Team');
+  PortalUI.navDestinations(userType, app).find(i => i.label === LABEL);
 const canSee = who => find(who).roles.includes(who);
 
 ok('students can reach it', canSee('student'));
@@ -66,11 +69,11 @@ ok('the page is actually there', fs.existsSync(path.join(__dirname, '..', 'porta
 // getSecondaryNavItems feeds. Last in the list is "the button at the bottom".
 for (const who of ['student', 'teacher', 'admin']) {
   const items = PortalUI.getSecondaryNavItems(who, 'portal').map(i => i.label);
-  ok(`${who}: in the More launcher`, items.includes('Worship Team'));
-  check(`${who}: at the bottom of it`, items[items.length - 1], 'Worship Team');
+  ok(`${who}: in the More launcher`, items.includes(LABEL));
+  check(`${who}: at the bottom of it`, items[items.length - 1], LABEL);
 }
 check('parents: not in their launcher',
-  PortalUI.getSecondaryNavItems('parent', 'portal').filter(i => i.label === 'Worship Team'), []);
+  PortalUI.getSecondaryNavItems('parent', 'portal').filter(i => i.label === LABEL), []);
 
 // ======================================================================
 // 2. Dates are calendar days, not instants
@@ -136,7 +139,7 @@ ok('the add-person search comes from worship_directory()', page.includes("rpc('w
 ok('user_profiles is never queried directly', !/from\('user_profiles'\)/.test(page));
 
 // A school admin runs the team without being on the roster.
-ok('a school admin is a worship admin', /user_type === 'admin' \|\| !!\(A\.member && A\.member\.is_worship_admin\)/.test(page));
+ok('a school admin is a team admin', /user_type === 'admin' \|\| !!\(A\.member && A\.member\.is_worship_admin\)/.test(page));
 // Parents and anyone else are turned away before a single query runs.
 ok('only students and staff get in', /\['student', 'teacher', 'admin'\]\.includes\(A\.me\.user_type\)/.test(page));
 
@@ -152,6 +155,32 @@ ok('request notes are escaped', /esc\(r\.note\)/.test(page));
 // The four instruments are defined once.
 const list = (page.match(/id: '(piano|guitar|cajon|singing)'/g) || []).length;
 check('four instruments, defined in one list', list, 4);
+
+// ======================================================================
+// 5. The pills toggle, and more than one can be on
+// ======================================================================
+// They were <label>s wrapping a hidden checkbox. Clicking one ran the handler,
+// and then the browser's own label behaviour dispatched a second click on the
+// input which bubbled back to the label and ran it AGAIN - so every pill turned
+// itself on and straight back off, and no instrument could be set. Buttons have
+// no second act. These three checks are the shape of that bug, not the symptom.
+ok('no pill is a label', !/<label class="pick/.test(page));
+ok('no pill hides a checkbox', !/type="checkbox"/.test(page));
+ok('every pill is a button', !/class="pick/.test(page) || /<button type="button" class="pick/.test(page));
+
+// State is read back off the class list, never off a .checked that no longer exists.
+ok('nothing reads .checked', !/\.checked/.test(page));
+ok('the instruments are read with pillOn', /INSTRUMENTS\.filter\(i => pillOn\('em-' \+ i\.id\)\)/.test(page));
+ok('  and so is the join form', /INSTRUMENTS\.filter\(i => pillOn\('join-' \+ i\.id\)\)/.test(page));
+ok('  and the leader flag', /pillOn\('slot-lead-' \+ serviceId\)/.test(page));
+
+// filter() over the whole list is what makes it multi-select: nothing anywhere
+// narrows the answer to one instrument.
+ok('instruments are a list, not a choice', /instruments text\[\]|instruments: \[\]|instruments,/.test(page));
+ok('the join form says so out loud', /You can choose more than one/.test(page));
+
+// A pill a screen reader can follow.
+ok('pressed state is exposed', /aria-pressed/.test(page));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

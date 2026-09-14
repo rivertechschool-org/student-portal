@@ -856,11 +856,11 @@ class PortalUI {
             // tool already had.
             { icon: '🏃', label: 'PE Assessment', app: 'portal', section: 'pe-assessment', url: `${toolPath}pe-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
             { icon: '🤖', label: 'Tech Projects', app: 'portal', section: 'tech-assessment', url: `${toolPath}tech-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
-            // Worship Team is its own page for students and staff alike, so it
+            // Worship & Band is its own page for students and staff alike, so it
             // sits in the More launcher at the foot of the Portal tab in both
             // portals rather than in the bar. The page decides what each person
             // sees: the join form, the roster, or the whole scheduler.
-            { icon: '🎵', label: 'Worship Team', app: 'portal', section: 'worship', url: `${toolPath}worship.html`, roles: ['student', 'teacher', 'admin'], secondary: true },
+            { icon: '🎵', label: 'Worship & Band', app: 'portal', section: 'worship', url: `${toolPath}worship.html`, roles: ['student', 'teacher', 'admin'], secondary: true },
             { icon: '👤', label: 'Profile', app: 'portal', section: 'profile', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🔑', label: 'Admin', app: 'portal', section: 'admin-dashboard', roles: ['admin'] },
         ];

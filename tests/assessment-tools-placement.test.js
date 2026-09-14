@@ -44,7 +44,7 @@ const TOOLS = ['PE Assessment', 'Tech Projects'];
 // Every destination that is a page of its own rather than a section. The tools
 // above plus Worship Team, which is a page because students and staff share it
 // and neither portal owns it.
-const PAGE_DESTINATIONS = TOOLS.concat(['Worship Team']);
+const PAGE_DESTINATIONS = TOOLS.concat(['Worship & Band']);
 const dest = (userType, app) => PortalUI.navDestinations(userType, app);
 const find = (label, userType = 'teacher', app = 'portal') =>
   dest(userType, app).find(i => i.label === label);

@@ -739,3 +739,38 @@ Instruments live in one `INSTRUMENTS` list at the top; a fifth is one entry ther
 nothing else. Slot status (`confirmed`/`declined`) and service-type notes exist in the
 tables but have no controls yet, which is where "can people confirm they are coming?"
 would go.
+
+---
+
+## 2026-09-14 — Luke's Claude (Worship & Band: the pills, and the name)
+
+**Renamed: Worship Team → Worship & Band,** since the section is also for band work
+that has nothing to do with a service. The label in `navDestinations()`, the page title,
+the header, the join card and the denial message all say the new name; "worship admin"
+reads as **team admin** for the same reason. `portal/worship.html`, the `worship_*` tables
+and the `is_worship_admin` column keep the older name — they are already deployed, and
+renaming them buys nothing that the comment at the top of the page does not.
+
+**Fixed: no pill could be turned on.** Instruments, the team-admin flag and "★ Leads"
+were each a `<label>` wrapping a hidden checkbox. Clicking one ran the handler, and then
+the browser's own label behaviour dispatched a second click on the input, which bubbled
+back up to the label and ran the handler AGAIN — so every pill turned itself on and
+straight back off. Nothing could be changed and nothing looked wrong.
+
+They are `<button type="button">` now, holding their state in their own class list, with
+`aria-pressed` for anyone using a screen reader. There is no checkbox left in the file and
+nothing reads `.checked`.
+
+Instruments always were multi-select — the reader is a `filter()` over the whole list — so
+that is a fix, not a change. The edit label now says so ("as many as they play").
+
+**What let it through.** The first build was driven in a real browser, but nothing ever
+*clicked* a pill: the page was rendered and read, not used. The new checks in
+`tests/worship-team.test.js` guard the shape of the bug rather than the symptom — no pill
+is a label, no checkbox exists, every reader goes through `pillOn()`. Verified again in
+Chromium by clicking pills on and off and reading back the row that would have been
+written.
+
+Also worth knowing: `tests/portalui.js` is a snapshot of `shared/config.js`, so **re-run
+`node tests/extract-portalui.js` after touching that file** or the nav tests check the
+old copy and fail for a reason that is not yours.
