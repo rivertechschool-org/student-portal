@@ -616,3 +616,35 @@ discoverable without reading this file.
 **Still worth doing, in rough order of value:** grading a whole class at once
 ("everyone got full marks on the warm-up") · activity management · a "what
 changed today" digest · teacher invitations if you want them in here after all.
+
+---
+
+## 2026-09-14 — Luke's Claude
+
+**RTC Management can now be pointed at one student group.** The Balances tab has a
+**Group** picker beside Search and Sort, listing every row in `student_groups` plus
+"All groups". It narrows the same `_rtcFilteredStudents` list the table renders and the
+bulk award reads, so "Award to All Filtered" awards to exactly that group.
+
+Three decisions worth knowing:
+
+- **The picker is on Balances only**, not on Transaction Log, Bank or IRL Store. Balances
+  is the only tab that acts on many students at once; the others are per-student or
+  read-only, so a group filter there would be decoration.
+- **It does not persist across tab switches.** Search and Sort already reset when you
+  leave and come back, and a sticky group filter is worse than inconsistent: a forgotten
+  narrowing turns a bulk award into a quiet no-op for everyone else.
+- **The bulk-award card now names its scope** — "Bulk Award to Junior High (12 students)"
+  — and the confirm says "…to 12 student(s) in Junior High for …". The old heading read
+  the same whether the list was one group or the whole school, and the gap between those
+  two is every balance in the building. End-of-Year Rollover is untouched and still hits
+  **all** students regardless of the picker; its buttons say "All" for that reason.
+
+Groups load in their own promise with its own catch, so a `student_groups` read that
+fails leaves the section working without the picker rather than taking RTC Management
+down. Tests: `tests/rtc-group-filter.test.js` (18 assertions). Verified in Chromium
+against a stubbed student set as well, since the picker is markup the DOM stub cannot
+prove.
+
+**No schema change** — `student_groups` and `student_group_members` are already read by
+the portal elsewhere, and nothing new is written.

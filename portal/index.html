@@ -44381,6 +44381,18 @@
 
       section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading RTC Management...</p></div>';
 
+      // Student groups are an admin-defined filter axis, staff-readable only.
+      // Kicked off alongside the main load and caught on its own so a group read
+      // that fails degrades to "no group picker" rather than taking the whole
+      // RTC section down with it.
+      const groupsPromise = Promise.all([
+        this.auth.supabase.from('student_groups').select('id, name').order('name'),
+        this.auth.supabase.from('student_group_members').select('group_id, student_id')
+      ]).catch(groupErr => {
+        console.warn('Student groups unavailable, continuing without that filter:', groupErr);
+        return [{ data: [] }, { data: [] }];
+      });
+
       try {
         const [studentsRes, categoriesRes, rateRes, privilegesRes, cosmeticsRes] = await Promise.all([
           this.supabaseQuery(() => this.auth.supabase
@@ -44418,6 +44430,15 @@
         this._bankInterestRate = parseInt(rateRes.data?.value) || 10;
         this._rtcPrivileges = privilegesRes.data || [];
         this._rtcCosmetics = cosmeticsRes.data || [];
+
+        // Membership as studentId -> [groupId], the shape the balances filter
+        // tests against. A student in no group is simply absent from the map.
+        const [groupRows, memberRows] = await groupsPromise;
+        this._rtcGroups = groupRows.data || [];
+        this._rtcGroupsByStudent = {};
+        (memberRows.data || []).forEach(m => {
+          (this._rtcGroupsByStudent[m.student_id] = this._rtcGroupsByStudent[m.student_id] || []).push(m.group_id);
+        });
         // Teachers only get Bank and IRL Store, so do not default them to a
         // tab whose button is not rendered.
         const isAdminUser = this.userInfo?.profile?.user_type === 'admin';
@@ -44615,6 +44636,12 @@
       const categoryOptions = (this._rtcCategories || []).filter(c => c.is_active).map(c =>
         `<option value="${c.id}">${c.name}</option>`
       ).join('');
+      // No picker when there are no groups (or the read failed) - a select whose
+      // only option is "All groups" is a control that does nothing.
+      const groups = this._rtcGroups || [];
+      const groupOptions = groups.map(g =>
+        `<option value="${g.id}">${this.escapeHtml(g.name)}</option>`
+      ).join('');
 
       container.innerHTML = `
         <div class="card" style="padding: 15px; margin-bottom: 15px;">
@@ -44624,6 +44651,15 @@
               <input type="text" id="rtc-search" placeholder="Search by name..." oninput="app.filterAdminRTC()"
                 style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
             </div>
+            ${groups.length ? `
+            <div>
+              <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Group</label>
+              <select id="rtc-group" onchange="app.filterAdminRTC()"
+                style="padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); min-width: 150px;">
+                <option value="">All groups</option>
+                ${groupOptions}
+              </select>
+            </div>` : ''}
             <div>
               <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Sort By</label>
               <select id="rtc-sort" onchange="app.filterAdminRTC()"
@@ -44638,7 +44674,7 @@
         </div>
 
         <div class="card" style="padding: 15px; margin-bottom: 15px; border-left: 3px solid #f39c12;">
-          <div style="font-weight: 600; margin-bottom: 10px;">Bulk Award to All Filtered Students</div>
+          <div id="rtc-bulk-scope" style="font-weight: 600; margin-bottom: 10px;">Bulk Award to All Filtered Students</div>
           <div style="display: flex; gap: 10px; align-items: end; flex-wrap: wrap;">
             <div>
               <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Amount</label>
@@ -44679,10 +44715,16 @@
     filterAdminRTC() {
       const search = (document.getElementById('rtc-search')?.value || '').toLowerCase();
       const sort = document.getElementById('rtc-sort')?.value || 'name-asc';
+      const group = document.getElementById('rtc-group')?.value || '';
+      const groupsOf = this._rtcGroupsByStudent || {};
 
       let filtered = this._rtcStudents.filter(s => {
         const name = `${s.first_name} ${s.last_name}`.toLowerCase();
-        return name.includes(search);
+        if (!name.includes(search)) return false;
+        // Group is a membership test, not a column on the student: anyone in no
+        // group at all matches only "All groups".
+        if (group && !(groupsOf[s.id] || []).map(String).includes(String(group))) return false;
+        return true;
       });
 
       switch (sort) {
@@ -44701,7 +44743,30 @@
       }
 
       this._rtcFilteredStudents = filtered;
+
+      // The bulk award acts on whatever this filter leaves behind, so the card
+      // says so out loud. Narrowing to a group and then awarding is the point of
+      // the picker, and "All Filtered Students" alone does not name the group.
+      const scopeEl = document.getElementById('rtc-bulk-scope');
+      if (scopeEl) {
+        const scope = this._rtcFilterScopeLabel();
+        const plural = filtered.length === 1 ? '' : 's';
+        scopeEl.textContent = scope
+          ? `Bulk Award to ${scope} (${filtered.length} student${plural})`
+          : `Bulk Award to All Filtered Students (${filtered.length} student${plural})`;
+      }
+
       this.renderAdminRTCTable(filtered);
+    }
+
+    // Human-readable name of the group the Balances tab is narrowed to, or null
+    // for "All groups". Used by the bulk award so its confirm names the group
+    // rather than only a count.
+    _rtcFilterScopeLabel() {
+      const group = document.getElementById('rtc-group')?.value || '';
+      if (!group) return null;
+      const match = (this._rtcGroups || []).find(g => String(g.id) === String(group));
+      return match ? match.name : null;
     }
 
     renderAdminRTCTable(students) {
@@ -44896,7 +44961,8 @@
         return;
       }
 
-      if (!confirm(`Award ${amount} RTC to ${filtered.length} student(s) for "${reason}"?`)) return;
+      const scope = this._rtcFilterScopeLabel();
+      if (!confirm(`Award ${amount} RTC to ${filtered.length} student(s)${scope ? ' in ' + scope : ''} for "${reason}"?`)) return;
 
       let success = 0;
       let failed = 0;
