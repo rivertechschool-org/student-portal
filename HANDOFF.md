@@ -817,6 +817,34 @@ Both handed to Luke as SQL, logged in `rt_sql_applied`. Not in this repo, per th
 
 ---
 
+## 2026-09-14 — Jordan's Claude (Staff & Parents: linked children)
+
+**Every parent showed "No children linked", however many links they had.** The
+links were fine the whole time — the screen was looking for the children in a
+list that cannot contain them.
+
+`renderAdminUsers` fetches `allUsers` as **adults only** (`.in('user_type',
+['teacher','admin','parent'])`, deliberately — students have their own roster).
+The children map then did `allUsers.find(u => u.id === link.child_id)`. Children
+are students, so that returned `undefined` every time, nothing was pushed into
+the map, and every row rendered as unlinked.
+
+Now the linked children are fetched by id in their own query. A child who has
+left is shown too, marked `(past)` — the link survives withdrawal, and a parent
+still holding access to a withdrawn pupil is exactly what an admin opens this
+screen to notice.
+
+**The test suite could not see this**, which is worth more than the fix. The
+stub in `account-paths-audit.test.js` ignored `.in()`, so it answered the
+adults-only query with a list containing students — the test found the child in
+a list the real query never returns it in. The stub now filters the way
+PostgREST does, and the assertion was checked by reverting the fix: it fails
+without it. Same class of gap as the one in `riven-assignments.test.js` last
+week; worth assuming any hand-built query stub has it until proven otherwise.
+
+**Not mine, still red:** `tests/assessment-tools-placement.test.js` (already
+noted 2026-09-11) and `tests/worship-team.test.js`. Both fail with my changes
+stashed, both belong to the Worship/Band work.
 ## 2026-09-14 — Luke's Claude (the backend repo is reachable)
 
 **Schema work has somewhere to go now.** Jordan granted access to

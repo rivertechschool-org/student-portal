@@ -34918,6 +34918,30 @@
             console.warn('rt_logins_without_profiles unavailable:', e?.message);
           }
 
+          // The linked children are STUDENTS, and allUsers is adults only - the
+          // query above asks for teachers, admins and parents by design,
+          // because students have their own roster screen.
+          //
+          // So `allUsers.find(u => u.id === link.child_id)` never matched
+          // anything. Every lookup came back undefined, nothing was pushed, and
+          // every parent rendered "No children linked" no matter how many links
+          // they had. The links were there the whole time; this screen was
+          // looking for the children in a list that cannot contain them.
+          //
+          // Fetched by id instead, which is also the only way to show a child
+          // who has left - they are off the roster but the link remains, and a
+          // parent still holding access to a withdrawn pupil is exactly the
+          // thing an admin opens this screen to notice.
+          const childIds = [...new Set((parentChildLinks || []).map(l => l.child_id).filter(Boolean))];
+          const childById = {};
+          if (childIds.length) {
+            const { data: linkedChildren } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('id, first_name, last_name, grade_level, student_status')
+              .in('id', childIds));
+            (linkedChildren || []).forEach(c => { childById[c.id] = c; });
+          }
+
           // Create a map of parent_id -> array of child profiles
           const parentChildrenMap = {};
           if (parentChildLinks) {
@@ -34925,7 +34949,7 @@
               if (!parentChildrenMap[link.parent_id]) {
                 parentChildrenMap[link.parent_id] = [];
               }
-              const childProfile = allUsers.find(u => u.id === link.child_id);
+              const childProfile = childById[link.child_id];
               if (childProfile) {
                 parentChildrenMap[link.parent_id].push(childProfile);
               }
@@ -35133,7 +35157,7 @@
                                   <div style="display: flex; flex-wrap: wrap; gap: 5px;">
                                     ${children.map(child => `
                                       <span style="background: rgba(139, 255, 176, 0.2); color: var(--accent-2); padding: 2px 8px; border-radius: 12px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px;">
-                                        ${child.first_name} ${child.last_name}
+                                        ${child.first_name} ${child.last_name}${child.student_status === 'past' ? ' <span style="opacity:.7;">(past)</span>' : ''}
                                         <button onclick="app.unlinkChildFromParent('${linkId}', '${child.id}', '${parent.first_name}', '${child.first_name}')"
                                                 style="background: none; border: none; color: var(--danger); cursor: pointer; padding: 0 2px; font-size: 14px;"
                                                 title="Remove link">×</button>
