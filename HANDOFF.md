@@ -814,3 +814,27 @@ row is a picker now, not free text, so the link always has a key it can use.
 
 **Database:** two columns and a unique index on `lower(title)`, plus the 29-song import.
 Both handed to Luke as SQL, logged in `rt_sql_applied`. Not in this repo, per the rule.
+
+---
+
+## 2026-09-14 — Luke's Claude (the backend repo is reachable)
+
+**Schema work has somewhere to go now.** Jordan granted access to
+`rivertechschool-org/student-portal-backend`, so migrations are committed there rather than
+pasted into a reply and forgotten. `CLAUDE.md` above has been corrected to say so — it used
+to tell you to write the exact SQL into this file, which contradicted the rule at the top of
+the same document that forbids describing access control in a repo served verbatim at
+rivertech.me. The top rule wins; this file gets a pointer, never the SQL.
+
+The two Worship / Band scripts Luke ran today are committed there as
+`worship_band_1_…` and `worship_band_2_…`, verbatim, with their md5s recorded in the header
+so a future reader can tell whether the file drifted from what was actually applied.
+
+**Read that repo's README before adding a migration.** Two things there are easy to get
+wrong: migrations have no timestamps, so the alphabetical filename *is* the apply order and
+a later file silently overrides an earlier one; and `MIGRATION_MAP.md` is generated from
+each migration's header comment and must be regenerated in the same commit
+(`node tools/gen-migration-map.js`), never hand-edited.
+
+Noticed on the way through: that map was 16 migrations out of date before today's commit,
+so anyone who trusted it this month was reading a stale picture. It is current now.

@@ -33,9 +33,18 @@ plain language, and hand it over rather than committing it here.
 | Pages, games, curriculum data, client JS | Schema, RLS, functions, migrations |
 | Push to `main` → live in ~25s | Migrations applied to Supabase by hand |
 
-Claude sessions generally have access to **this repo only**. When work needs a schema
-change, write the exact SQL into your reply and into `HANDOFF.md`, and say who has to run
-it. Do not commit migrations here.
+A Claude session can reach the backend repo now (ask for it by name if it is not already
+attached). When work needs a schema change, **the migration goes there**, under
+`supabase/migrations/`, following that repo's own rules — read its README first: filenames
+are the apply order, the header comment feeds a generated map, and the map is regenerated
+in the same commit.
+
+Applying is still by hand: there is no CI and no staging, so hand Luke the SQL to paste
+into the Supabase SQL editor, and commit the file either way so the repo is the record.
+
+In `HANDOFF.md` here, leave a plain-language pointer only — never the SQL, and never a
+description of a policy. That would put the access-control model on a public web page,
+which the rule above forbids.
 
 ## Stack
 
