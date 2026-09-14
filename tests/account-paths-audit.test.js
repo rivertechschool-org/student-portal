@@ -209,10 +209,19 @@ const base = () => ({
           from: (table) => {
             const q = {
               select() { return q; },
-              in() { return q; },
+              // Honoured, not ignored. The screen asks user_profiles for adults
+              // only, and separately asks for the linked children by id. A stub
+              // that drops .in() answers both with the same list, which is how
+              // "No children linked" survived this file the first time: the
+              // test found the children in a list the real query never returns
+              // them in.
+              in(col, vals) { (q._in = q._in || []).push({ col, vals }); return q; },
               order() { return q; },
               then(res, rej) {
-                const data = table === 'parent_child_links' ? links : users;
+                let data = table === 'parent_child_links' ? links : users;
+                for (const f of (q._in || [])) {
+                  data = data.filter(r => f.vals.includes(r[f.col]));
+                }
                 return Promise.resolve({ data, error: null }).then(res, rej);
               },
             };
@@ -249,7 +258,15 @@ const base = () => ({
       [{ parent_id: 'auth-mary', child_id: 'c1' }]);
 
     ok('a parent who signs in is offered Link Child', /showLinkChildToParentModal\('auth-mary'/.test(html));
+    // The bug this file could not see for a week: the children are students,
+    // the adults-only query cannot contain them, and every parent rendered
+    // "No children linked" however many links they had.
     ok('  and their linked child is shown', /Ruthie Argon/.test(html));
+    // Two parents in this fixture: Mary has a link, Pat does not. Exactly one
+    // row may say so. Before the fix both did, because the lookup could never
+    // find a student.
+    check('  and only the parent without links says otherwise',
+      (html.match(/No children linked/g) || []).length, 1);
 
     // The whole point: a link keyed on an auth user that does not exist cannot
     // be written, so offering the button would be offering a failure.
