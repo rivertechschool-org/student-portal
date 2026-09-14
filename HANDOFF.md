@@ -742,9 +742,9 @@ would go.
 
 ---
 
-## 2026-09-14 — Luke's Claude (Worship & Band: the pills, and the name)
+## 2026-09-14 — Luke's Claude (Worship / Band: the pills, and the name)
 
-**Renamed: Worship Team → Worship & Band,** since the section is also for band work
+**Renamed: Worship Team → Worship / Band,** since the section is also for band work
 that has nothing to do with a service. The label in `navDestinations()`, the page title,
 the header, the join card and the denial message all say the new name; "worship admin"
 reads as **team admin** for the same reason. `portal/worship.html`, the `worship_*` tables

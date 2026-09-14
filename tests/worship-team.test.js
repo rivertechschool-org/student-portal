@@ -1,4 +1,4 @@
-// The Worship & Band page: where it is reached from, and the two rules that make
+// The Worship / Band page: where it is reached from, and the two rules that make
 // it work for a student as well as for the person who runs the team.
 //
 //   * ONE ENTRY, BOTH PORTALS. It is a page, not a section, so it hangs off
@@ -24,7 +24,7 @@ const path = require('path');
 const PortalUI = require('./portalui.js');
 // The section is named for both jobs it does: worship, and band work that has
 // nothing to do with a service. The file and the tables keep the older name.
-const LABEL = 'Worship & Band';
+const LABEL = 'Worship / Band';
 const page = fs.readFileSync(path.join(__dirname, '..', 'portal', 'worship.html'), 'utf8');
 
 let pass = 0;
