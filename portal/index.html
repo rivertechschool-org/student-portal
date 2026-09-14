@@ -48813,7 +48813,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-12·j';
+      const RIVEN_BUILD = '2026-09-14·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -49006,6 +49006,9 @@
       if (!out) return;
       if (this._terminalChatObserver) this._terminalChatObserver.disconnect();
       this._terminalChatObserver = new MutationObserver((mutations) => {
+        // Our own trimming removes nodes from this element; reacting to that
+        // would schedule a save for every message we dropped.
+        if (this._rivenTrimBusy) return;
         // Make any student/class name in new chat content clickable (guarded
         // against the mutations we cause ourselves)
         if (!this._linkifyBusy) {
@@ -49194,25 +49197,84 @@
         </div>`);
     }
 
+    // How much transcript is kept. One number for the page and the save,
+    // because two numbers meant the live DOM grew without limit while only the
+    // saved copy was ever trimmed.
+    _rivenChatMaxNodes() { return 200; }
+
+    // Drop the oldest messages once the transcript is longer than the cap.
+    //
+    // Trimming the LIVE page is the point. Before this only the saved copy was
+    // bounded, so a tab left open all day kept every node - and the save then
+    // deep-cloned all of them, 400ms after every message, to throw most of the
+    // copy away. On a phone, in the afternoon, that is the cost you feel.
+    //
+    // Sets a flag while it works: the observer that triggers saves watches this
+    // element, so removing nodes here would schedule another save.
+    _trimTerminalChat(max) {
+      const out = document.getElementById('terminal-output');
+      if (!out) return false;
+      const cap = max || this._rivenChatMaxNodes();
+      if (out.children.length <= cap) return false;
+      this._rivenTrimBusy = true;
+      try {
+        while (out.children.length > cap) out.removeChild(out.firstElementChild);
+      } finally {
+        this._rivenTrimBusy = false;
+      }
+      return true;
+    }
+
     _persistTerminalChat() {
       const out = document.getElementById('terminal-output');
       if (!out) return;
-      try {
-        // Keep the transcript bounded: persist at most the last 120 top-level
-        // nodes so localStorage stays small
-        const clone = out.cloneNode(true);
-        while (clone.children.length > 120) clone.removeChild(clone.firstElementChild);
-        const ls = this._nlpContext?.lastStudent;
-        localStorage.setItem(this._terminalChatKey(), JSON.stringify({
-          html: clone.innerHTML,
-          lastStudent: ls ? { id: ls.id, full_name: ls.full_name, first_name: ls.first_name, last_name: ls.last_name, rtc_balance: ls.rtc_balance } : null,
-          savedAt: Date.now()
-        }));
-      } catch (e) {
-        // Quota or serialization problems: drop the saved chat rather than break the UI
-        try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
+
+      // A week-old conversation is not context, it is clutter, and the page
+      // reads it back as though it were this morning's.
+      this._trimTerminalChat();
+
+      const ls = this._nlpContext?.lastStudent;
+      const lastStudent = ls
+        ? { id: ls.id, full_name: ls.full_name, first_name: ls.first_name, last_name: ls.last_name, rtc_balance: ls.rtc_balance }
+        : null;
+
+      // The tail, read straight off the nodes rather than by copying the tree.
+      const tail = (n) => Array.from(out.children).slice(-n).map(el => el.outerHTML).join('');
+
+      // Node count is bounded; BYTES are not - one roster listing outweighs
+      // fifty "done"s. So a save that will not fit retries with less of the
+      // transcript instead of throwing the whole thing away, which is what the
+      // old catch did, silently.
+      for (const n of [this._rivenChatMaxNodes(), 80, 30, 10]) {
+        try {
+          localStorage.setItem(this._terminalChatKey(), JSON.stringify({
+            html: tail(n),
+            lastStudent,
+            savedAt: Date.now()
+          }));
+          return;
+        } catch (e) { /* too big or unavailable - try a shorter tail */ }
+      }
+
+      // Nothing would fit. Drop the key so a half-written value cannot be
+      // restored, and say so once: losing the conversation on the next reload
+      // without being told is worse than the loss.
+      try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
+      if (!this._rivenChatSaveWarned) {
+        this._rivenChatSaveWarned = true;
+        console.warn('Riven: could not save the transcript (storage full).');
+        // Outside terminal-output on purpose, so it cannot trigger another save.
+        this.showNotification?.(
+          "Riven can't save this conversation - it won't survive a reload. Say /clear to start fresh.",
+          'warning');
       }
     }
+
+    // Kept for a week. Nothing ever read savedAt before, so a conversation
+    // from last term came back mid-lesson looking like this morning's - and
+    // _nlpContext.lastStudent came back with it, so "give him 5 rtc" pointed at
+    // a child nobody in the room had mentioned.
+    _rivenChatMaxAgeMs() { return 7 * 24 * 60 * 60 * 1000; }
 
     _restoreTerminalChat() {
       try {
@@ -49220,6 +49282,10 @@
         if (!raw) return;
         const saved = JSON.parse(raw);
         if (!saved?.html) return;
+        if (saved.savedAt && (Date.now() - saved.savedAt) > this._rivenChatMaxAgeMs()) {
+          try { localStorage.removeItem(this._terminalChatKey()); } catch (_) {}
+          return;
+        }
         const out = document.getElementById('terminal-output');
         if (!out) return;
         out.innerHTML = saved.html;
