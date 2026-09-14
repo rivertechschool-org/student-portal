@@ -774,3 +774,43 @@ written.
 Also worth knowing: `tests/portalui.js` is a snapshot of `shared/config.js`, so **re-run
 `node tests/extract-portalui.js` after touching that file** or the nav tests check the
 old copy and fail for a reason that is not yours.
+
+---
+
+## 2026-09-14 — Luke's Claude (Worship / Band: charts in any key)
+
+**A chart is stored once, in no key at all.** Chords are scale degrees written inline in
+the lyric, exactly where they fall — `He 1picked me up, and 2turned me around` — and the
+page draws them in whichever key you press. This is the notation Luke's lyric-slides app
+already uses, which is what made importing his 29 songs possible without re-keying them.
+
+The whole vocabulary, taken from every song in that library rather than from a spec:
+`1`–`7` (quality from the major scale: 1, 4, 5 major · 2, 3, 6 minor · 7 diminished),
+`maj` to force major on a borrowed chord (`3maj`), `1/3` for a slash chord, and a line
+starting with `/` as a section heading.
+
+**The trap, and why the parser is written the way it is:** a letter after a digit is
+lyric, not chord quality. `1mountain` is the 1 chord over the word "mountain" — there is
+no such thing as a `1m` token here. A regex that greedily eats `m`, `maj`, `sus` after the
+digit reports minor chords all over the library that do not exist; that is how the first
+scan of the corpus read it, and the contexts disproved it.
+
+Two rules the renderer holds to, both guarded by `tests/worship-chart-transpose.test.js`
+(55 assertions):
+
+- **Spelling follows the key, not the pitch.** The 4 of Eb is Ab, never G#. Each key has
+  its own seven spelled notes rather than a pitch-class table, so no chart ever mixes
+  sharps and flats.
+- **A slash chord names a bass note.** `1/3` in C is C/E — the lower degree carries no
+  quality of its own.
+
+**From the rota to the chart.** A song on a set list is a link, and it opens the chart
+already transposed into the key that service is playing it in. The key box on the set-list
+row is a picker now, not free text, so the link always has a key it can use.
+
+`chart_format` on a song says which kind of chart it holds: `nashville` gets the key bar,
+`text` is shown as pasted. Songs already in the table stay `text`, which is what they are.
+`spotify_url` sits alongside the YouTube link.
+
+**Database:** two columns and a unique index on `lower(title)`, plus the 29-song import.
+Both handed to Luke as SQL, logged in `rt_sql_applied`. Not in this repo, per the rule.

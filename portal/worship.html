@@ -69,6 +69,14 @@ td{padding:8px 8px;border-top:1px solid var(--border);vertical-align:middle}
 .modal h3{font-size:1.05rem;margin-bottom:12px}
 .modal .close{float:right;background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1}
 pre.chart{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:.82rem;white-space:pre-wrap;overflow-x:auto;max-height:50vh}
+.chart-box{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;overflow-x:auto;max-height:55vh;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.82rem;line-height:1.35}
+.chart-chords{color:var(--accent);font-weight:700;white-space:pre}
+.chart-lyric{white-space:pre;color:var(--text)}
+.chart-section{color:var(--warn);font-weight:700;margin:12px 0 4px;letter-spacing:.04em;text-transform:uppercase;font-size:.75rem}
+.chart-section:first-child{margin-top:0}
+.keybar{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin:6px 0 10px}
+.keybar button{background:var(--card2);border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:4px 9px;font-size:.78rem;cursor:pointer;font-family:inherit}
+.keybar button.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
 @media (max-width:640px){
   th:nth-child(2),td:nth-child(2){display:none}
   .wrap{padding:12px}
@@ -160,6 +168,135 @@ const INSTRUMENTS = [
   { id: 'cajon',   label: 'Cajón',   icon: '🥁' },
   { id: 'singing', label: 'Singing', icon: '🎤' }
 ];
+// =========================================================================
+// Nashville charts
+//
+// A chart is stored ONCE, in no key at all. Chords are written as scale
+// degrees inline in the lyric, exactly where they fall:
+//
+//     /Chorus
+//     He 1picked me up, and 2turned me around
+//     And 1/3placed my feet on 4solid ground
+//
+// That is the notation the lyric-slides app uses, and the reason these charts
+// can be read in any key: 1 is the key's own chord, 4 is the fourth, and the
+// player reads the letters for whichever key the band is actually in. Storing
+// twelve transposed copies of a song is how that goes wrong.
+//
+// The whole vocabulary, from every song in the library:
+//   1-7      a degree; its quality comes from the major scale, so 1, 4 and 5
+//            are major, 2, 3 and 6 minor, 7 diminished
+//   3maj     "maj" forces major on a degree that would otherwise be minor -
+//            the borrowed III of "He Reigns"
+//   1/3      a slash chord: the 1 chord with the third degree in the bass
+//   /Chorus  a line beginning with / is a section heading, not a lyric
+// Everything else on a line is lyric, including any letter that happens to
+// follow a digit ("1mountain" is the 1 chord over the word "mountain").
+// =========================================================================
+
+// Twelve keys, each spelled the way that key is written rather than by
+// pitch number - a chart in Eb must read Ab, never G#.
+const KEY_SCALES = {
+  'C':  ['C', 'D', 'E', 'F', 'G', 'A', 'B'],
+  'Db': ['Db', 'Eb', 'F', 'Gb', 'Ab', 'Bb', 'C'],
+  'D':  ['D', 'E', 'F#', 'G', 'A', 'B', 'C#'],
+  'Eb': ['Eb', 'F', 'G', 'Ab', 'Bb', 'C', 'D'],
+  'E':  ['E', 'F#', 'G#', 'A', 'B', 'C#', 'D#'],
+  'F':  ['F', 'G', 'A', 'Bb', 'C', 'D', 'E'],
+  'Gb': ['Gb', 'Ab', 'Bb', 'Cb', 'Db', 'Eb', 'F'],
+  'G':  ['G', 'A', 'B', 'C', 'D', 'E', 'F#'],
+  'Ab': ['Ab', 'Bb', 'C', 'Db', 'Eb', 'F', 'G'],
+  'A':  ['A', 'B', 'C#', 'D', 'E', 'F#', 'G#'],
+  'Bb': ['Bb', 'C', 'D', 'Eb', 'F', 'G', 'A'],
+  'B':  ['B', 'C#', 'D#', 'E', 'F#', 'G#', 'A#']
+};
+const KEYS = Object.keys(KEY_SCALES);
+// What people write when they mean one of the twelve above.
+const KEY_ALIASES = { 'C#': 'Db', 'D#': 'Eb', 'F#': 'Gb', 'G#': 'Ab', 'A#': 'Bb',
+                      'Cb': 'B', 'Fb': 'E', 'E#': 'F', 'B#': 'C' };
+// Quality of each degree in a major key. "maj" in the chart overrides it.
+const DEGREE_QUALITY = ['', 'm', 'm', '', '', 'm', 'dim'];
+
+function normaliseKey(k){
+  if (!k) return null;
+  const t = String(k).trim().replace(/\s+.*$/, '');
+  const up = t.charAt(0).toUpperCase() + t.slice(1);
+  if (KEY_SCALES[up]) return up;
+  if (KEY_ALIASES[up]) return KEY_ALIASES[up];
+  return null;
+}
+
+// One degree token -> the chord as played in `key`.
+function chordFor(degree, forceMajor, key){
+  const scale = KEY_SCALES[key] || KEY_SCALES.C;
+  const root = scale[degree - 1];
+  return root + (forceMajor ? '' : DEGREE_QUALITY[degree - 1]);
+}
+
+// Split one line into { text, chords: [{ at, name }] }, where `at` is the
+// index in the finished lyric text that the chord sits above.
+function parseChartLine(line, key){
+  const chords = [];
+  let text = '';
+  let i = 0;
+  while (i < line.length) {
+    const m = /^([1-7])(maj)?(?:\/([1-7])(maj)?)?/.exec(line.slice(i));
+    if (m) {
+      let name = chordFor(+m[1], !!m[2], key);
+      if (m[3]) {
+        // A slash chord names a bass NOTE, so the quality of the lower
+        // degree is not written - 1/3 in C is C/E, never C/Em.
+        name += '/' + (KEY_SCALES[key] || KEY_SCALES.C)[+m[3] - 1];
+      }
+      chords.push({ at: text.length, name });
+      i += m[0].length;
+    } else {
+      text += line[i];
+      i++;
+    }
+  }
+  return { text, chords };
+}
+
+// Lay the chords out on their own line above the lyric, monospaced so the
+// two line up. A chord that would collide with the one before it is pushed
+// right by a space rather than overwriting it.
+function renderChartLine(line, key){
+  const { text, chords } = parseChartLine(line, key);
+  if (!chords.length) return { chordLine: '', lyricLine: text };
+
+  let chordLine = '';
+  for (const c of chords) {
+    if (c.at > chordLine.length) chordLine += ' '.repeat(c.at - chordLine.length);
+    else if (chordLine.length) chordLine += ' ';
+    chordLine += c.name;
+  }
+  return { chordLine, lyricLine: text };
+}
+
+// The whole chart, as HTML.
+function renderChart(chart, key){
+  const lines = String(chart || '').split('\n');
+  const out = [];
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    if (/^\//.test(line)) {
+      const label = line.slice(1).trim();
+      out.push(label.toLowerCase() === 'blank'
+        ? '<div style="height:10px"></div>'
+        : `<div class="chart-section">${esc(label)}</div>`);
+      continue;
+    }
+    if (!line.trim()) { out.push('<div style="height:10px"></div>'); continue; }
+    const { chordLine, lyricLine } = renderChartLine(line, key);
+    out.push(
+      (chordLine ? `<div class="chart-chords">${esc(chordLine)}</div>` : '') +
+      `<div class="chart-lyric">${esc(lyricLine)}</div>`
+    );
+  }
+  return out.join('');
+}
+
 // A pill is a button that remembers, in its own class list, whether it is on.
 //
 // It was a <label> wrapping a hidden checkbox, which does not work: clicking the
@@ -431,8 +568,9 @@ function songsTab(){
         ${(s.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}
       </div>
       <div style="margin-top:6px;font-size:.75rem;color:var(--muted)">
-        ${s.chord_chart_url || s.chord_chart ? '📄 chart' : ''}
-        ${s.song_url ? ' 🔗 link' : ''}
+        ${s.chart_format === 'nashville' && s.chord_chart ? '🎹 chart in any key'
+          : (s.chord_chart_url || s.chord_chart ? '📄 chart' : '')}
+        ${s.song_url || s.spotify_url ? ' 🔗 link' : ''}
       </div>
     </div>`).join('');
 
@@ -449,20 +587,55 @@ function songsTab(){
     </div>`;
 }
 
-function openSong(id){
+// `key` is the key to open in. The schedule passes the key the song is
+// actually being played in that day, which is the whole point: you press the
+// song on the rota and the chart is already in the right key.
+function openSong(id, key){
   const s = A.songs.find(x => x.id === id);
   if (!s) return;
+  A._chartSong = id;
+  A._chartKey = normaliseKey(key) || normaliseKey(s.default_key) || 'C';
+  drawSongModal();
+}
+
+function setChartKey(key){
+  A._chartKey = key;
+  drawSongModal();
+}
+
+function drawSongModal(){
+  const s = A.songs.find(x => x.id === A._chartSong);
+  if (!s) return;
+  const key = A._chartKey;
+  const home = normaliseKey(s.default_key);
+  const isNashville = (s.chart_format === 'nashville') && !!s.chord_chart;
+
   showModal(esc(s.title), `
     <div class="hint">${esc(s.artist || 'Unknown artist')}</div>
     <div style="margin:8px 0">
-      ${s.default_key ? `<span class="chip on">Key ${esc(s.default_key)}</span>` : ''}
+      ${home ? `<span class="chip ${key === home ? 'on' : ''}">Original ${esc(home)}</span>` : ''}
       ${s.bpm ? `<span class="chip">${s.bpm} bpm</span>` : ''}
       ${(s.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}
     </div>
-    ${s.song_url ? `<div class="field"><a class="back" href="${esc(s.song_url)}" target="_blank" rel="noopener">🔗 Listen / watch</a></div>` : ''}
-    ${s.chord_chart_url ? `<div class="field"><a class="back" href="${esc(s.chord_chart_url)}" target="_blank" rel="noopener">📄 Open chord chart</a></div>` : ''}
+    <div class="row" style="margin-bottom:8px">
+      ${s.song_url ? `<a class="back" href="${esc(s.song_url)}" target="_blank" rel="noopener">🔗 Listen / watch</a>` : ''}
+      ${s.spotify_url ? `<a class="back" href="${esc(s.spotify_url)}" target="_blank" rel="noopener">🎧 Spotify</a>` : ''}
+      ${s.chord_chart_url ? `<a class="back" href="${esc(s.chord_chart_url)}" target="_blank" rel="noopener">📄 Chart link</a>` : ''}
+    </div>
     ${s.notes ? `<div class="field"><label class="fld">Notes</label>${esc(s.notes)}</div>` : ''}
-    ${s.chord_chart ? `<div class="field"><label class="fld">Chart</label><pre class="chart">${esc(s.chord_chart)}</pre></div>` : ''}
+
+    ${isNashville ? `
+      <label class="fld">Chord chart — pick your key</label>
+      <div class="keybar">
+        ${KEYS.map(k => `<button class="${k === key ? 'on' : ''}" onclick="setChartKey('${k}')">${k}</button>`).join('')}
+      </div>
+      <div class="chart-box">${renderChart(s.chord_chart, key)}</div>
+      <div class="hint" style="margin-top:6px">Stored once in numbers, drawn in whatever key you press. ${
+        home && key !== home ? `The recording is in ${esc(home)}.` : ''}</div>
+    ` : s.chord_chart ? `
+      <div class="field"><label class="fld">Chart</label><pre class="chart">${esc(s.chord_chart)}</pre></div>
+    ` : ''}
+
     ${A.isAdmin ? `<div class="row" style="margin-top:12px">
       <button class="btn sec" onclick="editSong('${s.id}')">Edit</button>
       <button class="btn danger" onclick="deleteSong('${s.id}')">Delete</button>
@@ -483,16 +656,28 @@ function editSong(id){
       <div class="field" style="width:100px"><label class="fld" for="sg-bpm">BPM</label>
         <input type="number" id="sg-bpm" style="width:100%" value="${s && s.bpm != null ? s.bpm : ''}"></div>
     </div>
-    <div class="field"><label class="fld" for="sg-song-url">Song link (YouTube, Spotify…)</label>
+    <div class="field"><label class="fld" for="sg-song-url">YouTube link</label>
       <input type="text" id="sg-song-url" style="width:100%" value="${esc(s && s.song_url || '')}"></div>
+    <div class="field"><label class="fld" for="sg-spotify">Spotify link</label>
+      <input type="text" id="sg-spotify" style="width:100%" value="${esc(s && s.spotify_url || '')}"></div>
     <div class="field"><label class="fld" for="sg-chart-url">Chord chart link</label>
       <input type="text" id="sg-chart-url" style="width:100%" value="${esc(s && s.chord_chart_url || '')}"></div>
     <div class="field"><label class="fld" for="sg-tags">Tags (comma separated)</label>
       <input type="text" id="sg-tags" style="width:100%" value="${esc(s ? (s.tags || []).join(', ') : '')}"></div>
     <div class="field"><label class="fld" for="sg-notes">Notes</label>
       <textarea id="sg-notes">${esc(s && s.notes || '')}</textarea></div>
-    <div class="field"><label class="fld" for="sg-chart">Chord chart text (paste it here to read it on this page)</label>
-      <textarea id="sg-chart" style="min-height:140px;font-family:ui-monospace,Menlo,Consolas,monospace">${esc(s && s.chord_chart || '')}</textarea></div>
+    <div class="field">
+      <label class="fld" for="sg-chart">Chord chart</label>
+      ${pill('sg-nashville', '🎹 Written in numbers (readable in any key)',
+             !s || s.chart_format === 'nashville')}
+      <div class="hint" style="margin:4px 0 6px">
+        Numbers: put the degree where the chord falls — <code>He 1picked me up, and 2turned me around</code>.
+        1 is the key's own chord, 4 the fourth, <code>1/3</code> a slash chord, <code>3maj</code> forces major,
+        and a line starting with <code>/</code> is a section heading. Turn this off to paste a plain chart that
+        is already in one key.
+      </div>
+      <textarea id="sg-chart" style="min-height:160px;font-family:ui-monospace,Menlo,Consolas,monospace">${esc(s && s.chord_chart || '')}</textarea>
+    </div>
     <button class="btn" onclick="saveSong(${s ? `'${s.id}'` : 'null'})">Save</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
@@ -536,10 +721,18 @@ function serviceCard(s){
       A.isAdmin && open ? ` <a href="#" onclick="removeSlot('${sl.id}','${s.id}');return false;" style="color:inherit">✕</a>` : ''}</span>`;
   }).join('') : '<span class="empty">Nobody scheduled yet.</span>';
 
+  // Pressing a song on the rota opens its chart already transposed into the
+  // key it is being played in that day. That is the practice sheet: no one
+  // has to work out what "4" is in Eb at half past six in the morning.
   const setlist = songs.length ? `<ol style="margin:4px 0 0 18px;font-size:.85rem">${songs.map(l => {
     const song = A.songs.find(x => x.id === l.song_id);
-    return `<li style="margin:3px 0">${esc(song ? song.title : 'Song')}${
+    const playable = song && song.chart_format === 'nashville' && song.chord_chart;
+    const title = esc(song ? song.title : 'Song');
+    return `<li style="margin:3px 0">${
+      song ? `<a href="#" onclick="openSong('${song.id}'${l.song_key ? `,'${esc(l.song_key)}'` : ''});return false;"
+                 style="color:var(--text)">${title}</a>` : title}${
       l.song_key ? ` <span class="chip on">${esc(l.song_key)}</span>` : ''}${
+      playable ? ` <span style="color:var(--muted);font-size:.75rem">🎹</span>` : ''}${
       l.note ? ` <span style="color:var(--muted)">${esc(l.note)}</span>` : ''}${
       A.isAdmin && open ? ` <a href="#" onclick="removeServiceSong('${l.id}','${s.id}');return false;" style="color:var(--muted)">✕</a>` : ''}</li>`;
   }).join('')}</ol>` : '<div class="empty">No songs picked yet.</div>';
@@ -585,7 +778,10 @@ function serviceAdminBox(s){
       <div class="sub-h">Add a song</div>
       <div class="row">
         <select id="song-pick-${s.id}" style="min-width:180px">${songOpts}</select>
-        <input type="text" id="song-key-${s.id}" placeholder="Key" style="width:80px">
+        <select id="song-key-${s.id}" style="width:90px">
+          <option value="">Key…</option>
+          ${KEYS.map(k => `<option value="${k}">${k}</option>`).join('')}
+        </select>
         <input type="text" id="song-note-${s.id}" placeholder="Note (optional)" style="width:150px">
         <button class="btn small" onclick="addServiceSong('${s.id}')">Add</button>
       </div>
@@ -902,7 +1098,9 @@ async function saveSong(id){
     default_key: ($('sg-key').value || '').trim() || null,
     bpm: bpmRaw ? parseInt(bpmRaw, 10) : null,
     song_url: ($('sg-song-url').value || '').trim() || null,
+    spotify_url: ($('sg-spotify').value || '').trim() || null,
     chord_chart_url: ($('sg-chart-url').value || '').trim() || null,
+    chart_format: pillOn('sg-nashville') ? 'nashville' : 'text',
     tags: ($('sg-tags').value || '').split(',').map(t => t.trim()).filter(Boolean),
     notes: ($('sg-notes').value || '').trim() || null,
     chord_chart: ($('sg-chart').value || '').trim() || null
