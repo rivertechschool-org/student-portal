@@ -648,3 +648,32 @@ prove.
 
 **No schema change** — `student_groups` and `student_group_members` are already read by
 the portal elsewhere, and nothing new is written.
+## 2026-09-14 — Jordan's Claude (Riven transcript bounds)
+
+**The transcript never refreshed and only half of it was ever bounded.** The
+saved copy was capped at 120 nodes; the live page kept every node it had ever
+rendered. Worse, the save deep-cloned the whole live transcript 400ms after
+every message in order to throw most of the copy away — so the cost grew with
+how long the tab had been open, which on a phone in the afternoon is the one
+you feel.
+
+Now: the live page is trimmed to 200 nodes and the save reads the tail straight
+off those nodes. No `cloneNode` anywhere in the file any more.
+
+**Bytes, not nodes, are the real limit.** A Riven bubble is 647 bytes of markup
+before any content, so one roster listing outweighs fifty "done"s. A save that
+will not fit now retries with a shorter tail (200 → 80 → 30 → 10) instead of
+the old behaviour, which caught its own quota error and deleted the whole saved
+transcript silently. If nothing fits, it says so once.
+
+**`savedAt` was written and never read.** A conversation from last term came
+back mid-lesson looking like this morning's — and `_nlpContext.lastStudent`
+came back with it, so "give him 5 rtc" pointed at a child nobody in the room
+had mentioned. Transcripts older than a week are dropped on load.
+
+Not a problem, checked: `_phi3History` was already capped at 12 messages, so the
+local model's prompt cannot grow.
+
+RIVEN_BUILD → 2026-09-14·a. `tests/riven-chat-bounds.test.js` — 24 assertions,
+including a `cloneNode` that throws if anything ever deep-copies the transcript
+again.
