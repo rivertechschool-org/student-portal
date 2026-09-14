@@ -41,6 +41,10 @@ const check = (label, actual, expected) => {
 const ok = (label, cond) => check(label, !!cond, true);
 
 const TOOLS = ['PE Assessment', 'Tech Projects'];
+// Every destination that is a page of its own rather than a section. The tools
+// above plus Worship Team, which is a page because students and staff share it
+// and neither portal owns it.
+const PAGE_DESTINATIONS = TOOLS.concat(['Worship Team']);
 const dest = (userType, app) => PortalUI.navDestinations(userType, app);
 const find = (label, userType = 'teacher', app = 'portal') =>
   dest(userType, app).find(i => i.label === label);
@@ -87,7 +91,7 @@ check('Tech from the portal', find('Tech Projects', 'teacher', 'portal').url, 't
 check('Tech from the main app', find('Tech Projects', 'teacher', 'main').url, 'portal/tech-assessment.html');
 
 ok('no other destination grew a url by accident',
-  dest('admin', 'portal').filter(i => i.url).map(i => i.label).sort().join() === TOOLS.slice().sort().join());
+  dest('admin', 'portal').filter(i => i.url).map(i => i.label).sort().join() === PAGE_DESTINATIONS.slice().sort().join());
 
 // ---- a url destination renders as a link -------------------------------
 console.log('\n== a url destination is a link, not a section call ==\n');

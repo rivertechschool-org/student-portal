@@ -648,3 +648,62 @@ prove.
 
 **No schema change** — `student_groups` and `student_group_members` are already read by
 the portal elsewhere, and nothing new is written.
+
+---
+
+## 2026-09-14 — Luke's Claude (Worship Team)
+
+**New page: `portal/worship.html`,** reached from a **Worship Team** button at the foot of
+the Portal tab — for students and for staff, from one line in `navDestinations()` in
+`shared/config.js`. It is a `secondary` destination with a `url`, which is what puts it in
+the More launcher of both portals rather than in the nav bar. Parents do not have it.
+
+The page is four things to four people: the join form to someone not on the team, the
+roster and song library to a member, and the requests queue, roster controls, library and
+scheduler to whoever runs it. Tabs: Team · Songs · Schedule · Requests.
+
+**It will not work until the database side is run.** The tables, the policies and three
+read functions were written this session and handed to Luke as a file to paste into the
+SQL Editor. They are deliberately **not** in this repo — it is public, and access-control
+rules are on the list of things that must never be committed here. Until that SQL is run,
+the page loads and says it could not load; nothing else in the portal is affected. So the
+branch should not be merged to `main` before the SQL is in.
+
+**Three decisions worth knowing:**
+
+- **Names come back through functions, not through a join.** A student may not read
+  another student's profile row, so a roster assembled by embedding `user_profiles` would
+  render a page of blanks for exactly the people who need to read it. Three small
+  read-only functions return names and nothing else. Everything else is read straight off
+  its own table.
+- **A school admin runs the team without being on the roster.** They may never play. The
+  database decides this, not the page; the page's admin flag only chooses which buttons
+  are drawn.
+- **Drafts are hidden by the page, not by a policy,** so that a draft is never invisible
+  to the admin building it. A member sees a date only once it is published.
+
+Songs and service types are removed by marking them inactive rather than deleted, because
+past set lists name them and a hard delete would empty those lines.
+
+Tests: `tests/worship-team.test.js` (40 assertions) covers the entry point for each role,
+the calendar-day handling, the labels, and the rules above as they appear in the page.
+`tests/assessment-tools-placement.test.js` grew a `PAGE_DESTINATIONS` list — its "no other
+destination grew a url by accident" check now expects Worship Team too. Verified in
+Chromium against a stubbed backend in both an admin and a non-member student session.
+
+**Two notes for whoever is next:**
+
+- **Run `node tests/extract-portalui.js` before the suite.** Four suites read
+  `tests/portalui.js`, which is generated and not committed; without it they fail for a
+  reason that has nothing to do with your change. Only `inequality-region` and
+  `typed-answer-mode` are genuinely red on a clean tree.
+- **`CLAUDE.md` contradicts itself about SQL.** The top rule forbids committing anything
+  that describes access control; the "two repos" section says to write the exact SQL into
+  this file. I followed the top rule and kept the SQL out, leaving this pointer instead.
+  Luke may want to settle which one wins.
+
+**More build instructions are expected on this page** — it was built to be added to.
+Instruments live in one `INSTRUMENTS` list at the top; a fifth is one entry there and
+nothing else. Slot status (`confirmed`/`declined`) and service-type notes exist in the
+tables but have no controls yet, which is where "can people confirm they are coming?"
+would go.
