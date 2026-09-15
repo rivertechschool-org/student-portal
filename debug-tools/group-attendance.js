@@ -102,7 +102,7 @@ for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput'
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenQuantifiesClasses',
                  '_rememberClass', '_showClassPicker', '_showGroupPicker',
                  '_rivenResolveClassRow', '_rivenFindEnrollment', '_rivenNamesEachClass', '_rivenResolvedStudent', '_rivenPeriodsOn', '_rivenClassLabels', '_rivenOwnsClass', '_rivenSaidEveryTeacher', '_rivenClassNamedBeyondCohort', 'terminalGroupAddRTC',
-                 'terminalMarkAttendanceGroup', '_rivenCanManageClass']) {
+                 'terminalMarkAttendanceGroup', '_rivenCanManageClass', '_rivenClassIsOpen']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }

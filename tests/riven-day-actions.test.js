@@ -70,7 +70,7 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const NOAH = { id: 'noah', full_name: 'Noah Williams' };
-const CLASS = { id: 'c1', name: 'Chess', teacher_id: 'me', secondary_teacher_id: null };
+const CLASS = { id: 'c1', name: 'Chess', teacher_id: 'me', secondary_teacher_id: null, status: 'active' };
 
 function makeApp({ role = 'teacher', daily = [], marks = [], sessions = [], classRow = CLASS, rpcFails = null } = {}) {
   const app = {
@@ -129,6 +129,8 @@ function makeApp({ role = 'teacher', daily = [], marks = [], sessions = [], clas
     },
   };
   app._rivenCanManageClass = extract('_rivenCanManageClass');
+  app._rivenClassIsOpen = extract('_rivenClassIsOpen');
+  app._rivenRefuseIfClosed = extract('_rivenRefuseIfClosed');
   app._rivenPolicyError = extract('_rivenPolicyError');
   for (const m of ['terminalExcuseAbsence', 'terminalMarkPickedUp', 'terminalCancelClass',
                    'terminalUncancelClass', 'terminalReportCard', 'terminalTranscript']) {

@@ -845,6 +845,9 @@ week; worth assuming any hand-built query stub has it until proven otherwise.
 **Not mine, still red:** `tests/assessment-tools-placement.test.js` (already
 noted 2026-09-11) and `tests/worship-team.test.js`. Both fail with my changes
 stashed, both belong to the Worship/Band work.
+
+---
+
 ## 2026-09-14 — Luke's Claude (the backend repo is reachable)
 
 **Schema work has somewhere to go now.** Jordan granted access to
@@ -866,3 +869,55 @@ each migration's header comment and must be regenerated in the same commit
 
 Noticed on the way through: that map was 16 migrations out of date before today's commit,
 so anyone who trusted it this month was reading a stale picture. It is current now.
+
+---
+
+## 2026-09-15 — Jordan's Claude (Riven: classes closed for the year)
+
+**Riven kept offering classes that stopped running in June.** Jordan spotted it
+looking over the day's classes; it went a long way past that one screen.
+
+Closing a class for the year sets its status and **nothing else**. It does not
+archive the enrolments and it does not remove its timetable rows. So a closed
+class still reads as enrolled and still reads as meeting on a Tuesday, and
+every list that answered "what is happening" believed it. Measured against
+live data before the fix: 62 closed classes, 49 still carrying timetable rows,
+22 of them "meeting" on the day I looked, and 356 active enrolments inside
+them. One child's answer to "what classes is he in" was forty, twenty-seven of
+them closed.
+
+There is now one shared rule — `_rivenClassIsOpen(row)` — and the surfaces that
+answer "now" all ask it:
+
+* the briefing (`_rivenMyClassRows`), which is what put closed registers under
+  **Attendance not yet taken today** every day, for ever, since a closed class
+  can never have its attendance taken and so could never leave the list
+* a student's classes, single and multi — the closed ones are counted in a
+  footnote rather than silently dropped, and "is he in X" now distinguishes
+  "no" from "X is closed for the year, he was in it"
+* "mark him absent in all his classes", and the cohort fan-out — both were
+  writing today's register into last year's classes
+* ranking my classes by grade, the note class-picker, chat entity links, and
+  the same-name sibling expansion (last year's "Math" turned a single live
+  match into a picker)
+
+**Writes at a closed class are refused**, not silently applied — attendance,
+cancel, un-cancel. The message says to reopen it first.
+
+**Which matters, because reopen never worked.** It tested `is_active`, the
+soft-DELETE flag, and the class cache only ever holds rows where that is true —
+so every "reopen chess" answered *"Chess is already open"* and wrote nothing.
+It now moves the same flag closing moves, and brings the roster back the way
+the Reopen Class button does (the old confirmation promised the opposite, which
+sent teachers off to re-enrol students who were about to reappear anyway). Undo
+restores each enrolment to the state it was actually in — archived and removed
+are different things, and one of them means somebody took that child off on
+purpose.
+
+Both fixes were checked by putting the bug back and watching the new
+assertions fail. `tests/riven-scope.test.js` owns the closed-class rule since
+that is where "my classes" is decided.
+
+**Not mine, still red:** `tests/assessment-tools-placement.test.js` (noted
+2026-09-11) and `tests/worship-team.test.js` — both fail with my changes
+stashed, both from the Worship/Band work.

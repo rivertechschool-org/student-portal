@@ -48837,7 +48837,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-14·a';
+      const RIVEN_BUILD = '2026-09-15·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -49070,7 +49070,9 @@
         map[key] = { type, id };
       };
       (this._terminalAllStudents || []).forEach(s => add(s.full_name, 'student', s.id));
-      (this._terminalAllClasses || []).forEach(c => add(c.name, 'class', c.id));
+      // A closed class name still linkifies if it is written out, but it is
+      // not offered as though the class were running.
+      (this._terminalAllClasses || []).forEach(c => { if (this._rivenClassIsOpen(c)) add(c.name, 'class', c.id); });
       const keys = Object.keys(map).sort((a, b) => b.length - a.length);
       keys.forEach(k => {
         // word-boundaries only where the name starts/ends with a word char
@@ -49406,6 +49408,33 @@
         console.warn('Student groups unavailable, continuing without them:', err);
         this._terminalAllGroups = [];
       }
+    }
+
+    // Is this class part of the school as it runs TODAY?
+    //
+    // Two different flags, and they are not the same thing:
+    //   status 'closed' - closed for the year. Grades and history stay
+    //     readable; it is simply not running any more.
+    //   is_active false - soft-DELETED. Lives in Deleted Classes and is
+    //     already excluded at load time.
+    //
+    // closeClassForYear only sets status. It leaves the enrolments active and
+    // the timetable rows in place, so a closed class still looks enrolled and
+    // still looks like it meets on Tuesdays. Every list that answers "what is
+    // happening" has to ask this question itself.
+    _rivenClassIsOpen(classRow) {
+      return !!classRow && classRow.is_active !== false && classRow.status !== 'closed';
+    }
+
+    // Refuse a write aimed at a class that is closed for the year, and say how
+    // to undo that. Attendance, cancellations and the rest all describe a day
+    // that is happening; a class closed for the year is not having one.
+    _rivenRefuseIfClosed(classRow, what) {
+      if (this._rivenClassIsOpen(classRow)) return false;
+      this.terminalPrintError(
+        `${classRow.name} is closed for the year, so I can't ${what}. ` +
+        `Say "reopen ${classRow.name}" first if it is running again.`);
+      return true;
     }
 
     // Permission mirror of the portal UI / RLS: admin can manage any class;
@@ -58038,6 +58067,11 @@
       }
     }
 
+    // "What classes is he in?" answered with forty, twenty-seven of them
+    // closed for the year - because closing a class leaves its enrolments
+    // active, so the enrolment table alone says he is still in all of them.
+    // The classes he is IN are the ones still running; the rest are history,
+    // counted at the bottom so the drop is visible rather than silent.
     async terminalShowEnrollments(student, entities = null) {
       const { data: enr, error } = await this.auth.supabase
         .from('class_enrollments')
@@ -58045,28 +58079,41 @@
         .eq('student_id', student.id)
         .eq('status', 'active');
       if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
-      const classIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
+      const allIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
       // Membership question ("is jordan in chess?") deserves a direct answer
       const cmName = entities?.classMatch?.name || null;
-      if (!classIds.length) {
-        const lead = cmName ? `❌ No — ${this.escapeHtml(student.full_name)} isn't in <b>${this.escapeHtml(cmName)}</b>. ` : '';
-        this._showRivenMessage(`${lead}${this.escapeHtml(student.full_name)} isn't enrolled in any classes right now. Enrollment is managed in the <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('classes')">Classes tab</span>.`, true);
+      const { data: allRows } = allIds.length
+        ? await this.auth.supabase.from('classes').select('id, name, subject, status, is_active').in('id', allIds)
+        : { data: [] };
+      const classes = (allRows || []).filter(c => this._rivenClassIsOpen(c));
+      const closed = (allRows || []).filter(c => !this._rivenClassIsOpen(c));
+      const closedHit = cmName && closed.find(c => (c.name || '').toLowerCase() === cmName.toLowerCase());
+      const closedNote = closed.length
+        ? `<div style="color: var(--muted); font-size: 12px; margin-top: 8px;">Not counting ${closed.length} class${closed.length === 1 ? '' : 'es'} closed for the year.</div>`
+        : '';
+      if (!classes.length) {
+        // "Closed, and they were in it" is a different answer from "no" - one
+        // sends you to enrol them, the other to reopen the class.
+        const lead = closedHit
+          ? `<b>${this.escapeHtml(closedHit.name)}</b> is closed for the year — ${this.escapeHtml(student.full_name)} was in it. `
+          : (cmName ? `❌ No — ${this.escapeHtml(student.full_name)} isn't in <b>${this.escapeHtml(cmName)}</b>. ` : '');
+        this._showRivenMessage(`${lead}${this.escapeHtml(student.full_name)} isn't enrolled in any classes that are still running.${closed.length && !closedHit ? ` ${closed.length} closed class${closed.length === 1 ? '' : 'es'} still list${closed.length === 1 ? 's' : ''} them.` : ''} Enrollment is managed in the <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('classes')">Classes tab</span>.`, true);
         return;
       }
-      const { data: classes } = await this.auth.supabase
-        .from('classes').select('id, name, subject').in('id', classIds);
-      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${this.escapeHtml(student.full_name)} — ${classIds.length} class${classIds.length === 1 ? '' : 'es'}</div>`;
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${this.escapeHtml(student.full_name)} — ${classes.length} class${classes.length === 1 ? '' : 'es'}</div>`;
       if (cmName) {
-        const hit = (classes || []).find(c => (c.name || '').toLowerCase() === cmName.toLowerCase());
+        const hit = classes.find(c => (c.name || '').toLowerCase() === cmName.toLowerCase());
         const verdict = hit
           ? `✅ Yes — ${this.escapeHtml(student.full_name)} is in <b>${this.escapeHtml(hit.name)}</b>.`
-          : `❌ No — ${this.escapeHtml(student.full_name)} isn't in <b>${this.escapeHtml(cmName)}</b>. Here's where they are:`;
+          : closedHit
+            ? `<b>${this.escapeHtml(closedHit.name)}</b> is closed for the year — ${this.escapeHtml(student.full_name)} was in it. Here's where they are now:`
+            : `❌ No — ${this.escapeHtml(student.full_name)} isn't in <b>${this.escapeHtml(cmName)}</b>. Here's where they are:`;
         html = `<div style="margin-bottom: 8px;">${verdict}</div>` + html;
       }
-      (classes || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(c => {
+      classes.sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(c => {
         html += `<div style="padding: 5px 10px; margin: 3px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed class')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
       });
-      this._showRivenMessage(html, true);
+      this._showRivenMessage(html + closedNote, true);
     }
 
     async terminalShowEnrollmentsMulti(students, entities = null) {
@@ -58075,14 +58122,20 @@
         const { data: enr, error } = await this.auth.supabase
           .from('class_enrollments').select('class_id').eq('student_id', student.id).eq('status', 'active');
         if (error) { this.terminalPrintError('Could not read enrollments for ' + student.full_name); continue; }
-        const classIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
+        const allIds = [...new Set((enr || []).map(e => e.class_id).filter(Boolean))];
+        // Same rule as the single-student answer: closed for the year is not
+        // a class they are in.
+        const { data: allRows } = allIds.length
+          ? await this.auth.supabase.from('classes').select('id, name, subject, status, is_active').in('id', allIds)
+          : { data: [] };
+        const classIds = (allRows || []).filter(c => this._rivenClassIsOpen(c));
         html += `<div style="font-weight: 600; color: var(--accent); margin: ${html ? '14px' : '2px'} 0 6px;">
           👤 ${this.escapeHtml(student.full_name)} — ${classIds.length} class${classIds.length === 1 ? '' : 'es'}
         </div>`;
         if (!classIds.length) {
-          html += `<div style="font-size: 13px; color: var(--muted); padding: 4px 8px;">Not enrolled in any classes.</div>`;
+          html += `<div style="font-size: 13px; color: var(--muted); padding: 4px 8px;">Not enrolled in any classes that are still running.</div>`;
         } else {
-          const { data: classes } = await this.auth.supabase.from('classes').select('id, name, subject').in('id', classIds);
+          const classes = classIds;
           (classes || []).sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(c => {
             html += `<div style="padding: 4px 10px; margin: 2px 0; background: rgba(255,255,255,0.03); border-radius: 4px;">${this.escapeHtml(c.name || 'Unnamed')}${c.subject ? ` <span style="color: var(--muted); font-size: 11px;">· ${this.escapeHtml(c.subject)}</span>` : ''}</div>`;
           });
@@ -59907,26 +59960,49 @@
       if (!row) { this.terminalPrintError('Which class? Try "reopen chess".'); return; }
 
       const esc = (t) => this.escapeHtml(String(t));
-      if (row.is_active) {
+      // status, not is_active. Closing for the year sets status='closed';
+      // is_active is the soft-DELETE flag, and _loadTerminalClasses only ever
+      // loads rows where it is true - so testing it here meant every reopen
+      // answered "already open" and nothing was ever reopened.
+      if (this._rivenClassIsOpen(row)) {
         this._showRivenMessage(`<b>${esc(row.name)}</b> is already open.`, true);
         return;
       }
 
       this._requestConfirmation(
-        `Reopen <b>${esc(row.name)}</b>?` +
-        `<br><span style="font-size: 12px;">It comes back into the active lists. Enrolments archived when ` +
-        `it closed are NOT restored \u2014 enrol students again.</span>`,
+        `Reopen <b>${esc(row.name)}</b> for the year?` +
+        `<br><span style="font-size: 12px;">It comes back into the active lists, and students archived or ` +
+        `removed when it closed are enrolled again \u2014 the same as the Reopen Class button.</span>`,
         async () => {
-          const { error } = await this.auth.supabase.from('classes')
-            .update({ is_active: true }).eq('id', row.id);
+          const sb = this.auth.supabase;
+          const { error } = await sb.from('classes')
+            .update({ status: 'active' }).eq('id', row.id);
           if (error) throw this._rivenPolicyError(error);
+          // Mirrors app.reopenClass: the roster comes back with the class.
+          // Recorded per id so the undo puts each student back exactly as
+          // they were rather than archiving the whole register.
+          const { data: revived } = await sb.from('class_enrollments')
+            .select('id, status').eq('class_id', row.id).in('status', ['archived', 'removed']);
+          const before = revived || [];
+          if (before.length) {
+            await sb.from('class_enrollments')
+              .update({ status: 'active', updated_at: new Date().toISOString() })
+              .in('id', before.map(e => e.id));
+          }
           this._pushUndo(`reopening ${row.name}`, async () => {
-            const { error: r } = await this.auth.supabase.from('classes')
-              .update({ is_active: false }).eq('id', row.id);
+            const { error: r } = await sb.from('classes')
+              .update({ status: 'closed' }).eq('id', row.id);
             if (r) throw r;
+            for (const e of before) {
+              await sb.from('class_enrollments')
+                .update({ status: e.status, updated_at: new Date().toISOString() }).eq('id', e.id);
+            }
+            row.status = 'closed';
           });
-          row.is_active = true;
-          this._naturalSuccess([`${row.name} is open again. Its old enrolments are still archived.`]);
+          row.status = 'active';
+          this._naturalSuccess([
+            `${row.name} is open again${before.length ? `, with ${before.length} student${before.length === 1 ? '' : 's'} back on its roster` : ''}.`
+          ]);
         });
     }
 
@@ -60121,6 +60197,7 @@
         this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't cancel it.`);
         return;
       }
+      if (this._rivenRefuseIfClosed(row, 'cancel a session for it')) return;
 
       const raw = entities.original || entities._rawInput || '';
       const date = entities.sinceDate || this._rivenPhraseToDate?.(raw) || this._localDateStr(new Date());
@@ -60165,6 +60242,7 @@
         this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't change it.`);
         return;
       }
+      if (this._rivenRefuseIfClosed(row, 'put a session back on')) return;
 
       const raw = entities.original || entities._rawInput || '';
       const date = entities.sinceDate || this._rivenPhraseToDate?.(raw) || this._localDateStr(new Date());
@@ -61081,9 +61159,17 @@
           .select('class_id').eq('student_id', student.id).eq('status', 'active');
         if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
         const ids = [...new Set((enr || []).map(e => e.class_id))];
-        const all = (this._terminalAllClasses || []).filter(c => ids.includes(c.id));
+        // Closed classes hold active enrolments too, and a register for a
+        // class that stopped meeting in June is not a mark anyone wants.
+        const enrolled = (this._terminalAllClasses || []).filter(c => ids.includes(c.id));
+        const all = enrolled.filter(c => this._rivenClassIsOpen(c));
         targets = all.filter(c => this._rivenCanManageClass(c, { attendance: true }));
-        if (all.length > targets.length) skippedNote = ` (skipping ${all.length - targets.length} class${all.length - targets.length === 1 ? '' : 'es'} you don't teach)`;
+        const notMine = all.length - targets.length;
+        const shut = enrolled.length - all.length;
+        const skips = [];
+        if (notMine) skips.push(`${notMine} you don't teach`);
+        if (shut) skips.push(`${shut} closed for the year`);
+        if (skips.length) skippedNote = ` (skipping ${skips.join(' and ')})`;
         if (!targets.length) {
           this.terminalPrintError(`${student.full_name} isn't in any class whose attendance you can mark — only the primary teacher (or an admin) can.`);
           return;
@@ -61104,6 +61190,7 @@
           this.terminalPrintError(`Only the primary teacher of ${row.name} (or an admin) can mark its attendance.`);
           return;
         }
+        if (this._rivenRefuseIfClosed(row, 'mark its attendance')) return;
         targets = [row];
       }
 
@@ -62082,7 +62169,7 @@
         if (!this._terminalAllClasses?.length) await this._loadTerminalClasses();
         const myId = this.userInfo?.user?.id;
         const myClasses = (this._terminalAllClasses || []).filter(c =>
-          c.is_active !== false && (c.teacher_id === myId || c.secondary_teacher_id === myId));
+          this._rivenClassIsOpen(c) && (c.teacher_id === myId || c.secondary_teacher_id === myId));
         if (!myClasses.length) {
           this._showRivenMessage(`You're not listed as the primary or secondary teacher of any active class.`, true);
           return;
@@ -62286,7 +62373,7 @@
         (enr || []).forEach(e => { (holds[e.class_id] = holds[e.class_id] || []).push(e.student_id); });
         const all = Object.entries(holds).map(([cid, sids]) => ({
           row: (this._terminalAllClasses || []).find(c => c.id === cid), studentIds: sids
-        })).filter(b => b.row);
+        })).filter(b => b.row && this._rivenClassIsOpen(b.row));
         // MINE, not "every class I am allowed to write to". An admin can write
         // to the whole school, so permission is the wrong filter here: "mark
         // attendance for lower ms" reached 16 classes across 8 teachers.
@@ -62441,8 +62528,13 @@
     // briefing opened with thirty-seven registers belonging to other teachers
     // and buried the two that were the admin's own. School-wide is still here,
     // it is just something you ask for - and only an admin gets it.
+    //
+    // Classes closed for the year are not mine to be briefed about. They keep
+    // their class_schedule rows, so "attendance not yet taken today" opened
+    // with 22 registers for classes that stopped meeting in June - every day,
+    // for ever, because a closed class can never have its attendance taken.
     _rivenMyClassRows({ school = false } = {}) {
-      const all = this._terminalAllClasses || [];
+      const all = (this._terminalAllClasses || []).filter(c => this._rivenClassIsOpen(c));
       if (school && this.userInfo?.profile?.user_type === 'admin') return all;
       const me = this.userInfo.user.id;
       return all.filter(c => c.teacher_id === me || c.secondary_teacher_id === me);
@@ -63901,6 +63993,9 @@
       if (!cm.pinned && !cm.qualified) {
         const names = new Set(candidates.map(c => (c.name || '').toLowerCase()));
         (this._terminalAllClasses || []).forEach(c => {
+          // Last year's "Math" is not one of the four Math classes on offer -
+          // pulling it in turns a single live match into a picker.
+          if (!this._rivenClassIsOpen(c)) return;
           if (names.has((c.name || '').toLowerCase()) && !candidates.find(x => x.id === c.id)) candidates.push(c);
         });
       }
@@ -64266,7 +64361,7 @@
           pickerClasses = ambiguousCandidates;
         } else {
           const myClasses = (this._terminalAllClasses || []).filter(c =>
-            c.is_active !== false && (c.teacher_id === myId || c.secondary_teacher_id === myId));
+            this._rivenClassIsOpen(c) && (c.teacher_id === myId || c.secondary_teacher_id === myId));
           const { data: enr } = await this.auth.supabase.from('class_enrollments')
             .select('class_id').eq('student_id', student.id).eq('status', 'active');
           const enrolledIds = new Set((enr || []).map(e => e.class_id));

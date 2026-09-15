@@ -73,7 +73,11 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g,
 // Frozen, and cloned per app below: the executor writes the new teacher back
 // onto the row it was given, so a shared fixture leaks the first test's
 // result into the second and the "already teaches it" case never fires.
-const CHESS = Object.freeze({ id: 'c1', name: 'Chess', teacher_id: 'dan', is_active: true });
+// status is what closing for the year sets. is_active is the soft-DELETE
+// flag, and a deleted class is filtered out at load time, so a class Riven can
+// see is always is_active true - which is exactly why testing is_active here
+// used to pass while proving nothing.
+const CHESS = Object.freeze({ id: 'c1', name: 'Chess', teacher_id: 'dan', is_active: true, status: 'active' });
 const STAFF = [
   { id: 'dan', first_name: 'Dan', last_name: 'Pike', email: 'dan@x.com', user_type: 'teacher' },
   { id: 'cait', first_name: 'Caitlin', last_name: 'Pennock', email: 'cait@x.com', user_type: 'teacher' },
@@ -83,7 +87,8 @@ const QUARTERS = [
   { id: 'q2', name: 'Quarter 2', is_current: false, is_archived: false, start_date: '2026-11-02', end_date: '2027-01-15' },
 ];
 
-function makeApp({ role = 'admin', classRow = { ...CHESS }, staff = STAFF, quarters = QUARTERS } = {}) {
+function makeApp({ role = 'admin', classRow = { ...CHESS }, staff = STAFF, quarters = QUARTERS,
+                  enrolments = [] } = {}) {
   const app = {
     said: [],
     errors: [],
@@ -110,12 +115,16 @@ function makeApp({ role = 'admin', classRow = { ...CHESS }, staff = STAFF, quart
           const q = {
             select() { return q; },
             eq(c, v) { q._eq = q._eq || {}; q._eq[c] = v; return q; },
-            in() { return q; },
+            // .in() has to be recorded, not swallowed: reviving a roster
+            // addresses the rows BY ID, and a stub that forgets which ids
+            // cannot tell "put these three back" from "update everything".
+            in(c, v) { q._in = q._in || {}; q._in[c] = v; return q; },
             order() { return q; },
             update(patch) { q._patch = patch; return q; },
             then(res, rej) {
-              if (q._patch) { app.updates.push({ table, patch: q._patch, where: q._eq }); return Promise.resolve({ error: null }).then(res, rej); }
-              const data = table === 'quarters' ? quarters : staff;
+              if (q._patch) { app.updates.push({ table, patch: q._patch, where: { ...(q._eq || {}), ...(q._in || {}) } }); return Promise.resolve({ error: null }).then(res, rej); }
+              const data = table === 'quarters' ? quarters
+                : table === 'class_enrollments' ? enrolments : staff;
               return Promise.resolve({ data, error: null }).then(res, rej);
             },
           };
@@ -125,6 +134,7 @@ function makeApp({ role = 'admin', classRow = { ...CHESS }, staff = STAFF, quart
     },
   };
   app._rivenRequireAdmin = extract('_rivenRequireAdmin');
+  app._rivenClassIsOpen = extract('_rivenClassIsOpen');
   app._rivenPolicyError = extract('_rivenPolicyError');
   app._rivenMatchQuarter = extract('_rivenMatchQuarter');
   for (const m of ['terminalSetClassTeacher', 'terminalReopenClass', 'terminalSetCurrentQuarter']) {
@@ -209,16 +219,46 @@ const said = (text) => ({ original: text, _rawInput: text });
   console.log('\n== reopening ==\n');
 
   {
-    const app = makeApp({ classRow: { ...CHESS, is_active: false } });
+    // THE BUG THIS BLOCK EXISTS FOR. Reopen used to read row.is_active, and
+    // _loadTerminalClasses only ever loads rows where that is true - so every
+    // reopen of a genuinely closed class answered "already open" and wrote
+    // nothing. The one command that undoes closing could not run at all.
+    const app = makeApp({
+      classRow: { ...CHESS, is_active: true, status: 'closed' },
+      enrolments: [{ id: 'e1', status: 'archived' }, { id: 'e2', status: 'removed' }],
+    });
     await app.terminalReopenClass.call(app, said('reopen chess'));
-    check('the class is reopened', app.updates[0].patch, { is_active: true });
-    // The asymmetry: closing archived the enrolments, reopening does not undo that.
-    ok('the confirmation says enrolments are not restored', /NOT restored/.test(app.confirmed));
-    ok('  and the answer repeats it', /still archived/.test(app.ok[0]));
+    const classUpdate = app.updates.find(u => u.table === 'classes');
+    check('a class closed for the year is reopened', classUpdate && classUpdate.patch, { status: 'active' });
+
+    // Reopening brings the roster back, the same as the Reopen Class button.
+    // The old wording promised the opposite, which sent teachers off to
+    // re-enrol students who were about to reappear on their own.
+    const enrUpdate = app.updates.find(u => u.table === 'class_enrollments');
+    ok('the roster comes back with it', !!enrUpdate && enrUpdate.patch.status === 'active');
+    check('  addressed by id, not class-wide', enrUpdate.where.id, ['e1', 'e2']);
+    ok('the confirmation says the students return', /enrolled again/.test(app.confirmed));
+    ok('  and the answer counts them', /2 students back/.test(app.ok[0]));
   }
 
   {
-    const app = makeApp({ classRow: { ...CHESS, is_active: true } });
+    // Undo has to put each student back the way they were. 'archived' and
+    // 'removed' are different states and one of them means somebody took the
+    // child off the register on purpose.
+    const app = makeApp({
+      classRow: { ...CHESS, is_active: true, status: 'closed' },
+      enrolments: [{ id: 'e1', status: 'archived' }, { id: 'e2', status: 'removed' }],
+    });
+    await app.terminalReopenClass.call(app, said('reopen chess'));
+    app.updates.length = 0;
+    await app.undos[0].fn();
+    check('undo closes it again', app.updates[0].patch, { status: 'closed' });
+    check('  and restores archived as archived', app.updates[1].patch.status, 'archived');
+    check('  and removed as removed', app.updates[2].patch.status, 'removed');
+  }
+
+  {
+    const app = makeApp({ classRow: { ...CHESS, status: 'active' } });
     await app.terminalReopenClass.call(app, said('reopen chess'));
     check('an open class is left alone', app.updates, []);
     ok('  and says so', /already open/.test(app.said[0]));
