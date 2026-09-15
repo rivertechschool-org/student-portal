@@ -3246,8 +3246,78 @@
               // Game iframe requested to close (e.g. X button in Mathspire)
               this.closeModal('game-player');
               break;
+            // The arcade games (Mathspire, Mathletics, Wasteland...) speak the root
+            // portal's protocol. Homework launches them from THIS page, which used to
+            // drop these three messages on the floor: BKT never seeded, nothing saved.
+            case 'REQUEST_SKILL_DATA':
+              await this.sendSkillDataToGame(event.data.subject, event.source);
+              break;
+            case 'GAME_SESSION_COMPLETE':
+              await this.handleGameSessionComplete(event.data);
+              break;
           }
         });
+      }
+
+      // Answer a game's REQUEST_SKILL_DATA with this student's saved progress so its
+      // Bayesian (BKT) estimates start from real evidence instead of a cold prior.
+      async sendSkillDataToGame(subject, source) {
+        if (!source || typeof source.postMessage !== 'function') return;
+        const progress = {};
+        try {
+          const userId = this.userInfo?.user?.id;
+          if (userId && this.userInfo?.profile?.user_type === 'student') {
+            const { data, error } = await this.supabaseQuery(() =>
+              this.auth.supabase
+                .from('skill_progress')
+                .select('skill_name, state, mastery_score, p_mastered, last_evidence_at')
+                .eq('user_id', userId)
+                .eq('subject', subject || 'Math')
+            );
+            if (error) throw error;
+            for (const row of data || []) {
+              progress[row.skill_name] = {
+                state: row.state,
+                mastery_score: row.mastery_score || 0,
+                p_mastered: typeof row.p_mastered === 'number' ? row.p_mastered : undefined,
+                last_evidence_at: row.last_evidence_at || undefined
+              };
+            }
+          }
+        } catch (e) {
+          console.error('Failed to load skill data for game:', e);
+        }
+        source.postMessage({ type: 'SKILL_DATA_RESPONSE', subject: subject || 'Math', progress }, window.location.origin);
+      }
+
+      // A game finished a run: persist its per-skill BKT updates the same way the
+      // Dojo session handler does, then the legacy per-skill scores for anything BKT
+      // did not cover.
+      async handleGameSessionComplete(data) {
+        const { gameId, skills = [], bktUpdates = [] } = data;
+        const subject = data.subject || 'Math';
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+        try {
+          const covered = new Set();
+          for (const bu of bktUpdates) {
+            if (!bu || !bu.skill || typeof bu.p_mastered !== 'number') continue;
+            await this.upsertSkillProgress(
+              bu.skill, subject,
+              Math.round(bu.p_mastered * 100), bu.derivedState || 'in_progress',
+              bu.p_mastered, bu.last_evidence_at
+            );
+            covered.add(bu.skill);
+          }
+          for (const sk of skills) {
+            if (!sk || !sk.name || covered.has(sk.name)) continue;
+            const score = Math.max(0, Math.min(100, Math.round(sk.score || 0)));
+            await this.upsertSkillProgress(sk.name, subject, score, score >= 80 ? 'activated' : 'in_progress');
+          }
+          console.log(`Saved ${covered.size} BKT updates and ${skills.length} skill scores from ${gameId}`);
+          this.showNotification(`${gameId === 'mathspire' ? 'Mathspire' : 'Game'} session saved: ${covered.size + skills.length} skills updated.`, 'success');
+        } catch (e) {
+          console.error('Error handling game session:', e);
+        }
       }
 
       // Handle real-time skill progress updates from Math Dojo / English Lyceum
