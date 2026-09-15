@@ -60,6 +60,7 @@ const helpers = [
   lines[lineOf(/^const cap = /)],
   lines[lineOf(/^const gcd = /)],
   lines[lineOf(/^const simplifyFrac = /)],
+  fnSource('tallyMarks'),
   fnSource('generateDistractors'),
   fnSource('backfillOptions'),
   fnSource('answerValue'),
