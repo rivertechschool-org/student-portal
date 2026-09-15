@@ -3151,7 +3151,13 @@
                 this.calendarMonth = now.getMonth();
                 this.calendarEvents = [];
                 this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, school_events: true, attendance: true, bookings: true };
-                this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
+                this.schoolDaysLeft = null;
+                // The countdown spans the whole year, so it loads once here rather
+                // than with every month the calendar navigates to.
+                Promise.all([
+                    this.loadCalendarEvents(this.calendarYear, this.calendarMonth),
+                    this.loadSchoolDaysLeft()
+                ]).then(() => {
                     this.renderCalendar(this.calendarYear, this.calendarMonth);
                 });
             }
@@ -3456,6 +3462,7 @@
                     : '';
 
                 mount.innerHTML = `
+                    ${this.renderSchoolCountdown()}
                     ${manageEventsLink}
                     <div class="calendar-container card" style="margin-top: 20px;">
                         <div class="calendar-header">
@@ -3470,6 +3477,170 @@
                         <div class="calendar-grid">${cellsHTML}</div>
                     </div>
                 `;
+            }
+
+            // ── Days of school left ───────────────────────────────────
+            //
+            // Every weekday from `startStr` to `endStr` inclusive that is not a
+            // closure. Weekends come out because the school runs Mon-Fri, and a
+            // half day is still a day of school - the same rule the calendar grid
+            // uses to decide whether to shade a cell as no-school.
+            //
+            // Dates are anchored at noon before stepping: at midnight a
+            // daylight-saving spring-forward lands on the same calendar day twice.
+            countSchoolDays(startStr, endStr, noSchoolDates) {
+                if (!startStr || !endStr || startStr > endStr) return 0;
+                const no = noSchoolDates || new Set();
+                const d = new Date(startStr + 'T12:00:00');
+                const end = new Date(endStr + 'T12:00:00');
+                if (isNaN(d) || isNaN(end)) return 0;
+                let n = 0;
+                // The bound is a guard, not a limit: school_events has no
+                // constraints, so a mistyped end_date must not spin the page.
+                for (let i = 0; d <= end && i < 1000; i++) {
+                    const dow = d.getDay();
+                    if (dow !== 0 && dow !== 6 && !no.has(this.dateKey(d))) n++;
+                    d.setDate(d.getDate() + 1);
+                }
+                return n;
+            }
+
+            dateKey(d) {
+                return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            }
+
+            // Every date a school_events row closes the school on, one entry per
+            // day so multi-day breaks are counted properly.
+            expandNoSchoolDates(events) {
+                const out = new Set();
+                (events || []).forEach(ev => {
+                    if (!ev || !ev.start_date) return;
+                    if (ev.event_type !== 'holiday' && ev.event_type !== 'closure') return;
+                    const d = new Date(ev.start_date + 'T12:00:00');
+                    const end = new Date((ev.end_date || ev.start_date) + 'T12:00:00');
+                    if (isNaN(d) || isNaN(end) || end < d) { out.add(ev.start_date); return; }
+                    for (let i = 0; d <= end && i < 400; i++) {
+                        out.add(this.dateKey(d));
+                        d.setDate(d.getDate() + 1);
+                    }
+                });
+                return out;
+            }
+
+            // First and last day of the school year in progress. pickSchoolYearStart
+            // finds the start; the end is the latest quarter end that shares its
+            // school_year. Null when the quarters table cannot answer - the card is
+            // then left out rather than shown with a guessed date.
+            resolveSchoolYearSpan(quarters, todayStr) {
+                const rows = (quarters || []).filter(q => q && q.start_date);
+                const start = this.pickSchoolYearStart(rows, todayStr);
+                if (!start) return null;
+
+                const year = rows.find(q => q.start_date === start)?.school_year;
+                const [sy, sm, sd] = start.split('-');
+                const yearAfter = `${Number(sy) + 1}-${sm}-${sd}`;
+                const inYear = year
+                    ? rows.filter(q => q.school_year === year)
+                    : rows.filter(q => q.start_date >= start && q.start_date < yearAfter);
+
+                const ends = inYear.map(q => q.end_date || q.start_date).filter(Boolean).sort();
+                const end = ends[ends.length - 1];
+                return end && end >= start ? { start, end } : null;
+            }
+
+            // The whole calculation, with no database and no DOM in it, so it can be
+            // checked against a known year. Returns null when the dates are unknown.
+            schoolYearCountdown(todayStr, quarters, schoolEvents) {
+                const span = this.resolveSchoolYearSpan(quarters, todayStr);
+                if (!span) return null;
+
+                const noSchool = this.expandNoSchoolDates(schoolEvents);
+                const total = this.countSchoolDays(span.start, span.end, noSchool);
+
+                if (todayStr > span.end) {
+                    return { state: 'ended', left: 0, done: total, total, firstDay: span.start, lastDay: span.end, todayIsSchoolDay: false };
+                }
+                const from = todayStr < span.start ? span.start : todayStr;
+                const left = this.countSchoolDays(from, span.end, noSchool);
+                const dow = new Date(todayStr + 'T12:00:00').getDay();
+                return {
+                    state: todayStr < span.start ? 'not-started' : 'in-progress',
+                    left,
+                    done: total - left,
+                    total,
+                    firstDay: span.start,
+                    lastDay: span.end,
+                    todayIsSchoolDay: todayStr >= span.start && dow !== 0 && dow !== 6 && !noSchool.has(todayStr)
+                };
+            }
+
+            async loadSchoolDaysLeft() {
+                this.schoolDaysLeft = null;
+                try {
+                    const sb = this.auth.supabase;
+                    // school_events is a small table and the rows needed span the
+                    // whole year, so it is read whole rather than through an
+                    // overlap filter that has to special-case a null end_date.
+                    const [quartersRes, eventsRes] = await Promise.all([
+                        sb.from('quarters').select('name, start_date, end_date, school_year, is_current'),
+                        sb.from('school_events').select('event_type, start_date, end_date')
+                    ]);
+                    this.schoolDaysLeft = this.schoolYearCountdown(
+                        this.localTodayStr(), quartersRes.data, eventsRes.data);
+                } catch (err) {
+                    console.error('Error loading days of school left:', err);
+                }
+            }
+
+            renderSchoolCountdown() {
+                const s = this.schoolDaysLeft;
+                if (!s) return '';
+
+                const pretty = (str) => {
+                    const d = new Date(str + 'T12:00:00');
+                    if (isNaN(d)) return str;
+                    return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+                };
+
+                if (s.state === 'ended') {
+                    return `
+                    <div class="card" style="margin-top: 20px;">
+                        <h3 style="margin:0 0 4px;">🎉 School's out</h3>
+                        <div style="color:var(--muted);font-size:13px;">
+                            All ${s.total} school days are done. The year ended ${this.escapeHtml(pretty(s.lastDay))}.
+                        </div>
+                    </div>`;
+                }
+
+                const pct = s.total > 0 ? Math.round((s.done / s.total) * 100) : 0;
+                const noteText = s.state === 'not-started'
+                    ? `Starts ${pretty(s.firstDay)}`
+                    : s.todayIsSchoolDay
+                        ? `${s.done} of ${s.total} done · today counts`
+                        : `${s.done} of ${s.total} done · no school today`;
+
+                return `
+                <div class="card" style="margin-top: 20px;">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+                        <div>
+                            <h3 style="margin:0 0 2px;">🎓 Days of School Left</h3>
+                            <div style="color:var(--muted);font-size:13px;">Weekends and holidays already taken out</div>
+                        </div>
+                        <div style="text-align:right;min-width:110px;">
+                            <div style="font-size:2.4em;font-weight:700;line-height:1;color:var(--accent);">${s.left}</div>
+                            <div style="color:var(--muted);font-size:12px;">school day${s.left === 1 ? '' : 's'} left</div>
+                        </div>
+                    </div>
+                    <div style="margin-top:12px;height:8px;background:var(--border);border-radius:999px;overflow:hidden;"
+                         role="progressbar" aria-valuenow="${s.done}" aria-valuemin="0" aria-valuemax="${s.total}"
+                         aria-label="School year progress">
+                        <div style="width:${pct}%;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));"></div>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;gap:12px;margin-top:6px;color:var(--muted);font-size:12px;flex-wrap:wrap;">
+                        <span>${this.escapeHtml(noteText)}</span>
+                        <span>Last day ${this.escapeHtml(pretty(s.lastDay))}</span>
+                    </div>
+                </div>`;
             }
 
             navigateCalendar(dir) {
