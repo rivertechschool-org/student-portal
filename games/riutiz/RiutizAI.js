@@ -5,7 +5,6 @@ class RiutizAI {
     constructor(game, playerNum = 2) {
         this.game = game;
         this.playerNum = playerNum;
-        this.difficulty = 'normal'; // 'easy', 'normal', 'hard'
         this.thinkingDelay = 800;
         this.actionDelay = 1000;
         this.isRunning = false;
@@ -122,22 +121,6 @@ class RiutizAI {
     }
 
     /**
-     * Get a random quote from current personality
-     */
-    getQuote() {
-        if (!this.personality?.quotes) return null;
-        return this.personality.quotes[Math.floor(Math.random() * this.personality.quotes.length)];
-    }
-
-    /**
-     * Set AI difficulty
-     */
-    setDifficulty(level) {
-        this.difficulty = level;
-        this.thinkingDelay = level === 'easy' ? 1200 : level === 'hard' ? 400 : 800;
-    }
-
-    /**
      * Execute AI turn
      */
     async takeTurn() {
@@ -176,6 +159,14 @@ class RiutizAI {
 
         } catch (error) {
             console.error('AI error:', error);
+            // An engine exception used to strand the game on the AI's turn: the human's
+            // buttons are gated on it being their turn, so nothing could ever move again.
+            if (!this.game.state.gameOver && this.game.state.currentPlayer === this.playerNum) {
+                this.game.state.combatStep = null;
+                this.game.state.attackers = [];
+                this.game.state.blockers = {};
+                this.game.endTurn(this.playerNum);
+            }
         }
 
         this.isRunning = false;
@@ -204,6 +195,7 @@ class RiutizAI {
         if (this.personality?.name === 'Chaotic' && Math.random() > 0.7) {
             console.log('AI (Chaotic): Letting attacks through for fun!');
             await this.delay(this.actionDelay);
+            this.game.confirmBlockers();
             return;
         }
 
@@ -227,6 +219,12 @@ class RiutizAI {
         }
 
         await this.delay(this.actionDelay);
+
+        // The defender resolves combat. The human attacker used to be handed a
+        // "Done Blocking" button (and could even assign the AI's blockers) instead.
+        if (this.game.state.combatStep === 'declare-blockers') {
+            this.game.confirmBlockers();
+        }
     }
 
     /**
@@ -281,7 +279,7 @@ class RiutizAI {
             return;
         }
 
-        let resCard = null;
+        let resCard;
 
         // Personality affects resource choice
         if (this.personality?.preferCreatures) {
@@ -390,8 +388,8 @@ class RiutizAI {
 
             if (this.personality?.name === 'Aggressive') {
                 // Prefer creatures with high dice
-                if (a.dice) aValue += parseInt(a.dice) || 0;
-                if (b.dice) bValue += parseInt(b.dice) || 0;
+                if (a.dice) aValue += this.estimateRoll(a.dice);
+                if (b.dice) bValue += this.estimateRoll(b.dice);
             }
 
             // Chaotic shuffles a bit
@@ -513,7 +511,9 @@ class RiutizAI {
         // Control only attacks when significantly ahead
         if (this.personality?.name === 'Control') {
             const myPoints = this.game.state.players[this.playerNum].points;
-            const oppPoints = this.game.state.players[this.game.getOpponent(this.playerNum)].points;
+            // getOpponent() returns the player state itself; indexing players[] with it
+            // was undefined, and this branch threw every time the AI was behind on points
+            const oppPoints = this.game.getOpponent(this.playerNum).points;
 
             if (myPoints < oppPoints && shouldAttack.length < attackers.length) {
                 // Only send safe attackers
@@ -540,7 +540,7 @@ class RiutizAI {
         // Creature stats
         if (card.type?.includes('Pupil')) {
             value += (card.currentEndurance || card.endurance) / 2;
-            value += card.ad / 2;
+            value += (parseFloat(card.ad) || 0) / 2;   // ad is a string ("8x2", "?") for ~50 cards
         }
 
         // Keywords
@@ -587,7 +587,7 @@ class RiutizAI {
      * Utility delay function
      */
     delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise(resolve => { setTimeout(resolve, ms); });
     }
 }
 

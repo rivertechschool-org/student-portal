@@ -7,6 +7,7 @@ class RiutizUI {
         this.localPlayer = options.localPlayer || 1; // Which player we're viewing as
         this.onCardClick = options.onCardClick || (() => {});
         this.onCardLongPress = options.onCardLongPress || (() => {});
+        this.onConcede = options.onConcede || null;   // online matches: forfeit
 
         this.longPressTimer = null;
         this.didLongPress = false;
@@ -118,6 +119,13 @@ class RiutizUI {
     createHoverPreviewElement() {
         if (this.hoverPreviewElement) return;
 
+        // One per page, not one per game: every rematch used to append another
+        const existing = document.getElementById('game-hover-preview');
+        if (existing) {
+            this.hoverPreviewElement = existing;
+            return;
+        }
+
         this.hoverPreviewElement = document.createElement('div');
         this.hoverPreviewElement.id = 'game-hover-preview';
         this.hoverPreviewElement.style.cssText = `
@@ -135,6 +143,10 @@ class RiutizUI {
      * Set up drop zones for drag and drop
      */
     setupDropZones() {
+        // The drop zones are static nodes that outlive the game: bind once
+        if (this.elements.yourField && this.elements.yourField.dataset.dropZonesBound) return;
+        if (this.elements.yourField) this.elements.yourField.dataset.dropZonesBound = '1';
+
         // Field drop zone
         if (this.elements.yourField) {
             this.elements.yourField.addEventListener('dragover', (e) => this.handleDragOver(e, 'field'));
@@ -403,10 +415,7 @@ class RiutizUI {
                 const isGrounded = card.ability?.toLowerCase().includes('grounded');
                 targetable = isPupil && !card.hasGettingBearings && (!card.isSpent || card.ability?.toLowerCase().includes('relentless')) && !isGrounded;
             } else if (isYours && state.combatStep === 'declare-blockers' && !isYourTurn) {
-                targetable = isPupil && !card.isSpent;
-            } else if (!isYours && state.combatStep === 'declare-blockers' && isYourTurn) {
-                // Opponent's blockers can be clicked to assign
-                targetable = isPupil && !card.isSpent;
+                targetable = isPupil && !card.isSpent && !card.cannotBlock;
             }
 
             const isSelected = this.selectedFieldCard?.instanceId === card.instanceId;
@@ -437,7 +446,7 @@ class RiutizUI {
         }
 
         artifacts.forEach(card => {
-            const hasSpendAbility = card.ability?.toLowerCase().includes('spend:');
+            const hasSpendAbility = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
 
             const el = this.renderCard(card, {
                 small: true,
@@ -462,7 +471,7 @@ class RiutizUI {
             return;
         }
 
-        const hasSpendAbility = card.ability?.toLowerCase().includes('spend:');
+        const hasSpendAbility = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
         if (hasSpendAbility && !card.isSpent) {
             // Try to activate spend ability
             const result = this.game.activateAbility(this.localPlayer, card.instanceId);
@@ -696,7 +705,7 @@ class RiutizUI {
         const color = this.game.getPrimaryColor(card.cost);
         const c = this.getColor(color);
         const isPupil = card.type?.includes('Pupil');
-        const hasSpendAbility = card.ability?.toLowerCase().includes('spend:');
+        const hasSpendAbility = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
 
         let classes = 'card';
         if (small) classes += ' small';
@@ -769,11 +778,9 @@ class RiutizUI {
 
         // --- Mobile: Long press preview ---
         if (this.isTouchDevice) {
-            let touchStartTime = 0;
             let touchMoved = false;
 
             div.addEventListener('touchstart', (e) => {
-                touchStartTime = Date.now();
                 touchMoved = false;
                 this.didLongPress = false;
 
@@ -1248,14 +1255,16 @@ class RiutizUI {
         }
 
         if (state.combatStep === 'declare-blockers') {
+            // Only the defender assigns blockers, and only from its own pupils
+            if (isYourTurn || !isYours) return;
             const isPupil = card.type?.includes('Pupil');
             if (!isPupil || card.isSpent) return;
 
             // Find first unblocked attacker
             const unblockedAttacker = state.attackers.find(a => !state.blockers[a.instanceId]);
             if (unblockedAttacker) {
-                const defenderNum = isYourTurn ? (this.localPlayer === 1 ? 2 : 1) : this.localPlayer;
-                this.game.toggleBlocker(defenderNum, card.instanceId, unblockedAttacker.instanceId);
+                const result = this.game.toggleBlocker(this.localPlayer, card.instanceId, unblockedAttacker.instanceId);
+                if (!result.success) this.setMessage(result.error);
                 this.render();
             }
             return;
@@ -1270,7 +1279,7 @@ class RiutizUI {
                 this.selectedFieldCard = card;
                 this.selectedCard = null;
 
-                const hasSpend = card.ability?.toLowerCase().includes('spend:');
+                const hasSpend = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
                 const isPupil = card.type?.includes('Pupil');
                 const hasGettingBearings = card.hasGettingBearings && isPupil;
 
@@ -1310,7 +1319,7 @@ class RiutizUI {
         // Field card activation
         if (this.selectedFieldCard && state.phase === 'main' && isYourTurn && !state.combatStep) {
             const card = this.selectedFieldCard;
-            const hasSpend = card.ability?.toLowerCase().includes('spend:');
+            const hasSpend = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
             const isPupil = card.type?.includes('Pupil');
             const hasGettingBearings = card.hasGettingBearings && isPupil;
 
@@ -1381,8 +1390,8 @@ class RiutizUI {
             btns.appendChild(confirmBtn);
         }
 
-        // Declare blockers
-        if (state.combatStep === 'declare-blockers') {
+        // Declare blockers - the defender's button (the AI confirms its own)
+        if (state.combatStep === 'declare-blockers' && !isYourTurn) {
             const doneBtn = this.createButton('✓ Done Blocking', 'btn-primary');
             doneBtn.style.animation = 'pulse 1s infinite';
             doneBtn.onclick = () => {
@@ -1397,6 +1406,13 @@ class RiutizUI {
             btns.appendChild(this.createButton('End Turn →', 'btn-warning', () => {
                 this.game.endTurn(this.localPlayer);
                 this.render();
+            }));
+        }
+
+        // Online: the only way out of a match used to be closing the tab
+        if (this.onConcede && !state.gameOver) {
+            btns.appendChild(this.createButton('🏳 Concede', 'btn-danger', () => {
+                if (confirm('Concede this match? It counts as a loss.')) this.onConcede();
             }));
         }
     }
@@ -1425,15 +1441,6 @@ class RiutizUI {
     showGameScreen() {
         this.elements.menuScreen?.classList.add('hidden');
         this.elements.gameScreen?.classList.remove('hidden');
-        this.elements.victoryScreen?.classList.add('hidden');
-    }
-
-    /**
-     * Show menu screen
-     */
-    showMenuScreen() {
-        this.elements.menuScreen?.classList.remove('hidden');
-        this.elements.gameScreen?.classList.add('hidden');
         this.elements.victoryScreen?.classList.add('hidden');
     }
 

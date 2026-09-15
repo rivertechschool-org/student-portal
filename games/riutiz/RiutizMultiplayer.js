@@ -30,13 +30,19 @@ class RiutizMultiplayer {
         this.matchmaking = new MatchmakingManager(this.arcade, 'riutiz');
         this.sync = new MultiplayerSync(this.arcade, 'riutiz');
 
+        // One lobby listener for the life of this session (create/leave/join used to
+        // stack a new closure each time, so a later match start joined N times)
+        this._lobbyHandler = (data) => {
+            if (data && data.event === 'match_started') this.joinMatch(data.matchId);
+        };
+
         // Hook into game events
         this.game.addEventListener('cardPlayed', (e) => this.onLocalAction('play_card', e.detail));
         this.game.addEventListener('cardPlayedAsResource', (e) => this.onLocalAction('play_resource', e.detail));
         this.game.addEventListener('attackerToggled', (e) => this.onLocalAction('toggle_attacker', e.detail));
         this.game.addEventListener('blockerToggled', (e) => this.onLocalAction('toggle_blocker', e.detail));
         this.game.addEventListener('combatResolved', (e) => this.onLocalAction('combat_resolved', e.detail));
-        this.game.addEventListener('turnEnded', (e) => this.onLocalAction('end_turn', e.detail));
+        this.game.addEventListener('turnEnded', (e) => this.onLocalEndTurn(e.detail));
         this.game.addEventListener('abilityActivated', (e) => this.onLocalAction('activate_ability', e.detail));
     }
 
@@ -68,11 +74,8 @@ class RiutizMultiplayer {
         this.isHost = true;
 
         // Listen for match start
-        this.matchmaking.onLobbyChange((data) => {
-            if (data.event === 'match_started') {
-                this.joinMatch(data.matchId);
-            }
-        });
+        this.matchmaking.offLobbyChange(this._lobbyHandler);
+        this.matchmaking.onLobbyChange(this._lobbyHandler);
 
         return result;
     }
@@ -80,16 +83,13 @@ class RiutizMultiplayer {
     /**
      * Join a lobby
      */
-    async joinLobby(lobbyIdOrCode) {
-        const lobby = await this.matchmaking.joinLobby(lobbyIdOrCode);
+    async joinLobby(lobbyIdOrCode, options = {}) {
+        const lobby = await this.matchmaking.joinLobby(lobbyIdOrCode, options);
         this.isHost = false;
 
         // Listen for match start
-        this.matchmaking.onLobbyChange((data) => {
-            if (data.event === 'match_started') {
-                this.joinMatch(data.matchId);
-            }
-        });
+        this.matchmaking.offLobbyChange(this._lobbyHandler);
+        this.matchmaking.onLobbyChange(this._lobbyHandler);
 
         return lobby;
     }
@@ -115,6 +115,9 @@ class RiutizMultiplayer {
      */
     async leaveLobby() {
         await this.matchmaking.leaveLobby();
+        // MatchmakingManager.leaveLobby detaches the Firebase ref but keeps every
+        // callback; the next lobby would notify all of them.
+        this.matchmaking._lobbyListeners = [];
     }
 
     // ==========================================
@@ -125,7 +128,13 @@ class RiutizMultiplayer {
      * Join an existing match
      */
     async joinMatch(matchId) {
+        // The host reaches here twice (its own startMatch call and the lobby listener);
+        // a second join duplicated every Firebase listener and every UI.
+        if (this.matchId === matchId && this.sync && this.sync.isConnected) {
+            return this.sync.match;
+        }
         this.matchId = matchId;
+        this._resultRecorded = false;
 
         // Initialize sync
         const match = await this.sync.initialize(matchId);
@@ -160,13 +169,10 @@ class RiutizMultiplayer {
      * Initialize game state (host only)
      */
     async initializeGameState(match) {
-        // Load decks
-        const p1DeckId = match.players['1'].deck_id;
-        const p2DeckId = match.players['2'].deck_id;
-
-        // For now, use random decks if no deck specified
-        // In full implementation, load actual decks from Firebase
-        this.game.player1Deck = null; // Will use random
+        // Both seats' chosen decks (match.players[n].deck_id) are still ignored: the
+        // host would have to read the guest's deck node from Firebase, which the
+        // database rules do not allow yet. Random 40-card decks for now.
+        this.game.player1Deck = null;
         this.game.player2Deck = null;
 
         // Start game
@@ -183,6 +189,8 @@ class RiutizMultiplayer {
         if (!this.sync.isConnected) return;
 
         const state = this.game.getSerializableState();
+        state.current_player = state.currentPlayer;      // the key MultiplayerSync gates on
+        state.lastWriter = this.localPlayerNumber;
         await this.sync.updateGameState(state);
     }
 
@@ -192,23 +200,51 @@ class RiutizMultiplayer {
     async onLocalAction(actionType, detail) {
         if (!this.sync || !this.sync.isConnected) return;
 
-        // Only sync if it's our turn (or blocking during opponent's combat)
         const isOurTurn = this.game.isPlayerTurn(this.localPlayerNumber);
-        const isBlocking = this.game.state.combatStep === 'declare-blockers' &&
-                          this.game.state.currentPlayer !== this.localPlayerNumber;
+        // The defender acts off-turn: declaring blockers and resolving the combat
+        const isDefending = !isOurTurn &&
+            (this.game.state.combatStep === 'declare-blockers' || actionType === 'combat_resolved');
 
-        if (!isOurTurn && !isBlocking) return;
-
-        const action = {
-            type: actionType,
-            ...detail
-        };
+        if (!isOurTurn && !isDefending) return;
 
         try {
-            await this.sync.submitAction(action);
-            await this.syncState();
+            if (isOurTurn) {
+                await this.sync.submitAction({ type: actionType, ...detail });
+                await this.syncState();
+            } else {
+                // MultiplayerSync refuses off-turn actions and state writes, so the
+                // defender's blockers and the combat result never reached the attacker.
+                // Write the state directly: it is what the attacker loads.
+                const state = this.game.getSerializableState();
+                state.current_player = state.currentPlayer;
+                state.lastWriter = this.localPlayerNumber;
+                await this.sync.updateMatch({ game_state: state });
+            }
         } catch (error) {
             console.error('Failed to sync action:', error);
+        }
+    }
+
+    /**
+     * Hand the turn over. MultiplayerSync.endTurn() was never called, so
+     * match.current_player stayed at 1 for the whole match and player 2 could
+     * never submit anything.
+     */
+    async onLocalEndTurn(detail) {
+        if (!this.sync || !this.sync.isConnected) return;
+        if (!detail || detail.player !== this.localPlayerNumber) return;
+        try {
+            const state = this.game.getSerializableState();
+            state.current_player = state.currentPlayer;
+            state.lastWriter = this.localPlayerNumber;
+            await this.sync.updateGameState(state);          // still our turn: allowed
+            await this.sync.updateMatch({
+                current_player: detail.nextPlayer,
+                turn: this.game.state.turn,
+                phase: 'draw'
+            });
+        } catch (error) {
+            console.error('Failed to hand the turn over:', error);
         }
     }
 
@@ -218,9 +254,11 @@ class RiutizMultiplayer {
     onRemoteStateChange(state) {
         if (!state) return;
 
-        // Only load state if it's not our turn (to avoid conflicts)
-        const currentPlayer = state.current_player;
-        if (currentPlayer !== this.localPlayerNumber) {
+        // Load whatever the OTHER seat wrote (its turn, its blockers, its combat
+        // result) and skip the echo of our own writes. The old check read
+        // `state.current_player`, a key the serialized state never had.
+        const writer = state.lastWriter !== undefined ? state.lastWriter : state.currentPlayer;
+        if (writer !== this.localPlayerNumber) {
             this.game.loadState(state);
         }
     }
@@ -373,30 +411,6 @@ class RiutizMultiplayer {
     // ==========================================
     // Utility
     // ==========================================
-
-    /**
-     * Get current match info
-     */
-    getMatchInfo() {
-        if (!this.sync || !this.sync.match) return null;
-
-        return {
-            matchId: this.matchId,
-            mode: this.sync.match.mode,
-            turn: this.sync.match.turn,
-            isMyTurn: this.sync.isMyTurn(),
-            localPlayer: this.sync.getLocalPlayer(),
-            opponent: this.sync.getOpponent(),
-            spectatorCount: this.sync.match.spectator_count || 0
-        };
-    }
-
-    /**
-     * Check if connected to a match
-     */
-    get isInMatch() {
-        return this.sync?.isConnected && this.matchId;
-    }
 
     /**
      * Get lobby info
