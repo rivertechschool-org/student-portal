@@ -124,6 +124,9 @@ async function boot(page, seed, me) {
         return Promise.resolve({ data: null, error: null });
       }
     };
+    // Each journey starts from a clean screen, including any dialog the
+    // previous one left open - a modal over the page swallows every click.
+    closeModal();
     A.me = me;
     A.member = null; A.myRequest = null; A.isAdmin = false;
     A.loaded = { songs: false, schedule: false, requests: false };
@@ -357,6 +360,45 @@ await page.evaluate(() => setChartKey('Bb'));
 await page.waitForTimeout(250);
 ok('  and transposes on demand', await page.evaluate(() =>
   document.querySelector('.chart-box').innerText.includes('Bb')));
+
+// ======================================================================
+console.log('\n5. The database is behind the page\n');
+// ======================================================================
+// Deploys land in seconds; migrations are run by hand, so there is always a
+// window where the page asks for something the database has not got. It has to
+// say so in words the person pressing the button can act on, and stop offering
+// what cannot work.
+world = await page.evaluate(() => window.__T);
+await boot(page, world, ANN);
+await page.evaluate(() => {
+  const realRpc = A.supabase.rpc;
+  A.supabase.rpc = (name, args) => name === 'worship_slot_respond'
+    ? Promise.resolve({ data: null, error: { code: 'PGRST202',
+        message: 'Could not find the function public.worship_slot_respond(p_slot_id, p_status) in the schema cache' } })
+    : realRpc(name, args);
+});
+await page.click('.card:nth-child(2) .drow');
+await page.waitForTimeout(400);
+ok('the reply buttons are offered', await page.evaluate(() => !!document.querySelector('button.good.small')));
+await page.click('button.good.small');
+await page.waitForTimeout(500);
+const behind = await page.evaluate(() => ({
+  toast: document.getElementById('toast').textContent,
+  stillOffered: !!document.querySelector('button.good.small'),
+  planIntact: !!document.querySelector('.planhead')
+}));
+ok('it says what is actually wrong', /migration/i.test(behind.toast));
+ok('  without a raw database error', !/schema cache|PGRST/i.test(behind.toast));
+ok('  stops offering a button that cannot work', !behind.stillOffered);
+ok('  and leaves the rest of the plan alone', behind.planIntact);
+
+// Dates are the same words for everyone, whatever language the browser is in.
+const asSpanish = await browser.newPage({ viewport: { width: 900, height: 700 }, locale: 'es-ES' });
+await asSpanish.goto('http://localhost:8765/portal/worship.html', { waitUntil: 'domcontentloaded' });
+await asSpanish.waitForTimeout(1500);
+const spanishDate = await asSpanish.evaluate(() => fmtDate('2026-09-16'));
+await asSpanish.close();
+check('a Spanish browser reads the same date', spanishDate, 'Wed, Sep 16');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (errors.length) console.log('page errors:', errors);

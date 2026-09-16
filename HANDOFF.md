@@ -1209,3 +1209,27 @@ driven in Chromium against a stubbed database:
 note — not only at the moment of adding. Who leads a song is not who leads the service, so
 that is a new nullable column, migration 4 in the backend repo, handed to Luke. Until it is
 run the Leader field is not drawn and not sent; everything else works.
+
+---
+
+## 2026-09-16 — Luke's Claude (three things the live site showed)
+
+**Dates followed the viewer's browser language.** Luke's browser is set to Spanish, so the
+same service read `mié 16 de sep` to him and `Wed, Sep 16` to everyone else. A rota is one
+shared document that people quote at each other; it now renders `en-US` for everyone
+regardless of the browser. Guarded by a journey that loads the page with `locale: 'es-ES'`
+and expects the English date.
+
+**A missing database function reached the user as a raw PostgREST error.** Deploys land in
+seconds and migrations are run by hand, so there is always a window where the page asks for
+something the database has not got. `worship_slot_respond()` was not visible to the API, and
+the page said so in PostgREST's words — schema cache and all. It now says "Replying is not
+switched on yet — that needs the newest migration run", hides the two buttons rather than
+offering something that cannot work, and leaves the rest of the plan alone. Journey 5 in
+the harness covers exactly this, because it is a permanent condition of this setup rather
+than a one-off.
+
+**"— plays this" in the add-person dialog** was true but read oddly in a list of names, and
+the people it applied to were scattered alphabetically through everyone else. It now names
+the instrument ("— plays piano"), those people sort to the top, and the field label says so.
+The question being asked is "who can cover the piano"; the answer belongs at the top.

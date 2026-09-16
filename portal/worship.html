@@ -198,7 +198,11 @@ function dateFromStr(s){
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 function fmtDate(s){
   const d = dateFromStr(s);
-  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  // en-US, not the viewer's own locale: this is a shared rota, and a date that
+  // renders differently for each person reading it is a date people quote at
+  // each other wrongly. (Luke's browser is set to Spanish, which is how this
+  // was found: the same service read "mié 16 de sep" to him.)
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 }
 function fmtTime(t){
   if (!t) return '';
@@ -384,6 +388,7 @@ const A = {
   slots: {}, songLinks: {}, files: {},   // serviceId -> rows
   filesUnavailable: false,     // set when the practice-files table is not there yet
   songLeaderAvailable: true,   // cleared when the set list cannot name a leader yet
+  slotReplyUnavailable: false, // set when worship_slot_respond() is not on the database
   directory: null,         // lazily loaded, admin only
   tab: 'schedule',
   openService: null, _openType: null,
@@ -1032,9 +1037,10 @@ function teamBlock(s, slots){
       <h3>👥 Team</h3>
       ${mySlot ? `
         <div class="hint" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          You are on for ${esc(instrLabel(mySlot.instrument))}.
+          You are on for ${esc(instrLabel(mySlot.instrument))}.${A.slotReplyUnavailable ? '' : ''}
+          ${A.slotReplyUnavailable ? '' : `
           <button class="btn good small" onclick="respondToSlot('${mySlot.id}','${s.id}','confirmed')">✓ I'll be there</button>
-          <button class="btn sec small" onclick="respondToSlot('${mySlot.id}','${s.id}','declined')">✗ Can't make it</button>
+          <button class="btn sec small" onclick="respondToSlot('${mySlot.id}','${s.id}','declined')">✗ Can't make it</button>`}
         </div>` : ''}
       ${positions}
     </div>`;
@@ -1229,15 +1235,23 @@ function onOrderSongPick(serviceId){
 // the only question left is who.
 function addPersonTo(serviceId, instrument){
   const taken = new Set((A.slots[serviceId] || []).filter(sl => sl.instrument === instrument).map(sl => sl.user_id));
-  const options = A.roster.filter(m => !taken.has(m.user_id));
+  const label = (INSTRUMENTS.find(i => i.id === instrument) || {}).label || instrument;
+
+  // Whoever's roster says they play this comes first. The question being asked
+  // is "who can cover the piano", so the answer belongs at the top of the list
+  // rather than scattered alphabetically through everyone on the team.
+  const plays = m => (m.instruments || []).includes(instrument);
+  const options = A.roster.filter(m => !taken.has(m.user_id))
+    .sort((a, b) => (plays(b) ? 1 : 0) - (plays(a) ? 1 : 0));
   if (!options.length) { toast('Everyone on the team is already on for that', true); return; }
 
   showModal('Add to ' + esc(instrLabel(instrument)), `
     <div class="field">
-      <label class="fld" for="ap-user">Who</label>
+      <label class="fld" for="ap-user">Who${
+        options.some(plays) ? ` — people who play ${esc(label.toLowerCase())} are listed first` : ''}</label>
       <select id="ap-user" style="width:100%">
         ${options.map(m => `<option value="${m.user_id}">${esc(m.full_name)}${
-          (m.instruments || []).includes(instrument) ? ' — plays this' : ''}</option>`).join('')}
+          plays(m) ? ` — plays ${esc(label.toLowerCase())}` : ''}</option>`).join('')}
       </select>
     </div>
     <div class="field">${pill('ap-lead', '★ Leads this service', false)}</div>
@@ -1765,6 +1779,18 @@ async function respondToSlot(slotId, serviceId, status){
   const { data, error } = await A.supabase.rpc('worship_slot_respond', {
     p_slot_id: slotId, p_status: status
   });
+
+  // PostgREST answers a function it cannot see with PGRST202 / "Could not find
+  // the function ... in the schema cache". That is a database without the
+  // migration, or one whose API cache has not caught up with it - not
+  // something the person pressing the button can do anything about.
+  if (error && (error.code === 'PGRST202' || /schema cache|could not find the function/i.test(error.message || ''))) {
+    A.slotReplyUnavailable = true;
+    toast('Replying is not switched on yet — that needs the newest migration run', true);
+    renderTab();
+    return;
+  }
+
   if (error || (data && data.success === false)) {
     toast('Could not save: ' + ((error && error.message) || (data && data.error) || 'unknown'), true);
     return;
