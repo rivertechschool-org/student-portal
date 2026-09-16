@@ -28,7 +28,18 @@
 const fs = require('fs');
 const path = require('path');
 
-const PortalUI = require('./portalui.js');
+// tests/portalui.js is generated from shared/config.js and deliberately not
+// committed. Without it this file throws a stack trace that says nothing about
+// the real problem, which has now cost two people an afternoon apiece.
+let PortalUI;
+try {
+  PortalUI = require('./portalui.js');
+} catch (e) {
+  console.log('\n  This suite reads tests/portalui.js, which is generated and not committed.');
+  console.log('  Run this first, then try again:\n');
+  console.log('      node tests/extract-portalui.js\n');
+  process.exit(1);
+}
 const portalHtml = fs.readFileSync(path.join(__dirname, '..', 'portal', 'index.html'), 'utf8');
 
 let pass = 0;

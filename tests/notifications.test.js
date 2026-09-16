@@ -20,7 +20,18 @@ const timers = [];
 global.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
 const runTimers = () => { const t = timers.splice(0); t.forEach(x => x.fn()); };
 
-const PortalUI = require('./portalui.js');
+// tests/portalui.js is generated from shared/config.js and deliberately not
+// committed. Without it this file throws a stack trace that says nothing about
+// the real problem, which has now cost two people an afternoon apiece.
+let PortalUI;
+try {
+  PortalUI = require('./portalui.js');
+} catch (e) {
+  console.log('\n  This suite reads tests/portalui.js, which is generated and not committed.');
+  console.log('  Run this first, then try again:\n');
+  console.log('      node tests/extract-portalui.js\n');
+  process.exit(1);
+}
 let fails = 0;
 const check = (label, got, want) => {
   const ok = got === want;

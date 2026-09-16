@@ -1072,3 +1072,28 @@ Two details that are easy to get wrong and are both tested:
 - **It is two writes, and only the first is the song.** If the link into the order fails,
   the song is still in the library — so that says so out loud rather than reporting a clean
   save that did half the job.
+
+---
+
+## 2026-09-16 — Luke's Claude (closing the "still red" loop)
+
+**Both suites flagged as red in the two entries above pass.** They were never failing an
+assertion — they were throwing, because `tests/portalui.js` is generated from
+`shared/config.js` and is deliberately not committed. Four suites read it, and without it
+they die with a stack trace that says nothing about the real problem. Two people have now
+lost time to that, which is two more than a documentation line was ever going to fix.
+
+So all four now catch the missing file and print what to run:
+
+```
+  This suite reads tests/portalui.js, which is generated and not committed.
+  Run this first, then try again:
+
+      node tests/extract-portalui.js
+```
+
+`CLAUDE.md`'s before-you-push block has that step as its first line as well.
+
+To be unambiguous about the clean-tree state: `inequality-region` and `typed-answer-mode`
+are the only two that genuinely fail, both for the missing `tests/ai.js` extraction they
+have always needed. Everything else is green.
