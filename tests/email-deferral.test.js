@@ -219,6 +219,27 @@ const SOON = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     check('  which it needs, because it returns early', (body.match(/\breturn;/g) || []).length, 3);
   }
 
+  console.log('\n== the assignment id travels with the email ==\n');
+
+  {
+    // A queued digest is a list of assignments, and deleting one has to find
+    // its line and take it out. The database trigger matches on assignmentId
+    // INSIDE the email's own data - the log context it used to live in is not
+    // visible to the queue at all.
+    //
+    // So if this field ever goes missing, deleting an assignment stops
+    // cancelling its notification and families are told to do work that is not
+    // there. Nothing else would fail; the email just quietly goes out.
+    const src = html.slice(html.indexOf('async sendNewAssignmentNotifications'));
+    const body = src.slice(0, src.indexOf('async sendSubmissionNotification'));
+    const calls = body.match(/sendEmailWithTracking\([\s\S]*?\n\s+\);/g) || [];
+    check('both notifications are sent', calls.length, 2);
+    ok('  the student one carries assignmentId in its data',
+       /assignmentId: assignmentId/.test(calls[0] || ''));
+    ok('  and so does the parent one',
+       /assignmentId: assignmentId/.test(calls[1] || ''));
+  }
+
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();

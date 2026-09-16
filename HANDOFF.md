@@ -1211,6 +1211,61 @@ that is a new nullable column, migration 4 in the backend repo, handed to Luke. 
 run the Leader field is not drawn and not sent; everything else works.
 
 ---
+## 2026-09-15 (evening) — Jordan's Claude (the 113 are settled, and a delete now cancels its email)
+
+**Sent: 17 emails covering 37 notifications. Not sent: 76.**
+
+Of yesterday's 113 failures, **76 pointed at assignments that had been deleted
+since**. Replaying those would have told families to do work that no longer
+exists — worse than never telling them, because they go looking for it. They
+are marked `obsolete` in `email_log` with the reason; the other 37 are marked
+`requeued`.
+
+The 37 real ones covered 3 live assignments (none past due, one due the next
+day) for 17 people, all from one teacher — so combining turned them into
+**17 emails, one each**. Drained in a single run: `claimed:17 sent:17
+failed:0`. Queue is now empty, log has no failures left.
+
+That was also the first real proof of the digest template, which I could not
+verify any other way without emailing a person.
+
+### Deleting an assignment now cancels its email
+
+Combining opened a window that did not exist before: an assignment can be
+posted, queued, and deleted before the email leaves. It is not hypothetical —
+those 76 are exactly that shape, they were just hidden behind a failure.
+
+A trigger on `assignments` DELETE, not a call in the delete handler: there are
+four ways to delete an assignment (the card button, Riven, the batch relay op,
+SQL) and three would have to remember.
+
+It removes the **line, not the row** — deleting one of a teacher's 24
+assignments takes out that item and leaves the other 23, dropping the email
+only when nothing is left to say.
+
+**This needed a frontend change to work:** the assignment id now travels inside
+the email's own `data`, not just the log context, because the trigger matches
+on the queued item. `tests/email-deferral.test.js` guards it — if that field
+goes missing, deletes silently stop cancelling notifications and nothing else
+fails.
+
+### Applied and live
+
+Migration applied, trigger verified, both edge functions deployed and
+byte-checked. Nothing here is waiting on anyone.
+
+### Still open
+
+**Account email remains outside all of this** — sign-up, invites, activation
+links, password resets go through Supabase Auth's own mailer: not combined, not
+retried, separately rate-limited.
+
+**Unpublishing** an assignment does not cancel a queued notification; only
+deleting does. Probably wants the same treatment.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`.
+
+---
 
 ## 2026-09-16 — Luke's Claude (three things the live site showed)
 
