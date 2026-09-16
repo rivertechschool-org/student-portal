@@ -41123,6 +41123,15 @@
               </div>
             </div>
 
+            ${/* How the morning actually went, not just how much of it has been
+                  typed in. The banner above counts marks made; this counts what
+                  they say. Rendered empty and filled by _renderDailyTally so
+                  there is exactly one place that knows how to count - the
+                  opening render and every later change go through the same
+                  code and cannot drift apart. */''}
+            <div id="daily-attendance-tally"
+                 style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px;"></div>
+
             ${students.length === 0 ? `
               <div style="text-align: center; padding: 40px; color: var(--muted);">
                 <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
@@ -41249,6 +41258,11 @@
         `;
 
         this.showModal('daily-attendance', '📋 Daily Attendance', modalContent, true);
+        // Fill the totals from the roster that was just drawn. Doing it here
+        // rather than building the numbers into the markup keeps one counter:
+        // the opening view and every later change are produced by the same
+        // code, so they cannot disagree about what a status means.
+        this._renderDailyTally();
 
       } catch (error) {
         console.error('Error loading attendance roster:', error);
@@ -41259,6 +41273,64 @@
 
     // `save` is false when the value came from the server rather than from a
     // person - the refresh only wants the show/hide half of this.
+    // Counted off the ROSTER, not off a running total kept alongside it.
+    //
+    // The register is edited from more than one phone and pulls other people's
+    // marks in every 20 seconds; a tally incremented as changes happen would
+    // drift the first time two devices touched the same child, and drift
+    // silently. The dropdowns are what is on screen, so they are what gets
+    // counted - and a remote change repaints the strip for free, because it
+    // arrives through the same handler a local one does.
+    //
+    // Hidden rows are counted too. The search box filters the list, but the
+    // total is the total for the day; a tally that changed when someone typed
+    // a name would be worse than none.
+    _renderDailyTally() {
+      const strip = document.getElementById('daily-attendance-tally');
+      if (!strip) return;
+
+      const SHOW = [
+        { key: 'present',         label: 'Present',    icon: '\u2705', colour: 'var(--accent-2)' },
+        { key: 'absent',          label: 'Absent',     icon: '\u274c', colour: 'var(--danger, #ff6a6a)' },
+        { key: 'late',            label: 'Late',       icon: '\u23f0', colour: 'var(--warning, #ffd36a)' },
+        { key: 'left_early',      label: 'Left early', icon: '\ud83d\udeaa', colour: 'var(--warning, #ffd36a)' },
+        { key: 'late_left_early', label: 'Late & left early', icon: '\u26a0\ufe0f', colour: 'var(--warning, #ffd36a)' },
+      ];
+
+      const counts = {};
+      let marked = 0, total = 0;
+      document.querySelectorAll('tr[data-student-id] .attendance-status').forEach(sel => {
+        total++;
+        const v = sel.value;
+        if (!v) return;
+        marked++;
+        counts[v] = (counts[v] || 0) + 1;
+      });
+
+      const chip = (label, n, colour, icon) => `
+        <span style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+                     border-radius: 14px; background: rgba(255,255,255,0.05);
+                     border: 1px solid ${colour}; font-size: 13px; white-space: nowrap;">
+          <span>${icon}</span>
+          <strong style="color: ${colour};">${n}</strong>
+          <span style="color: var(--muted);">${this.escapeHtml(label)}</span>
+        </span>`;
+
+      // Only the statuses that actually happened. A row of zeroes reads as
+      // noise and buries the two numbers that matter on a normal morning.
+      const parts = SHOW.filter(s => counts[s.key])
+        .map(s => chip(s.label, counts[s.key], s.colour, s.icon));
+
+      const left = total - marked;
+      if (left > 0) parts.push(chip(left === 1 ? 'not yet marked' : 'not yet marked',
+                                    left, 'var(--muted)', '\u2014'));
+
+      // Nothing scheduled: say nothing. The roster already prints its own "no
+      // students are scheduled on Wednesday", and a second empty-state next to
+      // it just makes the screen look broken.
+      strip.innerHTML = total ? parts.join('') : '';
+    }
+
     onAttendanceStatusChange(select, save = true) {
       const studentId = select.dataset.studentId;
       const status = select.value;
@@ -41293,6 +41365,10 @@
       } else if (status === 'absent') {
         excusedSection.style.display = 'block';
       }
+
+      // Last, so the totals reflect the change that was just made. Reached by
+      // a remote refresh too, which calls this handler for every row it moves.
+      this._renderDailyTally();
     }
 
     // ---- One child at a time -----------------------------------------------
@@ -49018,7 +49094,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·a';
+      const RIVEN_BUILD = '2026-09-16·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the

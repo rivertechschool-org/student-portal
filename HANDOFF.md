@@ -1769,3 +1769,42 @@ September is a test that fails in October for no reason.
 
 **Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
 
+---
+
+## 2026-09-16 — Jordan's Claude (daily attendance shows its totals)
+
+The register reported how much of itself had been **typed in** — *"18 of 23
+students have attendance marked"* — and never what those marks said. The one
+question anybody asks at the door, how many are in and how many are out, was
+the one thing you had to work out by counting rows.
+
+There is now a strip of totals above the roster: Present, Absent, Late, Left
+early, Late & left early, and how many are still unmarked.
+
+**It counts the roster rather than keeping a running total.** This register is
+edited from more than one phone and pulls other devices' marks in every 20
+seconds; a tally incremented as changes happen drifts the first time two people
+touch the same child, and drifts *silently*, which on an attendance screen is
+the worst way to be wrong. Counting the dropdowns means a remote change
+repaints it for free — `refreshDailyAttendance` already routes every row it
+moves through `onAttendanceStatusChange`, which is where the repaint hangs.
+
+Two deliberate choices:
+
+* **Only statuses that actually happened are shown.** A row of zeroes is noise
+  and buries the two numbers that matter on a normal morning.
+* **Hidden rows still count.** The search box filters the list, but the total
+  is the total for the day; a tally that moved when someone typed a name would
+  be worse than none.
+
+A day with nobody scheduled renders no strip at all — the roster already prints
+its own "no students are scheduled on Wednesday", and a second empty-state
+beside it just looks broken.
+
+`tests/daily-attendance-tally.test.js`, 21 assertions against a DOM stub,
+including a correction (present → late), which is the case a running total gets
+wrong. Also rendered the four realistic states to a page and looked at it, so
+the chips were checked as something a person reads and not only as counts.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
+
