@@ -1808,3 +1808,32 @@ the chips were checked as something a person reads and not only as counts.
 
 **Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
 
+---
+
+## 2026-09-16 — the tally was there, the number was invisible
+
+Jordan could see "17 Absent" and not "46 Present". Both chips were rendering;
+the Present **count** was a dark olive smudge on a dark card.
+
+I put the number in `var(--accent-2)`. That is a theme variable — this portal
+ships **six themes** and lets a person override the palette in
+`site_theme_custom`, so it is whatever somebody picked. Absent happened to be
+legible because `--danger` happened to contrast. That is luck, not design, and
+I had checked exactly one theme: the one where it looked fine.
+
+The number now wears **`var(--text)`** — the one colour a theme has to keep
+readable against its own background, which is what it is for. The status still
+reads at a glance from the icon and the border, and neither of those has to be
+read as a *character*, so they can be any colour without costing anything.
+Chip background moved to a neutral grey tint so it works on light themes too.
+
+Verified by rendering the strip under **all six shipped themes plus a
+deliberately hostile one** (dark `--accent-2` on a dark card, the shape of the
+one that broke) and looking at every result. Guarded by a test that asserts the
+number never takes a status variable and the border still does.
+
+**The lesson, which is the reusable part:** a colour a theme controls is fine
+for a border, a fill or an icon. It is not fine for anything that has to be
+*read*, because a custom palette can put any two of those colours next to each
+other. Text takes `--text`.
+

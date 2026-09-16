@@ -167,6 +167,33 @@ const countOf = (html, label) => {
     check('  and up on the other side', countOf(strip.innerHTML, 'Late'), 1);
   }
 
+  console.log('\n== legible under any theme ==\n');
+
+  {
+    // The portal ships six themes and lets a person override the palette in
+    // site_theme_custom, so --accent-2 is whatever somebody picked. On one
+    // theme it is a dark olive: "46 Present" rendered as an unreadable smudge
+    // while "17 Absent" beside it was perfectly legible, because --danger
+    // happened to contrast.
+    //
+    // --text is the one colour a theme has to keep readable against its own
+    // background. The number wears that; the status colour is spent on the
+    // border and the icon, neither of which has to be read as a character.
+    const { strip } = makeDom(['present', 'absent']);
+    app._renderDailyTally.call(app);
+
+    const numbers = [...strip.innerHTML.matchAll(/<strong style="([^"]*)"/g)].map(m => m[1]);
+    check('every count is rendered', numbers.length, 2);
+    ok('  the number takes the theme text colour',
+       numbers.every(st => /color:\s*var\(--text\)/.test(st)));
+    // The specific regression: a status variable on the number itself.
+    ok('  and never a status colour',
+       numbers.every(st => !/--accent-2|--danger|--warning|--success/.test(st)));
+    // The colour still has to be somewhere, or the chips stop being scannable.
+    ok('the border still carries the status colour',
+       /border: 1px solid var\(--accent-2\)/.test(strip.innerHTML));
+  }
+
   console.log('\n== wiring ==\n');
 
   {
