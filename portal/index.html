@@ -48977,6 +48977,7 @@
         this._rivenReadyPromise = Promise.all([
           this._loadTerminalStudents(),
           this._loadTerminalClasses(),
+          this._loadTerminalGradeBands(),
           this._loadTerminalGroups(),
           this._loadTerminalStoreItems(),
           this._loadTerminalPrivileges()
@@ -49017,7 +49018,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-15·b';
+      const RIVEN_BUILD = '2026-09-15·d';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -49541,7 +49542,7 @@
         const [{ data, error }, { data: staff }] = await Promise.all([
           this.auth.supabase
             .from('classes')
-            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, status, grading_weight')
+            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, status, grading_weight, grade_band')
             .eq('is_active', true)
             .order('name'),
           this.auth.supabase
@@ -49568,6 +49569,77 @@
         console.error('Error loading classes:', err);
         this._terminalAllClasses = [];
       }
+    }
+
+    // The year groups, cached synchronously.
+    //
+    // The name matcher runs on every keystroke and cannot await, so the async
+    // loadGradeBands() the class-creation form uses is no good here. Same rows,
+    // read once at mount.
+    async _loadTerminalGradeBands() {
+      try {
+        const rows = await this.loadGradeBands();
+        this._terminalGradeBands = rows || [];
+      } catch (err) {
+        console.warn('Grade bands unavailable, band matching stays off:', err);
+        this._terminalGradeBands = [];
+      }
+    }
+
+    _rivenBandLabel(code) {
+      if (!code) return '';
+      const hit = (this._terminalGradeBands || []).find(b => b.code === code);
+      return hit ? hit.label : String(code).replace(/_/g, ' ');
+    }
+
+    // Which year group does this sentence name?
+    //
+    // Three ways in, because people do not type the code:
+    //   the code itself          "old_middle"
+    //   the label from the table "Old Middle School"
+    //   what the staffroom says  "junior high", "upper MS", "lower middle"
+    //
+    // The spoken forms are the point. Nobody types "young_middle", and the
+    // classes themselves are named inconsistently enough ("Lower MS Math",
+    // "Literature - Younger Middle School", plain "Math") that the NAME cannot
+    // be relied on to say which year group a class belongs to. grade_band can.
+    //
+    // Longest phrase wins, so "old middle school" is not read as "middle".
+    _rivenBandFromText(text) {
+      const t = ` ${String(text || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ')} `;
+      const bands = this._terminalGradeBands || [];
+
+      const phrases = [];
+      const add = (phrase, code) => { if (phrase) phrases.push({ phrase: ` ${phrase} `, code }); };
+
+      bands.forEach(b => {
+        add(String(b.code).replace(/_/g, ' '), b.code);
+        add(String(b.label).toLowerCase(), b.code);
+      });
+
+      // The staffroom's words. Only ones that are unambiguous on their own -
+      // bare "middle" or "elementary" names two bands each and is left out on
+      // purpose, so a half-named group asks rather than guesses.
+      const SPOKEN = {
+        highschool: ['high school', 'highschool', 'high schoolers', 'hs', 'senior high'],
+        old_middle: ['old middle school', 'old middle', 'older middle', 'upper middle',
+                     'upper ms', 'junior high', 'jr high', 'juniorhigh'],
+        young_middle: ['young middle school', 'young middle', 'younger middle',
+                       'lower middle', 'lower ms', 'y middle'],
+        old_elementary: ['old elementary', 'older elementary', 'upper elementary', 'upper es'],
+        young_elementary: ['young elementary', 'younger elementary', 'lower elementary', 'lower es'],
+      };
+      // Filtered against the table when there IS one, so a band the school has
+      // removed stops being recognised; unfiltered when there is not, so a
+      // failed lookup degrades to the known vocabulary instead of to nothing.
+      Object.entries(SPOKEN).forEach(([code, list]) => {
+        if (!bands.length || bands.some(b => b.code === code)) list.forEach(p => add(p, code));
+      });
+
+      phrases.sort((a, b) => b.phrase.length - a.phrase.length);
+      const hit = phrases.find(p => t.includes(p.phrase));
+      if (!hit) return null;
+      return { code: hit.code, label: this._rivenBandLabel(hit.code), said: hit.phrase.trim() };
     }
 
     // Student groups are the school's own cohorts ("Full Young Middle",
@@ -49919,10 +49991,11 @@
         // first load raced auth on a fresh page), retry now — otherwise no
         // name can ever match for the rest of the session
         if (!this._terminalAllStudents?.length || !this._terminalAllClasses?.length
-            || !this._terminalStoreItems || !this._terminalPrivileges) {
+            || !this._terminalGradeBands || !this._terminalStoreItems || !this._terminalPrivileges) {
           await Promise.all([
             !this._terminalAllStudents?.length ? this._loadTerminalStudents() : Promise.resolve(),
             !this._terminalAllClasses?.length ? this._loadTerminalClasses() : Promise.resolve(),
+            !this._terminalGradeBands ? this._loadTerminalGradeBands() : Promise.resolve(),
             !this._terminalAllGroups?.length ? this._loadTerminalGroups() : Promise.resolve(),
             !this._terminalStoreItems ? this._loadTerminalStoreItems() : Promise.resolve(),
             !this._terminalPrivileges ? this._loadTerminalPrivileges() : Promise.resolve()
@@ -49948,13 +50021,61 @@
           this.terminalPrint('(I set the pending action aside — nothing was changed.)', '#97a2b0');
         }
 
-        // Check if this is a slash command or natural language
-        if (command.trim().startsWith('/')) {
-          // Slash command mode
-          await this._executeSlashCommand(command);
-        } else {
-          // Natural language mode
-          await this._executeNaturalLanguage(command);
+        // ---- /admin: do it, don't ask --------------------------------
+        //
+        // Every write that changes more than one row stops to confirm. That is
+        // right when you are dictating one thing, and it is friction when you
+        // are working through a list of twenty and already know what each one
+        // does. This prefix runs the command as written.
+        //
+        // What it does NOT do is grant anything. It skips the question, not
+        // the permission: RLS still decides, _rivenRequireAdmin still refuses,
+        // and every action still pushes its undo entry, so nothing done this
+        // way is any harder to reverse than normal. It is refused outright for
+        // anyone who is not an admin, so it cannot read as a way IN.
+        let toRun = command;
+        const adminPrefix = command.trim().match(/^\/admin\b\s*([\s\S]*)$/i);
+        if (adminPrefix) {
+          if (this.userInfo?.profile?.user_type !== 'admin') {
+            this.terminalPrintError('/admin is for admins only. Say the command on its own and I\'ll confirm it with you.');
+            output.scrollTop = output.scrollHeight;
+            return;
+          }
+          toRun = adminPrefix[1].trim();
+          if (!toRun) {
+            this._showRivenMessage(
+              `<b>/admin &lt;command&gt;</b> runs it without stopping to confirm.<br>` +
+              `<span style="font-size: 12px; color: var(--muted);">` +
+              `e.g. <b>/admin add Josey to every Old Middle School class</b><br>` +
+              `It skips the question, not the permission \u2014 you still can't do anything ` +
+              `you couldn't do anyway, and undo still works.</span>`, true);
+            output.scrollTop = output.scrollHeight;
+            return;
+          }
+          this._rivenAutoConfirm = true;
+        }
+
+        try {
+          // Check if this is a slash command or natural language
+          if (toRun.trim().startsWith('/')) {
+            // Slash command mode
+            await this._executeSlashCommand(toRun);
+          } else {
+            // Natural language mode
+            await this._executeNaturalLanguage(toRun);
+          }
+          // An auto-confirmed action runs detached from its executor, which
+          // has already returned. Wait for it here so a failure lands in this
+          // turn rather than after the next thing the person types.
+          if (this._rivenAutoPending) {
+            const p = this._rivenAutoPending;
+            this._rivenAutoPending = null;
+            await p;
+          }
+        } finally {
+          // Never sticky. One command, one exemption - a flag left set would
+          // silently disarm every confirmation for the rest of the session.
+          this._rivenAutoConfirm = false;
         }
       } catch (err) {
         console.error('Terminal command error:', err);
@@ -51793,6 +51914,10 @@
       // "AI Game Design" can't fuzzy-match a student ("Jordan Games") out of
       // its own name and "english with dan" doesn't match a student "Dan".
       entities.classMatch = this._rivenMatchClass(normalized);
+      // The year group, if one is named. Read before the student matcher runs
+      // so its words are off the table: "young middle" must not be mistaken
+      // for somebody's name.
+      entities.bandMatch = this._rivenBandFromText(normalized);
       // A school cohort ("lower middle", "HS", "upper elementary") is a
       // different kind of target from a class. Both are recorded; which one
       // wins is decided at resolution time, where the class match's strength
@@ -52506,7 +52631,7 @@
       const WRITE_INTENTS = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
         'MARK_ATTENDANCE', 'MARK_ATTENDANCE_GROUP', 'ENROLL_STUDENT', 'UNENROLL_STUDENT',
         'MOVE_STUDENT', 'CREATE_CLASS', 'DELETE_CLASS', 'CLOSE_ALL_CLASSES', 'RENAME_CLASS',
-        'UPDATE_CLASS', 'ENROLL_GROUP',
+        'UPDATE_CLASS', 'ENROLL_GROUP', 'ENROLL_BAND',
         'UPDATE_CONTACT', 'SET_ENROLLMENT_TYPE', 'SET_SCHEDULE', 'SET_GRADE_LEVEL',
         'RENAME_STUDENT', 'LINK_PARENT', 'UNLINK_PARENT',
         'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
@@ -52854,6 +52979,23 @@
         // ENROLL_STUDENT — "add jordan to robotics" (currency phrasing falls
         // through to ADD_RTC; "award jordan 10 in english" has an amount entity
         // that signals ADD_RTC not enrollment)
+        // ENROLL_BAND - "add josey to all the Old Middle School classes".
+        //
+        // Sits above ENROLL_STUDENT because the sentence looks exactly like an
+        // ordinary enrolment until you notice the year group and the "all".
+        // Both guards are required: without requiresBand this would swallow
+        // "add josey to all my classes", and without the all/every in the
+        // pattern it would swallow "add josey to Old Middle School Math".
+        {
+          intent: 'ENROLL_BAND',
+          w: 8, notIfNoteCommand: true, notIfCurrency: true, notIfAmount: true,
+          requiresStudent: true, requiresBand: true,
+          patterns: [
+            /\b(add|put|enroll|enrol|register|sign)\b[\s\S]*\b(all|every|each|the whole|the entire)\b[\s\S]*\bclass(es)?\b/,
+            /\b(all|every|each)\b[\s\S]*\bclass(es)?\b[\s\S]*\b(for|to)\b/,
+            /\benroll?\b[\s\S]*\bin\b[\s\S]*\b(all|every|each)\b/,
+          ]
+        },
         {
           intent: 'ENROLL_STUDENT',
           w: 4, notIfNoteCommand: true, notIfFromTo: true,
@@ -54509,6 +54651,7 @@
         if (pattern.requiresPair && !(hasPair || hasFromTo)) continue;
         if (pattern.requiresSince && !entities.sinceDate) continue;
         if (pattern.requiresClass && !entities.classMatch) continue;
+        if (pattern.requiresBand && !entities.bandMatch) continue;
         if (pattern.requiresStudentOrClass && !entities.student && !entities.classMatch) continue;
         if (pattern.requiresClassOrGroup && !entities.classMatch && !entities.groupMatch) continue;
         if (pattern.notIfStudent && entities.student) continue;
@@ -54560,6 +54703,7 @@
         if (pattern.requiresStudent) score += 2;
         if (pattern.requiresAmount) score += 2;
         if (pattern.requiresClass) score += 2;
+        if (pattern.requiresBand) score += 2;
         if (pattern.requiresFromTo) score += 4;
         if (pattern.requiresPair) score += 3;
         if (pattern.requiresSince) score += 2;
@@ -55005,6 +55149,10 @@
           await this.terminalEnrollStudent(entities);
           break;
 
+        case 'ENROLL_BAND':
+          await this.terminalEnrollInBand(entities);
+          break;
+
         case 'UNENROLL_STUDENT':
           await this.terminalUnenrollStudent(entities);
           break;
@@ -55349,6 +55497,13 @@
 </div>
 
 <div style="margin: 16px 0; padding: 12px; background: rgba(47, 107, 109, 0.1); border-radius: 8px; border-left: 3px solid #2f6b6d;">
+  <div style="font-weight: 600; font-size: 12px; margin-bottom: 4px;">\u26a1 /admin \u2014 skip the confirmation</div>
+  <div style="font-size: 12px; color: #6b5236; margin-bottom: 10px;">
+    Put <b>/admin</b> in front of any command and I'll just do it instead of asking \u2014
+    e.g. <b>/admin add Josey to every Old Middle School class</b>.
+    It skips the question, not the permission: you still can't do anything you
+    couldn't do anyway, and undo still works. Admins only.
+  </div>
   <div style="font-weight: 600; font-size: 12px; margin-bottom: 4px;">⌨️ Advanced: Slash Commands</div>
   <div style="font-size: 11px; color: #6b5236; line-height: 1.6;">
     You can also use commands like <code style="background: rgba(61, 40, 23, 0.12); padding: 2px 6px; border-radius: 3px;">/read</code>,
@@ -55925,6 +56080,22 @@
     // ---- Confirmation framework (sensitive writes pause here) ----
 
     _requestConfirmation(summaryHtml, executeFn) {
+      // /admin said go. Still SHOW what is being done - the summary is the
+      // only record of what was about to happen, and skipping the question is
+      // not a reason to skip telling them.
+      if (this._rivenAutoConfirm) {
+        this._showRivenMessage(
+          `\u26a1 <b>Doing it</b> <span style="font-size: 11px; color: var(--muted);">(/admin \u2014 not asking)</span><br>${summaryHtml}`, true);
+        this._rivenAutoPending = (async () => {
+          try {
+            await executeFn();
+          } catch (err) {
+            console.error('Auto-confirmed action failed:', err);
+            this.terminalPrintError('That failed: ' + (err.message || err));
+          }
+        })();
+        return;
+      }
       this._pendingAction = { summary: summaryHtml, execute: executeFn, timestamp: Date.now() };
       this._showRivenMessage(`⚠️ <b>Please confirm:</b><br>${summaryHtml}
         <div style="display: flex; gap: 8px; margin-top: 10px;">
@@ -61416,6 +61587,119 @@
       }
     }
 
+    // Enrol somebody into every class in a year group.
+    //
+    // A new pupil arriving mid-year has to be put into nine or ten classes,
+    // one at a time, through a picker that could not tell two classes called
+    // "Math" apart. This is that job in one sentence.
+    //
+    // Deliberately NOT a silent bulk write: it lists the classes first, says
+    // which ones they are already in, and names anything it is skipping. A
+    // bulk roster change that reports only a number is one nobody can check.
+    async terminalEnrollInBand(entities) {
+      const band = entities.bandMatch;
+      if (!band) { this.terminalPrintError('Which year group? Try "add Josey to every Old Middle School class".'); return; }
+
+      const single = entities.student?.student;
+      const targets = (entities.students && entities.students.length >= 2)
+        ? entities.students.map(w => w.student || w)
+        : (single ? [single] : []);
+      if (!targets.length) { this.terminalPrintError('Who should I enrol? Name a student.'); return; }
+
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      if (!this._terminalAllClasses?.length) await this._loadTerminalClasses();
+
+      const inBand = (this._terminalAllClasses || [])
+        .filter(c => this._rivenClassIsOpen(c) && c.grade_band === band.code);
+      if (!inBand.length) {
+        this._showRivenMessage(
+          `There are no classes running in <b>${esc(band.label)}</b>. ` +
+          `Classes carry a year group on the class record; if these should be in one, it has not been set.`, true);
+        return;
+      }
+
+      // Permission is per class, the same rule a single enrolment follows. An
+      // admin gets the lot; a teacher gets their own and is told plainly what
+      // was left out rather than quietly receiving a smaller result.
+      const mine = inBand.filter(c => this._rivenCanManageClass(c));
+      const notMine = inBand.length - mine.length;
+      if (!mine.length) {
+        this.terminalPrintError(
+          `All ${inBand.length} ${band.label} classes belong to other teachers — only their teacher or an admin can change those rosters.`);
+        return;
+      }
+
+      // What is actually left to do, per student.
+      const plans = [];
+      const already = [];
+      for (const stu of targets) {
+        for (const row of mine) {
+          const existing = await this._rivenFindEnrollment(row.id, stu.id);
+          if (existing && existing.status === 'active') { already.push({ stu, row }); continue; }
+          plans.push({ stu, row, existing });
+        }
+      }
+
+      if (!plans.length) {
+        this._showRivenMessage(
+          `${esc(targets.map(t => t.full_name).join(' and '))} ` +
+          `${targets.length > 1 ? 'are' : 'is'} already in all ${mine.length} ${esc(band.label)} class${mine.length === 1 ? '' : 'es'}. Nothing to do.`, true);
+        return;
+      }
+
+      const names = targets.map(t => `<b>${esc(t.full_name)}</b>`).join(' and ');
+      const list = [...new Set(plans.map(p => p.row.name))].sort()
+        .map(n => `<div style="padding: 2px 10px;">\u2022 ${esc(n)}</div>`).join('');
+      const notes = [];
+      if (already.length) notes.push(`${already.length} enrolment${already.length === 1 ? '' : 's'} already in place, left alone`);
+      if (plans.some(p => p.existing)) notes.push('previous enrolments are re-activated rather than duplicated');
+      if (notMine) notes.push(`${notMine} class${notMine === 1 ? '' : 'es'} skipped \u2014 not yours to change`);
+
+      this._requestConfirmation(
+        `Enrol ${names} in ${plans.length} <b>${esc(band.label)}</b> class${plans.length === 1 ? '' : 'es'}?` +
+        `<div style="font-size: 12px; margin-top: 6px;">${list}</div>` +
+        (notes.length ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">${esc(notes.join(' \u00b7 '))}</div>` : ''),
+        async () => {
+          const sb = this.auth.supabase;
+          const now = new Date().toISOString();
+          const undos = [];
+          let done = 0;
+          const failures = [];
+
+          for (const p of plans) {
+            try {
+              if (p.existing) {
+                const prev = p.existing.status;
+                const { error } = await sb.from('class_enrollments')
+                  .update({ status: 'active', enrolled_at: now, updated_at: now }).eq('id', p.existing.id);
+                if (error) throw error;
+                undos.push(async () => { await sb.from('class_enrollments').update({ status: prev, updated_at: new Date().toISOString() }).eq('id', p.existing.id); });
+              } else {
+                const { data: ins, error } = await sb.from('class_enrollments')
+                  .insert({ class_id: p.row.id, student_id: p.stu.id, status: 'active', enrolled_at: now })
+                  .select().single();
+                if (error) throw error;
+                undos.push(async () => { await sb.from('class_enrollments').update({ status: 'removed', updated_at: new Date().toISOString() }).eq('id', ins.id); });
+              }
+              done++;
+            } catch (e) {
+              // One refused class must not lose the other nine. Collect and
+              // report; RLS is the real gate and it can refuse per row.
+              failures.push(`${p.row.name}: ${(this._rivenPolicyError(e) || e).message || e}`);
+            }
+          }
+
+          if (undos.length) {
+            this._pushUndo(`enrolling ${targets.map(t => t.full_name).join(' and ')} in ${band.label}`,
+              async () => { for (const u of undos) await u(); });
+          }
+
+          const lines = [`${targets.map(t => t.full_name).join(' and ')} ${targets.length > 1 ? 'are' : 'is'} now in ${done} ${band.label} class${done === 1 ? '' : 'es'}.`];
+          if (failures.length) lines.push(`${failures.length} could not be changed: ${failures.slice(0, 3).join('; ')}`);
+          this._naturalSuccess(lines);
+        });
+    }
+
     async terminalEnrollStudent(entities) {
       const single = entities.student?.student;
       // "add jordan and dylan to robotics" — a resolved pair enrolls both
@@ -62519,7 +62803,12 @@
       rows.forEach(r => { const n = (r.name || '').toLowerCase(); counts[n] = (counts[n] || 0) + 1; });
       return rows.map(r => {
         const dup = counts[(r.name || '').toLowerCase()] > 1;
-        return r.name + (dup && r.teacher_name ? ` (${r.teacher_name})` : '');
+        if (!dup) return r.name;
+        // Whose it is used to be the only thing offered to tell two same-named
+        // classes apart. One teacher taking the same subject in two year
+        // groups is common here, and then the teacher's name tells you nothing.
+        const tell = r.grade_band ? this._rivenBandLabel(r.grade_band) : r.teacher_name;
+        return r.name + (tell ? ` (${tell})` : '');
       });
     }
 
@@ -64007,7 +64296,32 @@
           .forEach(w => { if ((w.length >= 3 || /^\d+$/.test(w)) && t.includes(w)) consumed.push(w); });
       });
 
+      // A class closed for the year is not what somebody naming a class means,
+      // unless it is the only thing that matches - which is how "reopen chess"
+      // still finds Chess. Without this, "my Math class" offered a picker of
+      // four, two of them last year's, and the picker showed nothing to tell
+      // them apart.
+      {
+        const live = candidates.filter(c => this._rivenClassIsOpen(c));
+        if (live.length) candidates = live;
+      }
+
       let qualified = false;
+
+      // Qualifier: the year group, by name. This is the one that resolves
+      // "my Math class tagged Old Middle School" outright - the class is
+      // called plain "Math" in two different year groups, so no amount of
+      // reading the NAME can separate them.
+      const bandHit = this._rivenBandFromText(t);
+      if (bandHit && candidates.length > 1) {
+        const narrowed = candidates.filter(c => c.grade_band === bandHit.code);
+        if (narrowed.length) {
+          candidates = narrowed;
+          bandHit.said.split(' ').forEach(w => { if (w.length >= 2) consumed.push(w); });
+          qualified = true;
+        }
+      }
+
       // Qualifier: "with <teacher first/last name>"
       const withM = t.match(/\bwith\s+([a-z]+)\b/);
       if (withM && candidates.length > 1) {
@@ -64132,15 +64446,25 @@
       this.terminalPrint(`I found ${rows.length} classes that could match:`, '#ffd36a');
       const output = document.getElementById('terminal-output');
       let html = '<div style="margin-top: 8px; margin-left: 16px;">';
+      // A picker has one job: show what tells the options apart. Four rows
+      // reading "Math · Jordan Ezell" is not a choice, it is a coin toss - and
+      // the thing that actually separated them, the year group, was the one
+      // field not on screen.
+      const bandCounts = {};
+      rows.forEach(c => { bandCounts[c.grade_band || ''] = (bandCounts[c.grade_band || ''] || 0) + 1; });
+      const bandTells = Object.keys(bandCounts).length > 1;
       rows.slice(0, 8).forEach((c, idx) => {
         const teach = c.teacher_name ? ` · ${this.escapeHtml(c.teacher_name)}` : '';
+        const band = bandTells
+          ? ` <span style="font-size: 11px; font-weight: 600; color: #f2e6c9; background: rgba(106, 169, 255, 0.28); padding: 1px 7px; border-radius: 10px; white-space: nowrap;">${this.escapeHtml(c.grade_band ? this._rivenBandLabel(c.grade_band) : 'no year group set')}</span>`
+          : '';
         const subj = c.subject ? ` <span style="font-size: 11px; color: var(--muted);">(${this.escapeHtml(c.subject)})</span>` : '';
         html += `
           <div onclick="app._resolveClassAmbiguity('${c.id}', '${this.escapeHtml(originalInput).replace(/'/g, '&#39;')}')"
                style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer;"
                onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
                onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
-            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(c.name)}${teach}${subj}</div>
+            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(c.name)}${teach}${band}${subj}</div>
           </div>`;
       });
       html += '</div>';

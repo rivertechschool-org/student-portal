@@ -112,7 +112,7 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
   '_extractEntities', '_parseTimeframe', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',
   '_rivenClassNamedBeyondCohort',
   '_levenshteinDistance', '_matchIntent', '_matchSmalltalk', '_isAggregateQuery',
-  '_rivenMatchClass', '_rivenCanManageClass', '_preferOwnedClasses', '_isoDaysAgo',
+  '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen', '_rivenCanManageClass', '_preferOwnedClasses', '_isoDaysAgo',
   '_rivenMatchGroup', '_rivenGroupCanon',
   '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo', '_commonWords',
@@ -165,6 +165,7 @@ const IMMEDIATE = new Set([...WRITE_INTENTS].filter(isImmediateWrite));
 // Writes whose blast radius is a whole class, or which destroy a record.
 // A false positive here is categorically worse than an over-eager ADD_NOTE.
 const BLAST_RADIUS = new Set(['GROUP_RTC', 'MARK_ATTENDANCE_GROUP', 'CLOSE_ALL_CLASSES', 'ANNOUNCE',
+  'ENROLL_BAND',
   'DELETE_CLASS', 'DELETE_NOTE', 'UNENROLL_STUDENT', 'MOVE_STUDENT',
   'REMOVE_SHOP_ITEM', 'REMOVE_PRIVILEGE', 'REVOKE_PRIVILEGE', 'ACTIVITY_UNENROLL']);
 
@@ -183,10 +184,19 @@ app._terminalAllStudents = roster.map(([f, l], i) => ({
 }));
 app.userInfo = { profile: { user_type: 'teacher' }, user: { id: 't1' } };
 app._terminalAllClasses = [
-  { id: 'c1', name: 'Math', subject: 'Mathematics', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
-  { id: 'c2', name: 'Robotics', subject: 'Science', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
-  { id: 'c3', name: 'Filmmaking - Freshman', subject: 'Art', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
-  { id: 'c4', name: 'World History', subject: 'History', teacher_id: 't2', secondary_teacher_id: null, is_active: true },
+  { id: 'c1', name: 'Math', subject: 'Mathematics', teacher_id: 't1', secondary_teacher_id: null, is_active: true, grade_band: 'old_middle' },
+  { id: 'c2', name: 'Robotics', subject: 'Science', teacher_id: 't1', secondary_teacher_id: null, is_active: true, grade_band: 'highschool' },
+  { id: 'c3', name: 'Filmmaking - Freshman', subject: 'Art', teacher_id: 't2', secondary_teacher_id: null, is_active: true, grade_band: 'highschool' },
+  { id: 'c4', name: 'World History', subject: 'History', teacher_id: 't2', secondary_teacher_id: null, is_active: true, grade_band: 'old_middle' },
+];
+// The real table. A year group named in a sentence is only recognised if it
+// is here, so the harness has to carry it like the page does.
+app._terminalGradeBands = [
+  { code: 'young_elementary', label: 'Young Elementary', sort_order: 1 },
+  { code: 'old_elementary',   label: 'Old Elementary',   sort_order: 2 },
+  { code: 'young_middle',     label: 'Young Middle',     sort_order: 3 },
+  { code: 'old_middle',       label: 'Old Middle School', sort_order: 4 },
+  { code: 'highschool',       label: 'Highschool',       sort_order: 5 },
 ];
 
 // ── Production decision path (mirrors _executeNaturalLanguage) ───────────────
@@ -274,6 +284,14 @@ function decide(input, { prior = [], keepContext = false } = {}) {
 // item = [input, expectedVerdict, expectedIntent|null, note?, opts?]
 
 const BUCKET_A = [ // in-scope commands — these SHOULD write
+  // Enrolling into a whole year group. The sentence reads like an ordinary
+  // enrolment until you notice the year group and the "all", which is exactly
+  // why ENROLL_BAND has to outrank ENROLL_STUDENT.
+  ['add noah to all the old middle school classes', 'WRITE', 'ENROLL_BAND'],
+  // The short form, as actually typed, with "every" and a singular class.
+  ['add noah to every old middle class', 'WRITE', 'ENROLL_BAND'],
+  ['enroll mia in every high school class', 'WRITE', 'ENROLL_BAND'],
+  ['put eli in all junior high classes', 'WRITE', 'ENROLL_BAND'],
   ['give charlotte 5 rtc', 'WRITE', 'ADD_RTC'],
   ['award noah 10 rtc for great work', 'WRITE', 'ADD_RTC'],
   ['give eli 3 gold', 'WRITE', 'ADD_RTC'],

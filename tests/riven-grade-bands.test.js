@@ -1,0 +1,287 @@
+// Riven understands the year groups, and can enrol into a whole one.
+//
+// WHAT WENT WRONG
+//
+// "Add her to my Math class tagged Old Middle School" produced a picker of
+// four rows, every one of them reading "Math · Jordan Ezell". Two problems at
+// once, and the second is the worse one:
+//
+//   * Three of the five classes named "Math" are CLOSED for the year. The
+//     matcher was still offering them. (_rivenMatchClass built its candidate
+//     list straight off the cache; the fix for closed classes had reached the
+//     sibling expansion but not the matcher itself.)
+//
+//   * The two live ones are both called "Math" and both taught by the same
+//     person. The ONLY thing separating them is grade_band - and grade_band
+//     was neither loaded into the cache, understood in a sentence, nor shown
+//     in the picker. So the person was asked to choose between four things
+//     that looked identical, having already said which one they meant.
+//
+// WHY THE NAME CANNOT BE USED INSTEAD
+//
+// Class names here carry the year group inconsistently: "Lower MS Math",
+// "Literature - Younger Middle School", "Math (Elementary) Monday", and plain
+// "Math" twice. Reading the name works until it doesn't. grade_band is the
+// field that actually knows.
+//
+// Run: node tests/riven-grade-bands.test.js
+
+const fs = require('fs');
+const path = require('path');
+
+const html = fs.readFileSync(path.join(__dirname, '..', 'portal', 'index.html'), 'utf8');
+
+let pass = 0;
+let fail = 0;
+const check = (label, actual, expected) => {
+  const a = JSON.stringify(actual), e = JSON.stringify(expected);
+  if (a === e) { pass++; console.log(`pass  ${label}`); }
+  else { fail++; console.log(`  FAIL  ${label}\n        expected ${e}\n        got      ${a}`); }
+};
+const ok = (label, cond) => check(label, !!cond, true);
+
+function extract(name, indent = 4) {
+  const pad = ' '.repeat(indent);
+  const re = new RegExp('\\n' + pad + '(?:async\\s+)?' + name + '\\s*\\(', 'g');
+  const m = re.exec(html);
+  if (!m) throw new Error('method not found: ' + name);
+  let i = m.index + m[0].length - 1, pd = 0;
+  for (; i < html.length; i++) {
+    const c = html[i];
+    if (c === '(') pd++;
+    else if (c === ')') { pd--; if (pd === 0) { i++; break; } }
+  }
+  const closeParen = i;
+  i = html.indexOf('{', i);
+  let depth = 0;
+  const start = i;
+  for (; i < html.length; i++) {
+    const c = html[i];
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) { i++; break; } }
+  }
+  const sig = html.slice(m.index + 1, closeParen).trim();
+  const args = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
+  const isAsync = /^\s*async\b/.test(m[0].slice(1));
+  const Ctor = isAsync ? Object.getPrototypeOf(async function () {}).constructor : Function;
+  return new Ctor(args, html.slice(start + 1, i - 1));
+}
+
+// The real table, as read off the live database.
+const BANDS = [
+  { code: 'young_elementary', label: 'Young Elementary', sort_order: 1 },
+  { code: 'old_elementary',   label: 'Old Elementary',   sort_order: 2 },
+  { code: 'young_middle',     label: 'Young Middle',     sort_order: 3 },
+  { code: 'old_middle',       label: 'Old Middle School', sort_order: 4 },
+  { code: 'highschool',       label: 'Highschool',       sort_order: 5 },
+];
+
+// The five classes actually called "Math", as they really are.
+const MATHS = [
+  { id: 'm1', name: 'Math', subject: 'Math',        grade_band: 'highschool', teacher_id: 'me', status: 'active' },
+  { id: 'm2', name: 'Math', subject: 'Math',        grade_band: 'old_middle', teacher_id: 'me', status: 'active' },
+  { id: 'm3', name: 'Math', subject: 'Mathematics', grade_band: 'old_middle', teacher_id: 'me', status: 'closed' },
+  { id: 'm4', name: 'Math', subject: 'Mathematics', grade_band: null,         teacher_id: 'me', status: 'closed' },
+  { id: 'm5', name: 'Math', subject: 'Mathematics', grade_band: null,         teacher_id: 'me', status: 'closed' },
+];
+
+function makeApp(classes = MATHS, bands = BANDS) {
+  const app = {
+    userInfo: { user: { id: 'me' }, profile: { id: 'p', user_type: 'admin' } },
+    _terminalAllClasses: classes,
+    _terminalAllStudents: [{ id: 's1', first_name: 'Josey', last_name: 'Baker', full_name: 'Josey Baker' }],
+    _terminalGradeBands: bands,
+    _notesPeople: null,
+    escapeHtml: (t) => String(t == null ? '' : t),
+  };
+  for (const m of ['_rivenClassIsOpen', '_rivenBandLabel', '_rivenBandFromText',
+                   '_rivenMatchClass', '_rivenClassLabels', '_levenshteinDistance']) {
+    app[m] = extract(m);
+  }
+  return app;
+}
+
+(async () => {
+
+  console.log('\n== reading a year group out of a sentence ==\n');
+
+  {
+    const app = makeApp();
+    const band = (t) => app._rivenBandFromText.call(app, t);
+
+    check('the label as written', band('tagged Old Middle School')?.code, 'old_middle');
+    check('the code, for anyone who types it', band('grade_band old_middle')?.code, 'old_middle');
+    check('what the staffroom says', band('put her in junior high')?.code, 'old_middle');
+    check('  and its other name', band('upper MS classes')?.code, 'old_middle');
+    check('high school', band('all the high school classes')?.code, 'highschool');
+    check('  written as one word', band('highschool bible')?.code, 'highschool');
+    check('young middle', band('lower ms math')?.code, 'young_middle');
+    check('lower elementary', band('lower elementary reading')?.code, 'young_elementary');
+
+    // "Old Middle School" contains "middle". Shortest-first matching would
+    // read it as young_middle or fail; longest-first gets it right.
+    check('the longest phrase wins, not the first', band('old middle school')?.code, 'old_middle');
+
+    // THE DELIBERATE GAP. Bare "middle" names two bands and bare "elementary"
+    // names two more. Guessing which is how a child lands in the wrong year.
+    check('a half-named group is not guessed at', band('the middle school classes'), null);
+    check('  nor elementary on its own', band('elementary classes'), null);
+    check('a sentence with no year group in it', band('add josey to math'), null);
+  }
+
+  console.log('\n== the table has to actually be loaded ==\n');
+
+  {
+    // THE BUG THIS SECTION EXISTS FOR.
+    //
+    // Band matching shipped completely dead. _loadTerminalGradeBands was wired
+    // into the SELF-HEAL block only - the one that runs when some other load
+    // failed - so on a healthy session it never ran, _terminalGradeBands stayed
+    // undefined, every sentence resolved to no band, and ENROLL_BAND's guard
+    // skipped it every time. "Add Josey to every Old Middle class" fell through
+    // to an ordinary class match on the word "middle" and offered a picker of
+    // Younger Middle School classes.
+    //
+    // Nothing failed. No error, no warning. The feature was simply off.
+    //
+    // And the harnesses could not see it, because they set _terminalGradeBands
+    // as a FIXTURE - supplying the very state production was failing to build.
+    // A fixture that stands in for a load tests everything except whether the
+    // load happens.
+    const src = html.slice(html.indexOf('_rivenReady()'));
+    const body = src.slice(0, src.indexOf('return this._rivenReadyPromise'));
+    ok('the year groups are loaded at mount, with the rest',
+       /_loadTerminalGradeBands\(\)/.test(body));
+
+    const heal = html.slice(html.indexOf('// Self-heal:'));
+    const healBody = heal.slice(0, heal.indexOf(']);'));
+    ok('  and self-heal notices when they are the thing missing',
+       /!this\._terminalGradeBands \|\|/.test(healBody));
+  }
+
+  {
+    // Degrade to the known vocabulary, never to silence. If the lookup fails,
+    // the staffroom words still work, because they carry their own codes.
+    const app = makeApp(MATHS, []);
+    app._terminalGradeBands = [];
+    check('with no table loaded, spoken names still resolve',
+          app._rivenBandFromText.call(app, 'every old middle class')?.code, 'old_middle');
+    check('  and high school', app._rivenBandFromText.call(app, 'all high school classes')?.code, 'highschool');
+    // The label falls back to the code rather than rendering blank.
+    check('  with a readable label', app._rivenBandLabel.call(app, 'old_middle'), 'old middle');
+  }
+
+  {
+    // "Old Middle", as actually typed. Not "Old Middle School".
+    const app = makeApp();
+    check('the short form names the right year group',
+          app._rivenBandFromText.call(app, 'add josey to every old middle class')?.code, 'old_middle');
+    // It must NOT come out as young_middle, which is what the screenshot showed.
+    ok('  and is never read as young middle',
+       app._rivenBandFromText.call(app, 'every old middle class')?.code !== 'young_middle');
+  }
+
+  console.log('\n== the picker that started this ==\n');
+
+  {
+    const app = makeApp();
+    const m = app._rivenMatchClass.call(app, 'add her to my math class tagged old middle school');
+    // One class. No picker. This is the whole point.
+    check('naming the year group resolves it outright', m.id, 'm2');
+    check('  and it is not ambiguous', !!m.ambiguous, false);
+    ok('  counted as a qualifier, so ownership rules do not re-widen it', m.qualified);
+  }
+
+  {
+    const app = makeApp();
+    const m = app._rivenMatchClass.call(app, 'add her to my math class');
+    // Without the year group it still has to ask - but only between the two
+    // that are actually running, not four including last year's.
+    ok('an unqualified name is still ambiguous', m.ambiguous);
+    check('  but only among live classes', m.candidates.map(c => c.id).sort(), ['m1', 'm2']);
+    check('  last year\'s Math is not offered', m.candidates.some(c => c.status === 'closed'), false);
+  }
+
+  {
+    // ... unless closed is all there is. "reopen chess" has to find Chess.
+    const app = makeApp([{ id: 'c9', name: 'Chess', grade_band: null, teacher_id: 'me', status: 'closed' }]);
+    const m = app._rivenMatchClass.call(app, 'reopen chess');
+    check('a closed class is still reachable when nothing else matches', m.id, 'c9');
+  }
+
+  console.log('\n== showing what tells them apart ==\n');
+
+  {
+    const app = makeApp();
+    const labels = app._rivenClassLabels.call(app, [MATHS[0], MATHS[1]]);
+    // Both are taught by the same person, so the teacher's name - which is all
+    // this used to offer - distinguishes nothing.
+    check('two same-named classes are labelled by year group', labels,
+          ['Math (Highschool)', 'Math (Old Middle School)']);
+  }
+
+  {
+    const app = makeApp();
+    const labels = app._rivenClassLabels.call(app, [MATHS[0], { id: 'x', name: 'Bible', grade_band: 'highschool' }]);
+    check('a name that is already unique is left alone', labels, ['Math', 'Bible']);
+  }
+
+  {
+    // The picker renders the band only when it is the differentiator, so a
+    // list of genuinely different classes does not grow noise.
+    const src = html.slice(html.indexOf('_showClassPicker(rowsIn'));
+    const body = src.slice(0, src.indexOf('async _resolveClassAmbiguity'));
+    ok('the picker works out whether the band tells them apart', /bandTells/.test(body));
+    ok('  and puts it on the row', /\$\{band\}/.test(body));
+    ok('  saying so when a class has none set', /no year group set/.test(body));
+  }
+
+  console.log('\n== enrolling into a whole year group ==\n');
+
+  {
+    const src = html.slice(html.indexOf('async terminalEnrollInBand'));
+    const body = src.slice(0, src.indexOf('async terminalEnrollStudent'));
+    ok('it only touches classes still running', /_rivenClassIsOpen\(c\) && c\.grade_band === band\.code/.test(body));
+    ok('  and only ones the asker may change', /_rivenCanManageClass/.test(body));
+    // A bulk roster change reporting only a number is one nobody can check.
+    ok('it lists the classes before writing', /_requestConfirmation/.test(body) && /list/.test(body));
+    ok('  says what it is skipping and why', /not yours to change/.test(body));
+    ok('  and leaves existing enrolments alone', /already in place, left alone/.test(body));
+    // One refused class must not lose the other nine.
+    ok('one refusal does not abandon the rest', /failures\.push/.test(body));
+    ok('  and the whole batch is undoable', /_pushUndo/.test(body));
+  }
+
+  {
+    const src = html.slice(html.indexOf("intent: 'ENROLL_BAND'"));
+    const block = src.slice(0, src.indexOf("intent: 'ENROLL_STUDENT'"));
+    ok('the intent needs a student', /requiresStudent: true/.test(block));
+    // Without this it would swallow "add josey to all MY classes".
+    ok('  and needs a year group to be named', /requiresBand: true/.test(block));
+    ok('  and outranks a single enrolment', /w: 8/.test(block));
+  }
+
+  console.log('\n== /admin ==\n');
+
+  {
+    const src = html.slice(html.indexOf('async executeTerminalCommand'));
+    const body = src.slice(0, src.indexOf('// ==================== /rt'));
+    ok('the prefix is recognised', /\^\\\/admin\\b/.test(body));
+    // It skips the question, not the permission.
+    ok('a non-admin is refused it', /admin is for admins only/.test(body));
+    // A flag left set would disarm every confirmation for the rest of the
+    // session, which is exactly the bug nobody would notice.
+    ok('the exemption lasts one command', /finally\s*\{[\s\S]*_rivenAutoConfirm = false/.test(body));
+    ok('  and the action is awaited in the same turn', /_rivenAutoPending/.test(body));
+  }
+
+  {
+    const src = html.slice(html.indexOf('_requestConfirmation(summaryHtml'));
+    const body = src.slice(0, src.indexOf('async _confirmPendingAction'));
+    ok('auto-confirm still shows what it did', /_rivenAutoConfirm[\s\S]*_showRivenMessage/.test(body));
+    ok('  and a failure is still reported', /Auto-confirmed action failed/.test(body));
+  }
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();

@@ -46,7 +46,7 @@ const mk = (n) => { const b = bodyOf(n); return new Function(...b.args.split(','
 const METHODS = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand', '_extractEntities',
   '_parseTimeframe', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance',
   '_rivenClassNamedBeyondCohort',
-  '_matchIntent', '_matchSmalltalk', '_isAggregateQuery', '_rivenMatchClass', '_rivenCanManageClass',
+  '_matchIntent', '_matchSmalltalk', '_isAggregateQuery', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen', '_rivenCanManageClass',
   '_rivenMatchGroup', '_rivenGroupCanon',
   '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
