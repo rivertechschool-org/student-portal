@@ -264,6 +264,46 @@ const said = (text) => ({ original: text, _rawInput: text, normalized: text });
     ok('  and they are pointed at the school-wide form', /school-wide/.test(app.said[0] || ''));
   }
 
+  console.log('\n== /admin widens a question, not a demolition ==\n');
+
+  {
+    // /admin skips the confirmation. If it also widened this, eight typed
+    // words would clear every register in the building with nothing in
+    // between. Cancelling keeps costing the words "school-wide".
+    const app = makeApp();
+    app.userInfo.profile.user_type = 'admin';
+    app._rivenAutoConfirm = true;                       // as /admin sets it
+    await app.terminalCancelDay.call(app, said('cancel all classes except p1'));
+    ok('/admin does not widen a cancellation', !/Bible/.test(app.confirmed || ''));
+    ok("  it is still the asker's own day", /Chemistry/.test(app.confirmed || ''));
+  }
+
+  {
+    // But a question asked with the prefix does widen - that is the whole
+    // point of the prefix, and a read costs nothing.
+    const app = makeApp();
+    app.userInfo.profile.user_type = 'admin';
+    app._rivenAutoConfirm = true;
+    check('/admin widens a read',
+          app._rivenSchoolScope.call(app, said('who was missing today')).school, true);
+
+    // "my" says whose, and the prefix must not overrule a sentence that does.
+    check('  unless the sentence says "my"',
+          app._rivenSchoolScope.call(app, said('who was missing in my classes')).school, false);
+
+    // Without the prefix nothing changes.
+    const plain = makeApp();
+    plain.userInfo.profile.user_type = 'admin';
+    check('  no prefix, no widening',
+          plain._rivenSchoolScope.call(plain, said('who was missing today')).school, false);
+
+    // A teacher is refused the prefix earlier, but belt and braces.
+    const t = makeApp();
+    t._rivenAutoConfirm = true;
+    check('  and a teacher never widens',
+          t._rivenSchoolScope.call(t, said('who was missing today')).school, false);
+  }
+
   console.log('\n== nothing to do ==\n');
 
   {

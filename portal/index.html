@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·e';
+      const RIVEN_BUILD = '2026-09-16·f';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -55627,8 +55627,13 @@
   <div style="font-size: 12px; color: #6b5236; margin-bottom: 10px;">
     Put <b>/admin</b> in front of any command and I'll just do it instead of asking \u2014
     e.g. <b>/admin add Josey to every Old Middle School class</b>.
+    It also widens a <i>question</i> to the whole school, so
+    <b>/admin who was missing today?</b> covers every teacher's classes rather
+    than only yours — say "my" to keep it to your own.
     It skips the question, not the permission: you still can't do anything you
     couldn't do anyway, and undo still works. Admins only.
+    <br>Cancelling is the exception: that always needs the words
+    <b>"school-wide"</b>, because /admin already skips the confirmation.
   </div>
   <div style="font-weight: 600; font-size: 12px; margin-bottom: 4px;">⌨️ Advanced: Slash Commands</div>
   <div style="font-size: 11px; color: #6b5236; line-height: 1.6;">
@@ -60904,7 +60909,10 @@
       // "all" would let an ordinary afternoon's tidy-up close every register
       // in the building, so the wider reach has to be asked for out loud
       // ("school-wide", "every teacher's classes") and is admin-only.
-      const scope = this._rivenSchoolScope(entities);
+      // Explicit words only. /admin skips the confirmation, so letting it also
+      // widen this would put every register in the building one short sentence
+      // away from being cleared with nothing in between.
+      const scope = this._rivenSchoolScope(entities, { viaAdminPrefix: false });
       if (scope.refused) {
         this._showRivenMessage(
           `Cancelling across the whole school is admin-only \u2014 I'll do your own classes instead.`, true);
@@ -63536,11 +63544,33 @@
     // case worth naming out loud: a teacher who asked for school-wide gets
     // their own scope back, and should be told that is what happened rather
     // than handed a short answer that looks like the school has no problems.
-    _rivenSchoolScope(entities) {
-      const said = this._rivenSaidEveryTeacher(
-        `${entities?.normalized || ''} ${entities?.original || entities?._rawInput || ''}`);
-      if (!said) return { school: false, refused: false };
-      if (this.userInfo?.profile?.user_type !== 'admin') return { school: false, refused: true };
+    // Did they ask for the whole school, and may they have it?
+    //
+    // Two ways to ask. The words - "school-wide", "every teacher's classes" -
+    // and the /admin prefix, which reads as "with my admin hat on" and is the
+    // way an admin naturally expects to widen a question. Without the second,
+    // "/admin who was missing today?" answered with the asker's own classes,
+    // which is the same list they get without the prefix; the prefix appeared
+    // to do nothing.
+    //
+    // TWO GUARDS ON THAT SECOND WAY.
+    //
+    // "my" wins. "/admin cancel all MY classes" is a sentence that says whose,
+    // and the prefix must not overrule it.
+    //
+    // And a destructive write never widens on the prefix alone - callers pass
+    // viaAdminPrefix:false. /admin also skips the confirmation, so the two
+    // together would turn eight typed words into every register in the
+    // building being cleared with nothing in between. Widening what a question
+    // ANSWERS is free; widening what a command DESTROYS is not, and that one
+    // keeps costing the words "school-wide".
+    _rivenSchoolScope(entities, { viaAdminPrefix = true } = {}) {
+      const raw = `${entities?.normalized || ''} ${entities?.original || entities?._rawInput || ''}`;
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      const said = this._rivenSaidEveryTeacher(raw);
+      const byPrefix = viaAdminPrefix && !!this._rivenAutoConfirm && isAdmin && !/\bmy\b/i.test(raw);
+      if (!said && !byPrefix) return { school: false, refused: false };
+      if (!isAdmin) return { school: false, refused: true };
       return { school: true, refused: false };
     }
 

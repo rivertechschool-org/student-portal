@@ -1920,3 +1920,35 @@ pointed at the school-wide form.
 `tests/riven-cancel-day.test.js` is up to 43, `frontdoor-precision` to 70
 writes with the school-wide phrasing pinned.
 
+---
+
+## 2026-09-16 — /admin now widens a question
+
+`/admin who was missing today?` answered with the asker's own classes — the
+same list they get without the prefix, so the prefix looked like it did
+nothing. `/admin` meant "skip the confirmation" and nothing else, while the
+obvious reading is "with my admin hat on".
+
+It now widens the **scope of a question** too, through the same
+`_rivenSchoolScope` helper. `/admin who was missing today?` covers every
+teacher's classes; the answer's own header already says which scope it used,
+so there is no ambiguity about what you are looking at.
+
+### Two guards on that
+
+**"my" wins.** `/admin cancel all MY classes` is a sentence that says whose,
+and a prefix must not overrule it.
+
+**A destructive write never widens on the prefix alone.** `terminalCancelDay`
+passes `viaAdminPrefix: false`, so cancelling still costs the words
+"school-wide". `/admin` also *skips the confirmation* — the two together would
+turn eight typed words into every register in the building being cleared with
+nothing in between. Widening what a question **answers** is free; widening what
+a command **destroys** is not.
+
+That asymmetry is the whole design, and it is worth keeping in mind for any
+future bulk write: reads may take the prefix, writes must be told in words.
+
+`tests/riven-cancel-day.test.js` is at 49, covering both directions plus the
+teacher case and the no-prefix case.
+
