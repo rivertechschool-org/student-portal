@@ -382,7 +382,8 @@ const A = {
   types: [],
   services: [],
   slots: {}, songLinks: {}, files: {},   // serviceId -> rows
-  filesUnavailable: false,   // set when the practice-files table is not there yet
+  filesUnavailable: false,     // set when the practice-files table is not there yet
+  songLeaderAvailable: true,   // cleared when the set list cannot name a leader yet
   directory: null,         // lazily loaded, admin only
   tab: 'schedule',
   openService: null, _openType: null,
@@ -440,6 +441,15 @@ async function loadCore(){
   // A school admin is a team admin without being on the roster at all - they
   // may never play, and still have to run the team.
   A.isAdmin = A.me.user_type === 'admin' || !!(A.member && A.member.is_worship_admin);
+
+  // The count of people waiting belongs on the tab from the first paint. It
+  // used to load only when the Requests tab was opened, so an admin who lands
+  // on the schedule - which is everyone, now that it is the first tab - was
+  // never told anyone had asked.
+  if (A.isAdmin) {
+    const waiting = await A.supabase.rpc('worship_requests_list');
+    if (!waiting.error) { A.requests = waiting.data || []; A.loaded.requests = true; }
+  }
 }
 
 // --------------------------------------------------------------- shell ----
@@ -1030,6 +1040,80 @@ function teamBlock(s, slots){
     </div>`;
 }
 
+// Who leads THIS song, which is not the same question as who leads the
+// service: a set list usually shares the leading around.
+function leaderName(link){
+  if (!link || !link.leader_user_id) return '';
+  const m = A.rosterById[link.leader_user_id];
+  return m ? m.full_name : 'Former member';
+}
+
+// Key, leader and note are the three things that change about a song AFTER it
+// is on the order - a key gets moved to suit whoever is singing it, and who is
+// singing it changes too. Set at the moment of adding is not enough.
+function editServiceSong(linkId, serviceId){
+  const l = (A.songLinks[serviceId] || []).find(x => x.id === linkId);
+  if (!l) return;
+  const song = A.songs.find(x => x.id === l.song_id);
+  const current = l.song_key || (song && song.default_key) || '';
+
+  showModal(esc(song ? song.title : 'Song'), `
+    <div class="row">
+      <div class="field" style="width:120px">
+        <label class="fld" for="es-key">Key</label>
+        <select id="es-key" style="width:100%">
+          <option value="">No key set</option>
+          ${KEYS.map(k => `<option value="${k}" ${k === normaliseKey(current) ? 'selected' : ''}>${k}</option>`).join('')}
+        </select>
+      </div>
+      ${A.songLeaderAvailable ? `
+      <div class="field" style="flex:1;min-width:180px">
+        <label class="fld" for="es-leader">Led by</label>
+        <select id="es-leader" style="width:100%">
+          <option value="">Nobody set</option>
+          ${A.roster.map(m => `<option value="${m.user_id}" ${
+            m.user_id === l.leader_user_id ? 'selected' : ''}>${esc(m.full_name)}</option>`).join('')}
+        </select>
+      </div>` : ''}
+    </div>
+    <div class="field">
+      <label class="fld" for="es-note">Note</label>
+      <input type="text" id="es-note" style="width:100%" placeholder="e.g. straight into the next one"
+             value="${esc(l.note || '')}">
+    </div>
+    ${song && song.default_key ? `<div class="hint">The song's own key is ${esc(song.default_key)}. The chart reads in whichever you pick.</div>` : ''}
+    <div class="row" style="margin-top:12px">
+      <button class="btn" onclick="saveServiceSong('${linkId}','${serviceId}')">Save</button>
+      <button class="btn sec" onclick="closeModal()">Cancel</button>
+    </div>
+  `);
+}
+
+async function saveServiceSong(linkId, serviceId){
+  const row = {
+    song_key: ($('es-key').value || '').trim() || null,
+    note: ($('es-note').value || '').trim() || null
+  };
+  // The leader column arrived after the rest; on a database that has not had
+  // that migration the field is not drawn and must not be sent either.
+  if (A.songLeaderAvailable) row.leader_user_id = $('es-leader').value || null;
+
+  const { error } = await A.supabase.from('worship_service_songs').update(row).eq('id', linkId);
+  if (error) {
+    if (/leader_user_id/.test(error.message)) {
+      A.songLeaderAvailable = false;
+      toast('Saved without the leader — that needs the newest migration run', true);
+    } else {
+      toast('Could not save: ' + error.message, true);
+      return;
+    }
+  }
+
+  closeModal();
+  await loadServiceChildren();
+  renderTab();
+}
+
 function statusTag(status){
   if (status === 'confirmed') return '<span class="tag yes">in</span>';
   if (status === 'declined') return '<span class="tag no">out</span>';
@@ -1052,6 +1136,7 @@ function orderBlock(s){
           ${song ? `<a href="#" onclick="openSong('${song.id}'${l.song_key ? `,'${esc(l.song_key)}'` : ''});return false;">${title}</a>`
                  : title}
           <div class="sub">${l.song_key ? 'Key ' + esc(l.song_key) : (song && song.default_key ? 'Key ' + esc(song.default_key) : 'No key set')}${
+            leaderName(l) ? ' · led by ' + esc(leaderName(l)) : ''}${
             song && song.artist ? ' · ' + esc(song.artist) : ''}${playable ? ' · 🎹 chart' : ''}${
             l.note ? ' · ' + esc(l.note) : ''}</div>
         </div>
@@ -1059,6 +1144,7 @@ function orderBlock(s){
           <div class="ord">
             <button title="Up" onclick="moveServiceSong('${l.id}','${s.id}',-1)" ${i === 0 ? 'disabled' : ''}>↑</button>
             <button title="Down" onclick="moveServiceSong('${l.id}','${s.id}',1)" ${i === songs.length - 1 ? 'disabled' : ''}>↓</button>
+            <button title="Key, leader, note" onclick="editServiceSong('${l.id}','${s.id}')">✎</button>
             <button title="Remove" onclick="removeServiceSong('${l.id}','${s.id}')">✕</button>
           </div>` : ''}
       </div>`;
@@ -1258,6 +1344,12 @@ async function loadServiceChildren(){
 
   (slotRes.data || []).forEach(r => { (A.slots[r.service_id] = A.slots[r.service_id] || []).push(r); });
   (songRes.data || []).forEach(r => { (A.songLinks[r.service_id] = A.songLinks[r.service_id] || []).push(r); });
+
+  // Whether a set-list row can name a leader. Told by the rows themselves
+  // rather than guessed: with none to look at, assume yes and let the write
+  // correct it, which costs one toast on one old database.
+  const sample = (songRes.data || [])[0];
+  if (sample) A.songLeaderAvailable = 'leader_user_id' in sample;
   (fileRes.data || []).forEach(r => { (A.files[r.service_id] = A.files[r.service_id] || []).push(r); });
 }
 
@@ -1277,7 +1369,10 @@ async function submitJoinRequest(){
   const note = ($('join-note').value || '').trim();
 
   const { error } = await A.supabase.from('worship_join_requests')
-    .insert({ user_id: A.me.id, instruments, note: note || null });
+    // status is defaulted by the database and REQUIRED by the insert policy.
+    // Sending it puts the policy's condition in the code that has to satisfy
+    // it, and makes the row read back the row this meant to write.
+    .insert({ user_id: A.me.id, instruments, note: note || null, status: 'pending' });
   if (error) { toast('Could not send: ' + error.message, true); return; }
 
   await loadCore();
@@ -1447,6 +1542,10 @@ async function saveSong(id, serviceId, key){
     ({ error } = await A.supabase.from('worship_songs').update(row).eq('id', id));
   } else {
     row.created_by = A.me.id;
+    // is_active is defaulted by the database, and loadSongs() FILTERS on it.
+    // A write that leans on a default for a column its own read then filters
+    // by is a coupling worth removing: say it here, where both can be seen.
+    row.is_active = true;
     // The id comes back because a song made from a service's order has to be
     // put into that order straight away.
     const res = await A.supabase.from('worship_songs').insert(row).select('id').single();
@@ -1710,9 +1809,21 @@ async function moveServiceSong(linkId, serviceId, dir){
   if (i === -1 || j < 0 || j >= songs.length) return;
 
   const a = songs[i], b = songs[j];
+
+  // Read BOTH numbers before issuing either write. Reading the second one
+  // after the first write has gone out makes the result depend on whether
+  // anything has already updated the row in hand - which is a dependency this
+  // does not need and cannot see.
+  const ao = a.sort_order, bo = b.sort_order;
+
+  // Two rows can hold the SAME sort_order - any row that never had one set -
+  // and swapping equal numbers moves nothing at all. Give the pair their
+  // positions instead, so the press still does what it says.
+  const [newA, newB] = ao === bo ? [j, i] : [bo, ao];
+
   const [res1, res2] = await Promise.all([
-    A.supabase.from('worship_service_songs').update({ sort_order: b.sort_order }).eq('id', a.id),
-    A.supabase.from('worship_service_songs').update({ sort_order: a.sort_order }).eq('id', b.id)
+    A.supabase.from('worship_service_songs').update({ sort_order: newA }).eq('id', a.id),
+    A.supabase.from('worship_service_songs').update({ sort_order: newB }).eq('id', b.id)
   ]);
   if (res1.error || res2.error) {
     toast('Could not reorder: ' + ((res1.error || res2.error).message), true);

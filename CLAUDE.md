@@ -93,6 +93,35 @@ Playwright at `/opt/pw-browsers/chromium`. The page loads fully offline; only th
 calls fail, which is expected. Do this for any visible UI change — it catches what a
 DOM stub cannot.
 
+## Beta-test it yourself, end to end
+
+**Before handing a feature over, walk the whole journey in a browser as each person who
+uses it** — not the function you changed, the journey: the student who asks to join, the
+admin who plans a service from an empty date, the player who opens it on Sunday morning.
+Luke should not be the one who finds out that step four does not reach step five.
+
+Unit tests hold single functions honest. Journeys hold the SEAMS honest — the places where
+a render, a write and a reload have to agree — and every bug that has reached Luke on this
+page has lived in a seam, not in a function.
+
+Write it as a harness, not a one-off click-through, so the next change re-runs it:
+
+```bash
+python3 -m http.server 8765 &
+node debug-tools/worship-journeys.mjs        # the pattern to copy
+```
+
+Two things that harness learned the hard way, both worth copying:
+
+- **Give the stub the schema's column defaults.** A stub without them is *stricter* than
+  Postgres: the page rightly omits a defaulted column on insert, reads the row back, and
+  the stub reports a bug that cannot happen. Cry wolf twice and the harness stops being
+  read.
+- **Hand back copies of rows, not the rows themselves.** A real client cannot reach into
+  your page's state. A stub that shares object references lets a write appear to take
+  effect on data the page is still holding, which is neither how it behaves nor how it
+  fails.
+
 ## Conventions
 
 - **Comment what you write, and why.** Match the density of the code around you. Leave

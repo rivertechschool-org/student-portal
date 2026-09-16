@@ -1109,3 +1109,41 @@ services on the same day at the same time, but it is no longer the first thing c
 
 One sort, applied where the types are loaded, so the list, the one-off picker and every
 dropdown built from `A.types` agree without each remembering to sort.
+
+---
+
+## 2026-09-16 — Luke's Claude (beta-testing the journeys, and what it found)
+
+**New standing rule, from Luke: "You do the beta testing so I don't have to."** It is
+written up in `CLAUDE.md` under *Beta-test it yourself, end to end*, and the harness that
+implements it for this page is `debug-tools/worship-journeys.mjs` — 4 journeys, 44 checks,
+driven in Chromium against a stubbed database:
+
+1. a student asks to join and an admin lets them in;
+2. an admin plans a service from an empty date — people, songs, a song that is not in the
+   library yet, a reorder, a key change, a practice file, publish;
+3. a player opens the published plan, replies, and reads the chart in the booked key;
+4. the library — search, open, transpose.
+
+**What it found, stated honestly, because the difference matters:**
+
+- **One real bug.** The "people waiting" badge on the Requests tab only loaded once that
+  tab had been opened. Since the Schedule became the first tab, an admin could go a week
+  without being told anyone had asked to join. The count now loads at boot.
+- **One real fragility, surfaced by a stub artifact.** Reordering a set list read the
+  second row's `sort_order` *after* issuing the write against the first. Against the real
+  client that is harmless; against anything that updates the row in hand it is wrong, and
+  it was invisible. Both numbers are now read before either write. While there, a tie
+  (two rows sharing a `sort_order`, which any row that never set one has) made the press
+  silently do nothing — that now falls back to assigning positions.
+- **Two false alarms, which are worth more than they cost.** Both were the stub being
+  *stricter* than Postgres: the page omits a defaulted column on insert and reads the row
+  back expecting the default. Fixed in the stub, and the two writes were made explicit
+  anyway, since a write that leans on a default its own read then filters by is a coupling
+  worth removing. A harness that cries wolf twice stops being read, so this is written down
+  in `CLAUDE.md` as the first thing to get right when stubbing.
+
+**Also:** a set-list row is editable after it is added — key, who leads *that song*, and a
+note — not only at the moment of adding. Who leads a song is not who leads the service, so
+that is a new nullable column, migration 4 in the backend repo, handed to Luke. Until it is
+run the Leader field is not drawn and not sent; everything else works.

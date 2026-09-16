@@ -177,8 +177,29 @@ ok('pressing Schedule from inside a plan comes back out',
 ok('an admin can start a plan from an empty date', /planDate\('\$\{type\.id\}','\$\{d\.date\}'\)/.test(page));
 ok('  and it starts as a draft', /status: 'draft', created_by: A\.me\.id/.test(page));
 
-// Reordering swaps two rows rather than rewriting the list.
-ok('reorder swaps a pair', /sort_order: b\.sort_order/.test(page) && /sort_order: a\.sort_order/.test(page));
+// Reordering swaps two rows rather than rewriting the list, so two people
+// editing different parts of an order cannot clobber each other.
+ok('reorder swaps a pair', /const \[newA, newB\] = ao === bo \? \[j, i\] : \[bo, ao\];/.test(page));
+
+// Both numbers are read BEFORE either write goes out. Reading the second after
+// the first write has been issued makes the result depend on whether anything
+// has already changed the row in hand — a dependency this does not need and
+// cannot see.
+ok('  reading both first', /const ao = a\.sort_order, bo = b\.sort_order;/.test(page));
+ok('  and issuing the writes after that',
+  page.indexOf('const ao = a.sort_order, bo = b.sort_order;') <
+  page.indexOf("update({ sort_order: newA })"));
+
+// Rows that never had a sort_order set all hold the same number, and swapping
+// equal numbers moves nothing: the press would silently do nothing at all.
+ok('  with a tie falling back to positions', /ao === bo \? \[j, i\]/.test(page));
+
+// A set-list row is editable after it is added: a key gets moved to suit
+// whoever is singing, and who is singing changes too.
+ok('a set-list row can be edited', /function editServiceSong\(linkId, serviceId\)/.test(page));
+ok('  key, leader and note', /song_key:.*\n.*note:/.test(page) && /row\.leader_user_id = \$\('es-leader'\)\.value \|\| null;/.test(page));
+ok('  and the leader is shown on the row', /led by/.test(page));
+ok('  but not offered on a database without the column', /if \(A\.songLeaderAvailable\) row\.leader_user_id/.test(page));
 
 // The songs tab is a list now.
 ok('songs render as rows', /class="songrow"/.test(page));
