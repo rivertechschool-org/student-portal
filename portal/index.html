@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·c';
+      const RIVEN_BUILD = '2026-09-16·d';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52729,7 +52729,7 @@
         'RENAME_STUDENT', 'LINK_PARENT', 'UNLINK_PARENT',
         'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
         'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'CANCEL_CLASS', 'UNCANCEL_CLASS',
-        'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER',
+        'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER', 'CANCEL_DAY',
         'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
         'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
@@ -54352,6 +54352,30 @@
             /\b(gone home|went home|left with)\b/,
           ]
         },
+        // CANCEL_DAY - "cancel all my classes for the day except P1".
+        //
+        // A teacher going home sick cancels their whole day, not one lesson at
+        // a time. This used to fall through to LIST_CLASSES and print all 21 of
+        // their classes back at them.
+        //
+        // Weighted well above CANCEL_CLASS because "cancel all my classes
+        // except Math" DOES name a class, so CANCEL_CLASS bids too - and with
+        // requiresClass it out-scores a plain w:10. The named class there is
+        // the exception, not the target, and cancelling it would be the exact
+        // opposite of what was asked.
+        //
+        // "all/every/the rest of" is required. Without it "cancel my math
+        // class" matches this instead, which is the same mistake pointed the
+        // other way.
+        {
+          intent: 'CANCEL_DAY',
+          w: 14, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,40}\b(all|every|the rest of|the whole|rest of)\b[\s\S]{0,30}\b(class(?:es)?|day|schedule)\b/,
+            /\bcancel\b[\s\S]{0,20}\b(everything|the whole day|the rest of (?:my|the) day)\b/,
+            /\b(no|not having)\s+classes\b[\s\S]{0,20}\b(today|tomorrow)\b/,
+          ]
+        },
         {
           intent: 'CANCEL_CLASS',
           w: 9, requiresClass: true, notIfNoteCommand: true, notIfQuestion: true,
@@ -55421,6 +55445,10 @@
           return await this.terminalExcuseAbsence(entities);
         case 'MARK_PICKED_UP':
           return await this.terminalMarkPickedUp(entities);
+        case 'CANCEL_DAY':
+          await this.terminalCancelDay(entities);
+          break;
+
         case 'CANCEL_CLASS':
           return await this.terminalCancelClass(entities);
         case 'UNCANCEL_CLASS':
@@ -55558,6 +55586,7 @@
     \u2022 "Excuse [student] today" \u2014 flags an absence already on the register as excused<br>
     \u2022 "[student] has been picked up" \u2014 the same tick as the pickup board<br>
     \u2022 "Cancel [class] today" \u2014 calls off the session; I say how many marks that deletes<br>
+    \u2022 "Cancel all my classes for the day except P1" \u2014 the whole day, minus what you keep<br>
     \u2022 "[class] is back on today" \u2014 puts a cancelled session back<br>
     \u2022 "[student] got 18 out of 20 on [assignment]" \u2014 the letter comes from the rubric<br>
     \u2022 "Make [assignment] due friday" / "[assignment] is worth 50 points" / "Unpublish [assignment]"<br>
@@ -60829,6 +60858,153 @@
     // marks already taken for that class, date and period. That is right - a
     // session that did not happen has no register - but a teacher who cancels
     // the wrong period loses real marks, so the confirmation counts them first.
+    // What comes after "except". Returns the periods and the raw tail, so the
+    // caller can also match class names against it.
+    //
+    // Deliberately anchored to the end of the sentence: "except" introduces the
+    // exception and everything after it belongs to that clause.
+    _rivenExceptClause(raw) {
+      const m = String(raw || '').match(
+        /\b(?:except|except for|apart from|other than|but not|excluding|besides)\b\s+(.{1,80})$/i);
+      if (!m) return null;
+      const tail = m[1].trim().replace(/[.!?]+$/, '');
+      const periods = new Set();
+      // "P1", "period 1", "periods 1 and 2", "1st period", "p1/p3".
+      const re = /\b(?:p|period)\s*(\d{1,2})\b|\b(\d{1,2})(?:st|nd|rd|th)?\s+period\b/gi;
+      let pm;
+      while ((pm = re.exec(tail))) periods.add(parseInt(pm[1] || pm[2], 10));
+      // "except P1 and 3" - a bare number after a period reference is a period.
+      if (periods.size) {
+        for (const nm of tail.match(/\b\d{1,2}\b/g) || []) periods.add(parseInt(nm, 10));
+      }
+      return { periods, tail };
+    }
+
+    // Cancel a whole teaching day, minus anything excepted.
+    //
+    // Same mechanics as cancelling one class - a cancelled session has no
+    // register, so the marks go with it - just repeated, and reported as one
+    // list so nobody has to guess what it touched.
+    async terminalCancelDay(entities) {
+      const raw = entities.original || entities._rawInput || '';
+      const date = entities.sinceDate || this._rivenPhraseToDate?.(raw)?.iso
+                   || this._rivenPhraseToDate?.(raw) || this._localDateStr(new Date());
+      const dateStr = typeof date === 'string' ? date : this._localDateStr(new Date());
+      const esc = (t) => this.escapeHtml(String(t));
+      const sb = this.auth.supabase;
+
+      if (!this._terminalAllClasses?.length) await this._loadTerminalClasses();
+
+      // MINE, and only the ones still running. An admin saying "cancel all my
+      // classes" means the ones they teach, not the school's 75.
+      const mine = (this._terminalAllClasses || []).filter(c =>
+        this._rivenClassIsOpen(c) && this._rivenOwnsClass(c)
+        && this._rivenCanManageClass(c, { attendance: true }));
+      if (!mine.length) {
+        this.terminalPrintError("You aren't listed as the teacher of any class that's running, so there's nothing for me to cancel.");
+        return;
+      }
+
+      // Only classes that actually MEET that day. Cancelling a session that was
+      // never going to happen writes a cancellation nobody asked for, and it
+      // would show on the register as a thing that was called off.
+      const periods = await this._rivenPeriodsOn(mine.map(c => c.id), dateStr);
+      const meeting = mine.filter(c => (periods[c.id] || []).length);
+      if (!meeting.length) {
+        this._showRivenMessage(
+          `None of your classes meet on ${esc(dateStr)}, so there's nothing to cancel.`, true);
+        return;
+      }
+
+      // The exception clause.
+      const ex = this._rivenExceptClause(raw);
+      const kept = [];
+      let targets = meeting;
+      if (ex) {
+        const tail = ex.tail.toLowerCase();
+        targets = meeting.filter(c => {
+          const ps = periods[c.id] || [];
+          // A class meeting in an excepted period is kept WHOLE - cancelling
+          // is per class per day, not per period, so there is no way to cancel
+          // half of one. Said out loud below when it applies.
+          if (ps.some(p => ex.periods.has(p))) { kept.push({ c, why: 'period' }); return false; }
+          const words = (c.name || '').toLowerCase().split(/\s+/)
+            .map(w => w.replace(/[^a-z0-9]/g, '')).filter(w => w.length >= 3);
+          if (words.length && words.every(w => tail.includes(w))) { kept.push({ c, why: 'named' }); return false; }
+          return true;
+        });
+      }
+
+      if (!targets.length) {
+        this._showRivenMessage(
+          `That leaves nothing to cancel \u2014 every class you teach on ${esc(dateStr)} is in the exception.`, true);
+        return;
+      }
+
+      // How much register is about to be thrown away.
+      const { data: marks } = await sb.from('class_attendance')
+        .select('class_id').eq('date', dateStr).in('class_id', targets.map(c => c.id));
+      const markCount = {};
+      (marks || []).forEach(m => { markCount[m.class_id] = (markCount[m.class_id] || 0) + 1; });
+      const totalMarks = (marks || []).length;
+
+      const rm = raw.match(/\b(?:because|reason|due to)\s+(.{3,80}?)\s*[.!?]?$/i);
+      const reason = rm ? rm[1].trim() : null;
+
+      const pLabel = (c) => {
+        const ps = (periods[c.id] || []).sort((a, b) => a - b);
+        return ps.length ? ` <span style="color: var(--muted);">P${ps.join(', P')}</span>` : '';
+      };
+      const list = targets.map(c =>
+        `<div style="padding: 2px 10px;">\u2022 ${esc(c.name)}${pLabel(c)}` +
+        `${markCount[c.id] ? ` <span style="color: var(--danger, #ff6a6a); font-size: 11px;">${markCount[c.id]} mark${markCount[c.id] === 1 ? '' : 's'}</span>` : ''}</div>`).join('');
+
+      const keptNote = kept.length
+        ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">Left alone: ` +
+          kept.map(k => `${esc(k.c.name)}${pLabel(k.c)}` +
+            (k.why === 'period' && (periods[k.c.id] || []).length > 1
+              ? ' <i>(kept whole \u2014 it also meets outside the excepted period)</i>' : '')).join(', ') +
+          `</div>`
+        : '';
+
+      this._requestConfirmation(
+        `Cancel <b>${targets.length}</b> class${targets.length === 1 ? '' : 'es'} on ${esc(dateStr)}?` +
+        `<div style="font-size: 12px; margin-top: 6px;">${list}</div>` +
+        (totalMarks
+          ? `<div style="font-size: 12px; color: var(--danger, #ff6a6a); margin-top: 6px;">This deletes ${totalMarks} attendance mark${totalMarks === 1 ? '' : 's'} already taken. There is no undo for that.</div>`
+          : `<div style="font-size: 12px; margin-top: 6px;">No attendance has been taken for any of them.</div>`) +
+        keptNote +
+        (reason ? `<div style="font-size: 12px; margin-top: 6px;">Reason: ${esc(reason)}</div>` : ''),
+        async () => {
+          let done = 0, removed = 0;
+          const failed = [];
+          for (const c of targets) {
+            try {
+              await sb.from('class_attendance_sessions').delete()
+                .eq('class_id', c.id).eq('date', dateStr);
+              const { error } = await sb.from('class_attendance_sessions').insert({
+                class_id: c.id, date: dateStr, period: null, status: 'canceled',
+                cancel_reason: reason, taken_by: this.userInfo.user.id,
+              });
+              if (error) throw this._rivenPolicyError(error);
+              await sb.from('class_attendance').delete().eq('class_id', c.id).eq('date', dateStr);
+              removed += markCount[c.id] || 0;
+              done++;
+            } catch (e) {
+              // One refusal must not cost the other nine. RLS decides per row.
+              failed.push(`${c.name}: ${e.message || e}`);
+            }
+          }
+          const lines = [
+            `${done} class${done === 1 ? '' : 'es'} cancelled for ${dateStr}` +
+            `${removed ? ` \u2014 ${removed} mark${removed === 1 ? '' : 's'} removed` : ''}.`
+          ];
+          if (kept.length) lines.push(`${kept.map(k => k.c.name).join(', ')} left running.`);
+          if (failed.length) lines.push(`${failed.length} could not be cancelled: ${failed.slice(0, 3).join('; ')}`);
+          this._naturalSuccess(lines);
+        });
+    }
+
     async terminalCancelClass(entities) {
       const { row, asked } = await this._rivenRequireClass(entities);
       if (asked) return;

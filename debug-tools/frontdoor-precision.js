@@ -165,7 +165,7 @@ const IMMEDIATE = new Set([...WRITE_INTENTS].filter(isImmediateWrite));
 // Writes whose blast radius is a whole class, or which destroy a record.
 // A false positive here is categorically worse than an over-eager ADD_NOTE.
 const BLAST_RADIUS = new Set(['GROUP_RTC', 'MARK_ATTENDANCE_GROUP', 'CLOSE_ALL_CLASSES', 'ANNOUNCE',
-  'ENROLL_BAND',
+  'ENROLL_BAND', 'CANCEL_DAY',
   'DELETE_CLASS', 'DELETE_NOTE', 'UNENROLL_STUDENT', 'MOVE_STUDENT',
   'REMOVE_SHOP_ITEM', 'REMOVE_PRIVILEGE', 'REVOKE_PRIVILEGE', 'ACTIVITY_UNENROLL']);
 
@@ -287,6 +287,15 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   // Enrolling into a whole year group. The sentence reads like an ordinary
   // enrolment until you notice the year group and the "all", which is exactly
   // why ENROLL_BAND has to outrank ENROLL_STUDENT.
+  // A whole teaching day called off, and the exception clause that made
+  // this fall through to LIST_CLASSES. "except math" names a class, so
+  // CANCEL_CLASS bids too - and the named class is the one to KEEP.
+  ['cancel all my classes for the day except p1', 'WRITE', 'CANCEL_DAY'],
+  ['cancel all my classes today', 'WRITE', 'CANCEL_DAY'],
+  ['cancel the rest of my day', 'WRITE', 'CANCEL_DAY'],
+  ['cancel all my classes except math', 'WRITE', 'CANCEL_DAY'],
+  // ... and one class named on its own is still one class.
+  ['cancel math today', 'WRITE', 'CANCEL_CLASS'],
   ['add noah to all the old middle school classes', 'WRITE', 'ENROLL_BAND'],
   // The short form, as actually typed, with "every" and a singular class.
   ['add noah to every old middle class', 'WRITE', 'ENROLL_BAND'],

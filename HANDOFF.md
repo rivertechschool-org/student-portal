@@ -1837,3 +1837,51 @@ for a border, a fill or an icon. It is not fine for anything that has to be
 *read*, because a custom palette can put any two of those colours next to each
 other. Text takes `--text`.
 
+---
+
+## 2026-09-16 — Riven can call off a whole teaching day
+
+*"Cancel all my classes for the day except P1"* printed a list of all 21 of the
+teacher's classes back at them. No intent covered it: `CANCEL_CLASS` needs a
+class named and "classes" is not one, so the sentence fell to `LIST_CLASSES`,
+which matched, answered, and looked like a refusal.
+
+A teacher going home sick cancels their day, not one lesson at a time.
+
+### The part that is easy to get backwards
+
+**"cancel all my classes except Math" DOES name a class.** `CANCEL_CLASS` bids
+on it and, with `requiresClass`, out-scores a modest weight — and the class it
+would cancel is the one the teacher asked to **keep**. That is why `CANCEL_DAY`
+sits at w:14, well clear of it.
+
+The opposite mistake is just as easy: without requiring *all / every / the rest
+of*, "cancel my math class" matches the new intent instead. Both directions are
+pinned in `frontdoor-precision`, which now carries five routing cases including
+`cancel math today` → `CANCEL_CLASS`.
+
+### What it does and does not touch
+
+Only classes that are **yours**, still **running**, and that actually **meet
+that day**. Cancelling a session that was never going to happen writes a
+cancellation nobody asked for, and it shows on the register as something called
+off.
+
+The exception clause takes periods (`except P1`, `except period 1`, `except 1st
+period`, `except p1 and 3`) or a class by name.
+
+**A class meeting in an excepted period is kept whole**, because cancelling is
+per class per day — there is no way to cancel half of one. When that class also
+meets outside the excepted period the confirmation says so explicitly; a
+teacher expecting P5 to go should not find out from a student.
+
+The confirmation lists every class with its periods, the marks each one loses,
+the total, and that there is **no undo** for deleted marks. One class refusing
+does not cost the other nine — RLS decides per row, and the failures are named.
+
+`tests/riven-cancel-day.test.js`, 31 assertions. `CANCEL_DAY` is in
+`WRITE_INTENTS` and in the harness's blast-radius set, so a question phrasing
+cannot fire it and a confirmation is required.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
+
