@@ -98,7 +98,7 @@ const app = {
 for (const n of ['_rivenParseClassSpec', '_rivenParseNewClassName', '_rivenParseClassRosterRef',
                  '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass', '_rivenMatchTeacher',
                  '_rivenResolveRosterRef', '_rivenResolveSubject', '_rivenResolveGradeBand',
-                 '_rivenResolveFacility', '_rivenResolveClassRow', '_rivenCanManageClass',
+                 '_rivenResolveFacility', '_rivenResolveClassRow', '_rivenCanManageClass', '_rivenClassIsOpen',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenFindEnrollment',
                  '_showClassPicker', '_rivenQuantifiesClasses', '_rivenRequireClasses',
                  '_levenshteinDistance', '_rivenNamesEachClass',

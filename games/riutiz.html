@@ -803,7 +803,8 @@
       overflow: hidden;
       animation: zoomIn 0.15s ease-out;
     }
-    @keyframes zoomIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes zoomIn {from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 
     .preview-header { padding: 1rem 1rem 0.5rem; }
     .preview-name-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.25rem; }
@@ -997,7 +998,7 @@
     .deck-select-color.G { background: var(--green); }
     .deck-select-color.P { background: var(--purple); }
     .deck-select-color.B { background: var(--blue); }
-    .deck-select-color.K { background: var(--black); }
+    .deck-select-color.Bk { background: var(--black); }
     .deck-select-color.C { background: var(--colorless); }
 
     .deck-select-warning {
@@ -1459,11 +1460,11 @@
     .deck-card-icon.casual { background: var(--green-bg); border: 1px solid var(--green); }
     .deck-card-icon.ranked { background: var(--orange-bg); border: 1px solid var(--orange); }
 
-    .deck-card-info {
+    .deck-entry-info {
       flex: 1;
     }
 
-    .deck-card-name {
+    .deck-entry-name {
       font-weight: bold;
       font-size: 1rem;
       margin-bottom: 0.25rem;
@@ -1707,6 +1708,7 @@
       <button class="btn btn-danger" onclick="showMenu()">Back</button>
     </div>
     <div id="queue-status" class="loading hidden" style="margin-top: 1rem;"></div>
+    <button id="cancel-queue-btn" class="btn btn-secondary hidden" onclick="cancelQuickMatch()">Cancel Search</button>
   </div>
 
   <!-- Game Mode Selection -->
@@ -2098,7 +2100,6 @@
   <div id="preview-overlay" class="preview-overlay hidden"></div>
 
 <!-- Load Scripts -->
-<script src="Data/Riutiz/cards.json" type="application/json" id="card-data-json"></script>
 
 <!-- Supabase and Portal Auth (for Firebase bridge) -->
 <script src="../shared/supabase.min.js"></script>
@@ -2122,7 +2123,6 @@
 <script src="riutiz/RiutizCollection.js"></script>
 <script src="riutiz/RiutizDeckBuilder.js"></script>
 <script src="riutiz/RiutizMultiplayer.js"></script>
-<script src="riutiz/RiutizArt.js"></script>
 
 <script>
 // ============================================
@@ -2223,7 +2223,6 @@ function handleUrlParameters() {
   const inviteFrom = params.get('invite_from');
   if (inviteFrom) {
     handleBattleInvite(inviteFrom);
-    return;
   }
 }
 
@@ -2252,19 +2251,17 @@ async function joinLobbyById(lobbyId) {
   }
 
   try {
-    // Initialize multiplayer (H-29: constructor is (game, arcade) — must match startQuickMatch)
-    game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
-    multiplayer = new RiutizMultiplayer(game, window.arcade);
-    await multiplayer.initialize();
+    resetMultiplayer();
+    await ensureMultiplayer();
 
     // Join the lobby (works with both ID and code)
     await multiplayer.joinLobby(lobbyId);
 
-    // Show lobby screen
     document.querySelectorAll('.menu-screen, .game-screen, .victory-screen').forEach(el => {
       el.classList.add('hidden');
     });
-    document.getElementById('lobby-screen').classList.remove('hidden');
+    enterLobbyScreen(false, lobbyId);
+    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
 
   } catch (error) {
     console.error('Failed to join lobby:', error);
@@ -2279,24 +2276,23 @@ async function handleBattleInvite(fromUserId) {
   }
 
   try {
-    // Initialize multiplayer (H-29: constructor is (game, arcade) — must match startQuickMatch)
-    game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
-    multiplayer = new RiutizMultiplayer(game, window.arcade);
-    await multiplayer.initialize();
+    resetMultiplayer();
+    await ensureMultiplayer();
 
     // Create a lobby and send the invite response
     const result = await multiplayer.createLobby({ mode: 'casual', invitedPlayer: fromUserId });
 
-    if (result.success) {
-      // Show lobby screen
-      document.querySelectorAll('.menu-screen, .game-screen, .victory-screen').forEach(el => {
-        el.classList.add('hidden');
-      });
-      document.getElementById('lobby-screen').classList.remove('hidden');
-
-      // The invited player should be notified and can join this lobby
-      console.log('Created lobby for battle invite, code:', result.code);
+    // createLobby resolves to { lobbyId, joinCode }; the old `result.success` test was
+    // never true, so accepting an invite silently did nothing.
+    if (!result || !result.joinCode) {
+      throw new Error('Lobby could not be created');
     }
+    document.querySelectorAll('.menu-screen, .game-screen, .victory-screen').forEach(el => {
+      el.classList.add('hidden');
+    });
+    enterLobbyScreen(true, result.joinCode);
+    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
+    console.log('Created lobby for battle invite, code:', result.joinCode);
   } catch (error) {
     console.error('Failed to handle battle invite:', error);
     alert('Failed to set up game: ' + error.message);
@@ -2410,10 +2406,10 @@ function getRandomAIDeck() {
 }
 
 function startQuickGame() {
-  // M1/M3: this is an AI match. Clear any stale multiplayer/ranked state left
-  // over from a previous online session so beating the AI is never recorded as
-  // a ranked win.
-  multiplayer = null;
+  // M1/M3: this is an AI match. Tear down any multiplayer session left over from
+  // a previous online game so beating the AI is never recorded as a ranked win and
+  // a still-running search cannot start a match on top of this one.
+  resetMultiplayer();
   selectedGameMode = 'casual';
 
   // Get random AI deck
@@ -2501,6 +2497,7 @@ function startQuickGame() {
 }
 
 function showMenu() {
+  resetMultiplayer();
   document.querySelectorAll('.menu-screen, .game-screen, .victory-screen, .lobby-screen').forEach(el => {
     el.classList.add('hidden');
   });
@@ -2617,20 +2614,13 @@ async function joinLobbyWithDeck() {
   }
 
   try {
+    const joinedCode = pendingLobbyCode;
     await multiplayer.joinLobby(pendingLobbyCode, { deckId: selectedDeckId });
 
     document.querySelectorAll('.menu-screen').forEach(el => el.classList.add('hidden'));
-    document.getElementById('lobby-screen').classList.remove('hidden');
+    enterLobbyScreen(false, joinedCode);
 
-    updateLobbyUI();
-
-    multiplayer.matchmaking.onLobbyChange((data) => {
-      if (data.event === 'match_started') {
-        startMultiplayerGame(data);
-      } else {
-        updateLobbyUI();
-      }
-    });
+    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
 
     pendingLobbyCode = null;
 
@@ -2652,18 +2642,10 @@ async function startQuickMatch() {
   const queueStatus = document.getElementById('queue-status');
   queueStatus.classList.remove('hidden');
   queueStatus.textContent = `Finding ${selectedGameMode} match...`;
+  document.getElementById('cancel-queue-btn').classList.remove('hidden');
 
   try {
-    // Initialize multiplayer if needed
-    if (!multiplayer) {
-      game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
-      multiplayer = new RiutizMultiplayer(game, window.arcade);
-      await multiplayer.initialize();
-
-      multiplayer.onMatchStartCallback((match) => {
-        startMultiplayerGame(match);
-      });
-    }
+    await ensureMultiplayer();
 
     await multiplayer.joinQueue({ mode: selectedGameMode, deckId: selectedDeckId });
 
@@ -2680,16 +2662,7 @@ async function createLobbyWithDeck() {
   }
 
   try {
-    // Initialize multiplayer if needed
-    if (!multiplayer) {
-      game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
-      multiplayer = new RiutizMultiplayer(game, window.arcade);
-      await multiplayer.initialize();
-
-      multiplayer.onMatchStartCallback((match) => {
-        startMultiplayerGame(match);
-      });
-    }
+    await ensureMultiplayer();
 
     const result = await multiplayer.createLobby({
       mode: selectedGameMode,
@@ -2697,20 +2670,9 @@ async function createLobbyWithDeck() {
     });
 
     document.querySelectorAll('.menu-screen').forEach(el => el.classList.add('hidden'));
-    document.getElementById('lobby-screen').classList.remove('hidden');
-    document.getElementById('lobby-code-display').textContent = result.joinCode;
-    document.getElementById('start-match-btn').classList.remove('hidden');
+    enterLobbyScreen(true, result.joinCode);
 
-    // Update lobby mode display
-    updateLobbyUI();
-
-    multiplayer.matchmaking.onLobbyChange((data) => {
-      if (data.event === 'match_started') {
-        startMultiplayerGame(data);
-      } else {
-        updateLobbyUI();
-      }
-    });
+    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
 
   } catch (error) {
     alert('Error creating lobby: ' + error.message);
@@ -2732,11 +2694,7 @@ async function joinLobbyByCode() {
   }
 
   try {
-    if (!multiplayer) {
-      game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
-      multiplayer = new RiutizMultiplayer(game, window.arcade);
-      await multiplayer.initialize();
-    }
+    await ensureMultiplayer();
 
     // First, peek at the lobby to get its mode
     const lobbyInfo = await multiplayer.matchmaking.getLobbyInfo(code);
@@ -2753,23 +2711,99 @@ async function joinLobbyByCode() {
     await multiplayer.joinLobby(code);
 
     document.getElementById('join-lobby-screen').classList.add('hidden');
-    document.getElementById('lobby-screen').classList.remove('hidden');
-    document.getElementById('lobby-code-display').textContent = code;
-    document.getElementById('start-match-btn').classList.add('hidden');
+    enterLobbyScreen(false, code);
 
-    updateLobbyUI();
-
-    multiplayer.matchmaking.onLobbyChange((data) => {
-      if (data.event === 'match_started') {
-        startMultiplayerGame(data);
-      } else {
-        updateLobbyUI();
-      }
-    });
+    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
 
   } catch (error) {
     alert('Error joining lobby: ' + error.message);
   }
+}
+
+// Every path into the lobby screen goes through here, so a guest never inherits the
+// host's Start button, a stale Ready state, or the previous lobby's code.
+function enterLobbyScreen(isHost, code) {
+  isReady = false;
+  const readyBtn = document.getElementById('ready-btn');
+  if (readyBtn) {
+    readyBtn.textContent = 'Ready Up';
+    readyBtn.className = 'btn btn-primary';
+  }
+  document.getElementById('lobby-code-display').textContent = code || '------';
+  document.getElementById('start-match-btn').classList.toggle('hidden', !isHost);
+  document.getElementById('lobby-screen').classList.remove('hidden');
+  updateLobbyUI();
+}
+
+function onLobbyEvent(data) {
+  // 'match_started' is RiutizMultiplayer's: it joins the match, learns its seat, then
+  // fires onMatchStart. Starting the UI from here ran before the seat number existed,
+  // so a guest rendered the host's hand as its own.
+  if (data && data.event === 'match_started') return;
+  if (data && data.event === 'lobby_closed') {
+    alert('The lobby was closed.');
+    showMultiplayerMenu();
+    return;
+  }
+  updateLobbyUI();
+}
+
+// One multiplayer session per online game, with its callbacks bound to THIS session
+// so a search that resolves after the player walked away cannot start a match.
+async function ensureMultiplayer() {
+  if (multiplayer) return multiplayer;
+  game = new RiutizGame({ mode: 'online-pvp', cardData: CARD_DATA });
+  const mp = new RiutizMultiplayer(game, window.arcade);
+  await mp.initialize();
+  mp.onMatchStartCallback((match) => startMultiplayerGame(match, mp));
+  mp.onMatchEndCallback((won, data) => onMultiplayerMatchEnd(won, data, mp));
+  multiplayer = mp;
+  return mp;
+}
+
+function resetMultiplayer() {
+  if (multiplayer) {
+    const old = multiplayer;
+    multiplayer = null;
+    try { old.leaveQueue().catch(() => {}); } catch (e) { /* never queued */ }
+    try { old.destroy(); } catch (e) { console.warn('Multiplayer teardown:', e); }
+  }
+  isReady = false;
+  const queueStatus = document.getElementById('queue-status');
+  if (queueStatus) {
+    queueStatus.classList.add('hidden');
+    queueStatus.textContent = '';
+  }
+  const cancelBtn = document.getElementById('cancel-queue-btn');
+  if (cancelBtn) cancelBtn.classList.add('hidden');
+}
+
+async function cancelQuickMatch() {
+  if (multiplayer) {
+    try { await multiplayer.leaveQueue(); } catch (e) { console.warn('leaveQueue:', e); }
+  }
+  const queueStatus = document.getElementById('queue-status');
+  queueStatus.classList.add('hidden');
+  queueStatus.textContent = '';
+  document.getElementById('cancel-queue-btn').classList.add('hidden');
+}
+
+// The opponent conceded or the match was completed remotely
+function onMultiplayerMatchEnd(won, data, mp) {
+  if (mp !== multiplayer || !game || game.state.gameOver) return;   // our engine already ended it
+  const me = mp.localPlayerNumber;
+  game.state.gameOver = true;
+  game.state.winner = won ? me : (me === 1 ? 2 : 1);
+  if (won && window.arcade && !mp._resultRecorded) {
+    mp._resultRecorded = true;
+    const opponent = mp.sync && mp.sync.getOpponent ? mp.sync.getOpponent() : null;
+    Promise.resolve(window.arcade.recordGameResult('riutiz', {
+      won: true,
+      opponent: opponent ? opponent.display_name : undefined,
+      ranked: !!(mp.sync && mp.sync.match && mp.sync.match.mode === 'ranked')
+    })).catch(err => console.warn('Riutiz MP result record failed (non-blocking):', err));
+  }
+  if (ui) ui.showVictoryScreen(game.state.winner, game.state.players[1].points, game.state.players[2].points);
 }
 
 function updateLobbyUI() {
@@ -2787,7 +2821,7 @@ function updateLobbyUI() {
   const container = document.getElementById('lobby-players');
   container.innerHTML = '';
 
-  for (const [id, player] of Object.entries(lobby.players || {})) {
+  for (const player of Object.values(lobby.players || {})) {
     const deckName = player.deck_id ? getDeckName(player.deck_id) : 'No deck';
     const div = document.createElement('div');
     div.className = 'lobby-player' + (player.ready ? ' ready' : '');
@@ -2830,17 +2864,34 @@ async function leaveLobbyScreen() {
   showMultiplayerMenu();
 }
 
-function startMultiplayerGame(match) {
+function startMultiplayerGame(match, mp = multiplayer) {
+  // A search or lobby from a session the player already left must not start a match
+  if (!mp || mp !== multiplayer || !mp.sync) return;
+
   // Hide lobby/menu
   document.querySelectorAll('.menu-screen, .lobby-screen').forEach(el => {
     el.classList.add('hidden');
   });
+  const queueStatus = document.getElementById('queue-status');
+  queueStatus.classList.add('hidden');
+  queueStatus.textContent = '';
+  document.getElementById('cancel-queue-btn').classList.add('hidden');
 
   // Set up UI
   ui = new RiutizUI(game, {
-    localPlayer: multiplayer.localPlayerNumber
+    localPlayer: mp.localPlayerNumber,
+    onConcede: () => mp.forfeit().catch(err => console.warn('Concede failed:', err))
   });
   ui.init();
+
+  // The opponent's turn arrives as a full state load; their actions replay into the
+  // engine. Neither used to redraw the board, so the guest stared at an empty field.
+  game.addEventListener('stateLoaded', () => ui.render());
+  mp.onOpponentActionCallback(() => ui.render());
+  mp.onStatusChangeCallback((status) => {
+    if (status === 'opponent_disconnected') ui.setMessage('Opponent disconnected - waiting for them to return...');
+    else if (status === 'opponent_reconnected') ui.setMessage('Opponent reconnected');
+  });
 
   // Set opponent name
   const opponent = multiplayer.sync.getOpponent();
@@ -2938,8 +2989,8 @@ function renderDeckManagement() {
       <div class="deck-section-title">Starter Deck</div>
       <div class="deck-card">
         <div class="deck-card-icon starter">${chosenStarter.icon || '🎴'}</div>
-        <div class="deck-card-info">
-          <div class="deck-card-name">${chosenStarter.name}</div>
+        <div class="deck-entry-info">
+          <div class="deck-entry-name">${chosenStarter.name}</div>
           <div class="deck-card-meta">
             <span>${chosenStarter.deck_list?.length || 40} cards</span>
             <span class="deck-card-type starter">Starter</span>
@@ -2967,8 +3018,8 @@ function renderDeckManagement() {
       html += `
         <div class="deck-card">
           <div class="deck-card-icon ${iconClass}">${typeIcon}</div>
-          <div class="deck-card-info">
-            <div class="deck-card-name">${deck.name}</div>
+          <div class="deck-entry-info">
+            <div class="deck-entry-name">${deck.name}</div>
             <div class="deck-card-meta">
               <span>${deck.card_count || deck.cards?.length || 0} cards</span>
               <span class="deck-card-type ${deckType}">${deckType}</span>
@@ -3166,7 +3217,7 @@ function showDeckViewModal(deckName, deckCards) {
     const count = cardCounts[card.id];
     const color = getCardColor(card.cost);
     cardsHtml += `
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; border-radius: 0.25rem; background: ${color === 'C' ? '#27272a' : `var(--${color.toLowerCase()}-bg, #27272a)`}; margin-bottom: 0.25rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 0.5rem; border-radius: 0.25rem; background: ${getCardBgColor(color)};margin-bottom: 0.25rem;">
         <span style="font-size: 0.85rem;">${card.name}</span>
         <span style="font-size: 0.75rem; opacity: 0.7;">x${count}</span>
       </div>
@@ -3198,11 +3249,6 @@ function closeDeckViewModal() {
 // ============================================
 // DECK BUILDER (EDITOR)
 // ============================================
-function showDeckBuilder() {
-  // Redirect to deck management for new flow
-  showDeckManagement();
-}
-
 function openDeckBuilder() {
   // Alias for backward compatibility
   showDeckManagement();
@@ -3211,19 +3257,6 @@ function openDeckBuilder() {
 function closeDeckBuilder() {
   document.getElementById('deck-builder-screen').classList.add('hidden');
   showDeckManagement();
-}
-
-function setDeckMode(mode) {
-  deckBuilder.setMode(mode);
-
-  // Update UI
-  document.querySelectorAll('.deck-mode-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.mode === mode);
-  });
-
-  renderCardGrid();
-  renderDeckList();
-  updateDeckStats();
 }
 
 function setCardFilter(filterType, value) {
@@ -3267,8 +3300,8 @@ function renderCardGrid() {
             <div class="card-cost">${renderManaCost(card.cost)}</div>
             <div class="card-art" style="background: ${bgColor};">${getCardEmoji(card.type)}</div>
             <div class="card-stats">
-              ${card.dice ? `<span class="stat-dice">${card.dice}d</span>` : ''}
-              ${card.hp ? `<span class="stat-hp">${card.hp}hp</span>` : ''}
+              ${card.dice ? `<span class="stat-dice">${card.dice}</span>` : ''}
+              ${card.endurance ? `<span class="stat-hp">${card.endurance}hp</span>` : ''}
             </div>
             <div class="card-rarity ${card.rarity || 'C'}"></div>
           </div>
@@ -3288,7 +3321,6 @@ function renderDeckList() {
   }
 
   list.innerHTML = deckCards.map(card => {
-    const color = getCardColor(card.cost);
     return `
       <div class="deck-card-row"
            onmouseenter="showHoverPreview(${card.id}, event)"
@@ -3469,12 +3501,10 @@ async function deleteSavedDeck(deckId) {
 
 let hoverPreviewTimeout = null;
 let longPressTimer = null;
-let longPressCardId = null;
 let touchMoved = false;
 
 function handleTouchStart(cardId, event) {
   touchMoved = false;
-  longPressCardId = cardId;
   longPressTimer = setTimeout(() => {
     if (!touchMoved) {
       showMobilePreview(cardId);
@@ -3547,7 +3577,7 @@ function showHoverPreview(cardId, event) {
       <div class="preview-art" style="height: 5rem; margin: 0 0.75rem; border-radius: 0.25rem; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; opacity: 0.6; background: ${bgColor};">${getCardEmoji(card.type)}</div>
       <div class="preview-stats" style="display: flex; justify-content: space-between; padding: 0.5rem 0.75rem; font-size: 0.875rem;">
         ${card.dice ? `<span><span style="color: #fbbf24;">Dice:</span> ${card.dice}</span>` : '<span></span>'}
-        ${card.hp ? `<span><span style="color: #ef4444;">HP:</span> ${card.hp}</span>` : '<span></span>'}
+        ${card.endurance ? `<span><span style="color: #ef4444;">Endurance:</span> ${card.endurance}</span>` : '<span></span>'}
       </div>
       <div class="preview-ability" style="padding: 0.5rem 0.75rem; min-height: 3rem;">
         ${card.ability ? `<p style="font-size: 0.75rem; line-height: 1.4; color: #e4e4e7;">${card.ability}</p>` : '<p style="color: #71717a; font-style: italic; font-size: 0.75rem;">No special ability</p>'}
@@ -3558,8 +3588,10 @@ function showHoverPreview(cardId, event) {
     </div>
   `;
 
-  // Position the preview
-  const rect = event.target.closest('.card-grid-item').getBoundingClientRect();
+  // Position the preview (attached to grid items AND deck-list rows)
+  const anchor = event.target.closest('.card-grid-item, .deck-card-row');
+  if (!anchor) return;
+  const rect = anchor.getBoundingClientRect();
   const previewWidth = 256;
   const previewHeight = 320;
 
@@ -3621,7 +3653,7 @@ function showCardPreview(cardId) {
       <div class="preview-art" style="background: ${bgColor};">${getCardEmoji(card.type)}</div>
       <div class="preview-stats">
         ${card.dice ? `<span><span class="stat-dice">Dice:</span> ${card.dice}</span>` : ''}
-        ${card.hp ? `<span><span class="stat-hp">HP:</span> ${card.hp}</span>` : ''}
+        ${card.endurance ? `<span><span class="stat-hp">Endurance:</span> ${card.endurance}</span>` : ''}
       </div>
       <div class="preview-ability">
         ${card.ability ? `<p>${card.ability}</p>` : '<p class="no-ability">No special ability</p>'}
@@ -3725,6 +3757,7 @@ function showToast(message) {
 // FULLSCREEN MESSAGE HANDLER
 // ============================================
 window.addEventListener('message', (event) => {
+  if (!event.data || typeof event.data !== 'object') return;
   if (event.data.type === 'FULLSCREEN_ENTER') {
     document.body.classList.add('fullscreen-mode');
   } else if (event.data.type === 'FULLSCREEN_EXIT') {

@@ -14,76 +14,15 @@ class RiutizGame extends EventTarget {
         this.winCondition = 25; // Points to win
 
         // Ability system - pending actions that need targeting
-        this.pendingAbility = null;
     }
 
     // ==========================================
     // Ability Keywords & Patterns
     // ==========================================
 
-    static get KEYWORDS() {
-        return {
-            IMPULSIVE: 'impulsive',
-            RELENTLESS: 'relentless',
-            GROUNDED: 'grounded',
-            LETHAL: 'lethal',
-            STUBBORN: 'stubborn',
-            NON_SEQUITUR: 'non-sequitur',
-            OVERWHELM: 'overwhelm',
-            INTERJECT: 'interject',
-            LOCKDOWN: 'lockdown',
-            CLOSED_MINDED: 'closed-minded'
-        };
-    }
-
-    /**
-     * Check if a card has a specific keyword
-     */
-    hasKeyword(card, keyword) {
-        return card.ability?.toLowerCase().includes(keyword.toLowerCase());
-    }
-
-    /**
-     * Parse ability text to identify type and effects
-     */
-    parseAbility(abilityText) {
-        if (!abilityText) return null;
-        const lower = abilityText.toLowerCase();
-
-        const parsed = {
-            raw: abilityText,
-            isSpend: lower.includes('spend:'),
-            isETB: lower.includes('when') && (lower.includes('enters') || lower.includes('enter')),
-            isStartOfTurn: lower.includes('start of') && lower.includes('turn'),
-            isEndOfTurn: lower.includes('end of turn'),
-            isAttackTrigger: lower.includes('when') && lower.includes('attack'),
-            isBlockTrigger: lower.includes('when') && lower.includes('block'),
-            isDamageTrigger: lower.includes('when') && (lower.includes('damage') || lower.includes('absorb')),
-            isAura: lower.includes('other pupils') || lower.includes('your pupils') || lower.includes('all your'),
-            isProtection: lower.includes('protection from'),
-            needsTarget: lower.includes('target'),
-            keywords: []
-        };
-
-        // Extract keywords
-        Object.values(RiutizGame.KEYWORDS).forEach(kw => {
-            if (lower.includes(kw)) parsed.keywords.push(kw);
-        });
-
-        return parsed;
-    }
-
     // ==========================================
     // Constants
     // ==========================================
-
-    static get PHASES() {
-        return ['draw', 'ready', 'main', 'combat', 'end'];
-    }
-
-    static get COMBAT_STEPS() {
-        return ['declare-attackers', 'declare-blockers', 'resolve'];
-    }
 
     static get COLORS() {
         return {
@@ -404,6 +343,10 @@ class RiutizGame extends EventTarget {
             this.recalculateAuras(playerNum);
         }
 
+        // Anything the card did on entry (Alicia, Mad Scientist, Interruptions...) may
+        // have killed something on either side
+        this.checkStateBasedActions();
+
         this.emitEvent('cardPlayed', { player: playerNum, card });
         return { success: true, action: 'play', card };
     }
@@ -661,9 +604,6 @@ class RiutizGame extends EventTarget {
             if (target) {
                 target.currentEndurance -= damage;
                 this.emitEvent('damageDealt', { target, damage });
-                if (target.currentEndurance <= 0) {
-                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
-                }
                 return { success: true };
             }
             return { needsTarget: true, targetType: 'anyPupil', effect: 'dealDamage', amount: damage };
@@ -818,9 +758,6 @@ class RiutizGame extends EventTarget {
                 const damageTaken = player.damageTakenThisTurn || 0;
                 target.currentEndurance -= damageTaken;
                 this.emitEvent('catharsis', { target, damage: damageTaken });
-                if (target.currentEndurance <= 0) {
-                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
-                }
                 return { success: true };
             }
             return { needsTarget: true, targetType: 'anyPupil', effect: 'catharsis' };
@@ -848,7 +785,6 @@ class RiutizGame extends EventTarget {
                 if (target.currentEndurance <= threshold) {
                     target.currentEndurance = 0;
                     this.emitEvent('dissection', { target });
-                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
                     return { success: true };
                 }
                 return { success: false, error: 'Target has too much Endurance' };
@@ -916,14 +852,12 @@ class RiutizGame extends EventTarget {
         if (ability.includes('exhaust target pupil') && ability.includes('gains resources equal to')) {
             if (target) {
                 const targetOwner = player.field.includes(target) ? player : opponent;
-                const targetOwnerNum = player.field.includes(target) ? playerNum : (playerNum === 1 ? 2 : 1);
                 // Parse cost to get resource count
                 const costMatch = target.cost?.match(/\((\d+)\)/g) || [];
                 const colorMatch = target.cost?.match(/\([A-Za-z]+\)/g) || [];
                 const totalCost = costMatch.length + colorMatch.length;
 
                 target.currentEndurance = 0;
-                this.triggerPupilExhausted(target, targetOwnerNum);
 
                 // Add colorless resources to the target's controller
                 for (let i = 0; i < totalCost; i++) {
@@ -950,7 +884,6 @@ class RiutizGame extends EventTarget {
                 target.currentEndurance -= damage;
                 this.emitEvent('labAccidentDamage', { target, damage });
                 if (target.currentEndurance <= 0) {
-                    this.triggerPupilExhausted(target, playerNum === 1 ? 2 : 1);
                     for (let i = 0; i < drawCount && player.deck.length > 0; i++) {
                         player.hand.push(player.deck.shift());
                     }
@@ -1627,6 +1560,36 @@ class RiutizGame extends EventTarget {
     }
 
     /**
+     * State-based actions: any pupil at 0 or less endurance (counting aura bonuses)
+     * leaves the field, goes to its owner's discard and fires "when a pupil is
+     * exhausted" triggers exactly once. Called after every card play, ability and
+     * combat. Before this, damage outside combat left dead pupils on the field, and
+     * the combat sweep only removed pupils at NEGATIVE endurance (`!0` is true).
+     */
+    checkStateBasedActions() {
+        const dead = [];
+        [1, 2].forEach(playerNum => {
+            const player = this.state.players[playerNum];
+            player.field = player.field.filter(c => {
+                if (!c.type?.includes('Pupil')) return true;      // Tools, Locations
+                const endurance = (c.currentEndurance ?? c.endurance ?? 0) + (c.auraEnduranceBonus || 0);
+                if (endurance > 0) return true;
+                player.discard.push(c);
+                dead.push({ card: c, owner: playerNum });
+                return false;
+            });
+        });
+        if (dead.length === 0) return dead;
+        dead.forEach(({ card, owner }) => {
+            this.emitEvent('pupilExhausted', { card, owner });
+            this.triggerPupilExhausted(card, owner);
+        });
+        this.recalculateAuras(1);
+        this.recalculateAuras(2);
+        return dead;
+    }
+
+    /**
      * Trigger effects when a pupil is exhausted (destroyed/killed)
      */
     triggerPupilExhausted(exhaustedCard, ownerPlayerNum) {
@@ -1818,8 +1781,8 @@ class RiutizGame extends EventTarget {
             if (card.abilitiesDisabled) return;
             const ability = card.ability?.toLowerCase() || '';
 
-            // Confusion Matrix - When opponent draws, you draw
-            if (ability.includes('when') && ability.includes('opponent') && ability.includes('draws') && ability.includes('you draw')) {
+            // Confusion Matrix (id 141): "Draw a card when an opponent draws a card"
+            if (ability.includes('when an opponent draws')) {
                 // Draw without triggering (to prevent infinite loop)
                 if (opponent.deck.length > 0) {
                     opponent.hand.push(opponent.deck.shift());
@@ -1913,7 +1876,6 @@ class RiutizGame extends EventTarget {
      */
     triggerOnInterruption(playerNum, interruptionCard) {
         const player = this.state.players[playerNum];
-        const opponent = this.getOpponent(playerNum);
 
         player.field.forEach(card => {
             if (card.abilitiesDisabled) return;
@@ -1970,16 +1932,27 @@ class RiutizGame extends EventTarget {
      * Recalculate all aura effects for a player
      */
     recalculateAuras(playerNum) {
-        const player = this.state.players[playerNum];
-        const opponent = this.getOpponent(playerNum);
-
-        // Reset aura-based stats (keep counters and temp buffs)
-        player.field.forEach(card => {
+        // Auras cross the table (Authoritarian Parent penalises the opponent's pupils),
+        // so both fields are reset together and both players' auras re-applied;
+        // resetting one side at a time either lost or doubled the cross-table ones.
+        [1, 2].forEach(p => this.state.players[p].field.forEach(card => {
             card.auraEnduranceBonus = 0;
             card.auraDamageBonus = 0;
             card.auraDamageReduction = 0;
             card.auraProtection = [];
-        });
+            card.auraDieRollBonus = 0;
+            card.auraDieRollPenalty = 0;
+            card.toolCostReduction = 0;
+            card.interruptionCostReduction = 0;
+            card.hasComfortAura = false;
+        }));
+        this._applyAurasFrom(1);
+        this._applyAurasFrom(2);
+    }
+
+    _applyAurasFrom(playerNum) {
+        const player = this.state.players[playerNum];
+        const opponent = this.getOpponent(playerNum);
 
         // Apply auras from each card
         player.field.forEach(sourceCard => {
@@ -2258,30 +2231,10 @@ class RiutizGame extends EventTarget {
     }
 
     /**
-     * Get effective stats for a card (including auras, counters, buffs)
-     */
-    getEffectiveStats(card) {
-        const endurance = (card.currentEndurance || 0) +
-            (card.auraEnduranceBonus || 0) +
-            (card.counters?.plusOne || 0);
-
-        const damageBonus = (card.auraDamageBonus || 0) +
-            (card.counters?.plusOne || 0);
-
-        const dieRollBonus = (card.dieRollBonus || 0);
-
-        const damageReduction = (card.auraDamageReduction || 0) +
-            (card.damageReduction || 0);
-
-        return { endurance, damageBonus, dieRollBonus, damageReduction };
-    }
-
-    /**
      * Activate a card's spend ability
      */
     activateAbility(playerNum, instanceId, target = null) {
         const player = this.state.players[playerNum];
-        const opponent = this.getOpponent(playerNum);
         const card = player.field.find(c => c.instanceId === instanceId);
 
         if (!card) {
@@ -2293,11 +2246,12 @@ class RiutizGame extends EventTarget {
         }
 
         // Pupils with Getting Bearings can't use spend abilities (summoning sickness)
-        if (card.hasGettingBearings && card.type?.includes('Pupil')) {
+        if (card.hasGettingBearings && card.type?.includes('Pupil') && !card.hasImpulsive) {
             return { success: false, error: 'Has Getting Bearings - wait a turn' };
         }
 
-        const hasSpend = card.ability?.toLowerCase().includes('spend:');
+        // "Spend:" and "Spend, <extra cost>:" (Rex, Pen) are both spend abilities
+        const hasSpend = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
         if (!hasSpend) {
             return { success: false, error: 'Card has no Spend ability' };
         }
@@ -2313,6 +2267,9 @@ class RiutizGame extends EventTarget {
         }
 
         card.isSpent = true;
+
+        // Spend abilities deal damage (Pencil, Illustration, Anarchist...) - resolve deaths
+        this.checkStateBasedActions();
 
         this.emitEvent('abilityActivated', { player: playerNum, card, result });
         return { success: true, card, result };
@@ -2600,9 +2557,6 @@ class RiutizGame extends EventTarget {
             if (target) {
                 target.currentEndurance -= damage;
                 this.emitEvent('illustrationDamage', { target, damage });
-                if (target.currentEndurance <= 0) {
-                    this.triggerPupilExhausted(target, target.instanceId);
-                }
                 return { success: true };
             }
             return { needsTarget: true, targetType: 'anyPupil', effect: 'dealDamage', amount: damage };
@@ -2778,9 +2732,6 @@ class RiutizGame extends EventTarget {
                 target.tempBuffs = target.tempBuffs || [];
                 target.tempBuffs.push({ type: 'dieRollBonus', value: 2, expiresAt: 'endOfTurn' });
                 this.emitEvent('pencilApplied', { card: target });
-                if (target.currentEndurance <= 0) {
-                    this.exhaustPupil(target, playerNum);
-                }
                 return { success: true };
             }
             return { needsTarget: true, targetType: 'anyPupil', effect: 'pencil' };
@@ -2921,7 +2872,7 @@ class RiutizGame extends EventTarget {
             return { success: false, error: 'Only pupils can attack' };
         }
 
-        if (card.hasGettingBearings) {
+        if (card.hasGettingBearings && !card.hasImpulsive) {
             return { success: false, error: 'Card has Getting Bearings' };
         }
 
@@ -3055,7 +3006,6 @@ class RiutizGame extends EventTarget {
         }
 
         const defender = this.state.players[defenderNum];
-        const attacker = this.state.players[defenderNum === 1 ? 2 : 1];
         const blocker = defender.field.find(c => c.instanceId === blockerInstanceId);
         const attackingCard = this.state.attackers.find(a => a.instanceId === attackerInstanceId);
 
@@ -3071,25 +3021,13 @@ class RiutizGame extends EventTarget {
             return { success: false, error: 'Blocker is spent' };
         }
 
-        // Check protection - can't block creatures you have protection from
-        if (attackingCard) {
-            const attackerColor = this.getPrimaryColor(attackingCard.cost);
-            const allProtection = [...(blocker.protection || []), ...(blocker.auraProtection || [])];
-            // Actually, protection means the protected creature can't be DAMAGED by that color
-            // So blocking is allowed, but damage is prevented (handled in combat resolution)
+        // Flags set by Uninvolved Parent, Manipulation, Permeability, Selfie Girl,
+        // Influencer... were written and never checked here.
+        if (blocker.cannotBlock) {
+            return { success: false, error: `${blocker.name} cannot block` };
         }
-
-        // Check if attacker has max blocker limit (Prime Numbers effect)
-        if (attackingCard?.maxBlockers) {
-            const currentBlockers = Object.entries(this.state.blockers)
-                .filter(([attId, _]) => attId === attackerInstanceId).length;
-            if (currentBlockers >= attackingCard.maxBlockers) {
-                // Check if we're toggling off an existing blocker
-                const existing = Object.entries(this.state.blockers).find(([_, bId]) => bId === blockerInstanceId);
-                if (!existing) {
-                    return { success: false, error: `Can only be blocked by ${attackingCard.maxBlockers} creature(s)` };
-                }
-            }
+        if (attackingCard && (attackingCard.cannotBeBlocked || attackingCard.isUnblockable)) {
+            return { success: false, error: `${attackingCard.name} cannot be blocked` };
         }
 
         // Check The Tool (id 11) - Must be blocked if possible
@@ -3162,7 +3100,15 @@ class RiutizGame extends EventTarget {
                 const blocker = defender.field.find(c => c.instanceId === blockerId);
                 if (blocker) {
                     let blockerRoll = this.rollDice(blocker.dice);
-                    blockerRoll += (blocker.dieRollBonus || 0);
+                    if (blocker.hasAdvantage) {
+                        blockerRoll = Math.max(blockerRoll, this.rollDice(blocker.dice));
+                    }
+                    // Same modifiers the attacker gets; never below zero (a negative roll
+                    // used to inflate the attacker's damage-prevention buffs)
+                    blockerRoll += (blocker.dieRollBonus || 0)
+                        + (blocker.auraDieRollBonus || 0) + (blocker.auraDieRollPenalty || 0)
+                        + (blocker.counters?.plusOne || 0) + (blocker.auraDamageBonus || 0);
+                    blockerRoll = Math.max(0, blockerRoll);
 
                     const logEntry = {
                         attacker: att.name,
@@ -3175,9 +3121,23 @@ class RiutizGame extends EventTarget {
                     let damageToBlocker = roll;
                     let damageToAttacker = blockerRoll;
 
+                    // Protection from a color: no damage from cards of that color
+                    // (hasProtectionFrom existed but nothing called it)
+                    const attColors = this.getAllColors(attCard.cost);
+                    const blkColors = this.getAllColors(blocker.cost);
+                    if (attColors.some(c => this.hasProtectionFrom(blocker, c))) {
+                        damageToBlocker = 0;
+                        logEntry.blockerProtected = true;
+                    }
+                    if (blkColors.some(c => this.hasProtectionFrom(attCard, c))) {
+                        damageToAttacker = 0;
+                        logEntry.attackerProtected = true;
+                    }
+
                     // Drama Queen (id 78) - First Strike: deals damage before combat
                     const hasFirstStrike = attCard.ability?.toLowerCase().includes('damage first') ||
-                        attCard.ability?.toLowerCase().includes('first strike');
+                        attCard.ability?.toLowerCase().includes('first strike') ||
+                        attCard.hasFirstStrike === true;   // granted by Snail's ability
                     if (hasFirstStrike && !attCard.abilitiesDisabled) {
                         // Apply attacker damage first
                         blocker.currentEndurance -= damageToBlocker;
@@ -3214,7 +3174,8 @@ class RiutizGame extends EventTarget {
                     damageToAttacker = Math.max(0, damageToAttacker - attackerReduction);
 
                     // Check Lethal - any damage exhausts
-                    const hasLethal = attCard.ability?.toLowerCase().includes('lethal');
+                    const hasLethal = attCard.ability?.toLowerCase().includes('lethal') ||
+                        attCard.tempLethal === true;      // granted by Cement
                     if (hasLethal && damageToBlocker > 0) {
                         blocker.isSpent = true;
                         logEntry.lethal = true;
@@ -3330,45 +3291,12 @@ class RiutizGame extends EventTarget {
             }
         });
 
-        // Remove dead creatures and trigger exhaust events
-        const deadAttackerPupils = [];
-        const deadDefenderPupils = [];
+        // Remove dead pupils and fire their exhaust triggers (once each)
+        this.checkStateBasedActions();
 
-        attacker.field = attacker.field.filter(c => {
-            if (!c.currentEndurance) return true; // Tools, locations
-            if (c.currentEndurance <= 0) {
-                // Move to discard
-                attacker.discard.push(c);
-                if (c.type?.includes('Pupil')) {
-                    deadAttackerPupils.push(c);
-                }
-                return false;
-            }
-            return true;
-        });
-        defender.field = defender.field.filter(c => {
-            if (!c.currentEndurance) return true;
-            if (c.currentEndurance <= 0) {
-                defender.discard.push(c);
-                if (c.type?.includes('Pupil')) {
-                    deadDefenderPupils.push(c);
-                }
-                return false;
-            }
-            return true;
-        });
-
-        // Trigger exhaust effects for each dead pupil
-        deadAttackerPupils.forEach(deadPupil => {
-            this.triggerPupilExhausted(deadPupil, attackingPlayer);
-        });
-        deadDefenderPupils.forEach(deadPupil => {
-            this.triggerPupilExhausted(deadPupil, defendingPlayer);
-        });
-
-        // Recalculate auras after creatures die
-        this.recalculateAuras(attackingPlayer);
-        this.recalculateAuras(defendingPlayer);
+        // End-of-combat effects (Chemistry Teacher heal, "+1 until end of combat")
+        // ran nowhere before: processEndOfCombat had no caller.
+        this.processEndOfCombat(attackingPlayer);
 
         // Gerbil damage prevention - Prevent 1 damage each time opponent would score a point
         if (pointsScored > 0) {
@@ -3400,12 +3328,8 @@ class RiutizGame extends EventTarget {
             this.emitEvent('pointsLost', { player: defendingPlayer, amount: defenderPointsLost, reason: 'Authoritative Principal' });
         }
 
-        // Check win condition
-        if (attacker.points >= this.winCondition) {
-            this.state.gameOver = true;
-            this.state.winner = attackingPlayer;
-            this.emitEvent('gameOver', { winner: attackingPlayer, points: attacker.points });
-        }
+        // Check win condition (both players - defender point loss can matter too)
+        this.checkWinCondition();
 
         // Reset combat state
         this.state.combatStep = null;
@@ -3454,6 +3378,11 @@ class RiutizGame extends EventTarget {
         // Normal dice roll
         let roll = this.rollDice(card.dice);
 
+        // The Lab: roll twice, keep the higher (flag was set and never read)
+        if (card.hasAdvantage) {
+            roll = Math.max(roll, this.rollDice(card.dice));
+        }
+
         // Add die roll bonus from abilities, buffs, and auras
         roll += (card.dieRollBonus || 0);
 
@@ -3463,6 +3392,10 @@ class RiutizGame extends EventTarget {
 
         // Calculus Enthusiast cumulative bonus
         roll += (card.cumulativeDieBonus || 0);
+
+        // Aura die-roll modifiers (Popular Kid, Music Room, Gym, Authoritarian Parent...)
+        // were written by recalculateAuras and never added to any roll
+        roll += (card.auraDieRollBonus || 0) + (card.auraDieRollPenalty || 0);
 
         return Math.max(0, roll);
     }
@@ -3520,6 +3453,10 @@ class RiutizGame extends EventTarget {
 
         const nextPlayer = playerNum === 1 ? 2 : 1;
 
+        // Regen, "until end of turn" buffs on the ending player's own pupils, Overclock
+        // damage - processEndOfTurn existed but nothing ever called it
+        this.processEndOfTurn(playerNum);
+
         // Increment turn counter when player 2 ends their turn
         if (playerNum === 2) {
             this.state.turn++;
@@ -3548,6 +3485,19 @@ class RiutizGame extends EventTarget {
 
         // Clear end-of-turn effects from previous turn
         this.clearExpiredEffects(playerNum);
+
+        // "Cannot attack or block until your next turn" (Psychology Teacher) expires
+        // when the controller's next turn begins; it used to be permanent.
+        [1, 2].forEach(p => this.state.players[p].field.forEach(card => {
+            const buffs = card.tempBuffs || [];
+            const expiring = buffs.filter(b => b.expiresAt === 'nextTurn' && b.owner === playerNum);
+            if (expiring.length === 0) return;
+            card.tempBuffs = buffs.filter(b => !expiring.includes(b));
+            if (!card.tempBuffs.some(b => b.type === 'manipulation') && !card.lockedBy) {
+                card.cannotAttack = false;
+                card.cannotBlock = false;
+            }
+        }));
 
         // Draw phase
         let cardsToDraw = 1;
@@ -3743,6 +3693,15 @@ class RiutizGame extends EventTarget {
             }
         });
 
+        // Overclock: damage at end of turn, then the mark is cleared
+        player.field.forEach(card => {
+            if (card.endOfTurnDamage) {
+                card.currentEndurance -= card.endOfTurnDamage;
+                this.emitEvent('endOfTurnDamage', { card, damage: card.endOfTurnDamage });
+                card.endOfTurnDamage = 0;
+            }
+        });
+
         // Clear end of turn temp buffs
         player.field.forEach(card => {
             if (card.tempBuffs) {
@@ -3750,7 +3709,14 @@ class RiutizGame extends EventTarget {
             }
             // Reset die roll bonus from expired buffs
             card.dieRollBonus = 0;
+            // Granted-for-the-turn flags
+            card.isUnblockable = false;
+            card.tempLethal = false;
+            card.hasFirstStrike = false;
+            card.calculatorBonus = false;
         });
+
+        this.checkStateBasedActions();
     }
 
     /**
@@ -3779,9 +3745,14 @@ class RiutizGame extends EventTarget {
             }
         });
 
-        // Clear end of combat temp buffs
+        // Clear end of combat temp buffs, taking their die bonus back with them
         attacker.field.forEach(card => {
             if (card.tempBuffs) {
+                card.tempBuffs.forEach(buff => {
+                    if (buff.expiresAt === 'endOfCombat' && buff.type === 'dieRollBonus') {
+                        card.dieRollBonus = (card.dieRollBonus || 0) - (buff.value || 0);
+                    }
+                });
                 card.tempBuffs = card.tempBuffs.filter(buff => buff.expiresAt !== 'endOfCombat');
             }
         });
@@ -3826,13 +3797,6 @@ class RiutizGame extends EventTarget {
             [a[i], a[j]] = [a[j], a[i]];
         }
         return a;
-    }
-
-    /**
-     * Get current player
-     */
-    getCurrentPlayer() {
-        return this.state.players[this.state.currentPlayer];
     }
 
     /**
@@ -3914,7 +3878,6 @@ class RiutizGame extends EventTarget {
      */
     triggerOnPointsScored(playerNum, pointsScored) {
         const player = this.state.players[playerNum];
-        const opponent = this.getOpponent(playerNum);
 
         player.field.forEach(card => {
             if (card.abilitiesDisabled) return;
@@ -3994,15 +3957,14 @@ class RiutizGame extends EventTarget {
     /**
      * Choose cards from top of deck (Analytics Enthusiast, Hypothesis)
      */
-    chooseFromTop(playerNum, chosenIds, putRestOnBottom = true, discardRest = false) {
+    chooseFromTop(playerNum, chosenIds, putRestOnBottom = true, discardRest = false, lookCount = 5) {
         const player = this.state.players[playerNum];
 
         const topCards = [];
         const remaining = [];
 
-        // Get the cards that were being chosen from
-        const count = chosenIds.length + (putRestOnBottom || discardRest ? 2 : 0); // Estimate
-        player.deck.slice(0, 5).forEach(card => {
+        // Only the cards that were actually revealed
+        player.deck.slice(0, lookCount).forEach(card => {
             if (chosenIds.includes(card.instanceId)) {
                 topCards.push(card);
             } else {

@@ -128,13 +128,6 @@ class RiutizDeckBuilder {
     }
 
     /**
-     * Clear all filters
-     */
-    clearFilters() {
-        this.filters = { color: null, type: null, rarity: null, search: '' };
-    }
-
-    /**
      * Get count of a specific card in current deck
      */
     getCardCount(cardId) {
@@ -515,68 +508,6 @@ class RiutizDeckBuilder {
         });
     }
 
-    /**
-     * Export deck as shareable string
-     */
-    exportDeck() {
-        const cardCounts = {};
-        this.currentDeck.forEach(id => {
-            cardCounts[id] = (cardCounts[id] || 0) + 1;
-        });
-
-        const lines = [`# ${this.deckName}`];
-        const cards = this.getDeckCards();
-        cards.forEach(card => {
-            lines.push(`${card.count}x ${card.name}`);
-        });
-
-        return lines.join('\n');
-    }
-
-    /**
-     * Import deck from string
-     */
-    importDeck(deckString) {
-        const lines = deckString.split('\n').filter(l => l.trim());
-        const newDeck = [];
-        let deckName = 'Imported Deck';
-
-        for (const line of lines) {
-            // Check for deck name
-            if (line.startsWith('#')) {
-                deckName = line.substring(1).trim();
-                continue;
-            }
-
-            // Parse "Nx Card Name" format
-            const match = line.match(/^(\d+)x?\s+(.+)$/i);
-            if (match) {
-                const count = parseInt(match[1]);
-                const cardName = match[2].trim();
-
-                const card = this.cardData.find(c =>
-                    c.name.toLowerCase() === cardName.toLowerCase()
-                );
-
-                if (card) {
-                    for (let i = 0; i < count; i++) {
-                        newDeck.push(card.id);
-                    }
-                }
-            }
-        }
-
-        if (newDeck.length === 0) {
-            return { success: false, error: 'No valid cards found' };
-        }
-
-        this.currentDeck = newDeck;
-        this.deckName = deckName;
-        this.deckId = null;
-
-        return { success: true, size: newDeck.length };
-    }
-
     // ==========================================
     // Utility Methods
     // ==========================================
@@ -625,17 +556,6 @@ class RiutizDeckBuilder {
         }
 
         return colorKeys.includes(color);
-    }
-
-    /**
-     * Get all colors in a card's cost
-     * @param {string} costStr - Card cost string
-     * @returns {string[]} Array of colors, or ['C'] if colorless
-     */
-    getColors(costStr) {
-        const { colors } = this.parseCost(costStr);
-        const keys = Object.keys(colors);
-        return keys.length > 0 ? keys : ['C'];
     }
 
     generateId() {

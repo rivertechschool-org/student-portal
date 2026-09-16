@@ -110,6 +110,7 @@ function makeApp(userType, classes = CLASSES) {
     userInfo: { user: { id: ME }, profile: { id: 'p1', user_type: userType } },
     auth: { supabase: supabaseStub(sink) },
     _terminalAllClasses: classes,
+    _rivenClassIsOpen: extract('_rivenClassIsOpen'),
     _rivenMyClassRows: extract('_rivenMyClassRows'),
     _rivenSchoolScope: extract('_rivenSchoolScope'),
     _rivenSaidEveryTeacher: extract('_rivenSaidEveryTeacher'),
@@ -140,6 +141,36 @@ check('secondary teacher counts as yours',
   teacher._rivenMyClassRows().some(c => c.id === 'c2'), true);
 check('an admin who teaches nothing has nothing of their own',
   makeApp('admin', [CLASSES[2], CLASSES[3]])._rivenMyClassRows().length, 0);
+
+// ---- closed for the year is not one of my classes -----------------------
+//
+// Closing a class sets status='closed' and NOTHING ELSE. The enrolments stay
+// active and the class_schedule rows stay put, so a class that stopped meeting
+// in June still looks enrolled and still looks like it meets on Tuesdays.
+//
+// The briefing reads this function, which is why "attendance not yet taken
+// today" opened with registers for classes nobody was going to teach - every
+// day, for ever, because a closed class can never have its attendance taken
+// and so can never leave the list.
+console.log('\n== closed for the year drops out ==\n');
+
+const WITH_CLOSED = [
+  { id: 'c1', name: 'Coding/AI',  teacher_id: ME, secondary_teacher_id: null, status: 'active' },
+  { id: 'c9', name: 'Last Year Chess', teacher_id: ME, secondary_teacher_id: null, status: 'closed' },
+  // is_active false is the soft-DELETE flag, a different thing entirely, and
+  // it is already filtered at load time. Belt and braces.
+  { id: 'c8', name: 'Deleted Art', teacher_id: ME, secondary_teacher_id: null, is_active: false },
+];
+const withClosed = makeApp('teacher', WITH_CLOSED);
+check('a class closed for the year is not mine to be briefed about',
+  names(withClosed._rivenMyClassRows()), ['Coding/AI']);
+check('  nor a deleted one', withClosed._rivenMyClassRows().some(c => c.id === 'c8'), false);
+check('an admin asking school-wide does not get them back either',
+  names(makeApp('admin', WITH_CLOSED)._rivenMyClassRows({ school: true })), ['Coding/AI']);
+// A class with no status at all is open: rows predate the column and a missing
+// value must never read as closed.
+check('a row with no status set is still open',
+  makeApp('teacher', [{ id: 'c1', name: 'Coding/AI', teacher_id: ME }])._rivenMyClassRows().length, 1);
 
 // ---- asking for the whole school ---------------------------------------
 console.log('\n== asking for school-wide, and being told no ==\n');

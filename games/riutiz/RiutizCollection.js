@@ -108,33 +108,6 @@ class RiutizCollection {
     }
 
     /**
-     * Default starter cards if no JSON available
-     */
-    getDefaultStarterCards() {
-        const cards = {};
-
-        // Give 4 copies of first 30 common cards (or all cards if fewer)
-        const commonCards = this.cardData.filter(c => c.rarity === 'C').slice(0, 30);
-        commonCards.forEach(c => {
-            cards[c.id] = 4;
-        });
-
-        // Give 2 copies of first 10 uncommon cards
-        const uncommonCards = this.cardData.filter(c => c.rarity === 'U').slice(0, 10);
-        uncommonCards.forEach(c => {
-            cards[c.id] = 2;
-        });
-
-        // Give 1 copy of first 5 rare cards
-        const rareCards = this.cardData.filter(c => c.rarity === 'R').slice(0, 5);
-        rareCards.forEach(c => {
-            cards[c.id] = 1;
-        });
-
-        return cards;
-    }
-
-    /**
      * Get quantity of a specific card owned
      */
     getQuantity(cardId) {
@@ -171,85 +144,6 @@ class RiutizCollection {
             .reduce((sum, c) => sum + (c.quantity || 0), 0);
     }
 
-    /**
-     * Get all owned cards with full data
-     */
-    getOwnedCards() {
-        return this.cardData.filter(card => this.owns(card.id))
-            .map(card => ({
-                ...card,
-                owned: this.getQuantity(card.id)
-            }));
-    }
-
-    /**
-     * Get cards by color
-     */
-    getCardsByColor(color) {
-        return this.getOwnedCards().filter(card => {
-            const primaryColor = this.getPrimaryColor(card.cost);
-            return primaryColor === color;
-        });
-    }
-
-    /**
-     * Get cards by type
-     */
-    getCardsByType(type) {
-        return this.getOwnedCards().filter(card =>
-            card.type?.toLowerCase().includes(type.toLowerCase())
-        );
-    }
-
-    /**
-     * Get cards by rarity
-     */
-    getCardsByRarity(rarity) {
-        return this.getOwnedCards().filter(card => card.rarity === rarity);
-    }
-
-    /**
-     * Get collection stats
-     */
-    getStats() {
-        const owned = this.getOwnedCards();
-        const total = this.cardData.length;
-
-        const byRarity = {
-            C: { owned: 0, total: 0 },
-            U: { owned: 0, total: 0 },
-            R: { owned: 0, total: 0 }
-        };
-
-        this.cardData.forEach(card => {
-            byRarity[card.rarity || 'C'].total++;
-        });
-
-        owned.forEach(card => {
-            byRarity[card.rarity || 'C'].owned++;
-        });
-
-        return {
-            uniqueOwned: owned.length,
-            uniqueTotal: total,
-            completionPercent: Math.round((owned.length / total) * 100),
-            totalCards: this.getTotalCards(),
-            byRarity
-        };
-    }
-
-    /**
-     * Helper to get primary color from cost string
-     */
-    getPrimaryColor(costStr) {
-        if (!costStr) return 'C';
-        const matches = costStr.match(/\(([^)]+)\)/g) || [];
-        for (const m of matches) {
-            const val = m.replace(/[()]/g, '');
-            if (!/^\d+$/.test(val)) return val;
-        }
-        return 'C';
-    }
 }
 
 // Export
