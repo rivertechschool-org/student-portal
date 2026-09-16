@@ -104,6 +104,54 @@ global.A.services = [{ id: 'sv3', service_type_id: 'OTHER', service_date: dstr(n
 dates = upcomingDatesForType(SUNDAY_TYPE);
 check('another service\'s date is not borrowed', dates[0].service, null);
 
+// ---- services read in the order the week runs ---------------------------
+const compareServiceTypes = fn('compareServiceTypes');
+const order = list => list.slice().sort(compareServiceTypes).map(t => t.name);
+
+check('Sunday first, then the week in order',
+  order([
+    { name: 'Friday thing', weekday: 5 },
+    { name: 'Sunday Morning', weekday: 0 },
+    { name: 'Wednesday Chapel', weekday: 3 },
+    { name: 'Monday band practice', weekday: 1 },
+  ]),
+  ['Sunday Morning', 'Monday band practice', 'Wednesday Chapel', 'Friday thing']);
+
+// A service with no set day has no place in the week, so it goes after the
+// ones that do rather than sorting as "day zero" alongside Sunday.
+check('no set day sits at the end',
+  order([
+    { name: 'One-offs', weekday: null },
+    { name: 'Saturday', weekday: 6 },
+    { name: 'Sunday Morning', weekday: 0 },
+  ]),
+  ['Sunday Morning', 'Saturday', 'One-offs']);
+
+// Two on the same day read earliest first, which is the order they happen in.
+check('same day, earlier time first',
+  order([
+    { name: 'Sunday Evening', weekday: 0, start_time: '18:00:00' },
+    { name: 'Sunday Morning', weekday: 0, start_time: '10:30:00' },
+  ]),
+  ['Sunday Morning', 'Sunday Evening']);
+
+check('same day and time falls back to sort_order',
+  order([
+    { name: 'B', weekday: 0, start_time: '10:00:00', sort_order: 2 },
+    { name: 'A', weekday: 0, start_time: '10:00:00', sort_order: 1 },
+  ]),
+  ['A', 'B']);
+
+check('and then to the name',
+  order([
+    { name: 'Zebra', weekday: 2 },
+    { name: 'Aardvark', weekday: 2 },
+  ]),
+  ['Aardvark', 'Zebra']);
+
+ok('the sort is applied where the types are loaded',
+  /A\.types = \(typesRes\.data \|\| \[\]\)\.slice\(\)\.sort\(compareServiceTypes\);/.test(page));
+
 // ---- who is in, who is out ---------------------------------------------
 ok('confirmed reads as in', /\bin\b/.test(statusTag('confirmed')) && statusTag('confirmed').includes('tag yes'));
 ok('declined reads as out', statusTag('declined').includes('tag no'));

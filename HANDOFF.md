@@ -1097,3 +1097,15 @@ So all four now catch the missing file and print what to run:
 To be unambiguous about the clean-tree state: `inequality-region` and `typed-answer-mode`
 are the only two that genuinely fail, both for the missing `tests/ai.js` extraction they
 have always needed. Everything else is green.
+
+---
+
+## 2026-09-16 — Luke's Claude (services read in week order)
+
+Service types now sort by the day they fall on — Sunday first, the same order `WEEKDAYS`
+is written in — rather than by creation order. A type with no set day sits after the ones
+that do, since it has no place in the week. `sort_order` still breaks a tie between two
+services on the same day at the same time, but it is no longer the first thing consulted.
+
+One sort, applied where the types are loaded, so the list, the one-off picker and every
+dropdown built from `A.types` agree without each remembering to sort.
