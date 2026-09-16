@@ -1,4 +1,5 @@
-// The debug-tools harnesses must extract everything they will end up calling.
+// Anything that extracts methods out of the page must extract the whole call
+// graph - the debug-tools harnesses AND the test files.
 //
 // Those harnesses do not import Riven — there is nothing to import. They brace-
 // match named methods straight out of portal/index.html, bind them to a stub
@@ -82,15 +83,24 @@ const callsIn = (name) => {
 // ---- every harness ------------------------------------------------------
 console.log('\n== each harness extracts its whole call graph ==\n');
 
-const harnesses = fs.readdirSync(path.join(root, 'debug-tools'))
-  .filter(f => f.endsWith('.js'))
-  .sort();
+// tests/ as well as debug-tools/. The tests extract methods exactly the same
+// way and break exactly the same way when one of them grows a new collaborator
+// - which is not hypothetical: adding _rivenDayCodes to _rivenParseWeekdays
+// took out three test files at once, and this check only looked at
+// debug-tools, so it stayed silent while they failed.
+const harnesses = [
+  ...fs.readdirSync(path.join(root, 'debug-tools')).filter(f => f.endsWith('.js'))
+     .map(f => ['debug-tools', f]),
+  ...fs.readdirSync(path.join(root, 'tests')).filter(f => f.endsWith('.test.js'))
+     .map(f => ['tests', f]),
+].sort((a, b) => (a[0] + a[1]).localeCompare(b[0] + b[1]));
 
-ok('the harness directory was found', harnesses.length > 5);
+ok('both directories were found', harnesses.length > 20);
 
 let checked = 0;
-for (const file of harnesses) {
-  const text = fs.readFileSync(path.join(root, 'debug-tools', file), 'utf8');
+for (const [dir, file] of harnesses) {
+  if (dir === 'tests' && file === 'debug-harness-closure.test.js') continue;  // itself
+  const text = fs.readFileSync(path.join(root, dir, file), 'utf8');
 
   // Quoted names are what the harness asks to be extracted from the real file.
   const listed = new Set(
@@ -115,10 +125,10 @@ for (const file of harnesses) {
     }
   }
 
-  check(`${file} (${listed.size} extracted)`, [...missing].sort(), []);
+  check(`${dir}/${file} (${listed.size} extracted)`, [...missing].sort(), []);
 }
 
-ok('several harnesses were actually checked', checked >= 8);
+ok('plenty were actually checked', checked >= 20);
 
 // ---- and they still run -------------------------------------------------
 // The closure check is static. A harness can satisfy it and still be broken, so

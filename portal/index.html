@@ -49018,7 +49018,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-15·e';
+      const RIVEN_BUILD = '2026-09-16·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -58679,6 +58679,130 @@
       return t.length >= 2 ? t : '';
     }
 
+    // Month names, long and short, with or without the full stop people put
+    // after an abbreviation. Returns 0-11, or null.
+    _rivenMonthIndex(word) {
+      const w = String(word || '').toLowerCase().replace(/\.$/, '');
+      const M = ['january', 'february', 'march', 'april', 'may', 'june', 'july',
+                 'august', 'september', 'october', 'november', 'december'];
+      const exact = M.indexOf(w);
+      if (exact >= 0) return exact;
+      // "sept" is the one abbreviation that is not simply the first three
+      // letters, and it is the one this school writes most.
+      if (w === 'sept') return 8;
+      if (w.length >= 3) {
+        const i = M.findIndex(m => m.startsWith(w));
+        if (i >= 0) return i;
+      }
+      return null;
+    }
+
+    // Dates written with the month named: "Sept 23", "September 23rd and 24th",
+    // "23rd of September".
+    //
+    // This was the gap behind "Meadow will be absent Sept 23" answering with
+    // the help text. The day-number reader only understood a month introduced
+    // by "of" or "in" ("the 23rd OF September"), and it refused a lone number
+    // with no ordinal suffix - so "Sept 23" failed twice over, and the sentence
+    // fell through every branch to nothing.
+    //
+    // Returns ISO dates in the order they were said, or null.
+    _rivenMonthDayDates(text) {
+      const t = (text || '').toLowerCase();
+      const MON = '(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+      const DAY = '(\\d{1,2})(?:st|nd|rd|th)?';
+      const out = [];
+      const push = (mi, day) => {
+        if (mi === null || !(day >= 1 && day <= 31)) return;
+        const now = new Date();
+        // A month already behind us means next year. A day already behind us
+        // within the CURRENT month does not - "absent Sept 23" said on the
+        // 24th is a mistake worth showing them, not a date a year away.
+        const year = mi < now.getMonth() ? now.getFullYear() + 1 : now.getFullYear();
+        const d = new Date(year, mi, day);
+        if (d.getDate() !== day) return;   // the 31st of September is a mishearing
+        out.push(`${year}-${String(mi + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`);
+      };
+
+      // "Sept 23-25" — a range hung off one month. Handled here rather than in
+      // the general range matcher, because that one needs BOTH ends to look
+      // like dates on their own and a bare "25" deliberately does not: letting
+      // it count would make any stray number in a sentence a date. The month
+      // carries across instead.
+      const rng = new RegExp('\\b' + MON + '\\s+' + DAY +
+        '\\s*(?:to|through|thru|[-\\u2013\\u2014])\\s*(\\d{1,2})(?:st|nd|rd|th)?\\b');
+      const rm = t.match(rng);
+      if (rm) {
+        const mi = this._rivenMonthIndex(rm[1]);
+        const from = parseInt(rm[2], 10), to = parseInt(rm[3], 10);
+        if (mi !== null && to >= from) {
+          for (let d = from; d <= to; d++) push(mi, d);
+          if (out.length) return out;
+        }
+      }
+
+      // "Sept 23", and any run of days hung off the same month: "Sept 23 and
+      // 24", "Sept 23, 24 & 25".
+      const fwd = new RegExp('\\b' + MON + '\\s+' + DAY +
+        '((?:\\s*(?:,|and|&|\\+|/)\\s*(?:\\d{1,2})(?:st|nd|rd|th)?)*)', 'g');
+      let m;
+      while ((m = fwd.exec(t))) {
+        const mi = this._rivenMonthIndex(m[1]);
+        push(mi, parseInt(m[2], 10));
+        for (const extra of (m[3] || '').match(/\d{1,2}/g) || []) push(mi, parseInt(extra, 10));
+      }
+      if (out.length) return out;
+
+      // "23 Sept" — the day first, with no "of".
+      //
+      // Deliberately steps aside when the sentence says "of November" or "in
+      // November", because _rivenAbsenceDayNumbers already reads that form and
+      // reads it better: it gathers the whole list. Matching here would catch
+      // only the day nearest the month name, so "the 2nd and 3rd of November"
+      // came back as the 3rd alone — a silently halved absence, which is worse
+      // than one that fails outright.
+      if (!new RegExp('\\b(?:of|in)\\s+' + MON + '\\b').test(t)) {
+        const back = new RegExp('\\b' + DAY + '\\s+' + MON + '\\b', 'g');
+        while ((m = back.exec(t))) push(this._rivenMonthIndex(m[2]), parseInt(m[1], 10));
+      }
+      return out.length ? out : null;
+    }
+
+    // Weekday shorthand: "M,T,W,Th,F", "MWF", "Tu/Th", "M W F".
+    //
+    // Only read as days when it is a RUN of at least two codes. A single "M"
+    // or "T" in a sentence is a letter, not a Monday, and guessing at one would
+    // put a child down as absent on a day nobody mentioned.
+    //
+    // Longest token first, always: "th" has to win over "t", or Thursday
+    // silently becomes Tuesday followed by a stray letter.
+    _rivenDayCodes(text) {
+      const t = (text || '').toLowerCase();
+      // A candidate run: day letters joined by nothing, spaces, or list
+      // punctuation. Bounded either side so it cannot start mid-word.
+      const RUN = /\b((?:m|tu|th|t|w|r|f|sa|su|s)(?:\s*[,/&+]\s*|\s+|)){2,}\b/g;
+      const CODES = [['th', 4], ['tu', 2], ['sa', 6], ['su', 0],
+                     ['m', 1], ['t', 2], ['w', 3], ['r', 4], ['f', 5]];
+      let m;
+      while ((m = RUN.exec(t))) {
+        const raw = m[0].replace(/[\s,/&+]/g, '');
+        const days = [];
+        let i = 0, ok = true;
+        while (i < raw.length) {
+          const hit = CODES.find(([c]) => raw.startsWith(c, i));
+          if (!hit) { ok = false; break; }
+          days.push(hit[1]);
+          i += hit[0].length;
+        }
+        // Every character has to be a day. "mrs" parses as m + r + s and would
+        // otherwise turn a surname into Monday and Thursday.
+        if (ok && days.length >= 2 && new Set(days).size === days.length) {
+          return [...new Set(days)].sort((a, b) => a - b);
+        }
+      }
+      return [];
+    }
+
     // A bare date phrase, resolved against today. Shares its vocabulary with
     // _rivenParseDueDate on purpose - "friday" should not mean one thing for an
     // assignment and another for an absence - but it takes the phrase alone
@@ -58715,6 +58839,11 @@
         const d = new Date(yr, +slash[1] - 1, +slash[2]);
         if (!isNaN(d)) return { iso: mk(d), label: mk(d) };
       }
+      // "sept 23", "September 23rd", "23rd of September" - as a whole phrase,
+      // so a range end can be written this way too.
+      const named = this._rivenMonthDayDates(p);
+      if (named && named.length) return { iso: named[0], label: named[0] };
+
       // "the 17th" on its own, so a range can be written in day numbers as
       // well as weekdays. The month comes from the same rules the list uses.
       if (/^(?:on\s+|the\s+)*\d{1,2}(?:st|nd|rd|th)$/.test(p)) {
@@ -58797,9 +58926,18 @@
       // "out" - which is not a date, so the range was abandoned and the
       // sentence quietly fell through to the single-day path and lost its end.
       const DATEISH = '(?:next\\s+|this\\s+|on\\s+|the\\s+)*(?:today|tomorrow|\\d{4}-\\d{2}-\\d{2}|'
-        + '\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|\\d{1,2}(?:st|nd|rd|th)|'
+        + '\\d{1,2}\\/\\d{1,2}(?:\\/\\d{2,4})?|'
+        // A month-named date, either way round, before the bare-ordinal case
+        // so "sept 23" is not read as the month and then abandoned.
+        + '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?|'
+        + '\\d{1,2}(?:st|nd|rd|th)?\\s+(?:of\\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?|'
+        + '\\d{1,2}(?:st|nd|rd|th)|'
         + '(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?)';
-      const RANGE = new RegExp('\\b(' + DATEISH + ')\\s+(?:to|through|thru|until|till|[-\\u2013\\u2014])\\s+(' + DATEISH + ')\\b');
+      // The spaces around the separator are optional. "Monday-Thursday" and
+      // "Sept 23-25" are how people actually write a range; requiring
+      // "Monday - Thursday" meant both fell through to the single-day path and
+      // quietly lost their end.
+      const RANGE = new RegExp('\\b(' + DATEISH + ')\\s*(?:to|through|thru|until|till|[-\\u2013\\u2014])\\s*(' + DATEISH + ')\\b');
       const r = t.match(RANGE);
       if (r) {
         const a = this._rivenPhraseToDate(r[1]);
@@ -58818,21 +58956,28 @@
         }
       }
 
+      // A month-named date beats the bare day-number reader, which would see
+      // "sept 23" as a lone number with no ordinal and refuse it.
+      const byMonth = this._rivenMonthDayDates(t);
+      if (byMonth && byMonth.length) return this._rivenCollapseSpans(byMonth);
+
+      // Weekday shorthand: "out M,W,F", "away Tu/Th".
+      const codes = this._rivenDayCodes(t);
+      if (codes.length) {
+        const isoOf = (dow) => {
+          const now = new Date();
+          let delta = (dow - now.getDay() + 7) % 7;
+          if (delta === 0) delta = 7;
+          const d = new Date();
+          d.setDate(d.getDate() + delta);
+          return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        };
+        return this._rivenCollapseSpans(codes.map(isoOf));
+      }
+
       // Then a list of day numbers, which is how people give scattered days.
       const days = this._rivenAbsenceDayNumbers(t);
-      if (days) {
-        const sorted = [...new Set(days)].sort();
-        const spans = [];
-        let start = sorted[0], prev = sorted[0];
-        for (const iso of sorted.slice(1)) {
-          const gap = (new Date(iso + 'T12:00:00') - new Date(prev + 'T12:00:00')) / 86400000;
-          if (gap === 1) { prev = iso; continue; }
-          spans.push(span(start, prev));
-          start = iso; prev = iso;
-        }
-        spans.push(span(start, prev));
-        return spans;
-      }
+      if (days) return this._rivenCollapseSpans(days);
 
       // Finally a single phrase: "out monday", "away tomorrow".
       const SINGLE = /\b(?:out|away|absent|gone|off|missing)\b[^a-z0-9]{0,12}(?:on\s+|next\s+|this\s+)?([a-z0-9\/\-]{3,12}(?: \d{1,2})?)/;
@@ -58846,6 +58991,24 @@
         if (one) return [span(one.iso)];
       }
       return null;
+    }
+
+    // Consecutive days become one span; everything else stands alone. That is
+    // the shape planned_absences stores, and the shape a person reads back:
+    // "17-18 and 21", not "17, 18, 21".
+    _rivenCollapseSpans(isoDates) {
+      const sorted = [...new Set(isoDates)].sort();
+      if (!sorted.length) return null;
+      const spans = [];
+      let start = sorted[0], prev = sorted[0];
+      for (const iso of sorted.slice(1)) {
+        const gap = (new Date(iso + 'T12:00:00') - new Date(prev + 'T12:00:00')) / 86400000;
+        if (gap === 1) { prev = iso; continue; }
+        spans.push({ start, end: prev });
+        start = iso; prev = iso;
+      }
+      spans.push({ start, end: prev });
+      return spans;
     }
 
     // "2026-09-17 to 2026-09-18, and 2026-09-21"
@@ -58923,6 +59086,30 @@
         [6, /\bsat(urday)?s?\b/],
       ];
       for (const [d, re] of WORDS) if (re.test(t)) out.add(d);
+
+      // Any weekday range, not just Monday to Friday: "tuesday-thursday",
+      // "wed through fri". Written out in full because the shorthand form is
+      // handled below and the two must not disagree.
+      const STEM = { sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, wednes: 3,
+                     thu: 4, thur: 4, thurs: 4, fri: 5, sat: 6 };
+      const NAMED = '(sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?';
+      const rng = t.match(new RegExp('\\b' + NAMED + '\\s*(?:to|through|thru|[-\\u2013\\u2014])\\s*' + NAMED + '\\b'));
+      if (rng) {
+        const a = STEM[rng[1]], b = STEM[rng[2]];
+        if (a !== undefined && b !== undefined) {
+          // Inclusive, and wrapping: "friday to monday" is Fri, Sat, Sun, Mon.
+          for (let i = 0, d = a; i < 7; i++, d = (d + 1) % 7) {
+            out.add(d);
+            if (d === b) break;
+          }
+        }
+      }
+
+      // "M,T,W,Th,F", "MWF", "Tu/Th". Only when the words above found nothing,
+      // because a sentence that already named its days in full does not need a
+      // letter-by-letter reading of the rest of itself.
+      if (!out.size) this._rivenDayCodes(t).forEach(d => out.add(d));
+
       return [...out].sort((a, b) => a - b);
     }
 

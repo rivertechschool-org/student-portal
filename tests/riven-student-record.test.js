@@ -137,7 +137,7 @@ function makeApp({ role = 'admin', profile = {}, schedule = [], links = [], pare
   app._fuzzyFindStudent = (t) => (String(t).toLowerCase().includes('jonathan')
     ? { student: STUDENT, ambiguous: false, score: 1 } : null);
   for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenStudentAfterPreposition',
-                   '_rivenParseWeekdays', '_rivenDayList',
+                   '_rivenParseWeekdays', '_rivenDayCodes', '_rivenDayList',
                    '_rivenDayPhrase', '_rivenDayNames', 'terminalShowSchedule', 'terminalShowParents']) {
     app[m] = extract(m);
   }

@@ -1714,3 +1714,58 @@ account, and the activation email did not say whose account it opened. That is
 fixed by the account-type email template, now applied to the live project from
 `supabase/templates/recovery.html` (backend `82e7e1f`).
 
+---
+
+## 2026-09-16 — Jordan's Claude (the ways people write a date)
+
+**"Meadow will be absent Sept 23" answered with the help text. Twice.** The
+intent matched fine both times — the *date* came back null, and a null date is
+indistinguishable from a sentence Riven did not understand.
+
+Three separate gaps, all in how a date can be written:
+
+**A named month.** The day-number reader only understood a month introduced by
+"of" or "in" (*the 23rd OF September*), and it refused a lone number with no
+ordinal suffix. "Sept 23" failed both tests at once, so the sentence fell
+through every branch to nothing. Now reads `Sept 23`, `September 23rd`,
+`23 Sept`, `Sept 23, 24 and 25`, and `Sept 23-25`.
+
+**A range with no spaces.** The separator had to have whitespace either side,
+so **"Monday-Thursday"** — which is how anyone writes it — missed the range
+branch and fell through to the single-day path, which kept the start and
+silently dropped the end. A half-recorded absence is worse than none: it reads
+as recorded.
+
+**Shorthand.** `M,T,W,Th,F`, `MWF`, `Tu/Th` meant nothing. They do now, for
+absences *and* schedules, along with any weekday range (`tuesday-thursday`,
+and wrapping ones like `friday to monday`).
+
+### The shorthand is the part with teeth
+
+It can be wrong in a way nobody notices — a stray letter read as a day puts a
+child down as absent on a date no one mentioned. So it only fires on a run of
+**two or more** codes where **every** character resolves to a day, longest
+token first (`th` must beat `t`, or Thursday quietly becomes Tuesday).
+`out m`, `mrs smith` and a name all correctly yield nothing.
+
+One deliberate deferral: `23rd of September` is left to the existing
+`_rivenAbsenceDayNumbers`, which reads that form better because it gathers the
+whole list. My reader would have caught only the day nearest the month name, so
+*"the 2nd and 3rd of November"* came back as the 3rd alone. Caught by an
+existing test.
+
+### The closure check now covers tests/ as well
+
+`debug-harness-closure` only ever looked at `debug-tools/`. Adding one helper
+to `_rivenParseWeekdays` took out **three test files at once** and the check
+stayed silent, because the tests extract methods exactly the same way and break
+exactly the same way. It now walks both directories — 39 assertions — and it
+immediately found a latent one in `riven-pair-purchase` that was passing only
+because the branch was never taken.
+
+`tests/riven-date-phrasing.test.js`, 38 assertions, with the expectations
+computed from today's date rather than hard-coded — a test that only passes in
+September is a test that fails in October for no reason.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
+

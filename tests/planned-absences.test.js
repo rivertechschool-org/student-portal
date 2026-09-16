@@ -71,7 +71,10 @@ global.Date = FakeDate;
 check('the frozen day really is a Friday', new Date().getDay(), 5);
 
 const app = {};
-for (const n of ['_rivenPhraseToDate', '_rivenAbsenceDayNumbers', '_rivenResolveAbsenceSpans', '_rivenSpanLabel']) {
+for (const n of ['_rivenPhraseToDate', '_rivenAbsenceDayNumbers', '_rivenResolveAbsenceSpans', '_rivenSpanLabel',
+                 // The resolver leans on these now: named months, weekday
+                 // shorthand, and the shared span collapser.
+                 '_rivenMonthIndex', '_rivenMonthDayDates', '_rivenDayCodes', '_rivenCollapseSpans']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }

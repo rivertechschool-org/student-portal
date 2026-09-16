@@ -119,7 +119,7 @@ function makeApp({ role = 'admin', groups = [], rpc = {} } = {}) {
       },
     },
   };
-  for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenParseWeekdays', '_rivenDayList',
+  for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenParseWeekdays', '_rivenDayCodes', '_rivenDayList',
                    '_rivenDayPhrase', '_rivenDayNames']) {
     app[m] = extract(m);
   }

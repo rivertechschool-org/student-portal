@@ -70,6 +70,10 @@ function makeApp() {
     _normalizeInput: (t) => String(t || '').toLowerCase(),
     _rivenExtractPrivilegeName: () => 'homework pass',
     _rivenMatchStoreItem: (n, list) => ({ item: list[0] }),
+    // The catalogue is supplied, so terminalBuyPrivilege never reloads it. The
+    // stub is here anyway: the branch exists, and a test that would explode if
+    // it were ever taken is a test that only passes by luck.
+    async _loadTerminalPrivileges() { /* catalogue is already set below */ },
     _terminalPrivileges: [
       { id: 'p1', name: 'Homework Pass', price: 2, duration_days: 7, is_active: true, icon: '🎟️' },
     ],
