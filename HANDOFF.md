@@ -1288,3 +1288,34 @@ than a one-off.
 the people it applied to were scattered alphabetically through everyone else. It now names
 the instrument ("— plays piano"), those people sort to the top, and the field label says so.
 The question being asked is "who can cover the piano"; the answer belongs at the top.
+
+---
+
+## 2026-09-16 — Luke's Claude (one person, two positions)
+
+**The bug Luke hit:** he was on a service twice — Piano and Singing — pressed "I'll be
+there", and only Singing changed. Piano sat on "asked" with nothing that could reach it.
+`teamBlock` did `slots.find(sl => sl.user_id === A.me.id)`: the FIRST slot that is mine,
+as though a person could only hold one. Being on twice is normal, not an edge case.
+
+Now every position you hold gets its own row and its own pair of buttons, with its own
+status beside it, and a line saying "two positions, two answers" when there is more than
+one. The same single-slot assumption was in the "You are on" card on the schedule, which
+showed one status for what might be two; it lists each.
+
+**The harness did not catch this, and that is the lesson worth keeping.** Journey 3 put a
+player on exactly one position, so the code path that broke was never walked. It now puts
+Ann on two, answers one, checks the other is untouched and still reachable, answers that,
+and changes an answer — because a reply that cannot be changed is a trap. 56 checks.
+
+**Two changes Luke asked for in the same breath:**
+
+- **Slides is a position.** Not an instrument, but somebody has to run the words, and the
+  rota is where they find out it is them. One entry in `INSTRUMENTS`; the join form, the
+  roster chips and the rota all read that list, so nothing else needed touching. No
+  migration — `instrument` is free text with no check constraint.
+- **The add-person picker lists the people who play that instrument**, not everyone.
+  Two escapes, because a strict filter would otherwise be a dead end: if nobody on the
+  team has it on their profile the whole team is offered with a line saying why, and
+  there is always a "Show everyone on the team" link for someone covering an instrument
+  that never made it onto their profile. That widening is per-dialog, not a setting.

@@ -101,6 +101,9 @@ pre.chart{background:var(--bg);border:1px solid var(--border);border-radius:8px;
 .pos{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
 .pos:last-child{border-bottom:none}
 .pos .label{width:120px;color:var(--muted);font-size:.82rem;flex-shrink:0}
+.myslots{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:12px;background:var(--card2)}
+.myslot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:5px 0}
+.myslot .what{font-weight:600;font-size:.88rem;min-width:110px}
 .pos .people{flex:1;min-width:180px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .person{display:inline-flex;align-items:center;gap:6px;background:var(--card2);border:1px solid var(--border);border-radius:999px;padding:3px 10px;font-size:.82rem}
 .person.me{border-color:var(--good)}
@@ -218,7 +221,10 @@ const INSTRUMENTS = [
   { id: 'piano',   label: 'Piano',   icon: '🎹' },
   { id: 'guitar',  label: 'Guitar',  icon: '🎸' },
   { id: 'cajon',   label: 'Cajón',   icon: '🥁' },
-  { id: 'singing', label: 'Singing', icon: '🎤' }
+  { id: 'singing', label: 'Singing', icon: '🎤' },
+  // Not an instrument, but it is a position on the rota: somebody has to run
+  // the words, and this is where they find out it is them.
+  { id: 'slides',  label: 'Slides',  icon: '🖥️' }
 ];
 // =========================================================================
 // Nashville charts
@@ -842,7 +848,7 @@ function myNextCard(){
             <div class="date">${esc(fmtDate(s.service_date))}${
               s.service_date === today ? ' <span class="tag today">today</span>' : ''}</div>
             <div class="meta">${esc(type ? type.name : 'Service')} · ${
-              slots.map(sl => esc(instrLabel(sl.instrument))).join(', ')} ${statusTag(slots[0].status)}</div>
+              slots.map(sl => `${esc(instrLabel(sl.instrument))} ${statusTag(sl.status)}`).join(' · ')}</div>
           </div>
           <span class="chev">›</span>
         </button>`;
@@ -1012,7 +1018,11 @@ function planPage(s){
 // instrument shows even when nobody is on it, because an empty position is
 // the thing you are looking for when you open this page.
 function teamBlock(s, slots){
-  const mySlot = slots.find(sl => sl.user_id === A.me.id);
+  // ALL of them, not the first. A player is regularly on twice - piano and
+  // singing, guitar and singing - and answering for one of those is not
+  // answering for the other. Finding only the first left the second stuck on
+  // "asked" with no way to reach it.
+  const mySlots = slots.filter(sl => sl.user_id === A.me.id);
 
   const positions = INSTRUMENTS.map(inst => {
     const here = slots.filter(sl => sl.instrument === inst.id);
@@ -1035,12 +1045,23 @@ function teamBlock(s, slots){
   return `
     <div class="card">
       <h3>👥 Team</h3>
-      ${mySlot ? `
-        <div class="hint" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          You are on for ${esc(instrLabel(mySlot.instrument))}.${A.slotReplyUnavailable ? '' : ''}
-          ${A.slotReplyUnavailable ? '' : `
-          <button class="btn good small" onclick="respondToSlot('${mySlot.id}','${s.id}','confirmed')">✓ I'll be there</button>
-          <button class="btn sec small" onclick="respondToSlot('${mySlot.id}','${s.id}','declined')">✗ Can't make it</button>`}
+      ${mySlots.length ? `
+        <div class="myslots">
+          <div class="sub-h" style="margin-top:0">You are on for</div>
+          ${mySlots.map(sl => `
+            <div class="myslot">
+              <span class="what">${esc(instrLabel(sl.instrument))}</span>
+              ${statusTag(sl.status)}
+              ${A.slotReplyUnavailable ? '' : `
+                <button class="btn ${sl.status === 'declined' ? 'sec' : 'good'} small"
+                        onclick="respondToSlot('${sl.id}','${s.id}','confirmed')">✓ I'll be there</button>
+                <button class="btn ${sl.status === 'declined' ? 'danger' : 'sec'} small"
+                        onclick="respondToSlot('${sl.id}','${s.id}','declined')">✗ Can't make it</button>`}
+            </div>`).join('')}
+          ${A.slotReplyUnavailable
+            ? '<div class="hint">Replying is not switched on yet.</div>'
+            : (mySlots.length > 1
+                ? '<div class="hint">Two positions, two answers — say for each one.</div>' : '')}
         </div>` : ''}
       ${positions}
     </div>`;
@@ -1237,22 +1258,35 @@ function addPersonTo(serviceId, instrument){
   const taken = new Set((A.slots[serviceId] || []).filter(sl => sl.instrument === instrument).map(sl => sl.user_id));
   const label = (INSTRUMENTS.find(i => i.id === instrument) || {}).label || instrument;
 
-  // Whoever's roster says they play this comes first. The question being asked
-  // is "who can cover the piano", so the answer belongs at the top of the list
-  // rather than scattered alphabetically through everyone on the team.
+  // The question is "who can cover the piano", so the list is the people whose
+  // roster says they play it. Everyone else is noise you have to read past.
+  //
+  // Two escapes, because a strict filter would otherwise be a dead end: if
+  // nobody on the team plays it, the whole team is offered instead, and there
+  // is always a link to widen it by hand - someone can cover an instrument
+  // that never made it onto their profile.
   const plays = m => (m.instruments || []).includes(instrument);
-  const options = A.roster.filter(m => !taken.has(m.user_id))
-    .sort((a, b) => (plays(b) ? 1 : 0) - (plays(a) ? 1 : 0));
-  if (!options.length) { toast('Everyone on the team is already on for that', true); return; }
+  const free = A.roster.filter(m => !taken.has(m.user_id));
+  const players = free.filter(plays);
+  const widened = A._addPersonAll || !players.length;
+  const options = widened ? free : players;
+
+  if (!free.length) { toast('Everyone on the team is already on for that', true); return; }
 
   showModal('Add to ' + esc(instrLabel(instrument)), `
     <div class="field">
-      <label class="fld" for="ap-user">Who${
-        options.some(plays) ? ` — people who play ${esc(label.toLowerCase())} are listed first` : ''}</label>
+      <label class="fld" for="ap-user">Who</label>
       <select id="ap-user" style="width:100%">
         ${options.map(m => `<option value="${m.user_id}">${esc(m.full_name)}${
-          plays(m) ? ` — plays ${esc(label.toLowerCase())}` : ''}</option>`).join('')}
+          widened && plays(m) ? ` — plays ${esc(label.toLowerCase())}` : ''}</option>`).join('')}
       </select>
+      <div class="hint" style="margin-top:6px">
+        ${!players.length
+          ? `Nobody on the team has ${esc(label.toLowerCase())} on their profile, so this is everyone.`
+          : (widened
+              ? `Everyone on the team. <a href="#" onclick="A._addPersonAll=false;addPersonTo('${serviceId}','${instrument}');return false;">Just the ${esc(label.toLowerCase())} players</a>`
+              : `${players.length} ${players.length === 1 ? 'person plays' : 'people play'} ${esc(label.toLowerCase())}. <a href="#" onclick="A._addPersonAll=true;addPersonTo('${serviceId}','${instrument}');return false;">Show everyone on the team</a>`)}
+      </div>
     </div>
     <div class="field">${pill('ap-lead', '★ Leads this service', false)}</div>
     <button class="btn" onclick="confirmAddPerson('${serviceId}','${instrument}')">Add</button>
@@ -1754,6 +1788,7 @@ async function deleteService(id){
 }
 
 async function confirmAddPerson(serviceId, instrument){
+  A._addPersonAll = false;
   const userId = $('ap-user').value;
   const isLeader = pillOn('ap-lead');
 

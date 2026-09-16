@@ -163,9 +163,11 @@ ok('names are escaped in the roster', /esc\(m\.full_name\)/.test(page));
 ok('song titles are escaped', /esc\(s\.title\)/.test(page));
 ok('request notes are escaped', /esc\(r\.note\)/.test(page));
 
-// The four instruments are defined once.
-const list = (page.match(/id: '(piano|guitar|cajon|singing)'/g) || []).length;
-check('four instruments, defined in one list', list, 4);
+// The positions are defined once. Slides is one of them: not an instrument,
+// but somebody has to run the words and the rota is where they find out.
+const list = (page.match(/id: '(piano|guitar|cajon|singing|slides)'/g) || []).length;
+check('five positions, defined in one list', list, 5);
+ok('slides among them', /id: 'slides',\s+label: 'Slides'/.test(page));
 
 // ======================================================================
 // 5. The pills toggle, and more than one can be on

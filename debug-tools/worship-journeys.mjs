@@ -152,6 +152,7 @@ const SEED = () => ({
   worship_members: [
     { id: 'm1', user_id: 'u-luke', instruments: ['piano'], is_worship_admin: true },
     { id: 'm2', user_id: 'u-ann',  instruments: ['guitar', 'singing'], is_worship_admin: false },
+    { id: 'm3', user_id: 'u-ben',  instruments: ['cajon'], is_worship_admin: false },
   ],
   worship_join_requests: [],
   worship_service_types: [
@@ -255,6 +256,13 @@ await page.waitForTimeout(250);
 await page.selectOption('#ap-user', 'u-ann');
 await page.click('#modal button.btn:not(.sec)');
 await page.waitForTimeout(450);
+// Ann is on twice, which is normal - guitar and singing - and is exactly the
+// shape that broke: one answer was taken to cover both.
+await page.evaluate(() => addPersonTo(A.openService, 'singing'));
+await page.waitForTimeout(250);
+await page.selectOption('#ap-user', 'u-ann');
+await page.click('#modal button.btn:not(.sec)');
+await page.waitForTimeout(450);
 const team = await text(page);
 ok('both are on the rota', team.includes('Luke Hegelund') && team.includes('Ann Becker'));
 ok('  the leader is starred', team.includes('★ Luke Hegelund'));
@@ -318,15 +326,43 @@ ok('their own date is surfaced', annHome.includes('You are on'));
 await page.click('.card:nth-child(2) .drow');     // the "You are on" row
 await page.waitForTimeout(400);
 ok('it opens the plan', await page.evaluate(() => !!document.querySelector('.planhead')));
-ok('  which says what they are on for', (await text(page)).includes('You are on for'));
+ok('  which says what they are on for', /you are on for/i.test(await text(page)));
 ok('  and shows no admin controls', await page.evaluate(() =>
   !document.querySelector('.item .ord') && !document.querySelector('[id^="file-url-"]')));
 
-await page.click('button.good.small');            // I'll be there
+// Two positions, so two rows to answer, each with its own pair of buttons.
+ok('both positions are offered to answer', await page.evaluate(() => document.querySelectorAll('.myslot').length === 2));
+const myRows = await page.evaluate(() => [...document.querySelectorAll('.myslot .what')].map(w => w.textContent.trim()));
+ok('  naming each one', myRows.length === 2 && myRows.join('|').includes('Guitar') && myRows.join('|').includes('Singing'));
+
+await page.locator('.myslot').nth(0).locator('button.good.small').click();   // first position
 await page.waitForTimeout(500);
+ok('answering one answers ONLY that one', await page.evaluate(() => {
+  const mine = (window.__T.worship_service_slots || []).filter(s => s.user_id === 'u-ann');
+  return mine.length === 2 && mine.filter(s => s.status === 'confirmed').length === 1
+                           && mine.filter(s => s.status === 'scheduled').length === 1;
+}));
+ok('  and the other is still reachable', await page.evaluate(() =>
+  document.querySelectorAll('.myslot').length === 2 &&
+  [...document.querySelectorAll('.myslot')].some(r => r.innerText.includes('asked'))));
+
+await page.locator('.myslot').nth(1).locator('button.good.small').click();   // second position
+await page.waitForTimeout(500);
+ok('the second answer lands too', await page.evaluate(() => {
+  const mine = (window.__T.worship_service_slots || []).filter(s => s.user_id === 'u-ann');
+  return mine.length === 2 && mine.every(s => s.status === 'confirmed');
+}));
+
+// Changing your mind has to work, or the first press is a trap.
+await page.locator('.myslot').nth(0).locator('button.sec.small, button.danger.small').first().click();
+await page.waitForTimeout(500);
+ok('an answer can be changed', await page.evaluate(() => {
+  const mine = (window.__T.worship_service_slots || []).filter(s => s.user_id === 'u-ann');
+  return mine.filter(s => s.status === 'declined').length === 1;
+}));
 ok('the reply is recorded against them', await page.evaluate(() => {
-  const mine = (window.__T.worship_service_slots || []).find(s => s.user_id === 'u-ann');
-  return mine && mine.status === 'confirmed';
+  const mine = (window.__T.worship_service_slots || []).filter(s => s.user_id === 'u-ann');
+  return mine.some(s => s.status === 'confirmed');
 }));
 ok('  through the function, never a direct write', await page.evaluate(() =>
   window.__writes.some(w => w.op === 'rpc' && w.name === 'worship_slot_respond') &&

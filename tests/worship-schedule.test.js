@@ -194,6 +194,19 @@ ok('  and issuing the writes after that',
 // equal numbers moves nothing: the press would silently do nothing at all.
 ok('  with a tie falling back to positions', /ao === bo \? \[j, i\]/.test(page));
 
+// The add-person picker answers the question being asked: who plays this.
+// Everyone else is noise to read past.
+ok('the picker lists the players of that instrument', /const players = free\.filter\(plays\);/.test(page));
+// ...with two escapes, so a strict filter is never a dead end.
+ok('  falling back to everyone when nobody plays it', /const widened = A\._addPersonAll \|\| !players\.length;/.test(page));
+ok('  and offering to widen by hand', /Show everyone on the team/.test(page));
+ok('  which resets after an add', /A\._addPersonAll = false;/.test(page));
+
+// A player is regularly on twice — piano and singing — and answering for one
+// is not answering for the other.
+ok('every one of my positions gets its own answer', /const mySlots = slots\.filter\(sl => sl\.user_id === A\.me\.id\);/.test(page));
+ok('  and nothing takes just the first', !/slots\.find\(sl => sl\.user_id === A\.me\.id\)/.test(page));
+
 // A set-list row is editable after it is added: a key gets moved to suit
 // whoever is singing, and who is singing changes too.
 ok('a set-list row can be edited', /function editServiceSong\(linkId, serviceId\)/.test(page));
