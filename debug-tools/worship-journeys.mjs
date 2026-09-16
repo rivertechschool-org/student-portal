@@ -132,7 +132,7 @@ async function boot(page, seed, me) {
     A.loaded = { songs: false, schedule: false, requests: false };
     A.openService = null; A._openType = null; A._songQuery = ''; A._dirQuery = '';
     await loadCore();
-    if (!A.member && !A.isAdmin) A.tab = 'team'; else A.tab = 'schedule';
+    if (!A.member && !A.isAdmin) A.tab = 'team'; else A.tab = 'myschedule';
     await go(A.tab);
   }, { seed, me });
   await page.waitForTimeout(350);
@@ -232,7 +232,9 @@ console.log('\n2. An admin plans a service from an empty date\n');
 // ======================================================================
 world = await page.evaluate(() => window.__T);
 await boot(page, world, LUKE);
-ok('the page opens on the schedule', await page.evaluate(() => A.tab === 'schedule'));
+ok('the page opens on my schedule', await page.evaluate(() => A.tab === 'myschedule'));
+await page.evaluate(() => go('plan'));
+await page.waitForTimeout(350);
 ok('services are listed in week order', await page.evaluate(() =>
   [...document.querySelectorAll('.trow .name')].map(n => n.textContent).join('|') === 'Sunday Morning|Wednesday Chapel'));
 
@@ -320,15 +322,18 @@ console.log('\n3. A player opens the plan and answers\n');
 // ======================================================================
 world = await page.evaluate(() => window.__T);
 await boot(page, world, ANN);
-ok('a member lands on the schedule', await page.evaluate(() => A.tab === 'schedule'));
+ok('a member lands on my schedule', await page.evaluate(() => A.tab === 'myschedule'));
+ok('  and is offered no planning tab', await page.evaluate(() =>
+  ![...document.querySelectorAll('.tabbar button')].some(b => /Plan/.test(b.textContent))));
 const annHome = await text(page);
 ok('their own date is surfaced', annHome.includes('You are on'));
-await page.click('.card:nth-child(2) .drow');     // the "You are on" row
+await page.click('.card:nth-child(1) .drow');     // the first "You are on" row
 await page.waitForTimeout(400);
 ok('it opens the plan', await page.evaluate(() => !!document.querySelector('.planhead')));
 ok('  which says what they are on for', /you are on for/i.test(await text(page)));
 ok('  and shows no admin controls', await page.evaluate(() =>
-  !document.querySelector('.item .ord') && !document.querySelector('[id^="file-url-"]')));
+  !document.querySelector('.item .ord') && !document.querySelector('[id^="file-url-"]')
+  && !document.querySelector('[onclick^="addPersonTo"]')));
 
 // Two positions, so two rows to answer, each with its own pair of buttons.
 ok('both positions are offered to answer', await page.evaluate(() => document.querySelectorAll('.myslot').length === 2));
@@ -413,7 +418,7 @@ await page.evaluate(() => {
         message: 'Could not find the function public.worship_slot_respond(p_slot_id, p_status) in the schema cache' } })
     : realRpc(name, args);
 });
-await page.click('.card:nth-child(2) .drow');
+await page.click('.card:nth-child(1) .drow');
 await page.waitForTimeout(400);
 ok('the reply buttons are offered', await page.evaluate(() => !!document.querySelector('button.good.small')));
 await page.click('button.good.small');
@@ -435,6 +440,66 @@ await asSpanish.waitForTimeout(1500);
 const spanishDate = await asSpanish.evaluate(() => fmtDate('2026-09-16'));
 await asSpanish.close();
 check('a Spanish browser reads the same date', spanishDate, 'Wed, Sep 16');
+
+// ======================================================================
+console.log('\n6. One rota, two tabs\n');
+// ======================================================================
+// My schedule reads the same for everyone. What an admin gets extra is a way
+// OUT of it into planning - not a page that grows controls when they look at
+// it.
+world = await page.evaluate(() => window.__T);
+
+await boot(page, world, ANN);
+await page.click('.card:nth-child(1) .drow');
+await page.waitForTimeout(400);
+const playerView = await page.evaluate(() => ({
+  html: document.getElementById('tab-body').innerHTML,
+  edit: !!document.querySelector('[onclick^="editInPlan"]')
+}));
+ok('a player is offered no way to edit', !playerView.edit);
+
+await boot(page, world, LUKE);
+await page.click('.card:nth-child(1) .drow, .card:nth-child(2) .drow');
+await page.waitForTimeout(400);
+const adminView = await page.evaluate(() => ({
+  html: document.getElementById('tab-body').innerHTML,
+  edit: !!document.querySelector('[onclick^="editInPlan"]'),
+  controls: !!document.querySelector('.item .ord') || !!document.querySelector('[onclick^="addPersonTo"]')
+}));
+ok('an admin reads the very same page', !adminView.controls);
+ok('  with one button out to planning', adminView.edit);
+
+// Two things legitimately differ between two people reading the same service:
+// the admin's one button out to planning, and the "you are on for" rows, which
+// belong to whoever's name is on the rota rather than to a role. Strip both,
+// and what is left must be the same page.
+const strip = h => h
+  .replace(/<div class="row">\s*<button[^>]*editInPlan[\s\S]*?<\/div>/, '')
+  .replace(/<div class="myslots">[\s\S]*?<\/div>\s*(?=<div class="pos">)/, '')
+  // Your own name is highlighted on the rota. Also whose-name-is-on-the-row,
+  // not a role.
+  .replace(/class="person me"/g, 'class="person "')
+  .replace(/\s+/g, ' ')
+  .trim();
+const same = strip(adminView.html) === strip(playerView.html);
+check('the rest of the service reads identically to both', same ? 'same' : 'different', 'same');
+if (!same) {
+  const a = strip(adminView.html), b = strip(playerView.html);
+  let i = 0; while (i < a.length && a[i] === b[i]) i++;
+  console.log('         first difference at ' + i + ':\n           admin:  …' + a.slice(Math.max(0, i - 60), i + 90) +
+              '\n           player: …' + b.slice(Math.max(0, i - 60), i + 90));
+}
+
+await page.click('[onclick^="editInPlan"]');
+await page.waitForTimeout(500);
+const landed = await page.evaluate(() => ({
+  tab: A.tab,
+  onThatService: A.openService,
+  hasControls: !!document.querySelector('[onclick^="addPersonTo"]')
+}));
+ok('editing lands on the Plan tab', landed.tab === 'plan');
+ok('  on that same service', !!landed.onThatService);
+ok('  with the planning controls', landed.hasControls);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (errors.length) console.log('page errors:', errors);

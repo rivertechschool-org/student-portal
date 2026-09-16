@@ -1439,3 +1439,31 @@ and changes an answer — because a reply that cannot be changed is a trap. 56 c
   team has it on their profile the whole team is offered with a line saying why, and
   there is always a "Show everyone on the team" link for someone covering an instrument
   that never made it onto their profile. That widening is per-dialog, not a setting.
+
+---
+
+## 2026-09-16 — Luke's Claude (one rota, two tabs)
+
+**Schedule split into My schedule and Plan.** My schedule is what is coming up and what you
+are on, and a service opened from it **reads the same for a student, a teacher and an
+admin** — a rota is a rota. Plan is the planning tab, admins only: service types → the next
+fortnight → the plan with all the controls. A worship admin reading a service on My
+schedule gets exactly one extra thing: **Edit this service**, which lands on that same
+service in Plan rather than dropping them at the top of the tab to find it again.
+
+**How the two views cannot drift apart.** The four blocks — team, order, files, notes — now
+take an `editable` flag instead of each asking `A.isAdmin` internally. One source of markup,
+called with `false` from the read-only view and `true` from the plan. Journey 6 in the
+harness renders the same service as a player and as an admin, strips the admin's one button,
+and fails if a single character of the rest differs.
+
+Two things legitimately differ between two people reading the same service, and the harness
+allows exactly those: the "you are on for" rows, and the highlight on your own name. Neither
+is a role — both are whose name is on the row.
+
+**Drafts stay on Plan.** My schedule lists published services only, so an admin's
+half-finished plan is not on the team's screen. `myNextCard` is gone: "You are on" on My
+schedule replaced it, and leaving a second, divergent copy of the same idea is how two
+screens start disagreeing.
+
+64 journey checks, 72 in `tests/worship-schedule.test.js`.

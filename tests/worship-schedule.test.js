@@ -164,14 +164,35 @@ ok('a reply goes through the function, not the table',
 ok('  and nothing writes status onto a slot row directly',
   !/worship_service_slots'\)\s*\.update/.test(page));
 
-ok('the schedule is the first tab', page.indexOf("go('schedule')") < page.indexOf("go('songs')"));
+ok('my schedule is the first tab', page.indexOf("go('myschedule')") < page.indexOf("go('songs')"));
+ok('  then planning, for admins only', /A\.isAdmin \? `<button class="\$\{A\.tab === 'plan'/.test(page));
 ok('  and songs come before team', page.indexOf("go('songs')") < page.indexOf("go('team')"));
-ok('the page opens on the schedule', /tab: 'schedule'/.test(page));
+ok('the page opens on my schedule', /tab: 'myschedule'/.test(page));
 ok('  unless you are not on the team yet',
   /if \(!A\.member && !A\.isAdmin\) A\.tab = 'team';/.test(page));
 
-ok('pressing Schedule from inside a plan comes back out',
-  /if \(tab === 'schedule' && A\.tab === 'schedule'\) \{ A\.openService = null; A\._openType = null; \}/.test(page));
+ok('pressing Plan from inside a plan comes back out',
+  /if \(tab === 'plan' && A\.tab === 'plan'\) \{ A\.openService = null; A\._openType = null; \}/.test(page));
+ok('  and My schedule likewise', /if \(tab === 'myschedule' && A\.tab === 'myschedule'\) A\.openMyService = null;/.test(page));
+
+// ---- one rota, two tabs -------------------------------------------------
+// A service read from My schedule is the same page for a student, a teacher
+// and an admin. The blocks take an `editable` flag rather than each asking
+// A.isAdmin, so there is ONE source of that markup and the read-only view
+// cannot drift away from the planning view.
+ok('the blocks are told whether they may be edited', /function teamBlock\(s, slots, editable\)/.test(page));
+ok('  all four of them', /function orderBlock\(s, editable\)/.test(page)
+  && /function filesBlock\(s, editable\)/.test(page) && /function notesBlock\(s, editable\)/.test(page));
+ok('  and the read-only view passes false', /teamBlock\(s, slots, false\)/.test(page));
+ok('  while the plan passes true', /teamBlock\(s, slots, true\)/.test(page));
+
+// Drafts are the planner's workings, so they do not appear on the team's screen.
+ok('my schedule shows published services only', /x\.status === 'published'/.test(page));
+
+// The one door between the tabs lands on the same service, not the top.
+ok('an admin can step out to planning', /function editInPlan\(serviceId\)/.test(page));
+ok('  landing on that service', /A\.openService = serviceId;\s*\n\s*A\.tab = 'plan';/.test(page));
+ok('  and a non-admin is never offered it', /\$\{A\.isAdmin \? `<div class="row">\s*\n\s*<button class="btn sec small" onclick="editInPlan/.test(page));
 
 // An unplanned date is an admin's to start.
 ok('an admin can start a plan from an empty date', /planDate\('\$\{type\.id\}','\$\{d\.date\}'\)/.test(page));

@@ -396,8 +396,8 @@ const A = {
   songLeaderAvailable: true,   // cleared when the set list cannot name a leader yet
   slotReplyUnavailable: false, // set when worship_slot_respond() is not on the database
   directory: null,         // lazily loaded, admin only
-  tab: 'schedule',
-  openService: null, _openType: null,
+  tab: 'myschedule',
+  openService: null, _openType: null, openMyService: null,
   loaded: { songs: false, schedule: false, requests: false }
 };
 
@@ -480,7 +480,8 @@ function render(){
     </header>
 
     <div class="tabbar">
-      <button class="${A.tab === 'schedule' ? 'active' : ''}" onclick="go('schedule')">📅 Schedule</button>
+      <button class="${A.tab === 'myschedule' ? 'active' : ''}" onclick="go('myschedule')">📅 My schedule</button>
+      ${A.isAdmin ? `<button class="${A.tab === 'plan' ? 'active' : ''}" onclick="go('plan')">🗓️ Plan</button>` : ''}
       <button class="${A.tab === 'songs' ? 'active' : ''}" onclick="go('songs')">🎼 Songs</button>
       <button class="${A.tab === 'team' ? 'active' : ''}" onclick="go('team')">👥 Team</button>
       ${A.isAdmin ? `<button class="${A.tab === 'requests' ? 'active' : ''}" onclick="go('requests')">📥 Requests${
@@ -493,14 +494,15 @@ function render(){
 }
 
 async function go(tab){
-  // Pressing the Schedule tab while already inside a plan means "take me back
-  // out", not "stay where I was".
-  if (tab === 'schedule' && A.tab === 'schedule') { A.openService = null; A._openType = null; }
+  // Pressing a tab you are already on means "take me back out", not "stay
+  // where I was".
+  if (tab === 'plan' && A.tab === 'plan') { A.openService = null; A._openType = null; }
+  if (tab === 'myschedule' && A.tab === 'myschedule') A.openMyService = null;
   A.tab = tab;
   // Each tab fetches once, then keeps what it has until something changes it.
   try {
     if (tab === 'songs' && !A.loaded.songs) await loadSongs();
-    if (tab === 'schedule' && !A.loaded.schedule) await loadSchedule();
+    if ((tab === 'myschedule' || tab === 'plan') && !A.loaded.schedule) await loadSchedule();
     if (tab === 'requests' && !A.loaded.requests) await loadRequests();
   } catch (e) {
     console.error(e);
@@ -519,7 +521,8 @@ function renderTab(){
     if (A.isAdmin && (A._dirQuery || '').trim().length >= 2) renderDirectory();
   }
   else if (A.tab === 'songs') body.innerHTML = songsTab();
-  else if (A.tab === 'schedule') body.innerHTML = scheduleTab();
+  else if (A.tab === 'myschedule') body.innerHTML = myScheduleTab();
+  else if (A.tab === 'plan') body.innerHTML = A.isAdmin ? scheduleTab() : myScheduleTab();
   else if (A.tab === 'requests') body.innerHTML = requestsTab();
 }
 
@@ -765,8 +768,123 @@ function editSong(id, serviceId, key){
   `);
 }
 
-// ------------------------------------------------------------ schedule ----
-// ------------------------------------------------------------ schedule ----
+// --------------------------------------------------------- my schedule ----
+//
+// What is coming up, and what I am on. This screen reads the SAME whoever
+// opens it - student, teacher, admin - because a rota is a rota. The only
+// thing that differs person to person is which rows are theirs to answer for,
+// and that is not a role, it is whose name is on the row.
+//
+// Planning lives on its own tab. A worship admin reading a service here gets
+// one button out to it, rather than a page that quietly grows controls
+// depending on who is looking.
+function myScheduleTab(){
+  if (A.openMyService) {
+    const svc = A.services.find(x => x.id === A.openMyService);
+    if (svc) return serviceView(svc);
+    A.openMyService = null;
+  }
+
+  const today = localDateStr();
+  // Drafts are the planner's workings. This screen shows what the team has
+  // actually been given; an admin sees their drafts on the Plan tab.
+  const upcoming = A.services
+    .filter(x => x.service_date >= today && x.status === 'published')
+    .sort((a, b) => a.service_date.localeCompare(b.service_date));
+
+  const mine = upcoming.filter(x => (A.slots[x.id] || []).some(sl => sl.user_id === A.me.id));
+  const rest = upcoming.filter(x => mine.indexOf(x) === -1);
+
+  return `
+    <div class="card">
+      <h3>🎤 You are on</h3>
+      ${mine.length
+        ? mine.map(x => myRow(x, true)).join('')
+        : '<div class="empty">Nothing scheduled for you yet.</div>'}
+    </div>
+    <div class="card">
+      <h3>📅 Coming up</h3>
+      <div class="hint">Everything the team has been given, whether or not you are on it.</div>
+      ${rest.length ? rest.map(x => myRow(x, false)).join('')
+                    : '<div class="empty">Nothing else on the calendar.</div>'}
+    </div>`;
+}
+
+function myRow(x, isMine){
+  const type = A.types.find(t => t.id === x.service_type_id);
+  const slots = A.slots[x.id] || [];
+  const mySlots = slots.filter(sl => sl.user_id === A.me.id);
+  const songs = A.songLinks[x.id] || [];
+  const isToday = x.service_date === localDateStr();
+
+  return `
+    <button class="drow ${isToday ? 'today' : ''}" onclick="openMyService('${x.id}')">
+      <div class="grow">
+        <div class="date">${esc(fmtDate(x.service_date))}${
+          isToday ? ' <span class="tag today">today</span>' : ''}</div>
+        <div class="meta">${esc(type ? type.name : 'Service')}${
+          type && type.start_time ? ' · ' + esc(fmtTime(type.start_time)) : ''}${
+          x.title ? ' · ' + esc(x.title) : ''}</div>
+        <div class="meta">${isMine
+          ? mySlots.map(sl => `${esc(instrLabel(sl.instrument))} ${statusTag(sl.status)}`).join(' · ')
+          : `${slots.length} on the team · ${songs.length} song${songs.length === 1 ? '' : 's'}`}</div>
+      </div>
+      <span class="chev">›</span>
+    </button>`;
+}
+
+function openMyService(id){ A.openMyService = id; renderTab(); window.scrollTo(0, 0); }
+function closeMyService(){ A.openMyService = null; renderTab(); window.scrollTo(0, 0); }
+
+// The same service, read rather than edited. Identical for every role: the
+// reply buttons inside the team block belong to whoever's name is on the row,
+// which is not a permission.
+function serviceView(s){
+  const type = A.types.find(t => t.id === s.service_type_id);
+  const slots = A.slots[s.id] || [];
+  const isToday = s.service_date === localDateStr();
+
+  return `
+    <div class="crumb">
+      <a href="#" onclick="closeMyService();return false;">📅 My schedule</a>
+      <span class="sep">›</span>
+      <strong>${esc(fmtDate(s.service_date))}</strong>
+    </div>
+
+    <div class="card">
+      <div class="planhead">
+        <div>
+          <h2>${esc(fmtDate(s.service_date))}${isToday ? ' <span class="tag today">today</span>' : ''}</h2>
+          <div class="when2">${esc(type ? type.name : 'Service')}${
+            type && type.start_time ? ' · ' + esc(fmtTime(type.start_time)) : ''}${
+            type && type.location ? ' · ' + esc(type.location) : ''}${s.title ? ' · ' + esc(s.title) : ''}</div>
+        </div>
+        ${A.isAdmin ? `<div class="row">
+          <button class="btn sec small" onclick="editInPlan('${s.id}')">✏️ Edit this service</button>
+        </div>` : ''}
+      </div>
+    </div>
+
+    ${teamBlock(s, slots, false)}
+    ${orderBlock(s, false)}
+    ${filesBlock(s, false)}
+    ${notesBlock(s, false)}`;
+}
+
+// The one door between the two tabs: an admin reading a service can step into
+// planning THAT service, rather than being dropped at the top of the Plan tab
+// to find it again.
+function editInPlan(serviceId){
+  const svc = A.services.find(x => x.id === serviceId);
+  A.openMyService = null;
+  A._openType = svc ? svc.service_type_id : null;
+  A.openService = serviceId;
+  A.tab = 'plan';
+  render();
+  window.scrollTo(0, 0);
+}
+
+// -------------------------------------------------------------- planning ----
 //
 // Three screens, one tab, in the order someone actually thinks:
 //
@@ -815,45 +933,13 @@ function typeList(){
   return `
     <div class="card">
       <div class="spread">
-        <h3>📅 Services</h3>
+        <h3>🗓️ Plan a service</h3>
         ${A.isAdmin ? '<button class="btn small" onclick="editServiceType(null)">+ Add service</button>' : ''}
       </div>
       <div class="hint">Pick a service to see the next two weeks of it.</div>
       ${A.types.length ? rows : '<div class="empty">No services set up yet.</div>'}
     </div>
-    ${A.isAdmin ? oneOffCard() : ''}
-    ${myNextCard()}`;
-}
-
-// Anything the signed-in player is on, across every service, so they do not
-// have to go looking for their own name.
-function myNextCard(){
-  const today = localDateStr();
-  const mine = A.services
-    .filter(s => s.service_date >= today)
-    .map(s => ({ s, slots: (A.slots[s.id] || []).filter(sl => sl.user_id === A.me.id) }))
-    .filter(x => x.slots.length)
-    .sort((a, b) => a.s.service_date.localeCompare(b.s.service_date))
-    .slice(0, 5);
-  if (!mine.length) return '';
-
-  return `
-    <div class="card">
-      <h3>🎤 You are on</h3>
-      ${mine.map(({ s, slots }) => {
-        const type = A.types.find(t => t.id === s.service_type_id);
-        return `
-        <button class="drow ${s.service_date === today ? 'today' : ''}" onclick="openService('${s.id}')">
-          <div class="grow">
-            <div class="date">${esc(fmtDate(s.service_date))}${
-              s.service_date === today ? ' <span class="tag today">today</span>' : ''}</div>
-            <div class="meta">${esc(type ? type.name : 'Service')} · ${
-              slots.map(sl => `${esc(instrLabel(sl.instrument))} ${statusTag(sl.status)}`).join(' · ')}</div>
-          </div>
-          <span class="chev">›</span>
-        </button>`;
-      }).join('')}
-    </div>`;
+    ${A.isAdmin ? oneOffCard() : ''}`;
 }
 
 function oneOffCard(){
@@ -911,7 +997,7 @@ function typeDates(type){
 
   return `
     <div class="crumb">
-      <a href="#" onclick="closeType();return false;">📅 Services</a>
+      <a href="#" onclick="closeType();return false;">🗓️ Plan</a>
       <span class="sep">›</span>
       <strong>${esc(type.name)}</strong>
     </div>
@@ -978,7 +1064,7 @@ function planPage(s){
 
   return `
     <div class="crumb">
-      <a href="#" onclick="closeType();return false;">📅 Services</a>
+      <a href="#" onclick="closeType();return false;">🗓️ Plan</a>
       <span class="sep">›</span>
       <a href="#" onclick="openType('${s.service_type_id}');return false;">${esc(type ? type.name : 'Service')}</a>
       <span class="sep">›</span>
@@ -1008,16 +1094,16 @@ function planPage(s){
         ? '<div class="hint">A draft is yours alone. The team sees this date once you publish it.</div>' : ''}
     </div>
 
-    ${teamBlock(s, slots)}
-    ${orderBlock(s)}
-    ${filesBlock(s)}
-    ${notesBlock(s)}`;
+    ${teamBlock(s, slots, true)}
+    ${orderBlock(s, true)}
+    ${filesBlock(s, true)}
+    ${notesBlock(s, true)}`;
 }
 
 // Positions first, people inside them - the way a rota is read. Every
 // instrument shows even when nobody is on it, because an empty position is
 // the thing you are looking for when you open this page.
-function teamBlock(s, slots){
+function teamBlock(s, slots, editable){
   // ALL of them, not the first. A player is regularly on twice - piano and
   // singing, guitar and singing - and answering for one of those is not
   // answering for the other. Finding only the first left the second stuck on
@@ -1031,14 +1117,14 @@ function teamBlock(s, slots){
       const isMe = sl.user_id === A.me.id;
       return `<span class="person ${isMe ? 'me' : ''}">${sl.is_leader ? '★ ' : ''}${
         esc(m ? m.full_name : 'Former member')} ${statusTag(sl.status)}${
-        A.isAdmin ? ` <a href="#" class="x" onclick="removeSlot('${sl.id}','${s.id}');return false;">✕</a>` : ''}</span>`;
+        editable ? ` <a href="#" class="x" onclick="removeSlot('${sl.id}','${s.id}');return false;">✕</a>` : ''}</span>`;
     }).join('') : '<span class="empty" style="padding:0">—</span>';
 
     return `
       <div class="pos">
         <div class="label">${inst.icon} ${esc(inst.label)}</div>
         <div class="people">${people}</div>
-        ${A.isAdmin ? `<button class="btn sec small" onclick="addPersonTo('${s.id}','${inst.id}')">+ Add</button>` : ''}
+        ${editable ? `<button class="btn sec small" onclick="addPersonTo('${s.id}','${inst.id}')">+ Add</button>` : ''}
       </div>`;
   }).join('');
 
@@ -1149,7 +1235,7 @@ function statusTag(status){
 
 // The order of service. Songs carry the key they are played in that day, and
 // the title opens the chart already in it.
-function orderBlock(s){
+function orderBlock(s, editable){
   const songs = (A.songLinks[s.id] || []).slice().sort((a, b) => a.sort_order - b.sort_order);
 
   const items = songs.map((l, i) => {
@@ -1167,7 +1253,7 @@ function orderBlock(s){
             song && song.artist ? ' · ' + esc(song.artist) : ''}${playable ? ' · 🎹 chart' : ''}${
             l.note ? ' · ' + esc(l.note) : ''}</div>
         </div>
-        ${A.isAdmin ? `
+        ${editable ? `
           <div class="ord">
             <button title="Up" onclick="moveServiceSong('${l.id}','${s.id}',-1)" ${i === 0 ? 'disabled' : ''}>↑</button>
             <button title="Down" onclick="moveServiceSong('${l.id}','${s.id}',1)" ${i === songs.length - 1 ? 'disabled' : ''}>↓</button>
@@ -1181,7 +1267,7 @@ function orderBlock(s){
     <div class="card">
       <h3>🎼 Order of service</h3>
       ${songs.length ? items : '<div class="empty">No songs yet.</div>'}
-      ${A.isAdmin ? `
+      ${editable ? `
         <div class="row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
           <select id="song-pick-${s.id}" style="min-width:180px" onchange="onOrderSongPick('${s.id}')">
             ${A.songs.map(x => `<option value="${x.id}">${esc(x.title)}</option>`).join('')}
@@ -1200,7 +1286,7 @@ function orderBlock(s){
 // Practice files: rehearsal tracks, a click track, a PDF, a Drive folder.
 // Anything with a link. The table is newer than the rest of the section, so a
 // database that has not had the migration yet loses this block and nothing else.
-function filesBlock(s){
+function filesBlock(s, editable){
   if (A.filesUnavailable) return '';
   const files = (A.files[s.id] || []).slice().sort((a, b) => a.sort_order - b.sort_order);
 
@@ -1210,9 +1296,9 @@ function filesBlock(s){
       ${files.length ? files.map(f => `
         <div class="filerow">
           <a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.label || f.url)}</a>
-          ${A.isAdmin ? `<a href="#" class="x" style="color:var(--muted)" onclick="removeServiceFile('${f.id}','${s.id}');return false;">✕</a>` : ''}
+          ${editable ? `<a href="#" class="x" style="color:var(--muted)" onclick="removeServiceFile('${f.id}','${s.id}');return false;">✕</a>` : ''}
         </div>`).join('') : '<div class="empty">Nothing attached yet.</div>'}
-      ${A.isAdmin ? `
+      ${editable ? `
         <div class="row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
           <input type="text" id="file-label-${s.id}" placeholder="What is it? e.g. Rehearsal track" style="flex:1;min-width:160px">
           <input type="text" id="file-url-${s.id}" placeholder="Link" style="flex:2;min-width:200px">
@@ -1221,13 +1307,13 @@ function filesBlock(s){
     </div>`;
 }
 
-function notesBlock(s){
-  if (!s.notes && !A.isAdmin) return '';
+function notesBlock(s, editable){
+  if (!s.notes && !editable) return '';
   return `
     <div class="card">
       <div class="spread">
         <h3>📝 Notes for the team</h3>
-        ${A.isAdmin ? `<button class="btn sec small" onclick="editServiceNotes('${s.id}')">Edit</button>` : ''}
+        ${editable ? `<button class="btn sec small" onclick="editServiceNotes('${s.id}')">Edit</button>` : ''}
       </div>
       ${s.notes ? `<div style="font-size:.88rem;white-space:pre-wrap">${esc(s.notes)}</div>`
                 : '<div class="empty">None.</div>'}
