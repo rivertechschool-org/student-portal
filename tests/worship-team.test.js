@@ -172,7 +172,10 @@ ok('every pill is a button', !/class="pick/.test(page) || /<button type="button"
 ok('nothing reads .checked', !/\.checked/.test(page));
 ok('the instruments are read with pillOn', /INSTRUMENTS\.filter\(i => pillOn\('em-' \+ i\.id\)\)/.test(page));
 ok('  and so is the join form', /INSTRUMENTS\.filter\(i => pillOn\('join-' \+ i\.id\)\)/.test(page));
-ok('  and the leader flag', /pillOn\('slot-lead-' \+ serviceId\)/.test(page));
+// The leader pill moved into the add-person dialog when the rota became
+// position-first: the instrument is answered by the row you pressed, so the
+// only questions left are who, and whether they lead.
+ok('  and the leader flag', /pillOn\('ap-lead'\)/.test(page));
 
 // filter() over the whole list is what makes it multi-select: nothing anywhere
 // narrows the answer to one instrument.

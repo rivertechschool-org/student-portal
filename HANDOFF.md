@@ -866,3 +866,45 @@ each migration's header comment and must be regenerated in the same commit
 
 Noticed on the way through: that map was 16 migrations out of date before today's commit,
 so anyone who trusted it this month was reading a stale picture. It is current now.
+
+---
+
+## 2026-09-16 — Luke's Claude (Worship / Band: the schedule, rebuilt)
+
+**Three screens instead of one list:** the services you run → the next fortnight of one of
+them → one plan. That is the order someone actually thinks in, and it is why Planning
+Center is legible: a service type is a standing thing, a date is an instance of it, and the
+plan is where people, songs and files live. A flat list of every date across every service
+told you nothing about which was which.
+
+Schedule is now the first tab, and the page opens on it — unless you are not on the team
+yet, in which case you land on Team, where the join form is.
+
+**Today counts.** The fortnight window starts today, not tomorrow. Opening this on a Sunday
+morning, the service you are about to play is the first row. An unplanned date still shows,
+because the service happens weekly whether or not anyone has touched it; an admin starts a
+plan from that row.
+
+**The plan page** groups people by position rather than listing slots, so an empty position
+is visible — that is the thing you are looking for when you open a rota. Everyone carries
+their own reply (asked / in / out), and a player can answer for themselves.
+
+**That reply is the one place the security model bends, so it bends narrowly.** The slots
+table stays admin-write: a player must not be able to put themselves on a rota, take
+someone else off, or change what they are playing. Answering goes through a function that
+sets `status`, on your own slot, to one of two values. Nothing in the page updates a slot
+row directly, and `tests/worship-schedule.test.js` fails if anything starts to.
+
+Order of service reorders by swapping two rows' `sort_order` rather than rewriting the
+list, so two people editing different parts of an order cannot clobber each other.
+
+Songs are a list now rather than a grid of cards — a library is scanned down one column by
+title, and at 29 songs and growing the wall was slower to read than it looked.
+
+**Needs a migration run** before practice files and the confirm/decline buttons do
+anything: it is committed in the backend repo, and Luke has the SQL. Until it is applied
+the files block hides itself and everything else on the page works — the rota is what
+people came for.
+
+Tests: `tests/worship-schedule.test.js`, 31 assertions. Driven in Chromium end to end —
+type list, fortnight, plan page, reorder, reply, add-person dialog, songs list.
