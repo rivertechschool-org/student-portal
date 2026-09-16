@@ -976,6 +976,86 @@ type list, fortnight, plan page, reorder, reply, add-person dialog, songs list.
 
 ---
 
+## 2026-09-15 — Jordan's Claude (email: queued, not lost; and a share each)
+
+**113 emails vanished on 15 Sep and nothing would have retried them.** 312
+notification emails were attempted that day, 199 landed, and the rest hit the
+provider's daily allowance at exactly 199. They were written to `email_log`
+with status `failed` — which is a *log*, nothing drains it — so 17 families
+never heard about 8 assignments, and the only reason we know is that somebody
+happened to look.
+
+Almost all of it is one thing: `assignment_posted`. 706 of September's 738
+emails. One assignment fans out to every student in the class and every linked
+parent, so 24 assignments in an afternoon is 300+ emails. Monthly volume is
+only ~750 and the monthly allowance is 3,000 — **the daily cap is the only wall
+we hit, and it is the burstiness that hits it.**
+
+Two changes, both in the backend repo (`45e110c`, migration
+`…_teacher_email_budget_and_deferral.sql` plus both email edge functions):
+
+**A refusal that clears on its own now goes on the queue.** There has been a
+real queue all along — it claims before sending, retries, and records what
+happened — but direct sends never touched it. They do now.
+
+**Each teacher gets a daily share, 25 by default.** Past that their email is
+queued for the morning rather than dropped. The allowance is school-wide and
+shared, so without a per-person share whoever posts last loses everything,
+which is precisely what happened. Admins and scheduled mail are not capped —
+this is aimed at fan-out, not at people.
+
+### In this repo
+
+`sendEmailWithTracking` now understands a **third outcome**. "Queued" is not a
+success (nothing was delivered) and not a failure (nothing is wrong with it and
+it will be retried). Logging it as either is wrong in a way people act on:
+`failed` raises an alert nobody can act on, `success` tells a teacher the
+parents were told when they were not.
+
+And the teacher is told. A fan-out that sends 25 and holds 15 looked exactly
+like one that sent all 40 — they posted the work, the screen said "Assignment
+created", and the first they heard was a parent asking why. Now they get
+"25 emails sent · 15 queued — going out at 8:00 AM". A clean run says nothing,
+because a message on every assignment is one nobody reads by Wednesday.
+
+The report runs in a `finally`. `sendNewAssignmentNotifications` returns early
+in three places and a report after the last statement would be skipped in
+exactly the runs that sent the most.
+
+`tests/email-deferral.test.js` covers it, verified by removing the branch and
+watching it fail.
+
+### Somebody has to apply this
+
+Nothing above is live until three things happen, in this order — though
+deploying the functions first is safe, they degrade to today's behaviour if the
+migration has not run:
+
+1. Apply the migration (SQL editor, as usual).
+2. Set the `TEACHER_DAILY_EMAIL_CAP` secret — 25, or whatever we settle on. It
+   is a secret rather than a constant so it can move without a deploy.
+3. Deploy `send-notification-email` and `process-email-queue`.
+
+### Still open
+
+**Account email does not go through any of this.** Sign-up confirmation,
+teacher and student invites, activation links and password resets all go
+through Supabase Auth's own mailer, not our sender — so they are not capped,
+not queued, and not retried, while still drawing on the same provider
+allowance if that is where Auth's SMTP points. They also have a separate
+hourly limit of their own, which is what `admin-resend-activation`'s "hourly
+email limit" comment is about. Worth a decision; not touched here.
+
+**The real fix is still unbuilt.** A once-daily digest — "3 new assignments in
+Math, Bible and History" — would take 750 emails a month under 100 and make
+the cap irrelevant on any plan. It is also better for families: five emails in
+an hour from one teacher is how a sender gets muted.
+
+**Not mine, still red:** `tests/assessment-tools-placement.test.js` and
+`tests/worship-team.test.js`, both from the Worship/Band work.
+
+---
+
 ## 2026-09-16 — Luke's Claude (adding a song without leaving the plan)
 
 The song picker on an order of service now ends with **"➕ Add a song not in the library…"**,
