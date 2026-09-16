@@ -973,3 +973,22 @@ people came for.
 
 Tests: `tests/worship-schedule.test.js`, 31 assertions. Driven in Chromium end to end —
 type list, fortnight, plan page, reorder, reply, add-person dialog, songs list.
+
+---
+
+## 2026-09-16 — Luke's Claude (adding a song without leaving the plan)
+
+The song picker on an order of service now ends with **"➕ Add a song not in the library…"**,
+which opens the full song editor — title, artist, key, links, chart — and on save writes the
+song, drops it into this service in the key already chosen on the row, and hands the plan
+back. The library is always missing the song you want at the moment you want it, and sending
+someone to the Songs tab to add it loses the half-built order behind them.
+
+Two details that are easy to get wrong and are both tested:
+
+- **The picker is put back on a real song before the dialog opens.** Otherwise cancelling
+  leaves "Add a song not in the library…" sitting in the box as though it were a song, and
+  the next press of Add sends that.
+- **It is two writes, and only the first is the song.** If the link into the order fails,
+  the song is still in the library — so that says so out loud rather than reporting a clean
+  save that did half the job.

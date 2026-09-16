@@ -698,9 +698,14 @@ function drawSongModal(){
   `);
 }
 
-function editSong(id){
+// `serviceId` is set when this was opened from a service's order of service:
+// the song is then added to that service on save, and the plan comes back.
+function editSong(id, serviceId, key){
   const s = id ? A.songs.find(x => x.id === id) : null;
-  showModal(s ? 'Edit song' : 'Add song', `
+  const forService = serviceId ? A.services.find(x => x.id === serviceId) : null;
+  showModal(s ? 'Edit song' : (forService ? 'New song for ' + esc(fmtDate(forService.service_date)) : 'Add song'), `
+    ${forService ? `<div class="hint" style="margin-bottom:10px">Saving adds it to the library and to this service${
+      key ? ' in ' + esc(key) : ''}, then takes you back to the plan.</div>` : ''}
     <div class="field"><label class="fld" for="sg-title">Title</label>
       <input type="text" id="sg-title" style="width:100%" value="${esc(s ? s.title : '')}"></div>
     <div class="row">
@@ -733,7 +738,8 @@ function editSong(id){
       </div>
       <textarea id="sg-chart" style="min-height:160px;font-family:ui-monospace,Menlo,Consolas,monospace">${esc(s && s.chord_chart || '')}</textarea>
     </div>
-    <button class="btn" onclick="saveSong(${s ? `'${s.id}'` : 'null'})">Save</button>
+    <button class="btn" onclick="saveSong(${s ? `'${s.id}'` : 'null'}${
+      serviceId ? `, '${serviceId}', '${esc(key || '')}'` : ''})">Save${forService ? ' and add' : ''}</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
 }
@@ -1047,8 +1053,9 @@ function orderBlock(s){
       ${songs.length ? items : '<div class="empty">No songs yet.</div>'}
       ${A.isAdmin ? `
         <div class="row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-          <select id="song-pick-${s.id}" style="min-width:180px">
+          <select id="song-pick-${s.id}" style="min-width:180px" onchange="onOrderSongPick('${s.id}')">
             ${A.songs.map(x => `<option value="${x.id}">${esc(x.title)}</option>`).join('')}
+            <option value="__new">➕ Add a song not in the library…</option>
           </select>
           <select id="song-key-${s.id}" style="width:90px">
             <option value="">Key…</option>
@@ -1095,6 +1102,24 @@ function notesBlock(s){
       ${s.notes ? `<div style="font-size:.88rem;white-space:pre-wrap">${esc(s.notes)}</div>`
                 : '<div class="empty">None.</div>'}
     </div>`;
+}
+
+// The library will always be missing the song someone wants at the moment they
+// want it. Rather than sending them to the Songs tab and losing the half-built
+// order behind them, the picker itself opens the full song editor, and saving
+// it drops the new song straight into this service - in the key already chosen
+// on the row - and hands the plan back.
+function onOrderSongPick(serviceId){
+  const sel = $('song-pick-' + serviceId);
+  if (!sel || sel.value !== '__new') return;
+
+  // Put the box back on a real song, so cancelling out of the dialog does not
+  // leave "Add a song not in the library…" sitting there as if it were one.
+  const firstReal = [...sel.options].find(o => o.value !== '__new');
+  sel.value = firstReal ? firstReal.value : '';
+
+  const key = ($('song-key-' + serviceId) || {}).value || '';
+  editSong(null, serviceId, key);
 }
 
 // Adding a person is per position, so the instrument is already answered and
@@ -1380,7 +1405,7 @@ async function addMember(userId){
 // =========================================================================
 // The song library
 // =========================================================================
-async function saveSong(id){
+async function saveSong(id, serviceId, key){
   const title = ($('sg-title').value || '').trim();
   if (!title) { toast('A song needs a title', true); return; }
 
@@ -1399,18 +1424,41 @@ async function saveSong(id){
     chord_chart: ($('sg-chart').value || '').trim() || null
   };
 
-  let error;
+  let error, newId = null;
   if (id) {
     row.updated_at = new Date().toISOString();
     ({ error } = await A.supabase.from('worship_songs').update(row).eq('id', id));
   } else {
     row.created_by = A.me.id;
-    ({ error } = await A.supabase.from('worship_songs').insert(row));
+    // The id comes back because a song made from a service's order has to be
+    // put into that order straight away.
+    const res = await A.supabase.from('worship_songs').insert(row).select('id').single();
+    error = res.error;
+    newId = res.data && res.data.id;
   }
   if (error) { toast('Could not save: ' + error.message, true); return; }
 
   closeModal();
   await loadSongs();
+
+  if (!id && serviceId && newId) {
+    const existing = A.songLinks[serviceId] || [];
+    const { error: linkErr } = await A.supabase.from('worship_service_songs').insert({
+      service_id: serviceId,
+      song_id: newId,
+      song_key: (key || row.default_key || '').trim() || null,
+      sort_order: existing.length
+    });
+    // The song itself is saved either way, so a failure here is worth saying
+    // out loud rather than swallowing: it is in the library, just not on the
+    // order, and the row can be added by hand.
+    if (linkErr) toast('Saved to the library, but could not add it here: ' + linkErr.message, true);
+    else toast('Added to the library and to this service');
+    await loadServiceChildren();
+    renderTab();
+    return;
+  }
+
   toast('Saved');
   render();
 }

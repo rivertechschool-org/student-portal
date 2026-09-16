@@ -142,5 +142,37 @@ ok('a missing files table is survivable', /A\.filesUnavailable = true/.test(page
 ok('  and hides just that block', /if \(A\.filesUnavailable\) return '';/.test(page));
 ok('  while the rota still loads', !/if \(fileRes\.error\) throw/.test(page));
 
+// ---- the song the library does not have yet -----------------------------
+// The library is always missing the song you want at the moment you want it.
+// Sending someone to the Songs tab to add it loses the half-built order behind
+// them, so the picker itself makes the song and drops it into this service.
+ok('the picker offers to make one', /<option value="__new">/.test(page));
+ok('  and acts on the choice', /onchange="onOrderSongPick\('\$\{s\.id\}'\)"/.test(page));
+
+// Cancelling out of the dialog must not leave the picker reading
+// "Add a song not in the library…" as though that were a song.
+ok('the picker is put back on a real song first',
+  /const firstReal = \[\.\.\.sel\.options\]\.find\(o => o\.value !== '__new'\);/.test(page));
+
+// The key already chosen on the row travels into the new song.
+ok('the row\'s key is carried in', /const key = \(\$\('song-key-' \+ serviceId\) \|\| \{\}\)\.value \|\| '';/.test(page));
+ok('  and used on the link', /song_key: \(key \|\| row\.default_key \|\| ''\)\.trim\(\) \|\| null/.test(page));
+
+// The editor knows where it was opened from, and says so.
+ok('the editor takes a service', /function editSong\(id, serviceId, key\)/.test(page));
+ok('  and says what saving will do', /Saving adds it to the library and to this service/.test(page));
+ok('  on a button that says it too', /Save\$\{forService \? ' and add' : ''\}/.test(page));
+
+// An insert has to hand back the id, or there is nothing to add to the order.
+ok('the new id comes back', /insert\(row\)\.select\('id'\)\.single\(\)/.test(page));
+ok('  and the song lands at the end of the order', /sort_order: existing\.length/.test(page));
+
+// Two writes, and only the first is the song. If the second fails the song is
+// still in the library, which is worth saying rather than swallowing.
+ok('a failed link is reported', /Saved to the library, but could not add it here/.test(page));
+
+// And the plan comes back, rather than the whole page resetting to a tab.
+ok('the plan is handed back', /await loadServiceChildren\(\);\s*\n\s*renderTab\(\);\s*\n\s*return;/.test(page));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
