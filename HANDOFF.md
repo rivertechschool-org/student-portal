@@ -1653,3 +1653,32 @@ Two smaller things noticed and left alone:
 `tests/activation-link-lands-somewhere.test.js` (12) pins the ordering, since
 the ordering is the entire fix.
 
+### Driven, not assumed (2026-09-15, same day)
+
+The activation-link fix above was **verified in a real browser** rather than by
+test alone, because the bug was a race between a page script and a library and
+no fixture can reproduce one.
+
+The Claude-in-Chrome extension was not connected, so: headless Chrome with
+`--remote-debugging-port`, driven over CDP from plain node (v22+ has a global
+`WebSocket` — no Playwright, no Puppeteer, nothing to install). Throwaway auth
+user on an invalid domain so no mail could be sent; deleted afterwards.
+
+Result, following a genuine Supabase recovery link:
+
+```
+https://.../auth/v1/verify?token=...&type=recovery
+  -> https://rivertech.me                (path stripped — the allow-list)
+  -> https://rivertech.me/reset.html#... (the new head guard)
+     Auto session check: Session found
+     Valid session for user: link-drive@rivertech.invalid
+     reset form visible, error state hidden
+```
+
+The final URL is `reset.html#` — fragment **empty**. That is supabase-js
+consuming it, which is exactly what used to happen on the home page before
+`initialize()` could read it. The counterfactual and the fix in one trace.
+
+Recipe saved to memory; close the browser with CDP `Browser.close`, never
+`taskkill /IM chrome.exe` — that would take the user's own Chrome with it.
+
