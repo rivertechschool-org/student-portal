@@ -1467,3 +1467,18 @@ schedule replaced it, and leaving a second, divergent copy of the same idea is h
 screens start disagreeing.
 
 64 journey checks, 72 in `tests/worship-schedule.test.js`.
+
+---
+
+## 2026-09-16 — Luke's Claude (answering belongs to My schedule)
+
+The accept/decline buttons render on the reading view and never on the plan. Planning is
+arranging other people; answering is speaking for yourself, and mixing the two lets you say
+yes on behalf of the rota you are building. The plan still **shows** every answer — asked,
+in, out, against each name — because that is the whole point of looking at it. It just
+cannot be given from there, even by the admin who put themselves on.
+
+One flag, not two: `canReply` is `!editable`, because the two modes are always opposites and
+two booleans that could disagree is a bug waiting to be written. An admin who is on a
+service they are planning gets a line pointing them at My schedule rather than a missing
+button they have to reason about.

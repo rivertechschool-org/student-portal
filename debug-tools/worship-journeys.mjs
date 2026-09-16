@@ -267,6 +267,14 @@ await page.click('#modal button.btn:not(.sec)');
 await page.waitForTimeout(450);
 const team = await text(page);
 ok('both are on the rota', team.includes('Luke Hegelund') && team.includes('Ann Becker'));
+// Answering belongs to My schedule. The plan shows who has said yes — that is
+// the whole point of looking at it — but you cannot answer from here, even for
+// yourself, even as the admin who put you there.
+ok('the plan offers no reply buttons', await page.evaluate(() => !document.querySelector('.myslot')));
+ok('  while still showing every answer', await page.evaluate(() =>
+  [...document.querySelectorAll('.person')].every(p => /asked|in|out/.test(p.innerText))));
+ok('  and points at where to answer', await page.evaluate(() =>
+  document.body.innerText.includes('answer for it on')));
 ok('  the leader is starred', team.includes('★ Luke Hegelund'));
 ok('  and neither has answered yet', await page.evaluate(() =>
   [...document.querySelectorAll('.person')].every(p => p.innerText.includes('asked'))));

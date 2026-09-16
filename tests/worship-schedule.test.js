@@ -223,6 +223,13 @@ ok('  falling back to everyone when nobody plays it', /const widened = A\._addPe
 ok('  and offering to widen by hand', /Show everyone on the team/.test(page));
 ok('  which resets after an add', /A\._addPersonAll = false;/.test(page));
 
+// Answering is a My-schedule act: the buttons render on the reading view and
+// never on the plan. Planning is arranging other people; answering is speaking
+// for yourself, and the plan still SHOWS every answer.
+ok('replying is tied to the reading view', /const canReply = !editable;/.test(page));
+ok('  and the rows are gated on it', /\$\{canReply && mySlots\.length \? `/.test(page));
+ok('  with the plan saying where to answer', /answer for it on/.test(page));
+
 // A player is regularly on twice — piano and singing — and answering for one
 // is not answering for the other.
 ok('every one of my positions gets its own answer', /const mySlots = slots\.filter\(sl => sl\.user_id === A\.me\.id\);/.test(page));
