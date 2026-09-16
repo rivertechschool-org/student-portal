@@ -129,6 +129,58 @@ function makeApp(classes = MATHS, bands = BANDS) {
     check('a sentence with no year group in it', band('add josey to math'), null);
   }
 
+  console.log('\n== the table has to actually be loaded ==\n');
+
+  {
+    // THE BUG THIS SECTION EXISTS FOR.
+    //
+    // Band matching shipped completely dead. _loadTerminalGradeBands was wired
+    // into the SELF-HEAL block only - the one that runs when some other load
+    // failed - so on a healthy session it never ran, _terminalGradeBands stayed
+    // undefined, every sentence resolved to no band, and ENROLL_BAND's guard
+    // skipped it every time. "Add Josey to every Old Middle class" fell through
+    // to an ordinary class match on the word "middle" and offered a picker of
+    // Younger Middle School classes.
+    //
+    // Nothing failed. No error, no warning. The feature was simply off.
+    //
+    // And the harnesses could not see it, because they set _terminalGradeBands
+    // as a FIXTURE - supplying the very state production was failing to build.
+    // A fixture that stands in for a load tests everything except whether the
+    // load happens.
+    const src = html.slice(html.indexOf('_rivenReady()'));
+    const body = src.slice(0, src.indexOf('return this._rivenReadyPromise'));
+    ok('the year groups are loaded at mount, with the rest',
+       /_loadTerminalGradeBands\(\)/.test(body));
+
+    const heal = html.slice(html.indexOf('// Self-heal:'));
+    const healBody = heal.slice(0, heal.indexOf(']);'));
+    ok('  and self-heal notices when they are the thing missing',
+       /!this\._terminalGradeBands \|\|/.test(healBody));
+  }
+
+  {
+    // Degrade to the known vocabulary, never to silence. If the lookup fails,
+    // the staffroom words still work, because they carry their own codes.
+    const app = makeApp(MATHS, []);
+    app._terminalGradeBands = [];
+    check('with no table loaded, spoken names still resolve',
+          app._rivenBandFromText.call(app, 'every old middle class')?.code, 'old_middle');
+    check('  and high school', app._rivenBandFromText.call(app, 'all high school classes')?.code, 'highschool');
+    // The label falls back to the code rather than rendering blank.
+    check('  with a readable label', app._rivenBandLabel.call(app, 'old_middle'), 'old middle');
+  }
+
+  {
+    // "Old Middle", as actually typed. Not "Old Middle School".
+    const app = makeApp();
+    check('the short form names the right year group',
+          app._rivenBandFromText.call(app, 'add josey to every old middle class')?.code, 'old_middle');
+    // It must NOT come out as young_middle, which is what the screenshot showed.
+    ok('  and is never read as young middle',
+       app._rivenBandFromText.call(app, 'every old middle class')?.code !== 'young_middle');
+  }
+
   console.log('\n== the picker that started this ==\n');
 
   {

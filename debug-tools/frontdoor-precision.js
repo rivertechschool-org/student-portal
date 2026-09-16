@@ -288,6 +288,8 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   // enrolment until you notice the year group and the "all", which is exactly
   // why ENROLL_BAND has to outrank ENROLL_STUDENT.
   ['add noah to all the old middle school classes', 'WRITE', 'ENROLL_BAND'],
+  // The short form, as actually typed, with "every" and a singular class.
+  ['add noah to every old middle class', 'WRITE', 'ENROLL_BAND'],
   ['enroll mia in every high school class', 'WRITE', 'ENROLL_BAND'],
   ['put eli in all junior high classes', 'WRITE', 'ENROLL_BAND'],
   ['give charlotte 5 rtc', 'WRITE', 'ADD_RTC'],

@@ -1360,3 +1360,52 @@ one.
 **Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`
 — both fail with my changes stashed (checked).
 
+---
+
+## 2026-09-15 (c -> d) — Jordan's Claude (the year groups were never loaded)
+
+**Band matching shipped completely dead, and every test said it worked.**
+
+`_loadTerminalGradeBands` was wired into the **self-heal** block only — the one
+that runs when some *other* load has failed. On a healthy session it never ran.
+`_terminalGradeBands` stayed `undefined`, `_rivenBandFromText` hit its
+`if (!bands.length) return null` guard, every sentence resolved to no band, and
+`ENROLL_BAND`'s `requiresBand` guard skipped it every time.
+
+So "Add Josey to every Old Middle class" fell through to an ordinary class
+match on the word *middle* and offered a picker of **Younger** Middle School
+classes. Nothing errored. Nothing warned. The feature was simply off.
+
+Fixed three ways, because one was not enough:
+
+1. `_rivenReady()` — the actual mount loader — now loads them alongside
+   students, classes and groups.
+2. Self-heal watches `_terminalGradeBands` too, so a failed band load recovers
+   like every other roster.
+3. `_rivenBandFromText` no longer returns null on an empty table. The spoken
+   names (*junior high*, *upper MS*, *high school*) carry their own codes, so
+   the feature now degrades to the known vocabulary instead of to silence. The
+   table still filters them when it is present, so a band the school removes
+   stops being recognised.
+
+Also: the year-group chip in the picker was rendering in `--accent-2` against
+the dark panel and came out as near-invisible dark-on-dark — present in the
+markup, useless on screen, which is the same as not having shipped it. It is
+now a proper pill.
+
+### The part worth keeping
+
+**The harnesses could not have caught this, because they set
+`_terminalGradeBands` as a fixture** — supplying the exact state production was
+failing to build. Three ENROLL_BAND routing cases passed green while the
+feature was dead in the browser.
+
+That is the third time this session a fixture has stood in for the thing under
+test (`account-paths-audit` ignoring `.in()`, `riven-classes-quarters` modelling
+"closed" with the wrong flag, now this). **A fixture that substitutes for a
+load tests everything except whether the load happens.** `riven-grade-bands`
+now asserts against the source that `_rivenReady` performs the load, and checks
+band matching with the table empty. Both verified by putting the bug back.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
+
