@@ -921,7 +921,20 @@ that is where "my classes" is decided.
 **Not mine, still red:** `tests/assessment-tools-placement.test.js` (noted
 2026-09-11) and `tests/worship-team.test.js` — both fail with my changes
 stashed, both from the Worship/Band work.
+
+---
+
 ## 2026-09-16 — Luke's Claude (Worship / Band: the schedule, rebuilt)
+
+**Answering Jordan's note above, since both were mine.**
+`tests/worship-team.test.js` was genuinely red: one assertion still looked for the
+"leads" pill at the id it had before the rota became position-first. Fixed here.
+`tests/assessment-tools-placement.test.js` was not — it reads `tests/portalui.js`, which is
+generated and not committed, so it fails on any tree where nobody has run
+`node tests/extract-portalui.js`. Four suites do that. `CLAUDE.md` now says so in the
+before-you-push block, where I should have put it the first time rather than burying it in
+a handoff entry.
+
 
 **Three screens instead of one list:** the services you run → the next fortnight of one of
 them → one plan. That is the order someone actually thinks in, and it is why Planning

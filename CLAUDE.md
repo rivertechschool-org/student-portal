@@ -61,9 +61,14 @@ holding onto:
 Nothing here runs in CI, so these are on you. All of them are plain `node`, no install:
 
 ```bash
+node tests/extract-portalui.js                                     # FIRST: four suites read its output
 for f in tests/*.test.js; do node "$f" || echo "FAILED $f"; done   # the suite
 node debug-tools/nlp-stress.js                                     # Riven, after any Riven change
 ```
+
+`tests/portalui.js` is generated and deliberately not committed. Skip that first line and
+the nav suites read a stale copy, or none at all, and fail for a reason that has nothing to
+do with your change.
 
 Syntax-check any page you edited — this catches the broken-template-literal class of bug
 that the tests cannot:
