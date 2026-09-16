@@ -94,26 +94,28 @@ function makeApp(reply) {
   return app;
 }
 
-const RESET = '2026-09-16T07:00:00.000Z';   // midnight Pacific
+// The combining window is minutes away, not next morning - that is the whole
+// difference between combining and the rationing this replaced.
+const SOON = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
 (async () => {
 
   console.log('\n== a held email is neither sent nor failed ==\n');
 
   {
-    const app = makeApp({ data: { deferred: true, queued: true, retryAfter: RESET,
-                                  message: 'Daily send limit reached' }, error: null });
+    const app = makeApp({ data: { deferred: true, queued: true, coalesced: true, retryAfter: SOON,
+                                  message: 'Queued briefly so anything else posted now arrives as one email.' }, error: null });
     const r = await app.sendEmailWithTracking.call(app, 'a@b.com', 'assignment_posted', {}, { assignmentId: 'x' });
 
     check('the caller is not told it failed', r.success, true);
     check('  and not told it was delivered either', r.deferred, true);
-    check('  it says when it will go', r.retryAfter, RESET);
+    check('  it says when it will go', r.retryAfter, SOON);
     check('the log records it as queued', app.logged[0].status, 'queued');
     // THE ONE THAT MATTERS. 'failed' is what made 113 emails disappear: an
     // admin alert nobody could act on, and no retry anywhere.
     ok('  never as failed', app.logged.every(l => l.status !== 'failed'));
     check('no admin is alerted about a working system', app.alerts, []);
-    ok('  and the reset time is kept with it', app.logged[0].metadata.retryAfter === RESET);
+    ok('  and the reset time is kept with it', app.logged[0].metadata.retryAfter === SOON);
   }
 
   {
@@ -136,21 +138,43 @@ const RESET = '2026-09-16T07:00:00.000Z';   // midnight Pacific
   console.log('\n== what the teacher is told ==\n');
 
   {
-    // 40 recipients, the allowance runs out at 25.
+    // One assignment to a class of 13: all thirteen are held to be combined.
     const app = makeApp(null);
     app._startEmailTally.call(app);
-    for (let i = 0; i < 25; i++) app._tallyEmail.call(app, 'sent');
-    for (let i = 0; i < 15; i++) app._tallyEmail.call(app, 'queued', RESET);
+    for (let i = 0; i < 13; i++) app._tallyEmail.call(app, 'queued', SOON, true);
     app._reportEmailTally.call(app, app._emailTally);
 
     check('the teacher is told once', app.notices.length, 1);
     const said = app.notices[0].message;
-    ok('  how many went', /25 emails sent/.test(said));
-    ok('  how many are waiting', /15 queued/.test(said));
-    // "going out at 8:00 AM" beats "some emails were deferred" - the second
-    // leaves them wondering whether to chase it.
-    ok('  and when they go', /going out/.test(said));
+    ok('  how many are being combined', /13 notifications will be combined/.test(said));
+    // "queued" reads like a problem. This is the feature, so say what it does.
+    ok('  and when they go', /sent (at|shortly)/.test(said));
     check('  as information, not a warning', app.notices[0].kind, 'info');
+  }
+
+  {
+    // THE NOISE TEST. Combining is now the normal path, so a teacher posting
+    // 24 assignments would see 24 toasts saying the same thing - the same
+    // mistake as the emails, moved into the UI.
+    const app = makeApp(null);
+    for (let post = 0; post < 24; post++) {
+      app._startEmailTally.call(app);
+      for (let i = 0; i < 13; i++) app._tallyEmail.call(app, 'queued', SOON, true);
+      app._reportEmailTally.call(app, app._emailTally);
+    }
+    check('24 postings produce one notice, not 24', app.notices.length, 1);
+  }
+
+  {
+    // ... but a failure is never swallowed by that rate limit.
+    const app = makeApp(null);
+    app._emailNoticeAt = Date.now();          // just told them about combining
+    app._startEmailTally.call(app);
+    app._tallyEmail.call(app, 'queued', SOON, true);
+    app._tallyEmail.call(app, 'failed');
+    app._reportEmailTally.call(app, app._emailTally);
+    check('a failure still gets through the rate limit', app.notices.length, 1);
+    check('  as a warning', app.notices[0].kind, 'warning');
   }
 
   {
@@ -158,9 +182,7 @@ const RESET = '2026-09-16T07:00:00.000Z';   // midnight Pacific
     app._startEmailTally.call(app);
     for (let i = 0; i < 3; i++) app._tallyEmail.call(app, 'sent');
     app._reportEmailTally.call(app, app._emailTally);
-    // A message on every single assignment is a message nobody reads by
-    // Wednesday, and then the one that matters is invisible too.
-    check('a clean run says nothing at all', app.notices, []);
+    check('a run with nothing held says nothing at all', app.notices, []);
   }
 
   {

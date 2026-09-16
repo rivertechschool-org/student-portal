@@ -1097,3 +1097,66 @@ So all four now catch the missing file and print what to run:
 To be unambiguous about the clean-tree state: `inequality-region` and `typed-answer-mode`
 are the only two that genuinely fail, both for the missing `tests/ai.js` extraction they
 have always needed. Everything else is green.
+
+---
+## 2026-09-15 (later) — Jordan's Claude (email: combining replaced the cap, and it is live)
+
+**Superseding my entry above.** Jordan's call, and the right one: don't ration a
+teacher's emails, compress them. A teacher posting 24 assignments should send
+each child **one** email listing all 24, not 24 emails and not 25-today-rest-tomorrow.
+
+So the daily cap is gone — dropped, not disabled. In its place, notifications
+of one type, from one teacher, to one person are gathered for a few minutes and
+sent as a single digest. **24 assignments across a class of 13 goes from 312
+emails to 13.** The allowance stops being a constraint rather than being shared
+out, and it is better mail: two dozen near-identical messages in an afternoon
+is how a sender gets muted, and a muted sender takes the important message
+with it.
+
+The window slides with each new item but never past a maximum wait, so steady
+posting all afternoon still produces one email, and nothing waits forever on a
+burst that never ends. Defaults are 10 minutes and 1 hour, both secrets
+(`EMAIL_COALESCE_WINDOW_SECONDS`, `EMAIL_COALESCE_MAX_WAIT_SECONDS`); a window
+of 0 turns combining off entirely.
+
+**Applied and deployed — this is live**, unlike most entries here. Migration
+applied, both edge functions deployed and byte-verified against the local
+files.
+
+In this repo: the teacher-facing notice now says *"13 notifications will be
+combined and sent at 5:52 PM"* rather than "queued", because queued sounds like
+a problem and this is the feature. It is also **rate-limited to once every 30
+minutes** — combining is now the normal path, so a toast on every post would be
+24 toasts in an hour, which is the same mistake as the emails moved into the
+UI. Failures always show. `tests/email-deferral.test.js`, 27 assertions.
+
+### The thing that cost two real emails
+
+**`supabase functions deploy` without Docker reports success and deploys
+nothing.** It prints `WARNING: Docker is not running`, then `Uploading
+asset…`, then `Deployed Functions.` — and the old code keeps running.
+`functions list` even shows a new version and a new hash afterwards.
+
+`--use-api` is required. Verify with `functions download`, which returns what
+is actually running, and diff it against your file. Written up in the backend
+repo's README.
+
+I found this because a probe designed to be harmless *if the deploy had landed*
+was not harmless against the old code: two test emails went to
+`learn@rivertech.me` before I stopped using live sends to test. The remaining
+checks used an invalid recipient domain, which cannot reach anyone.
+
+### Still open
+
+**The 113 from yesterday are still unsent** — 17 people, 8 assignments. With
+combining they would now arrive as roughly 17 emails rather than 113. Waiting
+on Jordan's go-ahead, and worth checking the due dates have not already passed
+before sending day-old notices.
+
+**Account email is still outside all of this.** Sign-up, invites, activation
+links and password resets go through Supabase Auth's own mailer — not capped,
+not combined, not retried, and separately rate-limited.
+
+**Not mine, still red:** `tests/assessment-tools-placement.test.js` and
+`tests/worship-team.test.js`.
+

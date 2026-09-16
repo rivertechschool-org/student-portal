@@ -15601,7 +15601,7 @@
 
           // Accepted but held. The sender owns it from here.
           if (!error && result && result.deferred) {
-            this._tallyEmail('queued', result.retryAfter);
+            this._tallyEmail('queued', result.retryAfter, !!result.coalesced);
             await this.auth.supabase.from('email_log').insert({
               recipient_email: to,
               email_type: type,
@@ -15695,10 +15695,11 @@
         return this._emailTally;
       }
 
-      _tallyEmail(outcome, retryAfter = null) {
+      _tallyEmail(outcome, retryAfter = null, coalesced = false) {
         const t = this._emailTally;
         if (!t) return;
         t[outcome] = (t[outcome] || 0) + 1;
+        if (coalesced) t.coalesced = true;
         if (retryAfter && !t.retryAfter) t.retryAfter = retryAfter;
       }
 
@@ -15706,21 +15707,36 @@
         this._emailTally = null;
         if (!tally || (!tally.queued && !tally.failed)) return;
 
+        // Combining is the NORMAL path now - every assignment notification is
+        // held briefly so the afternoon's postings arrive as one email. Saying
+        // so on every single post would be a toast a teacher sees twenty-four
+        // times in an hour, which is the same mistake as the emails.
+        //
+        // So the reassurance is occasional and failures are always loud.
+        if (!tally.failed && tally.coalesced) {
+          const last = this._emailNoticeAt || 0;
+          if (Date.now() - last < 30 * 60 * 1000) return;
+          this._emailNoticeAt = Date.now();
+        }
+
+        let when = '';
+        if (tally.retryAfter) {
+          const d = new Date(tally.retryAfter);
+          if (!isNaN(d)) {
+            const today = new Date().toDateString() === d.toDateString();
+            when = `${today ? '' : 'tomorrow '}at ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+          }
+        }
+
         const bits = [];
         if (tally.sent) bits.push(`${tally.sent} email${tally.sent === 1 ? '' : 's'} sent`);
-
         if (tally.queued) {
-          // The reset time is the teacher's, not the server's - it arrives as
-          // an ISO instant and is shown where they are.
-          let when = 'when the daily limit resets';
-          if (tally.retryAfter) {
-            const d = new Date(tally.retryAfter);
-            if (!isNaN(d)) {
-              const today = new Date().toDateString() === d.toDateString();
-              when = `${today ? '' : 'tomorrow '}at ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-            }
-          }
-          bits.push(`${tally.queued} queued — going out ${when}`);
+          bits.push(tally.coalesced
+            // Say what actually happens, because "queued" sounds like a
+            // problem and this is the feature: anything else posted in the
+            // next few minutes joins the same email.
+            ? `${tally.queued} notification${tally.queued === 1 ? '' : 's'} will be combined and sent${when ? ' ' + when : ' shortly'}`
+            : `${tally.queued} queued — going out ${when || 'shortly'}`);
         }
         if (tally.failed) bits.push(`${tally.failed} could not be sent`);
 
