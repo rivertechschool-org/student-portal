@@ -2920,3 +2920,34 @@ assertion that had nothing to do with my change. The nav suites read
 `node tests/extract-portalui.js` first and it means it. I skipped it and spent
 a few minutes reading a stale file.
 
+
+---
+
+## Riven /rt: `score_assignment` (Wed 16 Sep 2026)
+
+/rt could create and edit an assignment but had no way to put marks on one,
+so a graded test still meant clicking through every student. New apply op:
+
+```
+{"op":"score_assignment","class":"X","assignment":"<exact title or id>",
+ "create_if_missing":{"due":"2026-09-15","points":100,"type":"test"},
+ "scores":[{"student":"Quinn Sable","points":88,"feedback":"..."}]}
+```
+
+- Finds the assignment by exact title in the class. If it is missing and the
+  command carries `create_if_missing`, the same batch creates it first; without
+  that key the batch is blocked. So one command can be pasted again safely: the
+  second paste grades the existing assignment instead of making a twin.
+- Marks go to `assignment_submissions` as `status: graded` with `points_earned`,
+  a letter from `calculateLetterGrade`, and optional feedback. An existing mark
+  is replaced, and the plan shows the value it replaces.
+- Blocked, like every /rt op, on anything uncertain: a student not actively
+  enrolled, a student listed twice, points outside 0 to the assignment's max.
+- Undo restores replaced marks, deletes new ones, and removes an assignment the
+  batch created.
+- Deliberately does NOT send grade notifications. A batch of twenty would fire
+  twenty emails at once; if that is wanted, it should be a flag, not a default.
+
+Built so the Class Stats spelling page can hand Luke one paste per test.
+`debug-tools/rt-surface.js` has 13 new assertions (103 total, all pass);
+nlp-stress unchanged. `RIVEN_BUILD` is `2026-09-17·b`.

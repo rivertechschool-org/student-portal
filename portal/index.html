@@ -49837,7 +49837,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-17·a';
+      const RIVEN_BUILD = '2026-09-17·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -51407,6 +51407,72 @@
           continue;
         }
 
+        // score_assignment: put marks for many students on ONE assignment in one
+        // paste. Built for the Class Stats spelling page (Sep 16 2026), which
+        // grades a Tuesday test and hands Luke a single command. The assignment
+        // is found by exact title in the class; if it is not there and the
+        // command carries "create_if_missing", the same batch creates it first,
+        // so re-sending the command grades the existing one instead of making a
+        // duplicate. Every student must be actively enrolled and every mark must
+        // fit the assignment's points, or the whole batch is blocked.
+        if (o.op === 'score_assignment') {
+          const c = await klass(o); if (!c) continue;
+          const title = String(o.assignment || '').trim();
+          if (!title) { fail(this._rtErr('missing_field', `Step ${idx}: score_assignment needs "assignment" (exact title or id).`)); continue; }
+          const scores = Array.isArray(o.scores) ? o.scores : null;
+          if (!scores || !scores.length) { fail(this._rtErr('missing_field', `Step ${idx}: score_assignment needs a non-empty "scores" array.`)); continue; }
+          let target = null, creating = null;
+          if (!c.pending) {
+            const found = await this._rtResolveAssignment({ assignment: title, class: c.name }, { scope: spec.scope });
+            if (found.error === 'ambiguous') { fail(this._rtErr('ambiguous', `Step ${idx}: "${title}" matches ${found.candidates.length} assignments in ${c.name} — use the id.`, { candidates: found.candidates })); continue; }
+            if (found.row) target = found.row;
+          }
+          if (!target) {
+            if (!o.create_if_missing || typeof o.create_if_missing !== 'object') {
+              fail(this._rtErr('not_found', `Step ${idx}: no assignment "${title}" in ${c.name}. Add "create_if_missing" to create it in the same batch.`)); continue;
+            }
+            const m = this._rtAssignmentFields({ ...o.create_if_missing, title }, { quarters, forCreate: true });
+            if (m.error) { fail(this._rtErr('bad_field', `Step ${idx}: ${m.error}`)); continue; }
+            creating = m;
+            m.warnings.forEach(w => sensitive.push({ step: idx, kind: 'due_date', detail: `${title}: ${w}` }));
+          }
+          const max = target ? Number(target.max_points) : creating.fields.max_points;
+          const prior = {};
+          if (target) {
+            const { data: subs } = await this.auth.supabase.from('assignment_submissions')
+              .select('id, student_id, points_earned, status').eq('assignment_id', target.id);
+            (subs || []).forEach(x => { prior[x.student_id] = x; });
+          }
+          let enrolled = null;
+          if (!c.pending) {
+            const { data: enr } = await this.auth.supabase.from('class_enrollments')
+              .select('student_id').eq('class_id', c.id).eq('status', 'active');
+            enrolled = new Set((enr || []).map(e => e.student_id));
+          }
+          const marks = []; const seen = new Set(); let bad = false;
+          for (const sc of scores) {
+            const st = student(sc && sc.student); if (!st) { bad = true; break; }
+            if (seen.has(st.id)) { fail(this._rtErr('duplicate', `Step ${idx}: ${st.full_name} is listed twice.`)); bad = true; break; }
+            seen.add(st.id);
+            if (enrolled && !enrolled.has(st.id)) { fail(this._rtErr('not_enrolled', `Step ${idx}: ${st.full_name} is not actively enrolled in ${c.name}.`)); bad = true; break; }
+            const pts = Number(sc.points);
+            if (sc.points === null || sc.points === undefined || !Number.isFinite(pts) || pts < 0 || pts > max) {
+              fail(this._rtErr('bad_value', `Step ${idx}: ${st.full_name} "points" must be 0-${max}.`)); bad = true; break;
+            }
+            const was = prior[st.id];
+            marks.push({ student: st.full_name, points: pts, before: was && was.points_earned != null ? was.points_earned : null });
+          }
+          if (bad) continue;
+          steps.push({ step: idx, op: 'score_assignment', class: c.name, assignment: title,
+            id: target ? target.id : null, creates_assignment: !!creating,
+            due_date: creating ? creating.fields.due_date : target.due_date,
+            quarter: creating ? creating.quarter : undefined, points_possible: max,
+            students: marks.length, marks });
+          const changed = marks.filter(mk => mk.before !== null && mk.before !== mk.points);
+          sensitive.push({ step: idx, kind: 'grade_change', detail: `${title} · ${c.name}: ${marks.length} marks${creating ? ' on a NEW assignment' : ''}${changed.length ? `, ${changed.length} replacing an existing mark` : ''}` });
+          continue;
+        }
+
         if (o.op === 'create_class') {
           const name = (o.name || '').trim();
           if (!name) { fail(this._rtErr('missing_field', `Step ${idx}: create_class needs "name".`)); continue; }
@@ -51457,7 +51523,7 @@
           continue;
         }
 
-        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll, schedule, create_assignment, edit_assignment.`));
+        fail(this._rtErr('unknown_op', `Step ${idx}: unknown op "${o.op}". Supported: award, deduct, group_award, note, grade, attendance, create_class, enroll, schedule, create_assignment, edit_assignment, score_assignment.`));
       }
 
       return {
@@ -51498,6 +51564,7 @@
         if (s.op === 'award' || s.op === 'deduct') return `<b>${this.escapeHtml(s.student)}</b> ${s.amount > 0 ? '+' : ''}${s.amount} RTC (${s.balance_before} → ${s.balance_after})`;
         if (s.op === 'note') return `Note on <b>${this.escapeHtml(s.student || s.class)}</b> (${s.sentiment})`;
         if (s.op === 'grade') return `<b>${this.escapeHtml(s.student)}</b> ${s.component}: ${s.before || '—'} → ${s.after}`;
+        if (s.op === 'score_assignment') return `${s.creates_assignment ? 'Create and grade' : 'Grade'} <b>${this.escapeHtml(s.assignment)}</b> in ${this.escapeHtml(s.class)}: <b>${s.students}</b> marks out of ${s.points_possible}`;
         if (s.op === 'attendance') return `Attendance for <b>${this.escapeHtml(s.class)}</b> ${s.date}: ${s.students} students ${s.status}`;
         return s.op;
       };
@@ -51712,6 +51779,55 @@
             results.push({ step: idx, op: o.op, ok: true, id: data.id, title: data.title,
               class: c.name, due_date: data.due_date, quarter: m.quarter,
               assigned_to: studentIds ? studentIds.length + ' students' : 'whole class' });
+
+          } else if (o.op === 'score_assignment') {
+            const c = await klass(o);
+            const title = String(o.assignment).trim();
+            let found = await this._rtResolveAssignment({ assignment: title, class: c.name }, spec);
+            let row = found.row || null;
+            if (!row) {
+              if (found.error === 'ambiguous') throw new Error(`assignment "${title}" became ambiguous at execution time`);
+              const quarters = await this._rtQuarters();
+              const m = this._rtAssignmentFields({ ...o.create_if_missing, title }, { quarters, forCreate: true });
+              if (m.error) throw new Error(m.error);
+              const { data, error } = await sb.from('assignments').insert([{
+                class_id: c.id, ...m.fields, assigned_to_all: true
+              }]).select().single();
+              if (error) throw error;
+              row = data;
+              undos.push(async () => {
+                await sb.from('assignment_submissions').delete().eq('assignment_id', data.id);
+                await sb.from('assignments').delete().eq('id', data.id);
+              });
+            }
+            const max = Number(row.max_points) || 0;
+            const now = new Date().toISOString();
+            let inserted = 0, updated = 0;
+            for (const sc of o.scores) {
+              const st = student(sc.student);
+              const pts = Number(sc.points);
+              const pct = max > 0 ? (pts / max) * 100 : 0;
+              const patch = { status: 'graded', points_earned: pts, grade: this.calculateLetterGrade(pct),
+                graded_at: now, feedback: sc.feedback == null ? null : String(sc.feedback) };
+              const { data: existing } = await sb.from('assignment_submissions')
+                .select('*').eq('assignment_id', row.id).eq('student_id', st.id).limit(1);
+              const prev = (existing || [])[0];
+              if (prev) {
+                const keep = { status: prev.status, points_earned: prev.points_earned, grade: prev.grade, graded_at: prev.graded_at, feedback: prev.feedback };
+                const { error } = await sb.from('assignment_submissions').update(patch).eq('id', prev.id);
+                if (error) throw error;
+                undos.push(async () => { await sb.from('assignment_submissions').update(keep).eq('id', prev.id); });
+                updated++;
+              } else {
+                const { data: ins, error } = await sb.from('assignment_submissions')
+                  .insert({ assignment_id: row.id, student_id: st.id, submitted_at: now, ...patch }).select().single();
+                if (error) throw error;
+                undos.push(async () => { await sb.from('assignment_submissions').delete().eq('id', ins.id); });
+                inserted++;
+              }
+            }
+            results.push({ step: idx, op: o.op, ok: true, id: row.id, title: row.title, class: c.name,
+              created_assignment: !found.row, marks_new: inserted, marks_replaced: updated });
 
           } else if (o.op === 'edit_assignment') {
             const found = await this._rtResolveAssignment(o, spec);
@@ -52064,9 +52180,10 @@
             shape: '{"op":"apply","ops":[...],"reads":[{"op":"roster","class":"X","as":"after"}]}',
             rules: 'One confirmation for the whole batch. If ANY op fails to resolve, NOTHING runs. One grouped undo.',
             extra_ops: ['create_class', 'enroll (students[] or from_class)', 'schedule',
-              'create_assignment', 'edit_assignment'],
+              'create_assignment', 'edit_assignment', 'score_assignment'],
             timetable: 'schedule: {"op":"schedule","class":"X","slots":[{"day":"tue","period":1}]} REPLACES that class\'s slots, so re-running leaves one timetable rather than two. create_class takes the same "slots" so a new class lands with its periods. day is mon-fri or 0-6, period is 1-8. A class with no slot on a given day does not meet that day, and its register will not show on the attendance screen.',
-            assignments: 'create_assignment: class, title, due (YYYY-MM-DD = end of that day, or a full timestamp), description, points, grading_type (points|rubric|none), type (regular|info|test), published, graded_offline, rtc_reward, max_submit_size_mb, category_id, rubric_id, students[] (omit = whole class). edit_assignment: {"assignment":"<id or exact title>","class":"X","set":{...}} patches ONLY the named fields. QUARTER IS NOT A FIELD: it is derived from due_date, and a date outside every quarter is flagged because the assignment then hides from quarter-filtered views.'
+            assignments: 'create_assignment: class, title, due (YYYY-MM-DD = end of that day, or a full timestamp), description, points, grading_type (points|rubric|none), type (regular|info|test), published, graded_offline, rtc_reward, max_submit_size_mb, category_id, rubric_id, students[] (omit = whole class). edit_assignment: {"assignment":"<id or exact title>","class":"X","set":{...}} patches ONLY the named fields. QUARTER IS NOT A FIELD: it is derived from due_date, and a date outside every quarter is flagged because the assignment then hides from quarter-filtered views.',
+            scoring: 'score_assignment: {"op":"score_assignment","class":"X","assignment":"<exact title or id>","create_if_missing":{"due":"2026-09-15","points":100,"type":"test"},"scores":[{"student":"Quinn Sable","points":88,"feedback":"..."}]} marks each named student graded on that assignment (letter from the percentage). If the title is not in the class, create_if_missing creates it in the same batch; without it the batch is blocked. Re-sending replaces the marks rather than duplicating the assignment. Every student must be enrolled and every mark 0 to the assignment points.'
           },
           writes: 'apply writes. Every other op is read-only.'
         });

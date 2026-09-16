@@ -68,6 +68,9 @@ const DB = {
     { id: '11111111-1111-1111-1111-111111111111', class_id: 'c1', title: 'Storyboard', due_date: '2026-09-15T23:59:00.000Z', max_points: 100, grading_type: 'points', assignment_type: 'regular', is_published: true, graded_offline: false, assigned_to_all: true, rtc_reward: 0 },
   ],
   assignment_students: [],
+  assignment_submissions: [
+    { id: 'sub1', assignment_id: '11111111-1111-1111-1111-111111111111', student_id: 's1', status: 'graded', points_earned: 70, grade: 'C', feedback: null },
+  ],
   class_attendance: [
     { student_id: 's1', class_id: 'c1', date: '2026-09-01', status: 'present' },
     { student_id: 's2', class_id: 'c1', date: '2026-09-01', status: 'absent' },
@@ -142,6 +145,7 @@ const app = {
     { id: 'c7', name: 'Filmmaking Last Year', subject: 'Art', teacher_id: 't1', secondary_teacher_id: null, is_active: true, status: 'closed', teacher_name: 'Luke H' },
   ],
   escapeHtml: (s) => String(s),
+  calculateLetterGrade: (p) => (p >= 90 ? 'A' : p >= 80 ? 'B' : p >= 70 ? 'C' : 'F'),
   _pctToLetter: (v) => (v >= 90 ? 'A' : v >= 80 ? 'B' : v >= 70 ? 'C' : 'F'),
   _letterToPct: (l) => ({ a: 95, 'a-': 92, b: 85, 'b+': 88, 'b-': 82, c: 75, d: 65, f: 50 }[l] ?? null),
   _rivenCurrentQuarter: async () => ({ id: 'Q1', name: 'Quarter 1' }),
@@ -442,6 +446,58 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   const uke = ccout.verification.after.classes.find(c => c.name === 'Lower MS Ukulele');
   t('a new class lands with its periods',
     uke && JSON.stringify(uke.schedule) === JSON.stringify(['Wed:P6']), uke);
+
+  // ---- score_assignment: many marks on one assignment, creating it if missing
+  const sp1 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Spelling Test 9/15',
+      create_if_missing: { due: '2026-09-15', points: 100, type: 'test' },
+      scores: [{ student: 'Quinn Sable', points: 92 }, { student: 'Ari Mercer', points: 64.5 }] } ] }));
+  t('score_assignment plans creating a missing assignment', sp1.ok === true && sp1.steps[0].creates_assignment === true && sp1.steps[0].students === 2, sp1);
+  t('score_assignment reports the quarter of the new assignment', sp1.steps[0].quarter === 'Quarter 1', sp1.steps[0]);
+  const sp2 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Nope', scores: [{ student: 'Quinn Sable', points: 5 }] } ] }));
+  t('a missing assignment without create_if_missing is blocked', sp2.ok === false && sp2.errors.some(e => e.error === 'not_found'), sp2.errors);
+  const sp3 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Storyboard', scores: [{ student: 'Ashgrove Gamer', points: 5 }] } ] }));
+  t('a student not in the class is blocked', sp3.errors.some(e => e.error === 'not_enrolled'), sp3.errors);
+  const sp4 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Storyboard', scores: [{ student: 'Quinn Sable', points: 101 }] } ] }));
+  t('a mark above the assignment points is blocked', sp4.errors.some(e => e.error === 'bad_value'), sp4.errors);
+  const sp5 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Storyboard', scores: [{ student: 'Quinn Sable', points: 80 }, { student: 'Quinn', points: 81 }] } ] }));
+  t('the same student twice is blocked', sp5.errors.some(e => e.error === 'duplicate'), sp5.errors);
+  const sp6 = await rt(JSON.stringify({ op: 'plan', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Storyboard', scores: [{ student: 'Quinn Sable', points: 85 }] } ] }));
+  t('an existing assignment is graded, not re-created, and shows the mark it replaces',
+    sp6.ok && sp6.steps[0].creates_assignment === false && sp6.steps[0].marks[0].before === 70, sp6.steps[0]);
+
+  WRITES.length = 0; app._pending = null;
+  const spa = await rt(JSON.stringify({ op: 'apply', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Spelling Test 9/15',
+      create_if_missing: { due: '2026-09-15', points: 100, type: 'test' },
+      scores: [{ student: 'Quinn Sable', points: 92, feedback: 'fortunate' }, { student: 'Ari Mercer', points: 64.5 }] } ],
+    reads: [{ op: 'assignments', class: 'Filmmaking', as: 'after' }] }));
+  t('score_assignment apply waits for confirmation and writes nothing yet', spa.awaiting_confirmation === true && WRITES.length === 0, spa);
+  await app._pending.execute();
+  const spo = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
+  const newA = DB.assignments.find(a => a.title === 'Spelling Test 9/15');
+  const marks = DB.assignment_submissions.filter(x => newA && x.assignment_id === newA.id);
+  t('the assignment was created once and both marks landed', spo.failed === 0 && !!newA && marks.length === 2 && spo.results[0].created_assignment === true, spo);
+  t('marks carry status, points and a letter', marks.find(x => x.student_id === 's1').points_earned === 92 && marks.find(x => x.student_id === 's1').grade === 'A' && marks.every(x => x.status === 'graded'), marks);
+
+  // re-sending the same command grades the existing assignment
+  app._pending = null;
+  await rt(JSON.stringify({ op: 'apply', ops: [
+    { op: 'score_assignment', class: 'Filmmaking', assignment: 'Spelling Test 9/15',
+      create_if_missing: { due: '2026-09-15', points: 100, type: 'test' },
+      scores: [{ student: 'Quinn Sable', points: 95 }, { student: 'Ari Mercer', points: 64.5 }] } ] }));
+  await app._pending.execute();
+  const spo2 = JSON.parse(app._lastHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/)[1]);
+  t('re-sending does not duplicate the assignment', DB.assignments.filter(a => a.title === 'Spelling Test 9/15').length === 1 && spo2.results[0].created_assignment === false, spo2.results);
+  t('re-sending replaces marks instead of adding rows', DB.assignment_submissions.filter(x => x.assignment_id === newA.id).length === 2 && spo2.results[0].marks_replaced === 2
+    && DB.assignment_submissions.find(x => x.assignment_id === newA.id && x.student_id === 's1').points_earned === 95, spo2.results);
+  await app._undo.fn();
+  t('undo puts the previous mark back', DB.assignment_submissions.find(x => x.assignment_id === newA.id && x.student_id === 's1').points_earned === 92, DB.assignment_submissions);
 
   const help = await rt('');
   t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);
