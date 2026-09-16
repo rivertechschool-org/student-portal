@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·d';
+      const RIVEN_BUILD = '2026-09-16·e';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -55587,6 +55587,7 @@
     \u2022 "[student] has been picked up" \u2014 the same tick as the pickup board<br>
     \u2022 "Cancel [class] today" \u2014 calls off the session; I say how many marks that deletes<br>
     \u2022 "Cancel all my classes for the day except P1" \u2014 the whole day, minus what you keep<br>
+    \u2022 "Cancel all classes school-wide except P1" \u2014 admin only; a snow day for the building<br>
     \u2022 "[class] is back on today" \u2014 puts a cancelled session back<br>
     \u2022 "[student] got 18 out of 20 on [assignment]" \u2014 the letter comes from the rubric<br>
     \u2022 "Make [assignment] due friday" / "[assignment] is worth 50 points" / "Unpublish [assignment]"<br>
@@ -60895,24 +60896,48 @@
 
       if (!this._terminalAllClasses?.length) await this._loadTerminalClasses();
 
-      // MINE, and only the ones still running. An admin saying "cancel all my
-      // classes" means the ones they teach, not the school's 75.
-      const mine = (this._terminalAllClasses || []).filter(c =>
-        this._rivenClassIsOpen(c) && this._rivenOwnsClass(c)
-        && this._rivenCanManageClass(c, { attendance: true }));
-      if (!mine.length) {
-        this.terminalPrintError("You aren't listed as the teacher of any class that's running, so there's nothing for me to cancel.");
-        return;
+      // Whose day is being called off.
+      //
+      // "cancel all my classes" is one teacher's day. A snow day is not, and
+      // an admin saying it has to be able to mean the school - but only by
+      // saying so. Scoping to the whole school on the strength of the word
+      // "all" would let an ordinary afternoon's tidy-up close every register
+      // in the building, so the wider reach has to be asked for out loud
+      // ("school-wide", "every teacher's classes") and is admin-only.
+      const scope = this._rivenSchoolScope(entities);
+      if (scope.refused) {
+        this._showRivenMessage(
+          `Cancelling across the whole school is admin-only \u2014 I'll do your own classes instead.`, true);
       }
+
+      // Everything this person is allowed to cancel. For a teacher that is
+      // already only their own; for an admin it is the school.
+      const manageable = (this._terminalAllClasses || []).filter(c =>
+        this._rivenClassIsOpen(c) && this._rivenCanManageClass(c, { attendance: true }));
 
       // Only classes that actually MEET that day. Cancelling a session that was
       // never going to happen writes a cancellation nobody asked for, and it
       // would show on the register as a thing that was called off.
-      const periods = await this._rivenPeriodsOn(mine.map(c => c.id), dateStr);
-      const meeting = mine.filter(c => (periods[c.id] || []).length);
+      const periods = await this._rivenPeriodsOn(manageable.map(c => c.id), dateStr);
+      const meetingAll = manageable.filter(c => (periods[c.id] || []).length);
+      const meetingMine = meetingAll.filter(c => this._rivenOwnsClass(c));
+
+      const meeting = scope.school ? meetingAll : meetingMine;
+      const othersToday = meetingAll.length - meetingMine.length;
+
       if (!meeting.length) {
-        this._showRivenMessage(
-          `None of your classes meet on ${esc(dateStr)}, so there's nothing to cancel.`, true);
+        if (scope.school) {
+          this._showRivenMessage(`No classes meet on ${esc(dateStr)}, so there's nothing to cancel.`, true);
+        } else if (!meetingMine.length && othersToday) {
+          // An admin who teaches nothing that day would otherwise be told they
+          // have no classes, which is true and unhelpful.
+          this._showRivenMessage(
+            `You don't teach anything on ${esc(dateStr)}. ${othersToday} class${othersToday === 1 ? '' : 'es'} ` +
+            `belonging to other teachers meet that day \u2014 say <b>"cancel all classes school-wide"</b> to call those off.`, true);
+        } else {
+          this.terminalPrintError(`You aren't listed as the teacher of any class meeting on ${dateStr}, so there's nothing for me to cancel.`);
+          return;
+        }
         return;
       }
 
@@ -60967,9 +60992,24 @@
           `</div>`
         : '';
 
+      // Who else's day this is. A cancellation that reaches nine other
+      // teachers' registers should say their names before it happens, not
+      // after.
+      const staff = [...new Set(targets.map(c => c.teacher_name).filter(Boolean))];
+      const whose = scope.school && staff.length > 1
+        ? `<div style="font-size: 12px; margin-top: 6px;">Across ${staff.length} teachers: ${esc(staff.join(', '))}</div>`
+        : '';
+      const offer = (!scope.school && othersToday && this.userInfo?.profile?.user_type === 'admin')
+        ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">That's your own. ` +
+          `${othersToday} other class${othersToday === 1 ? '' : 'es'} meet${othersToday === 1 ? 's' : ''} today \u2014 ` +
+          `say "cancel all classes school-wide" for those too.</div>`
+        : '';
+
       this._requestConfirmation(
+        `${scope.school ? '\u26a0\ufe0f <b>School-wide.</b> ' : ''}` +
         `Cancel <b>${targets.length}</b> class${targets.length === 1 ? '' : 'es'} on ${esc(dateStr)}?` +
         `<div style="font-size: 12px; margin-top: 6px;">${list}</div>` +
+        whose + offer +
         (totalMarks
           ? `<div style="font-size: 12px; color: var(--danger, #ff6a6a); margin-top: 6px;">This deletes ${totalMarks} attendance mark${totalMarks === 1 ? '' : 's'} already taken. There is no undo for that.</div>`
           : `<div style="font-size: 12px; margin-top: 6px;">No attendance has been taken for any of them.</div>`) +

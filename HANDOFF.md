@@ -1885,3 +1885,38 @@ cannot fire it and a confirmation is required.
 
 **Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
 
+---
+
+## 2026-09-16 — a snow day is not one teacher's day
+
+`CANCEL_DAY` scoped to the asker's own classes. An admin saying *"cancel all
+classes except P1"* would have had their own four cancelled and the other
+twenty-two left running — **doing something, just not what was asked**, which
+is worse than refusing.
+
+It now takes a school-wide scope, through the same `_rivenSchoolScope` helper
+the briefing uses: admin-only, and **only when asked for out loud** —
+"school-wide", "every teacher's classes", "across the school".
+
+**Scoping on the word "all" would have been the obvious shortcut and is the
+wrong one.** "Cancel all my classes" is an ordinary sentence a teacher says on
+an ordinary afternoon; letting it close every register in the building is not a
+risk worth taking to save four words.
+
+Three things the confirmation now does that it did not:
+
+* Leads with **⚠️ School-wide** when that is what this is.
+* **Names the teachers** whose days are being called off. A cancellation
+  reaching nine other registers should say whose before it happens, not after.
+* When an admin asks for their own and others also meet that day, says so and
+  offers the wider form — the same shape as the briefing's "that's your own N
+  classes, say school-wide for the other M".
+
+A teacher who asks for school-wide is refused the reach, told why, and gets
+their own day done rather than nothing. An admin who teaches nothing that day
+used to be told they have no classes, which is true and useless; they are now
+pointed at the school-wide form.
+
+`tests/riven-cancel-day.test.js` is up to 43, `frontdoor-precision` to 70
+writes with the school-wide phrasing pinned.
+

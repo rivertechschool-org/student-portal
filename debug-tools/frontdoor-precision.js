@@ -294,6 +294,7 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['cancel all my classes today', 'WRITE', 'CANCEL_DAY'],
   ['cancel the rest of my day', 'WRITE', 'CANCEL_DAY'],
   ['cancel all my classes except math', 'WRITE', 'CANCEL_DAY'],
+  ['cancel all classes school-wide except p1', 'WRITE', 'CANCEL_DAY'],
   // ... and one class named on its own is still one class.
   ['cancel math today', 'WRITE', 'CANCEL_CLASS'],
   ['add noah to all the old middle school classes', 'WRITE', 'ENROLL_BAND'],

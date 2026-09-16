@@ -67,13 +67,13 @@ const ME = 'me';
 // A real-ish Wednesday: four of mine meet, one is somebody else's, one is
 // closed for the year, and one of mine does not meet today at all.
 const CLASSES = [
-  { id: 'c1', name: 'Math',       teacher_id: ME,     status: 'active' },
-  { id: 'c2', name: 'Chemistry',  teacher_id: ME,     status: 'active' },
-  { id: 'c3', name: 'Coding',     teacher_id: ME,     status: 'active' },
-  { id: 'c4', name: 'Physics',    teacher_id: ME,     status: 'active' },
-  { id: 'c5', name: 'Bible',      teacher_id: 'other', status: 'active' },
-  { id: 'c6', name: 'Old Chess',  teacher_id: ME,     status: 'closed' },
-  { id: 'c7', name: 'Yearbook',   teacher_id: ME,     status: 'active' },  // meets Friday
+  { id: 'c1', name: 'Math',       teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
+  { id: 'c2', name: 'Chemistry',  teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
+  { id: 'c3', name: 'Coding',     teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
+  { id: 'c4', name: 'Physics',    teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
+  { id: 'c5', name: 'Bible',      teacher_id: 'other', teacher_name: 'Caitlin Pennock', status: 'active' },
+  { id: 'c6', name: 'Old Chess',  teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'closed' },
+  { id: 'c7', name: 'Yearbook',   teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },  // meets Friday
 ];
 const PERIODS = { c1: [1], c2: [2], c3: [3], c4: [1, 5], c5: [4], c6: [2] };  // c7 absent = not today
 
@@ -119,6 +119,8 @@ function makeApp({ marks = [] } = {}) {
   app._rivenOwnsClass = extract('_rivenOwnsClass');
   app._rivenCanManageClass = extract('_rivenCanManageClass');
   app._rivenExceptClause = extract('_rivenExceptClause');
+  app._rivenSchoolScope = extract('_rivenSchoolScope');
+  app._rivenSaidEveryTeacher = extract('_rivenSaidEveryTeacher');
   const fn = extract('terminalCancelDay');
   app.terminalCancelDay = async function (...a) {
     const r = await fn.apply(app, a);
@@ -127,7 +129,7 @@ function makeApp({ marks = [] } = {}) {
   };
   return app;
 }
-const said = (text) => ({ original: text, _rawInput: text });
+const said = (text) => ({ original: text, _rawInput: text, normalized: text });
 
 (async () => {
 
@@ -212,6 +214,54 @@ const said = (text) => ({ original: text, _rawInput: text });
        app.deleted.some(d => d.table === 'class_attendance'));
     ok('and it reports what it did', /2 classes cancelled/.test(app.ok[0]));
     ok('  naming what it left running', /Math|Physics/.test(app.ok[0]));
+  }
+
+  console.log('\n== the whole school ==\n');
+
+  {
+    // A snow day is not one teacher's day. An admin has to be able to mean the
+    // building — but only by saying so.
+    const app = makeApp();
+    app.userInfo.profile.user_type = 'admin';
+    await app.terminalCancelDay.call(app, said('cancel all classes school-wide except p1'));
+
+    ok('another teacher\'s class is now included', /Bible/.test(app.confirmed));
+    ok('  and it is flagged as school-wide', /School-wide/.test(app.confirmed));
+    // A cancellation reaching other people's registers should name them first.
+    ok('  naming whose days these are', /Caitlin Pennock/.test(app.confirmed));
+    ok('  the exception still holds', !/• Math/.test(app.confirmed));
+  }
+
+  {
+    // Scoping to the school on the strength of the word "all" would let an
+    // ordinary tidy-up close every register in the building.
+    const app = makeApp();
+    app.userInfo.profile.user_type = 'admin';
+    await app.terminalCancelDay.call(app, said('cancel all my classes today'));
+    ok('an admin who did not ask for the school gets their own', !/Bible/.test(app.confirmed));
+    ok('  and is told the wider option exists', /school-wide/.test(app.confirmed));
+    ok('  with a count of what they are leaving', /1 other class/.test(app.confirmed));
+  }
+
+  {
+    // A teacher asking for the school gets their own and an explanation, not
+    // a silent narrowing.
+    const app = makeApp();
+    await app.terminalCancelDay.call(app, said('cancel all classes school-wide'));
+    ok('a teacher is refused the wider reach', /admin-only/.test(app.said[0] || ''));
+    ok('  but their own day still happens', /Chemistry/.test(app.confirmed));
+    ok('  and no one else\'s is touched', !/Bible/.test(app.confirmed));
+  }
+
+  {
+    // An admin who teaches nothing that day would otherwise be told they have
+    // no classes, which is true and useless.
+    const app = makeApp();
+    app.userInfo.user.id = 'nobody';
+    app.userInfo.profile.user_type = 'admin';
+    await app.terminalCancelDay.call(app, said('cancel all my classes today'));
+    check('nothing is cancelled', app.confirmed, null);
+    ok('  and they are pointed at the school-wide form', /school-wide/.test(app.said[0] || ''));
   }
 
   console.log('\n== nothing to do ==\n');
