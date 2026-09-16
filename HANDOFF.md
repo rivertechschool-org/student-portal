@@ -1594,3 +1594,62 @@ the stub now delays writes, so an impatient five-press double-click is reproduci
 deliberately failing write proves the button comes back. Twice now `innerText` has caught
 this harness out by returning uppercased text where CSS uppercases a heading; both matches
 are case-blind now.
+
+---
+
+## 2026-09-15 — Jordan's Claude (activation links landed on the wrong page)
+
+**Every activation and password link was asking for /reset.html and landing on
+the home page.** Proved against the live project by generating a recovery link
+through the admin API (throwaway user at an invalid domain, deleted after):
+
+```
+asked for  redirect_to=https://rivertech.me/reset.html
+got        redirect_to=https://rivertech.me
+```
+
+Every path collapses to the bare origin. **The project's redirect allow-list
+holds only the Site URL**, and an un-allow-listed `redirect_to` silently falls
+back to it. The tokens still arrive — in the fragment, on a page with no reset
+form.
+
+### Why the fallback that existed did not save it
+
+`index.html` already forwarded `type=recovery` to `reset.html`. But it did so
+from inside `initialize()`, which runs *after* the Supabase client is
+constructed — and that client sets `detectSessionInUrl`, so supabase-js clears
+`window.location.hash` the instant it detects an implicit grant. The identical
+race is documented a few lines below for the teacher-invite path.
+
+So the fragment was usually gone before anything read it, the forward never
+fired, and the person was left on the login screen with nothing to explain it.
+**3 recovery links went out in 48 hours; 2 were never completed.**
+
+The guard now runs in the `<head>`, ahead of both script tags, where there is
+no client yet to race. Verified live: guard at line 35, scripts at 46–47.
+
+`reset.html` copes either way — it takes a session supabase-js already
+established, or sets one from the fragment — and `PortalAuth` builds its client
+lazily, so that page is not racing itself.
+
+### Worth doing, no longer blocking
+
+Add **`https://rivertech.me/reset.html`** (or `https://rivertech.me/**`) to
+Authentication → URL Configuration → **Redirect URLs** in the Supabase
+dashboard. That sends the link straight to the reset page instead of bouncing
+through the home page. I could not do it from here — the CLI's stored
+credentials do not include a Management API token.
+
+Two smaller things noticed and left alone:
+
+* `index.html`'s own `redirectTo` builds its URL with
+  `location.href.split('/').slice(0,-1).join('/')`, which yields `https:/` if
+  the page is ever served without a trailing slash. Moot while the path is
+  stripped anyway, but wrong.
+* `type=invite` links are not handled on the home page. Nothing issues them
+  today (`pin-login` generates a magiclink and consumes it server-side), so it
+  is latent, not live.
+
+`tests/activation-link-lands-somewhere.test.js` (12) pins the ordering, since
+the ordering is the entire fix.
+
