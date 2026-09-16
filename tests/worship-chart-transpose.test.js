@@ -173,7 +173,9 @@ ok('section names are escaped', renderChart('/<b>V1', 'C').includes('&lt;b&gt;V1
 // 5. Wired into the page
 // ======================================================================
 ok('the set list opens a song in its scheduled key', /openSong\('\$\{song\.id\}'\$\{l\.song_key/.test(page));
-ok('the modal takes a key', /function openSong\(id, key\)/.test(page));
+ok('the modal takes a key', /function openSong\(id, key, allowEdit\)/.test(page));
+// Editing is the library's job, so reading a chart off a rota offers none.
+ok('  and only the library may edit from it', /A\._chartCanEdit = !!allowEdit && A\.isAdmin;/.test(page));
 ok('  defaulting to the song\'s own', /normaliseKey\(key\) \|\| normaliseKey\(s\.default_key\) \|\| 'C'/.test(page));
 ok('the key bar offers every key', /KEYS\.map\(k =>/.test(page));
 ok('a scheduled key is picked, not typed', /<select id="song-key-\$\{s\.id\}"/.test(page));

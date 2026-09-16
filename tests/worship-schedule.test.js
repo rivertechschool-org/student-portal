@@ -195,7 +195,7 @@ ok('  landing on that service', /A\.openService = serviceId;\s*\n\s*A\.tab = 'pl
 ok('  and a non-admin is never offered it', /\$\{A\.isAdmin \? `<div class="row">\s*\n\s*<button class="btn sec small" onclick="editInPlan/.test(page));
 
 // An unplanned date is an admin's to start.
-ok('an admin can start a plan from an empty date', /planDate\('\$\{type\.id\}','\$\{d\.date\}'\)/.test(page));
+ok('an admin can start a plan from an empty date', /planDate\('\$\{type\.id\}','\$\{d\.date\}',this\)/.test(page));
 ok('  and it starts as a draft', /status: 'draft', created_by: A\.me\.id/.test(page));
 
 // Reordering swaps two rows rather than rewriting the list, so two people
@@ -259,10 +259,30 @@ ok('  while the rota still loads', !/if \(fileRes\.error\) throw/.test(page));
 ok('the picker offers to make one', /<option value="__new">/.test(page));
 ok('  and acts on the choice', /onchange="onOrderSongPick\('\$\{s\.id\}'\)"/.test(page));
 
-// Cancelling out of the dialog must not leave the picker reading
-// "Add a song not in the library…" as though that were a song.
-ok('the picker is put back on a real song first',
-  /const firstReal = \[\.\.\.sel\.options\]\.find\(o => o\.value !== '__new'\);/.test(page));
+// The box starts on a placeholder, so Add cannot fire a song nobody chose,
+// and cancelling out of the new-song dialog returns it there rather than
+// leaving "Add a song not in the library…" sitting in it like a selection.
+ok('the box starts on a placeholder', /<option value="">Song…<\/option>/.test(page));
+ok('  and cancelling returns it there', /sel\.value = '';/.test(page));
+
+// One press, one row: every write is wrapped so the button is disabled while
+// it is in flight, in ONE place so an early return cannot leave it stuck.
+ok('the writes are wrapped', /if \(!claim\(btn, label\)\) return;/.test(page));
+ok('  and released however they finish', /finally \{ release\(btn\); \}/.test(page));
+ok('  with no per-function claim to forget', !/if \(!claim\(btn, '/.test(page));
+
+// Somebody who has never been on the team can be put on a rota from the
+// position dialog, which also puts them on the team.
+ok('the whole school is reachable from a position', /function addPersonFromSchool\(serviceId, instrument\)/.test(page));
+ok('  and adding puts them on the team too', /from\('worship_members'\)\s*\n\s*\.insert\(\{ user_id: userId, instruments: \[instrument\]/.test(page));
+
+// Reading a chart off a rota must not put Delete under your thumb.
+ok('editing a song is the library\'s job', /A\._chartCanEdit \? `<div class="row"/.test(page));
+ok('  and only the library asks for it', /openSong\('\$\{s\.id\}', null, true\)/.test(page));
+
+// The practice files a set list already implies.
+ok('practice links come from the set list', /From the set list/.test(page));
+ok('  with the chart in the booked key', /Chart in \$\{esc\(key\)\}/.test(page));
 
 // The key already chosen on the row travels into the new song.
 ok('the row\'s key is carried in', /const key = \(\$\('song-key-' \+ serviceId\) \|\| \{\}\)\.value \|\| '';/.test(page));

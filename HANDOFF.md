@@ -1551,3 +1551,46 @@ One flag, not two: `canReply` is `!editable`, because the two modes are always o
 two booleans that could disagree is a bug waiting to be written. An admin who is on a
 service they are planning gets a line pointing them at My schedule rather than a missing
 button they have to reason about.
+
+---
+
+## 2026-09-16 — Luke's Claude (five fixes from real use)
+
+**One press, one row.** "Add to the order" took a beat, looked like it had done nothing, so
+Luke pressed it again — and again — and got the same song three times. Every write on the
+page is now wrapped: the button that started it is disabled and relabelled ("Adding…",
+"Saving…") until it finishes, and a second press while it is in flight does nothing.
+
+That wrapping is in **one place**, a list of function names near the foot of the file, not a
+claim/release pair inside each function. Between them these writes have a dozen early
+returns — a missing amount, a failed insert, a duplicate — and any one of them would have
+left a button disabled for good. A `try/finally` around the call cannot miss one.
+
+Note for whoever adds the next write: give its button `this` as the last argument and add
+the function's name to that list. Nothing else.
+
+**The song box starts on "Song…"** rather than on the first song in the library, which read
+as a choice already made — press Add without touching it and you got a song you never
+picked.
+
+**A position can be filled from the whole school.** The dialog still lists the people whose
+profile says they play it, but "Search the whole school" finds anyone, and adding them puts
+them on the worship team as well as on the rota, with that instrument on their profile.
+Somebody who has never been on the team is exactly who you reach for when a position is
+empty on the Thursday; making that a trip to the Team tab is how an empty position stays
+empty.
+
+**Reading a chart off a rota no longer offers Delete.** `openSong` takes `allowEdit`, and
+only the Songs tab passes it. Editing the library is a different job, done from the library
+on purpose.
+
+**Practice files now include what the set list already implies:** each song's chart *in the
+key it is booked in*, plus its YouTube and Spotify links, above anything attached by hand.
+A chart attached as a fixed link would be the wrong key the moment the key moves, so these
+are derived on render rather than stored.
+
+**Harness: 7 journeys, 83 checks.** Journey 7 is new and stages what actually happened —
+the stub now delays writes, so an impatient five-press double-click is reproducible, and a
+deliberately failing write proves the button comes back. Twice now `innerText` has caught
+this harness out by returning uppercased text where CSS uppercases a heading; both matches
+are case-blind now.

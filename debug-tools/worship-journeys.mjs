@@ -44,6 +44,10 @@ async function boot(page, seed, me) {
     const T = JSON.parse(JSON.stringify(seed));
     window.__T = T;
     let n = 0;
+    // Writes take a beat, the way a real one does over a school's wifi. Without
+    // this the harness can never stage the thing people actually do: press
+    // again because nothing appeared to happen.
+    const slow = () => new Promise(r => setTimeout(r, window.__writeDelay || 0));
     // Column defaults, as the real schema declares them. Without these the stub
     // is STRICTER than Postgres and cries wolf: the app rightly omits a
     // defaulted column on insert and then reads the row back expecting the
@@ -67,11 +71,13 @@ async function boot(page, seed, me) {
         single(){ st.single = true; return api; },
         insert(row){
           const id = `${st.tb}-${++n}`;
-          window.__writes.push({ op: 'insert', table: st.tb, row });
-          (T[st.tb] = T[st.tb] || []).push({ ...(DEFAULTS[st.tb] || {}), ...row, id });
+          const done = slow().then(() => {
+            window.__writes.push({ op: 'insert', table: st.tb, row });
+            (T[st.tb] = T[st.tb] || []).push({ ...(DEFAULTS[st.tb] || {}), ...row, id });
+          });
           return {
-            select: () => ({ single: () => Promise.resolve({ data: { id }, error: null }) }),
-            then: (r) => Promise.resolve({ data: null, error: null }).then(r)
+            select: () => ({ single: () => done.then(() => ({ data: { id }, error: null })) }),
+            then: (r) => done.then(() => ({ data: null, error: null })).then(r)
           };
         },
         update(row){
@@ -146,6 +152,7 @@ const PEOPLE = [
   { id: 'u-ann',  full_name: 'Ann Becker',    user_type: 'student', grade_level: 7 },
   { id: 'u-ben',  full_name: 'Ben Chase',     user_type: 'student', grade_level: 5 },
   { id: 'u-dee',  full_name: 'Dee Ellis',     user_type: 'student', grade_level: 6 },
+  { id: 'u-cal',  full_name: 'Cal Diaz',      user_type: 'student', grade_level: 8 },
 ];
 const SEED = () => ({
   __people: PEOPLE,
@@ -279,9 +286,9 @@ ok('  the leader is starred', team.includes('★ Luke Hegelund'));
 ok('  and neither has answered yet', await page.evaluate(() =>
   [...document.querySelectorAll('.person')].every(p => p.innerText.includes('asked'))));
 
-await page.selectOption(`#song-pick-${svcId}`, 's1');
+await page.selectOption(`#song-pick-${svcId}`, 's1');   // the box starts on "Song…"
 await page.selectOption(`#song-key-${svcId}`, 'Ab');
-await page.click(`button[onclick="addServiceSong('${svcId}')"]`);
+await page.click(`button[onclick="addServiceSong('${svcId}',this)"]`);
 await page.waitForTimeout(450);
 ok('the song is on the order in the key chosen', (await text(page)).includes('Key Ab'));
 
@@ -317,7 +324,7 @@ ok('  and a note kept', edited.includes('straight into the next one'));
 
 await page.fill(`#file-label-${svcId}`, 'Rehearsal track');
 await page.fill(`#file-url-${svcId}`, 'https://example.com/track.mp3');
-await page.click(`button[onclick="addServiceFile('${svcId}')"]`);
+await page.click(`button[onclick="addServiceFile('${svcId}',this)"]`);
 await page.waitForTimeout(450);
 ok('a practice file attaches', (await text(page)).includes('Rehearsal track'));
 
@@ -391,6 +398,8 @@ const chart = await page.evaluate(() => ({
 }));
 check('the chart opens in the key it is booked in', [chart.key, chart.lit], ['D', ['D']]);
 ok('  and it is the song the order names', chart.body.includes('love You Lord'));
+ok('  with no Delete under your thumb', await page.evaluate(() =>
+  !document.querySelector('#modal button.danger')));
 ok('  transposed into that key', chart.body.includes('D') && chart.body.includes('G'));
 
 // ======================================================================
@@ -405,6 +414,8 @@ ok('search narrows it', await page.evaluate(() => document.querySelectorAll('.so
 await page.click('.songrow');
 await page.waitForTimeout(350);
 ok('the song opens in its own key', await page.evaluate(() => A._chartKey === 'E'));
+ok('  and a student is offered no Delete even here', await page.evaluate(() =>
+  !document.querySelector('#modal button.danger')));
 await page.evaluate(() => setChartKey('Bb'));
 await page.waitForTimeout(250);
 ok('  and transposes on demand', await page.evaluate(() =>
@@ -508,6 +519,113 @@ const landed = await page.evaluate(() => ({
 ok('editing lands on the Plan tab', landed.tab === 'plan');
 ok('  on that same service', !!landed.onThatService);
 ok('  with the planning controls', landed.hasControls);
+
+// ======================================================================
+console.log('\n7. An impatient press, and a stranger on the rota\n');
+// ======================================================================
+world = await page.evaluate(() => window.__T);
+await boot(page, world, LUKE);
+await page.evaluate(() => { window.__writeDelay = 400; });   // a slow afternoon
+await page.evaluate(() => go('plan'));
+await page.waitForTimeout(300);
+await page.click('.trow');
+await page.waitForTimeout(300);
+await page.click('.drow');
+await page.waitForTimeout(700);
+const sid = await page.evaluate(() => A.openService);
+
+// The song box starts on nothing, so Add cannot fire a song nobody chose.
+check('the song box starts empty', await page.evaluate(id => document.getElementById('song-pick-' + id).value, sid), '');
+
+await page.selectOption(`#song-pick-${sid}`, { index: 1 });
+const before = await page.evaluate(() => (window.__T.worship_service_songs || []).length);
+// Five presses, as fast as a person who thinks nothing happened.
+await page.evaluate(id => {
+  const b = document.querySelector(`button[onclick="addServiceSong('${id}',this)"]`);
+  for (let i = 0; i < 5; i++) b.click();
+}, sid);
+await page.waitForTimeout(1500);
+const after = await page.evaluate(() => (window.__T.worship_service_songs || []).length);
+check('five presses, one song', after - before, 1);
+ok('  and the button came back', await page.evaluate(id =>
+  !document.querySelector(`button[onclick="addServiceSong('${id}',this)"]`).disabled, sid));
+
+// A failed write must not leave the button dead either.
+await page.evaluate(() => {
+  const realFrom = A.supabase.from;
+  A.supabase.from = (t) => t === 'worship_service_files'
+    ? { insert: () => Promise.resolve({ data: null, error: { message: 'nope' } }) }
+    : realFrom(t);
+});
+await page.fill(`#file-label-${sid}`, 'x');
+await page.fill(`#file-url-${sid}`, 'https://example.com/x');
+await page.click(`button[onclick="addServiceFile('${sid}',this)"]`);
+await page.waitForTimeout(600);
+ok('a failed write releases the button too', await page.evaluate(id =>
+  !document.querySelector(`button[onclick="addServiceFile('${id}',this)"]`).disabled, sid));
+
+// Somebody who has never been on the team, put on the rota from this dialog.
+await page.evaluate(() => { window.__writeDelay = 0; });
+await page.evaluate(() => { A.supabase.from = A.supabase.from; });
+await boot(page, world, LUKE);
+await page.evaluate(() => go('plan'));
+await page.waitForTimeout(300);
+await page.click('.trow'); await page.waitForTimeout(250);
+await page.click('.drow'); await page.waitForTimeout(500);
+await page.evaluate(() => addPersonTo(A.openService, 'slides'));
+await page.waitForTimeout(300);
+ok('the dialog offers the whole school', await page.evaluate(() =>
+  document.getElementById('modal').innerText.includes('Search the whole school')));
+await page.click('[onclick*="_addPersonSource=\'school\'"]');
+await page.waitForTimeout(300);
+await page.fill('#ap-search', 'cal');
+await page.waitForTimeout(400);
+const found = await page.evaluate(() => document.getElementById('ap-results').innerText);
+ok('a name that is not on the team is findable', found.includes('Cal Diaz'));
+await page.click('#ap-results button');
+await page.waitForTimeout(700);
+const joined = await page.evaluate(() => ({
+  onTeam: (window.__T.worship_members || []).some(m => m.user_id === 'u-cal'),
+  instruments: ((window.__T.worship_members || []).find(m => m.user_id === 'u-cal') || {}).instruments,
+  onRota: (window.__T.worship_service_slots || []).some(sl => sl.user_id === 'u-cal' && sl.instrument === 'slides'),
+  plan: !!document.querySelector('.planhead')
+}));
+ok('they are on the team now', joined.onTeam);
+ok('  with the instrument on their profile', (joined.instruments || []).includes('slides'));
+ok('  and on the rota for it', joined.onRota);
+ok('  and the plan came back', joined.plan);
+
+// Editing the library is an admin's, and lives in the library: Delete is there
+// and nowhere else.
+await page.evaluate(() => { closeModal(); return go('songs'); });
+await page.waitForTimeout(400);
+await page.click('.songrow');
+await page.waitForTimeout(350);
+ok('an admin edits songs from the library', await page.evaluate(() =>
+  !!document.querySelector('#modal button.danger')));
+
+// The practice files a set list already implies, in the key it is booked in.
+// Open the service that actually has a set list, rather than whichever date
+// happens to be first.
+await page.evaluate(() => {
+  closeModal();
+  const withSongs = Object.keys(A.songLinks).find(id => (A.songLinks[id] || []).length);
+  A.tab = 'plan';
+  A.openService = withSongs;
+  const svc = A.services.find(x => x.id === withSongs);
+  A._openType = svc && svc.service_type_id;
+  render();
+});
+await page.waitForTimeout(400);
+const practice = await page.evaluate(() => {
+  const card = [...document.querySelectorAll('.card')].find(c => c.innerText.includes('Practice files'));
+  return card ? card.innerText.replace(/\n+/g, ' | ') : '';
+});
+// innerText applies text-transform, so an uppercased heading reads back
+// uppercased. Second time that has caught this harness out; match case-blind.
+ok('the set list brings its own practice links', /from the set list/i.test(practice));
+ok('  the chart in the key it is booked in', /Chart in [A-G]/.test(practice));
+ok('  and the recording beside it', /Listen/.test(practice));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (errors.length) console.log('page errors:', errors);

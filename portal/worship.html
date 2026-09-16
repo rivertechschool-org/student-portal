@@ -355,6 +355,34 @@ function renderChart(chart, key){
   return out.join('');
 }
 
+// One press, one row.
+//
+// Every write on this page goes through these two. The button that started it
+// is disabled and relabelled for as long as the write is in flight, and a
+// second press while it is in flight does nothing at all.
+//
+// Without it a slow network turns an impatient double-click into two rows: the
+// press looks like it did nothing, so you press again, and the order of service
+// ends up with the same song three times. That is exactly how it was found.
+// Disabling ALONE is not enough either - a button with no visible change reads
+// as broken, which is what makes people click again.
+function claim(btn, label){
+  if (!btn) return true;              // called from somewhere with no button
+  if (btn.disabled) return false;     // already working: ignore the second press
+  btn.disabled = true;
+  btn._label = btn.innerHTML;
+  if (label) btn.innerHTML = label;
+  return true;
+}
+
+// Safe on a button that has since been re-rendered away: the node is simply
+// detached and nobody sees it.
+function release(btn){
+  if (!btn) return;
+  btn.disabled = false;
+  if (btn._label != null) { btn.innerHTML = btn._label; btn._label = null; }
+}
+
 // A pill is a button that remembers, in its own class list, whether it is on.
 //
 // It was a <label> wrapping a hidden checkbox, which does not work: clicking the
@@ -563,7 +591,7 @@ function joinCard(){
         <label class="fld" for="join-note">Anything else? (optional)</label>
         <textarea id="join-note" placeholder="How long you have played, what you would like to learn, when you are free…"></textarea>
       </div>
-      <button class="btn" onclick="submitJoinRequest()">Send my request</button>
+      <button class="btn" onclick="submitJoinRequest(this)">Send my request</button>
     </div>`;
 }
 
@@ -638,7 +666,7 @@ function songsTab(){
   // A list, not a grid: a library is scanned down one column by title, and at
   // 29 songs and growing a wall of cards is slower to read than it looks.
   const rows = list.map(s => `
-    <div class="songrow" onclick="openSong('${s.id}')">
+    <div class="songrow" onclick="openSong('${s.id}', null, true)">
       <div class="t">
         <div class="ti">${esc(s.title)}</div>
         <div class="ar">${esc(s.artist || '—')}${(s.tags || []).length ? ' · ' + esc((s.tags || []).join(', ')) : ''}</div>
@@ -669,11 +697,17 @@ function songsTab(){
 // `key` is the key to open in. The schedule passes the key the song is
 // actually being played in that day, which is the whole point: you press the
 // song on the rota and the chart is already in the right key.
-function openSong(id, key){
+//
+// `allowEdit` is off unless this was opened from the LIBRARY. Reading a chart
+// off a rota on a Sunday morning should not put a Delete button under your
+// thumb - editing the library is a different job, done from the Songs tab on
+// purpose.
+function openSong(id, key, allowEdit){
   const s = A.songs.find(x => x.id === id);
   if (!s) return;
   A._chartSong = id;
   A._chartKey = normaliseKey(key) || normaliseKey(s.default_key) || 'C';
+  A._chartCanEdit = !!allowEdit && A.isAdmin;
   drawSongModal();
 }
 
@@ -715,7 +749,7 @@ function drawSongModal(){
       <div class="field"><label class="fld">Chart</label><pre class="chart">${esc(s.chord_chart)}</pre></div>
     ` : ''}
 
-    ${A.isAdmin ? `<div class="row" style="margin-top:12px">
+    ${A._chartCanEdit ? `<div class="row" style="margin-top:12px">
       <button class="btn sec" onclick="editSong('${s.id}')">Edit</button>
       <button class="btn danger" onclick="deleteSong('${s.id}')">Delete</button>
     </div>` : ''}
@@ -763,7 +797,7 @@ function editSong(id, serviceId, key){
       <textarea id="sg-chart" style="min-height:160px;font-family:ui-monospace,Menlo,Consolas,monospace">${esc(s && s.chord_chart || '')}</textarea>
     </div>
     <button class="btn" onclick="saveSong(${s ? `'${s.id}'` : 'null'}${
-      serviceId ? `, '${serviceId}', '${esc(key || '')}'` : ''})">Save${forService ? ' and add' : ''}</button>
+      serviceId ? `, '${serviceId}', '${esc(key || '')}'` : ', null, null'}, this)">Save${forService ? ' and add' : ''}</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
 }
@@ -952,7 +986,7 @@ function oneOffCard(){
         <select id="ns-type">${A.types.map(t => `<option value="${t.id}">${esc(t.name)}</option>`).join('')}</select>
         <input type="date" id="ns-date" value="${nextDateForType(A.types[0])}">
         <input type="text" id="ns-title" placeholder="Title (optional)" style="min-width:160px">
-        <button class="btn" onclick="createService()">Create</button>
+        <button class="btn" onclick="createService(this)">Create</button>
       </div>
     </div>`;
 }
@@ -973,7 +1007,7 @@ function typeDates(type){
     // Admins get to start it from here; everyone else sees it is not ready.
     if (!s) {
       return `
-        <div class="drow unplanned" ${A.isAdmin ? `onclick="planDate('${type.id}','${d.date}')"` : ''}>
+        <div class="drow unplanned" ${A.isAdmin ? `onclick="planDate('${type.id}','${d.date}',this)"` : ''}>
           <div class="grow">
             <div class="date">${esc(fmtDate(d.date))}${isToday ? ' <span class="tag today">today</span>' : ''}</div>
             <div class="meta">Not planned yet</div>
@@ -1152,9 +1186,9 @@ function teamBlock(s, slots, editable){
               ${statusTag(sl.status)}
               ${A.slotReplyUnavailable ? '' : `
                 <button class="btn ${sl.status === 'declined' ? 'sec' : 'good'} small"
-                        onclick="respondToSlot('${sl.id}','${s.id}','confirmed')">✓ I'll be there</button>
+                        onclick="respondToSlot('${sl.id}','${s.id}','confirmed',this)">✓ I'll be there</button>
                 <button class="btn ${sl.status === 'declined' ? 'danger' : 'sec'} small"
-                        onclick="respondToSlot('${sl.id}','${s.id}','declined')">✗ Can't make it</button>`}
+                        onclick="respondToSlot('${sl.id}','${s.id}','declined',this)">✗ Can't make it</button>`}
             </div>`).join('')}
           ${A.slotReplyUnavailable
             ? '<div class="hint">Replying is not switched on yet.</div>'
@@ -1208,13 +1242,13 @@ function editServiceSong(linkId, serviceId){
     </div>
     ${song && song.default_key ? `<div class="hint">The song's own key is ${esc(song.default_key)}. The chart reads in whichever you pick.</div>` : ''}
     <div class="row" style="margin-top:12px">
-      <button class="btn" onclick="saveServiceSong('${linkId}','${serviceId}')">Save</button>
+      <button class="btn" onclick="saveServiceSong('${linkId}','${serviceId}',this)">Save</button>
       <button class="btn sec" onclick="closeModal()">Cancel</button>
     </div>
   `);
 }
 
-async function saveServiceSong(linkId, serviceId){
+async function saveServiceSong(linkId, serviceId, btn){
   const row = {
     song_key: ($('es-key').value || '').trim() || null,
     note: ($('es-note').value || '').trim() || null
@@ -1282,6 +1316,7 @@ function orderBlock(s, editable){
       ${editable ? `
         <div class="row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
           <select id="song-pick-${s.id}" style="min-width:180px" onchange="onOrderSongPick('${s.id}')">
+            <option value="">Song…</option>
             ${A.songs.map(x => `<option value="${x.id}">${esc(x.title)}</option>`).join('')}
             <option value="__new">➕ Add a song not in the library…</option>
           </select>
@@ -1290,7 +1325,7 @@ function orderBlock(s, editable){
             ${KEYS.map(k => `<option value="${k}">${k}</option>`).join('')}
           </select>
           <input type="text" id="song-note-${s.id}" placeholder="Note (optional)" style="width:150px">
-          <button class="btn small" onclick="addServiceSong('${s.id}')">Add to the order</button>
+          <button class="btn small" onclick="addServiceSong('${s.id}',this)">Add to the order</button>
         </div>` : ''}
     </div>`;
 }
@@ -1302,9 +1337,38 @@ function filesBlock(s, editable){
   if (A.filesUnavailable) return '';
   const files = (A.files[s.id] || []).slice().sort((a, b) => a.sort_order - b.sort_order);
 
+  // Everything the set list already implies: each song's chart IN THE KEY IT
+  // IS BOOKED IN, and whatever recording it has. Nobody should have to attach
+  // by hand a link the order of service already knows, and a chart attached as
+  // a fixed link would be in the wrong key the moment the key moves.
+  const setlist = (A.songLinks[s.id] || []).slice().sort((a, b) => a.sort_order - b.sort_order);
+  const auto = setlist.map(l => {
+    const song = A.songs.find(x => x.id === l.song_id);
+    if (!song) return '';
+    const key = normaliseKey(l.song_key) || normaliseKey(song.default_key) || 'C';
+    const bits = [];
+    if (song.chart_format === 'nashville' && song.chord_chart) {
+      bits.push(`<a href="#" onclick="openSong('${song.id}','${key}');return false;">🎹 Chart in ${esc(key)}</a>`);
+    } else if (song.chord_chart_url) {
+      bits.push(`<a href="${esc(song.chord_chart_url)}" target="_blank" rel="noopener">📄 Chart</a>`);
+    }
+    if (song.song_url) bits.push(`<a href="${esc(song.song_url)}" target="_blank" rel="noopener">▶️ Listen</a>`);
+    if (song.spotify_url) bits.push(`<a href="${esc(song.spotify_url)}" target="_blank" rel="noopener">🎧 Spotify</a>`);
+    if (!bits.length) return `
+      <div class="filerow"><span style="flex:1">${esc(song.title)}</span>
+        <span style="color:var(--muted);font-size:.78rem">nothing to practise from yet</span></div>`;
+    return `
+      <div class="filerow">
+        <span style="flex:1;min-width:120px">${esc(song.title)}</span>
+        <span style="display:flex;gap:12px;flex-wrap:wrap">${bits.join('')}</span>
+      </div>`;
+  }).join('');
+
   return `
     <div class="card">
       <h3>📎 Practice files</h3>
+      ${auto ? `<div class="sub-h" style="margin-top:0">From the set list</div>${auto}` : ''}
+      ${auto ? '<div class="sub-h">Attached by hand</div>' : ''}
       ${files.length ? files.map(f => `
         <div class="filerow">
           <a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.label || f.url)}</a>
@@ -1314,7 +1378,7 @@ function filesBlock(s, editable){
         <div class="row" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
           <input type="text" id="file-label-${s.id}" placeholder="What is it? e.g. Rehearsal track" style="flex:1;min-width:160px">
           <input type="text" id="file-url-${s.id}" placeholder="Link" style="flex:2;min-width:200px">
-          <button class="btn small" onclick="addServiceFile('${s.id}')">Attach</button>
+          <button class="btn small" onclick="addServiceFile('${s.id}',this)">Attach</button>
         </div>` : ''}
     </div>`;
 }
@@ -1341,10 +1405,10 @@ function onOrderSongPick(serviceId){
   const sel = $('song-pick-' + serviceId);
   if (!sel || sel.value !== '__new') return;
 
-  // Put the box back on a real song, so cancelling out of the dialog does not
-  // leave "Add a song not in the library…" sitting there as if it were one.
-  const firstReal = [...sel.options].find(o => o.value !== '__new');
-  sel.value = firstReal ? firstReal.value : '';
+  // Put the box back on the placeholder, so cancelling out of the dialog does
+  // not leave "Add a song not in the library…" sitting there as if it were a
+  // song, and does not silently arm some other song instead.
+  sel.value = '';
 
   const key = ($('song-key-' + serviceId) || {}).value || '';
   editSong(null, serviceId, key);
@@ -1355,6 +1419,12 @@ function onOrderSongPick(serviceId){
 function addPersonTo(serviceId, instrument){
   const taken = new Set((A.slots[serviceId] || []).filter(sl => sl.instrument === instrument).map(sl => sl.user_id));
   const label = (INSTRUMENTS.find(i => i.id === instrument) || {}).label || instrument;
+
+  // Somebody who has never been on the team is exactly who you reach for when
+  // a position is empty on the Thursday. Making that a trip to the Team tab -
+  // add them there, come back, find the service again, find the position -
+  // is how an empty position stays empty.
+  if (A._addPersonSource === 'school') return addPersonFromSchool(serviceId, instrument);
 
   // The question is "who can cover the piano", so the list is the people whose
   // roster says they play it. Everyone else is noise you have to read past.
@@ -1387,9 +1457,114 @@ function addPersonTo(serviceId, instrument){
       </div>
     </div>
     <div class="field">${pill('ap-lead', '★ Leads this service', false)}</div>
-    <button class="btn" onclick="confirmAddPerson('${serviceId}','${instrument}')">Add</button>
+    <button class="btn" onclick="confirmAddPerson('${serviceId}','${instrument}',this)">Add</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
+    <div class="hint" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      Not on the team yet?
+      <a href="#" onclick="A._addPersonSource='school';addPersonTo('${serviceId}','${instrument}');return false;">Search the whole school</a>
+    </div>
   `);
+}
+
+// The same dialog, looking at everyone in the school rather than the team.
+// Adding from here puts them on the team as well as on the rota: the roster is
+// where a person's name and instruments come from, and a slot pointing at
+// somebody who is not on it renders as "Former member".
+function addPersonFromSchool(serviceId, instrument){
+  const label = (INSTRUMENTS.find(i => i.id === instrument) || {}).label || instrument;
+  showModal('Add to ' + esc(instrLabel(instrument)), `
+    <div class="field">
+      <label class="fld" for="ap-search">Search the school</label>
+      <input type="text" id="ap-search" placeholder="Name…" value="${esc(A._apQuery || '')}"
+             oninput="A._apQuery=this.value;renderSchoolPicker('${serviceId}','${instrument}')"
+             style="width:100%">
+    </div>
+    <div class="field">${pill('ap-lead', '★ Leads this service', false)}</div>
+    <div id="ap-results"><div class="empty">Type at least two letters.</div></div>
+    <div class="hint" style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">
+      Adding somebody here puts them on the worship team too, with ${esc(label.toLowerCase())} on their profile.
+      <a href="#" onclick="A._addPersonSource='team';addPersonTo('${serviceId}','${instrument}');return false;">Back to the team</a>
+    </div>
+  `);
+  renderSchoolPicker(serviceId, instrument);
+}
+
+// The school directory, loaded once. Staff-readable only, which is why it is a
+// function rather than a select on user_profiles.
+async function ensureDirectory(){
+  if (A.directory) return A.directory;
+  const { data, error } = await A.supabase.rpc('worship_directory');
+  if (error) throw error;
+  A.directory = data || [];
+  return A.directory;
+}
+
+async function renderSchoolPicker(serviceId, instrument){
+  const box = $('ap-results');
+  if (!box) return;
+  const q = (A._apQuery || '').trim().toLowerCase();
+
+  if (!A.directory) {
+    box.innerHTML = '<div class="empty">Loading the school roll…</div>';
+    try { await ensureDirectory(); }
+    catch (e) { box.innerHTML = `<div class="empty">Could not load it: ${esc(e.message)}</div>`; return; }
+    if (!$('ap-results')) return;                  // dialog closed while loading
+  }
+
+  if (q.length < 2) { box.innerHTML = '<div class="empty">Type at least two letters.</div>'; return; }
+
+  const taken = new Set((A.slots[serviceId] || []).filter(sl => sl.instrument === instrument).map(sl => sl.user_id));
+  const onTeam = new Set(A.roster.map(m => m.user_id));
+  const hits = A.directory
+    .filter(pn => !taken.has(pn.user_id) && (pn.full_name || '').toLowerCase().includes(q))
+    .slice(0, 25);
+
+  box.innerHTML = hits.length ? `<table><tbody>${hits.map(pn => `
+    <tr>
+      <td><strong>${esc(pn.full_name)}</strong></td>
+      <td style="color:var(--muted)">${esc(whoLabel(pn))}${onTeam.has(pn.user_id) ? ' · on the team' : ''}</td>
+      <td style="text-align:right"><button class="btn small"
+          onclick="addPersonFromSchoolConfirm('${serviceId}','${instrument}','${pn.user_id}',this)">Add</button></td>
+    </tr>`).join('')}</tbody></table>`
+    : '<div class="empty">Nobody matches, or they are already on for this.</div>';
+}
+
+async function addPersonFromSchoolConfirm(serviceId, instrument, userId, btn){
+  const existing = A.roster.find(m => m.user_id === userId);
+
+  if (!existing) {
+    const { error } = await A.supabase.from('worship_members')
+      .insert({ user_id: userId, instruments: [instrument], added_by: A.me.id });
+    // Already a member is not a failure worth stopping for: carry on and put
+    // them in the slot, which is what was actually asked for.
+    if (error && !/duplicate key/i.test(error.message)) {
+      toast('Could not add them to the team: ' + error.message, true);
+      return;
+    }
+  } else if (!(existing.instruments || []).includes(instrument)) {
+    // On the team already, but this instrument was not on their profile. Add
+    // it, so the next time this position needs filling they are in the list.
+    const { error } = await A.supabase.from('worship_members')
+      .update({ instruments: (existing.instruments || []).concat(instrument) })
+      .eq('user_id', userId);
+    if (error) console.warn('Could not add the instrument to their profile:', error.message);
+  }
+
+  const { error: slotErr } = await A.supabase.from('worship_service_slots')
+    .insert({ service_id: serviceId, user_id: userId, instrument, is_leader: pillOn('ap-lead') });
+  if (slotErr) {
+    toast(/duplicate key/i.test(slotErr.message)
+      ? 'They are already on for that'
+      : 'On the team, but not added here: ' + slotErr.message, true);
+    return;
+  }
+
+  closeModal();
+  A._addPersonSource = 'team';
+  A._apQuery = '';
+  await Promise.all([loadCore(), loadServiceChildren()]);
+  toast('Added');
+  renderTab();
 }
 
 // The next time this type's weekday comes round, so the date box opens on the
@@ -1416,8 +1591,8 @@ function requestsTab(){
           <div class="type">${esc(whoLabel(r))} · asked ${esc(fmtDate(localDateStr(new Date(r.created_at))))}</div>
         </div>
         ${r.status === 'pending' ? `<div class="row">
-          <button class="btn good small" onclick="decideRequest('${r.id}','approved')">Add to team</button>
-          <button class="btn sec small" onclick="decideRequest('${r.id}','declined')">Not now</button>
+          <button class="btn good small" onclick="decideRequest('${r.id}','approved',this)">Add to team</button>
+          <button class="btn sec small" onclick="decideRequest('${r.id}','declined',this)">Not now</button>
         </div>` : `<span class="chip">${esc(r.status)}</span>`}
       </div>
       <div style="margin-top:8px">${(r.instruments || []).map(i => `<span class="chip on">${esc(instrLabel(i))}</span>`).join('')}</div>
@@ -1509,7 +1684,7 @@ async function loadRequests(){
 // =========================================================================
 // Joining
 // =========================================================================
-async function submitJoinRequest(){
+async function submitJoinRequest(btn){
   const instruments = INSTRUMENTS.filter(i => pillOn('join-' + i.id)).map(i => i.id);
   if (!instruments.length) { toast('Pick at least one instrument', true); return; }
   const note = ($('join-note').value || '').trim();
@@ -1540,7 +1715,7 @@ async function cancelMyRequest(){
 // Approving writes the roster row AND closes the request. Both are worship-admin
 // writes the database allows; if the roster row fails, the request stays open
 // rather than being marked answered with nobody added.
-async function decideRequest(id, status){
+async function decideRequest(id, status, btn){
   const req = A.requests.find(r => r.id === id);
   if (!req) return;
 
@@ -1585,12 +1760,12 @@ function editMember(userId){
       ${pill('em-admin', '🔑 Team admin', m.is_worship_admin)}
       <div class="hint" style="margin-top:6px">A team admin can schedule, edit the song library and answer join requests.</div>
     </div>
-    <button class="btn" onclick="saveMember('${userId}')">Save</button>
+    <button class="btn" onclick="saveMember('${userId}',this)">Save</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
 }
 
-async function saveMember(userId){
+async function saveMember(userId, btn){
   const instruments = INSTRUMENTS.filter(i => pillOn('em-' + i.id)).map(i => i.id);
   const isAdmin = pillOn('em-admin');
 
@@ -1646,11 +1821,11 @@ async function renderDirectory(){
     <tr>
       <td><strong>${esc(p.full_name)}</strong></td>
       <td style="color:var(--muted)">${esc(whoLabel(p))}</td>
-      <td style="text-align:right"><button class="btn small" onclick="addMember('${p.user_id}')">Add</button></td>
+      <td style="text-align:right"><button class="btn small" onclick="addMember('${p.user_id}',this)">Add</button></td>
     </tr>`).join('')}</tbody></table>` : '<div class="empty">Nobody matches, or they are already on the team.</div>';
 }
 
-async function addMember(userId){
+async function addMember(userId, btn){
   const { error } = await A.supabase.from('worship_members')
     .insert({ user_id: userId, instruments: [], added_by: A.me.id });
   if (error) { toast('Could not add: ' + error.message, true); return; }
@@ -1663,7 +1838,7 @@ async function addMember(userId){
 // =========================================================================
 // The song library
 // =========================================================================
-async function saveSong(id, serviceId, key){
+async function saveSong(id, serviceId, key, btn){
   const title = ($('sg-title').value || '').trim();
   if (!title) { toast('A song needs a title', true); return; }
 
@@ -1762,12 +1937,12 @@ function editServiceType(id){
     </div>
     <div class="field"><label class="fld" for="st-notes">Notes</label>
       <textarea id="st-notes">${esc(t && t.notes || '')}</textarea></div>
-    <button class="btn" onclick="saveServiceType(${t ? `'${t.id}'` : 'null'})">Save</button>
+    <button class="btn" onclick="saveServiceType(${t ? `'${t.id}'` : 'null'},this)">Save</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
 }
 
-async function saveServiceType(id){
+async function saveServiceType(id, btn){
   const name = ($('st-name').value || '').trim();
   if (!name) { toast('A service type needs a name', true); return; }
 
@@ -1806,7 +1981,7 @@ async function deleteServiceType(id){
   render();
 }
 
-async function createService(){
+async function createService(btn){
   const date = $('ns-date').value;
   if (!date) { toast('Pick a date', true); return; }
 
@@ -1850,12 +2025,12 @@ function editServiceNotes(id){
     </div>
     <div class="field"><label class="fld" for="sv-notes">Notes for the team</label>
       <textarea id="sv-notes">${esc(s.notes || '')}</textarea></div>
-    <button class="btn" onclick="saveServiceDetails('${id}')">Save</button>
+    <button class="btn" onclick="saveServiceDetails('${id}',this)">Save</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
 }
 
-async function saveServiceDetails(id){
+async function saveServiceDetails(id, btn){
   const { error } = await A.supabase.from('worship_services').update({
     service_date: $('sv-date').value,
     title: ($('sv-title').value || '').trim() || null,
@@ -1885,8 +2060,9 @@ async function deleteService(id){
   render();
 }
 
-async function confirmAddPerson(serviceId, instrument){
+async function confirmAddPerson(serviceId, instrument, btn){
   A._addPersonAll = false;
+  A._addPersonSource = 'team';
   const userId = $('ap-user').value;
   const isLeader = pillOn('ap-lead');
 
@@ -1908,7 +2084,7 @@ async function confirmAddPerson(serviceId, instrument){
 // OWN slot's status, through worship_slot_respond() - the row is otherwise an
 // admin's to write, and a player must not be able to put themselves on a rota
 // or change what they are playing.
-async function respondToSlot(slotId, serviceId, status){
+async function respondToSlot(slotId, serviceId, status, btn){
   const { data, error } = await A.supabase.rpc('worship_slot_respond', {
     p_slot_id: slotId, p_status: status
   });
@@ -1940,7 +2116,7 @@ async function removeSlot(slotId, serviceId){
   renderTab();
 }
 
-async function addServiceSong(serviceId){
+async function addServiceSong(serviceId, btn){
   const songId = $('song-pick-' + serviceId).value;
   if (!songId) { toast('Pick a song', true); return; }
 
@@ -1991,7 +2167,7 @@ async function moveServiceSong(linkId, serviceId, dir){
   renderTab();
 }
 
-async function addServiceFile(serviceId){
+async function addServiceFile(serviceId, btn){
   const url = ($('file-url-' + serviceId).value || '').trim();
   if (!url) { toast('A file needs a link', true); return; }
   const label = ($('file-label-' + serviceId).value || '').trim();
@@ -2013,7 +2189,7 @@ async function removeServiceFile(fileId, serviceId){
 }
 
 // Starting a plan from a date the service falls on but nobody has touched.
-async function planDate(typeId, date){
+async function planDate(typeId, date, btn){
   const { data, error } = await A.supabase.from('worship_services')
     .insert({ service_type_id: typeId, service_date: date, status: 'draft', created_by: A.me.id })
     .select('id').single();
@@ -2045,6 +2221,42 @@ function closeModal(){
   $('modal-bg').classList.remove('open');
   $('modal').innerHTML = '';
 }
+// Wrapping the writes in ONE place, rather than a claim/release pair inside
+// each, because between them these have a dozen early returns - a missing
+// amount, a failed insert, a duplicate - and every one of those would leave a
+// button disabled for good. A try/finally around the call cannot miss one.
+//
+// Each function's last argument is the button that started it (call sites pass
+// `this`); the wrapper takes it from there, so the functions themselves never
+// mention disabling anything.
+[
+  ['addServiceSong',   'Adding…'],
+  ['addServiceFile',   'Attaching…'],
+  ['confirmAddPerson', 'Adding…'],
+  ['planDate',         'Starting…'],
+  ['createService',    'Creating…'],
+  ['submitJoinRequest','Sending…'],
+  ['addMember',        'Adding…'],
+  ['decideRequest',    'Saving…'],
+  ['saveSong',         'Saving…'],
+  ['saveServiceType',  'Saving…'],
+  ['saveMember',       'Saving…'],
+  ['saveServiceDetails','Saving…'],
+  ['saveServiceSong',  'Saving…'],
+  ['respondToSlot',    'Saving…'],
+  ['addPersonFromSchoolConfirm', 'Adding…'],
+].forEach(([name, label]) => {
+  const fn = window[name];
+  if (typeof fn !== 'function') { console.warn('No such write to guard:', name); return; }
+  window[name] = async function(...args){
+    const last = args[args.length - 1];
+    const btn = (last && last.nodeType === 1) ? last : null;
+    if (!claim(btn, label)) return;          // a second press while the first is in flight
+    try { return await fn.apply(this, args); }
+    finally { release(btn); }
+  };
+});
+
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 </script>
 </body>
