@@ -1467,3 +1467,73 @@ schedule replaced it, and leaving a second, divergent copy of the same idea is h
 screens start disagreeing.
 
 64 journey checks, 72 in `tests/worship-schedule.test.js`.
+
+---
+## 2026-09-15 — Jordan's Claude (Riven audit: four silent faults)
+
+Asked to look for other shortcomings. Two parallel agents plus static analysis.
+**All four findings are the same shape: something that looks guarded, or looks
+loaded, and is not. None of them threw. None appeared in any log.**
+
+**1. `row.max_students` was read off the class cache, which never fetched it.**
+So every class read as a cap of 30. All 75 open classes have a cap set and
+**20 are below 30 — the smallest is 7** — so Riven's bulk-enrol cap check would
+have waved 30 students into a room for seven. Identical in shape to the
+`grade_band` bug earlier today: a field used, never selected, silently
+`undefined`. Both are now in the SELECT with a comment saying why, so neither
+gets trimmed back out.
+
+**2. Three permission checks failed OPEN.** `if (cls && !canManage(cls))` —
+where `cls` is a cache lookup by id. When the class was not found (soft-deleted,
+or a cache that had not loaded) the check was skipped and the write went ahead.
+Grading a submission, deleting an assignment, editing one. A gate that opens
+when it cannot see what it is guarding is not a gate; all three now refuse and
+say why.
+
+**3. Date of birth was writable by any teacher** — client and server. It is on
+the admin-only list with the name and year group, and the trigger I added
+earlier covered the other four fields but not this one, because the list was
+drawn from the Student Hub's profile tab and DOB is not edited there. It is
+reachable from Riven in a command that reads like contact details, so it got
+filed with the phone number. Trigger updated (backend `621e0a3`); Riven refuses
+it for non-admins and says which part of the sentence it dropped, keeping the
+rest — correcting a phone number and a birthday in one breath still fixes the
+phone.
+
+**4. `create a Chess class` answered "Chess already exists"** and pointed at
+last year's, because the name-clash check matched closed classes. **39 closed
+class names have no open equivalent** — Chess, Guitar, Filmmaking, World
+History. A dead end in the one week of the year that command is most used. Now
+only live classes clash; a closed one of the same name is mentioned, with
+"reopen" offered as the alternative.
+
+Also: `MARK_READ` was missing from `WRITE_INTENTS`, so "should I mark
+everything read?" would have executed. Added.
+
+### Clean, and worth recording as clean
+
+A full dead-wiring sweep found **nothing**: all 126 intents are routed, every
+router case resolves to a real method, no `terminal*` or `_riven*` method is
+unreferenced, and all 11 `requiresX` guards test an entity that is actually
+assigned. No contradictory guard pairs, no orphan pattern keys.
+
+### Open — needs your decision, not mine
+
+These are policy, so I have not touched them:
+
+* **`/rt apply` (the batch surface) has no client-side role gate at all**, and
+  with `"scope":"all"` it reaches every class. RLS is the real control here so
+  this is not automatically a hole — but it is the one path where Riven's own
+  rules do not apply, and it can create classes and rewrite timetables.
+  Worth deciding whether it should.
+* **Creating a class admits teachers**, but *renaming* one, changing its
+  co-teacher, and closing all of your classes are gated per-class rather than
+  admin — while *reopening* a class is admin-only. A teacher can close their
+  classes and then not reopen them. That asymmetry is probably not deliberate.
+* **Class rosters are per-class, group rosters are admin.** The two halves of
+  the same idea disagree. Either rosters are "the day" or they are "the shape".
+
+`tests/riven-audit-2026-09-15.test.js` (20) covers what I fixed.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`.
+

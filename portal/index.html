@@ -49018,7 +49018,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-15·d';
+      const RIVEN_BUILD = '2026-09-15·e';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -49542,7 +49542,7 @@
         const [{ data, error }, { data: staff }] = await Promise.all([
           this.auth.supabase
             .from('classes')
-            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, status, grading_weight, grade_band')
+            .select('id, name, subject, teacher_id, secondary_teacher_id, is_active, status, grading_weight, grade_band, max_students')
             .eq('is_active', true)
             .order('name'),
           this.auth.supabase
@@ -49560,6 +49560,11 @@
           if (p.id) staffByAnyId[p.id] = nm;
           if (p.auth_user_id) staffByAnyId[p.auth_user_id] = nm;
         });
+        // max_students earns its place: terminalEnrollGroup checks a class's
+        // cap before a bulk add, and without it every class read as 30. Twenty
+        // of the school's classes are capped lower than that, the smallest at
+        // seven, so the check was passing crowds into rooms that cannot hold
+        // them. grade_band likewise - see _rivenBandFromText.
         this._terminalAllClasses = (data || []).map(c => ({
           ...c,
           teacher_name: staffByAnyId[c.teacher_id] || '',
@@ -52644,6 +52649,9 @@
         'PROMOTE_STAFF', 'DEMOTE_STAFF', 'DEACTIVATE_STAFF', 'REACTIVATE_STAFF',
         'DECIDE_BOOKING', 'DECIDE_MATERIAL',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
+        // Small, but still a write: "should I mark everything read?" should be
+        // answered, not obeyed.
+        'MARK_READ',
         'PLAN_ABSENCE',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
@@ -59799,8 +59807,10 @@
       const a = res.row;
 
       const cls = (this._terminalAllClasses || []).find(c => c.id === a.class_id);
-      if (cls && !this._rivenCanManageClass(cls)) {
-        this.terminalPrintError(`That assignment belongs to ${cls.name}, which you don't teach.`);
+      if (!cls || !this._rivenCanManageClass(cls)) {
+        this.terminalPrintError(cls
+          ? `That assignment belongs to ${cls.name}, which you don't teach.`
+          : `I can't tell which class that assignment belongs to, so I won't change it.`);
         return;
       }
 
@@ -60135,8 +60145,10 @@
       const a = res.row;
 
       const cls = (this._terminalAllClasses || []).find(c => c.id === a.class_id);
-      if (cls && !this._rivenCanManageClass(cls)) {
-        this.terminalPrintError(`That assignment belongs to ${cls.name}, which you don't teach.`);
+      if (!cls || !this._rivenCanManageClass(cls)) {
+        this.terminalPrintError(cls
+          ? `That assignment belongs to ${cls.name}, which you don't teach.`
+          : `I can't tell which class that assignment belongs to, so I won't change it.`);
         return;
       }
 
@@ -60172,8 +60184,10 @@
       const a = res.row;
 
       const cls = (this._terminalAllClasses || []).find(c => c.id === a.class_id);
-      if (cls && !this._rivenCanManageClass(cls)) {
-        this.terminalPrintError(`That assignment belongs to ${cls.name}, which you don't teach.`);
+      if (!cls || !this._rivenCanManageClass(cls)) {
+        this.terminalPrintError(cls
+          ? `That assignment belongs to ${cls.name}, which you don't teach.`
+          : `I can't tell which class that assignment belongs to, so I won't change it.`);
         return;
       }
 
@@ -62013,13 +62027,31 @@
       }
       // A class that already exists by that name is nearly always a repeated
       // command, not a request for a duplicate.
-      const clash = (this._terminalAllClasses || []).find(c =>
-        (c.name || '').trim().toLowerCase() === name.toLowerCase());
+      //
+      // Only a class still RUNNING counts. 39 of this school's closed class
+      // names have no open equivalent - Chess, Guitar, Filmmaking, World
+      // History - so matching those meant that every September "create a Chess
+      // class" answered "Chess already exists", pointed at last year's, and
+      // offered to fill its roster. A dead end in the one week of the year the
+      // command is most used.
+      const sameName = (c) => (c.name || '').trim().toLowerCase() === name.toLowerCase();
+      const clash = (this._terminalAllClasses || []).find(c => sameName(c) && this._rivenClassIsOpen(c));
+      const closedTwin = !clash && (this._terminalAllClasses || []).find(c => sameName(c) && !this._rivenClassIsOpen(c));
       if (clash) {
         this._showRivenMessage(
           `<b>${this.escapeHtml(clash.name)}</b> already exists${clash.teacher_name ? ' (' + this.escapeHtml(clash.teacher_name) + ')' : ''}. ` +
           `Say "add the … group to ${this.escapeHtml(clash.name)}" to fill its roster, or pick a different name.`, true);
         return;
+      }
+
+      // A closed class of the same name does not block the new one, but going
+      // ahead without mentioning it would leave someone with two Chess classes
+      // and no idea where last year's register went.
+      if (closedTwin) {
+        this._showRivenMessage(
+          `Note: there's a <b>${this.escapeHtml(closedTwin.name)}</b> closed for the year. ` +
+          `I'll make a new one — say "reopen ${this.escapeHtml(closedTwin.name)}" instead if you wanted last year's back, ` +
+          `roster and all.`, true);
       }
 
       const spec = this._rivenParseClassSpec(original);
@@ -64126,11 +64158,27 @@
       if (m) updates.phone = m[1].trim();
       m = o.match(/email\s*(?:to|:|=)?\s*([^\s,]+@[^\s,]+)/i);
       if (m) updates.email = m[1].replace(/[.,!?]+$/, '');
+      // Date of birth lives in this method because it is TYPED like contact
+      // info, but it is not: it belongs with a student's name and year group,
+      // which are the office's to change. It was the one field on that list
+      // with neither a check here nor a trigger behind it.
+      //
+      // Refused on its own rather than refusing the whole sentence - someone
+      // correcting a phone number and a birthday in one breath should still
+      // get the phone number changed, and be told what was left.
       m = o.match(/(?:date of birth|birthday|dob)\s*(?:to|:|=)?\s*(\d{4}-\d{2}-\d{2})/i);
-      if (m) updates.date_of_birth = m[1];
+      let dobRefused = false;
+      if (m) {
+        if (this.userInfo?.profile?.user_type === 'admin') updates.date_of_birth = m[1];
+        else dobRefused = true;
+      }
       m = o.match(/address\s*(?:to|:|=)?\s+(.{5,})$/i);
       if (m) updates.address_line1 = m[1].replace(/[.!?]+$/, '').trim();
       const fields = Object.keys(updates);
+      if (dobRefused && !fields.length) {
+        this.terminalPrintError("Only an admin can change a student's date of birth \u2014 it belongs to their record, not their contact details.");
+        return;
+      }
       if (!fields.length) {
         this._showRivenMessage(`What should I change? Examples:<br>• change ${this.escapeHtml(student.full_name.split(' ')[0])}'s phone to 555-123-4567<br>• update her email to name@example.com<br>• set his date of birth to 2012-04-09<br>• change their address to 12 Oak St, Springfield`, true);
         return;
@@ -64142,8 +64190,9 @@
       const changeList = fields.map(f =>
         `${f.replace(/_/g, ' ')}: ${this.escapeHtml(String(prev[f] ?? '—'))} → <b>${this.escapeHtml(String(updates[f]))}</b>`).join('<br>');
       const emailWarn = updates.email ? `<br><span style="font-size: 11px;">⚠️ This updates the directory email only — their login email stays the same.</span>` : '';
+      const dobNote = dobRefused ? `<br><span style="font-size: 11px;">\u26a0\ufe0f Leaving the date of birth alone \u2014 only an admin can change that.</span>` : '';
       this._requestConfirmation(
-        `Update <b>${this.escapeHtml(student.full_name)}</b>'s contact info?<br>${changeList}${emailWarn}`,
+        `Update <b>${this.escapeHtml(student.full_name)}</b>'s contact info?<br>${changeList}${emailWarn}${dobNote}`,
         async () => {
           const { error } = await sb.from('user_profiles').update(updates).eq('id', student.id);
           if (error) {
