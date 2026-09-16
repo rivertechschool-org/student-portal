@@ -15230,7 +15230,12 @@
       }
 
       // Send new assignment notifications to students and their parents
+      //
+      // The big fan-out: one assignment reaches every enrolled student and
+      // every linked parent. Twenty-four of these in an afternoon is what
+      // exhausted a whole day's email allowance and cost 113 notifications.
       async sendNewAssignmentNotifications(assignmentId, assignmentTitle, dueDate, classId, studentIds = null) {
+        const tally = this._startEmailTally();
         try {
           // Get class info
           const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
@@ -15373,6 +15378,12 @@
         } catch (error) {
           console.error('Error sending new assignment notifications:', error);
           // Don't throw - assignment creation should still succeed
+        } finally {
+          // finally, not the end of the try: this function returns early in
+          // several places (no students, no parents, no linked parents) and a
+          // report written after the last statement would be skipped in
+          // exactly the runs that sent the most.
+          this._reportEmailTally(tally);
         }
       }
 
@@ -15569,11 +15580,38 @@
       }
 
       // Send email with failure tracking - alerts admins on failure and logs to email_log
+      //
+      // THREE OUTCOMES, NOT TWO
+      //
+      // The sender can now answer "not yet": the daily send limit is spent, or
+      // the provider refused something worth retrying. Either way it has put
+      // the email on the queue, which claims, retries and records what
+      // happened - so it is neither a success to report nor a failure to alert
+      // on, and treating it as either is wrong in a way people act on.
+      //
+      // It matters because of what "failed" used to mean here. On 2026-09-15,
+      // 113 emails hit the provider's daily allowance, were written to
+      // email_log as failed, and were never retried by anything: 17 families
+      // heard nothing about 8 assignments. Those would now be 'queued'.
       async sendEmailWithTracking(to, type, data, context = {}) {
         try {
           const { data: result, error } = await this.auth.supabase.functions.invoke('send-notification-email', {
             body: { to, type, data }
           });
+
+          // Accepted but held. The sender owns it from here.
+          if (!error && result && result.deferred) {
+            this._tallyEmail('queued', result.retryAfter);
+            await this.auth.supabase.from('email_log').insert({
+              recipient_email: to,
+              email_type: type,
+              subject: this.getEmailSubjectForType(type, data),
+              status: 'queued',
+              error_message: result.message || 'queued by the sender',
+              metadata: { ...context, retryAfter: result.retryAfter || null }
+            });
+            return { success: true, deferred: true, retryAfter: result.retryAfter || null };
+          }
 
           if (error) {
             console.error('Email delivery failed:', error);
@@ -15599,6 +15637,7 @@
                 critical: false
               }
             );
+            this._tallyEmail('failed');
             return { success: false, error };
           }
 
@@ -15611,6 +15650,7 @@
             metadata: context
           });
 
+          this._tallyEmail('sent');
           return { success: true, data: result };
         } catch (err) {
           console.error('Email sending error:', err);
@@ -15635,8 +15675,56 @@
               critical: false
             }
           );
+          this._tallyEmail('failed');
           return { success: false, error: err };
         }
+      }
+
+      // ---------------- Telling the teacher what actually went ----------------
+      //
+      // A fan-out that silently sends 25 and queues 15 is indistinguishable,
+      // from the teacher's chair, from one that sent all 40. They posted the
+      // work, the screen said "Assignment created", and nothing else happened.
+      // Then a parent asks why they were not told.
+      //
+      // So a run counts itself and says so at the end. Only when something was
+      // held - a clean run stays quiet, because a notification that always
+      // fires is one nobody reads.
+      _startEmailTally() {
+        this._emailTally = { sent: 0, queued: 0, failed: 0, retryAfter: null };
+        return this._emailTally;
+      }
+
+      _tallyEmail(outcome, retryAfter = null) {
+        const t = this._emailTally;
+        if (!t) return;
+        t[outcome] = (t[outcome] || 0) + 1;
+        if (retryAfter && !t.retryAfter) t.retryAfter = retryAfter;
+      }
+
+      _reportEmailTally(tally) {
+        this._emailTally = null;
+        if (!tally || (!tally.queued && !tally.failed)) return;
+
+        const bits = [];
+        if (tally.sent) bits.push(`${tally.sent} email${tally.sent === 1 ? '' : 's'} sent`);
+
+        if (tally.queued) {
+          // The reset time is the teacher's, not the server's - it arrives as
+          // an ISO instant and is shown where they are.
+          let when = 'when the daily limit resets';
+          if (tally.retryAfter) {
+            const d = new Date(tally.retryAfter);
+            if (!isNaN(d)) {
+              const today = new Date().toDateString() === d.toDateString();
+              when = `${today ? '' : 'tomorrow '}at ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+            }
+          }
+          bits.push(`${tally.queued} queued — going out ${when}`);
+        }
+        if (tally.failed) bits.push(`${tally.failed} could not be sent`);
+
+        this.showNotification(bits.join(' · '), tally.failed ? 'warning' : 'info');
       }
 
       // Helper to derive a human-readable subject from email type
@@ -48907,7 +48995,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-15·a';
+      const RIVEN_BUILD = '2026-09-15·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
