@@ -1,34 +1,35 @@
 // An activation link has to reach the page that can finish the job.
 //
-// WHAT WAS BROKEN
+// CORRECTION - READ THIS BEFORE TRUSTING THE REST
 //
-// Every activation and password link Supabase sends was asking to land on
-// /reset.html and landing on the home page instead. Verified against the live
-// project by generating a recovery link through the admin API:
+// This file was written on a wrong diagnosis. I claimed every activation link
+// was landing on the home page because /reset.html was not in the project's
+// redirect allow-list. It is, and always was: auth.additional_redirect_urls
+// contains https://rivertech.me/**.
 //
-//   asked for  redirect_to=https://rivertech.me/reset.html
-//   got        redirect_to=https://rivertech.me
+// What actually happened is that my test call was malformed. The admin
+// generate_link REST endpoint takes redirect_to at the TOP level; I passed it
+// nested inside `options`, which is the JS client's shape. Nested, it is
+// silently ignored and falls back to site_url - which is what I then read as
+// "the path is being stripped". Passed correctly, a link goes straight to
+// /reset.html. Both shapes verified against the live project.
 //
-// Every path collapses to the bare origin, because the project's redirect
-// allow-list holds only the Site URL, and an un-allow-listed redirect_to falls
-// back to it. The tokens still arrive, in the fragment, on the wrong page.
+// So the guard this file tests was never fixing a live bug.
 //
-// WHY THE EXISTING FALLBACK DID NOT SAVE IT
+// WHY IT IS STILL HERE
 //
-// index.html already forwarded `type=recovery` to reset.html — but from inside
-// initialize(), which runs after the Supabase client is constructed. That
-// client sets detectSessionInUrl, and supabase-js clears window.location.hash
-// the moment it detects an implicit grant. The same race is documented a few
-// lines below it for the teacher-invite path. So the fragment was frequently
-// gone before anything read it, the forward never fired, and the person was
-// left sitting on the login screen with no idea why.
+// It is cheap insurance against a real hazard. If a recovery grant ever does
+// land on the home page - a stale link from before the allow-list was set, a
+// template someone edits, a redirect_to that fails to match - index.html has
+// to forward it, and the forward it already had could not be relied on: it ran
+// inside initialize(), after the Supabase client is constructed with
+// detectSessionInUrl, and supabase-js clears window.location.hash the moment
+// it detects an implicit grant. The same race is documented a few lines below
+// it for the teacher-invite path.
 //
-// Measured while diagnosing: 3 recovery links sent in 48 hours, 2 never
-// completed.
-//
-// The guard therefore has to run BEFORE supabase-js is parsed, where there is
-// no client yet to race. That ordering is the whole fix, so it is what this
-// file asserts.
+// Running in the head, ahead of both scripts, there is no client yet to race.
+// That ordering is the only thing worth asserting, so it is what this file
+// asserts - as defence in depth, not as a fix.
 //
 // Run: node tests/activation-link-lands-somewhere.test.js
 

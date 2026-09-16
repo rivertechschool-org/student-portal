@@ -1682,3 +1682,35 @@ consuming it, which is exactly what used to happen on the home page before
 Recipe saved to memory; close the browser with CDP `Browser.close`, never
 `taskkill /IM chrome.exe` — that would take the user's own Chrome with it.
 
+---
+
+## 2026-09-15 — CORRECTION to the activation-link entry above
+
+**The allow-list was never the problem, and the entry above is wrong about the
+cause.** `auth.additional_redirect_urls` already contains
+`https://rivertech.me/**`.
+
+My evidence was an artifact of my own test. The admin `generate_link` REST
+endpoint takes `redirect_to` at the **top level**; I passed it nested inside
+`options`, which is the *JS client's* shape. Nested, it is ignored and falls
+back to `site_url` — which I read as "Supabase is stripping the path". Passed
+correctly, the link goes straight to `/reset.html`. Verified both ways against
+the live project.
+
+The head guard in `index.html` stays, but as **defence in depth, not a fix** —
+if a recovery grant ever does land on the home page it now recovers, and the
+forward that was already there could not be relied on because of the
+`detectSessionInUrl` race. The test header has been rewritten to say so.
+
+**Also corrected:** auth email does *not* share the Resend allowance. It goes
+over **Gmail SMTP** as `jordan@rivertech.me`, `otp_expiry` 86400, with a 1
+minute per-address frequency cap — entirely separate from the notification
+sender. Anywhere I said otherwise, including "still open" notes in earlier
+entries, is wrong.
+
+**What was actually wrong for the family who reported it:** their address was
+used as their son's *student* login, so the parent could not register her own
+account, and the activation email did not say whose account it opened. That is
+fixed by the account-type email template, now applied to the live project from
+`supabase/templates/recovery.html` (backend `82e7e1f`).
+
