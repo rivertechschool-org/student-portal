@@ -95,7 +95,7 @@ const app = {
   terminalMultiAward: async () => { throw new Error('should not route to multi-award'); },
 };
 for (const n of ['_rivenPresentOn', '_rivenIgnoresAttendance', '_normalizeInput',
-                 '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass',
+                 '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel',
                  '_rivenFindExcluded', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',
                  '_levenshteinDistance', '_rivenResolveGroup', '_rivenRequireClasses',
                  '_hasCommandSignal', '_hasCommandVerb', '_isCommonWordTypo', '_commonWords',

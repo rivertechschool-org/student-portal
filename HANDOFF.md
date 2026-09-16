@@ -1288,3 +1288,75 @@ than a one-off.
 the people it applied to were scattered alphabetically through everyone else. It now names
 the instrument ("— plays piano"), those people sort to the top, and the field label says so.
 The question being asked is "who can cover the piano"; the answer belongs at the top.
+
+---
+## 2026-09-15 — Jordan's Claude (Riven learns the year groups, and /admin)
+
+**"Add her to my Math class tagged Old Middle School" gave a picker of four
+rows, every one reading `Math · Jordan Ezell`.** Two faults at once.
+
+**Closed classes were still being offered.** Five classes are named `Math`;
+three are closed for the year. My earlier closed-class fix reached the sibling
+expansion but not `_rivenMatchClass` itself, which built its candidate list
+straight off the cache. Now live classes win — and closed ones stay reachable
+when they are the *only* match, which is what keeps `reopen chess` working.
+
+**The two live ones were genuinely indistinguishable on screen.** Same name,
+same teacher. The only thing separating them is `grade_band` — which was not
+loaded into the cache, not understood in a sentence, and not shown in the
+picker. So Riven asked someone to choose between four identical-looking rows
+*after they had already said which one they meant*.
+
+### What it understands now
+
+`grade_band`, three ways in: the code, the label from the `grade_bands` table,
+and what people actually say — *junior high*, *upper MS*, *lower middle*,
+*high school*. Longest phrase wins, so "old middle school" is not read as
+"middle".
+
+**Bare "middle" and bare "elementary" are deliberately NOT matched.** Each names
+two bands, and guessing is how a child lands in the wrong year. Riven asks.
+
+Class names cannot substitute for this: the same year group appears as
+`Lower MS Math`, `Literature - Younger Middle School`, and plain `Math`.
+
+The picker now shows the year group **only when that is what tells the options
+apart**, and confirmations prefer it over the teacher's name — one teacher
+taking the same subject in two year groups is common here, and then the
+teacher's name distinguishes nothing.
+
+### "Add [student] to every Old Middle School class"
+
+New `ENROLL_BAND` intent. A new pupil arriving mid-year needed ten separate
+enrolments through the picker that could not tell two `Math` classes apart.
+
+It lists the classes before writing, says what it is skipping and why (already
+enrolled, or not yours to change), keeps going if one class refuses, and pushes
+a single undo for the batch. A bulk roster change that reports only a number is
+one nobody can check.
+
+**Caught by the precision harness, and worth knowing about:** there is a
+production `WRITE_INTENTS` array inside `_matchIntent` that gates
+speculative/interrogative phrasings. A new write intent that is not in it will
+happily fire on *"should I add Josey to all the Old Middle School classes?"*.
+Add new write intents there.
+
+### /admin
+
+`/admin <command>` runs it without stopping to confirm. **It skips the
+question, not the permission** — RLS still decides, `_rivenRequireAdmin` still
+refuses, every action still pushes its undo, and non-admins are refused the
+prefix outright so it cannot read as a way *in*. It still prints what it did:
+the confirmation summary is the only record of what was about to happen.
+
+The exemption lasts exactly one command, cleared in a `finally`. A flag left
+set would disarm every confirmation for the rest of the session — the kind of
+bug nobody notices until it matters.
+
+Tests: `tests/riven-grade-bands.test.js` (40). Seven debug harnesses needed the
+new helpers added to their extract lists; `debug-harness-closure` caught every
+one.
+
+**Not mine:** `tests/assessment-tools-placement.test.js`, `tests/worship-team.test.js`
+— both fail with my changes stashed (checked).
+
