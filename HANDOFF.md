@@ -2098,3 +2098,45 @@ surprise. Nothing to tap, nothing to miss.
 The tests assert the *absence* of a toggle now, so this cannot quietly come
 back as a tidy-up.
 
+### …and then the cause turned up
+
+The entry above is honest about what I knew at the time, and wrong about what
+was happening. Photographs of the failure settled it: the label flipped to
+"show less" and **nothing appeared**. A handler that runs to completion found
+an element; nothing moving where the finger was means the element it found was
+somewhere else.
+
+`_briefingExpand` minted `brf-<counter>-<length>` and looked it up with
+`getElementById`. The counter is an in-memory property on the app, so it
+**restarts at 1 on every page load**. The transcript does not restart:
+`_restoreTerminalChat` writes the saved HTML of the last 200 messages straight
+back into `#terminal-output`. So this morning's answer came back out of
+localStorage still carrying `brf-1-17`, this afternoon's identical answer
+minted `brf-1-17` again, and `getElementById` returned the *first* one in
+document order — the restored bubble, far up the scroll. The tap opened the old
+copy, off-screen, and flipped the label on the new one.
+
+That is why it never reproduced: a fresh page holds one copy. Rendering the
+answer under two app objects — which is what a reload is — reproduces it on the
+old build first try, in a real browser: the restored block goes to `block`, the
+one that was clicked stays `none`, label says "show less".
+
+**Fixed by deleting the id.** The toggle now reaches its block through
+`previousElementSibling`; the block is emitted immediately before it, so that is
+the markup's own relationship and nothing else in the document can join it. A
+local relationship should not be expressed as a lookup through a document-wide
+namespace. Verified in a real browser for both joiners (`''` and `<br>`): the
+clicked copy opens, the restored copy stays shut, and it closes again.
+
+This mattered well beyond the absence answer — `_briefingExpand` is used twelve
+more times, almost all of them in the daily briefing, and every one of them was
+broken the same way for anyone whose transcript had been restored.
+
+The absence answer keeps its full list; that removal was a judgement about the
+answer, not a workaround, and it still holds.
+
+**The general lesson, worth remembering when adding anything interactive to a
+Riven answer:** the transcript is persisted and replayed. Any markup Riven emits
+can exist twice in one document, with a counter that started over in between.
+Ids minted from in-memory counters are not unique there.
+

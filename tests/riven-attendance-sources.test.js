@@ -111,7 +111,8 @@ function makeApp({ school = false } = {}) {
     } } },
   };
   // Still extracted: the answer no longer uses it, and several assertions
-  // below exist to keep it that way, so a stub would prove nothing.
+  // below exist to keep it that way, so a stub would prove nothing. Its own
+  // behaviour is covered by riven-expander-duplicate-ids.test.js.
   app._briefingExpand = extract('_briefingExpand');
   app.terminalAttendanceIssues = extract('terminalAttendanceIssues');
   return app;
@@ -209,8 +210,13 @@ const answer = (app) => app.said.join('\n');
     // No toggle, nothing to tap. "Who was missing today" is a question whose
     // whole answer is the names; hiding a third of them behind a 12px line on
     // a phone is a worse failure than a long bubble.
+    //
+    // (_briefingExpand itself is sound again - see
+    // riven-expander-duplicate-ids.test.js - so this is a judgement about this
+    // answer, not a workaround. Asserting on 'onclick' rather than on the old
+    // 'brf-' id keeps it a real assertion now that no id is minted at all.)
     ok('  nothing is hidden behind a control', !/show all/.test(out));
-    ok('  and there is no toggle to miss', !/brf-/.test(out));
+    ok('  and there is nothing to tap in the answer', !/onclick/.test(out));
   }
 
   {
