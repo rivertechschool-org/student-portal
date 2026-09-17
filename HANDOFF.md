@@ -2408,3 +2408,69 @@ method's own return statement, and they failed while the behaviour was right.
 Both now assert behaviour. **Source-text assertions go stale pointing at the
 wrong layer and then say "broken" when the answer is correct.**
 
+---
+
+## 2026-09-16 — which one did you mean?
+
+Same treatment as the attendance grid, on names. `debug-tools/name-resolution.js`
+is the second grid: name form × the sentence it sits in.
+
+Measured on the real roster first, so the fixtures reproduce real shapes:
+
+| shape | how many |
+| --- | --- |
+| one first name, **four** students, only **three** distinct last initials | 1 |
+| a shared first name where **both** share an initial | 3 |
+| …one of those differing only in the **letter case** of the stored surname | 1 |
+| **identical full name**, two records | 3 |
+
+**79 of 79 at the start, except for two gaps**, both real:
+
+- **A two-letter surname prefix did nothing.** "Marlowe Te" and "Marlowe Th"
+  are exactly how you pick between the two whose surnames both begin T, and the
+  prefix pass required three characters, so it stayed a four-way question.
+- **The possessive ate the initial.** "Marlowe B's grades" normalizes to
+  "marlowe bs" — not a word, not a single letter — so the initial vanished and a
+  question about one of four came back asking about all four.
+
+Both are one mechanism now: a **surname hint** in the one position where two
+letters cannot be anything else — directly after the first name it belongs to,
+checked per student against that student's own first name. Loose two-letter
+matching anywhere in a sentence would start finding surnames in "is", "in" and
+"at"; this cannot. Possessives are tried both written and stripped, so "B's" and
+"bs" both mean B.
+
+### The picker was not offering a choice
+
+Three pairs of students share an **identical full name** — an old record and its
+replacement, one activated and one inactive. `_showAmbiguityDialog` handed the
+chosen **name** back and looked it up again, so both rows resolved to whichever
+came first. It now passes the **id**, pins by id, and shows the account status
+on the row, because with the names identical that badge is the only thing that
+tells them apart. Old transcripts restored from localStorage still carry
+name-based onclicks, so the handler falls back to a name lookup rather than
+doing nothing.
+
+### The rule the grid enforces
+
+A read on the wrong student is a wasted question. A write on the wrong student
+is somebody else's record changed. So the grid checks reads and writes
+separately, and for writes the assertion is not "asks" but **never silently
+picks** — across `give … rtc`, `mark … absent` and `add a note about …`.
+
+---
+
+### ⚠️ Real student names are committed in this public repo
+
+Not introduced today, but found today and worth someone's decision.
+`debug-tools/nlp-stress.js` and its neighbours use rosters of real first and
+last names — several of them appear in this week's live attendance screenshots.
+CLAUDE.md's first rule forbids exactly that, and GitHub Pages serves every file
+here verbatim.
+
+`name-resolution.js` and `attendance-matrix.js` deliberately use invented names
+that reproduce the roster's *shapes*. The older harnesses have not been
+scrubbed: it rewrites fixtures across several files and a lot of expected-value
+assertions, so it is a deliberate job rather than something to slip into an
+unrelated commit. **Flagged, not done.**
+

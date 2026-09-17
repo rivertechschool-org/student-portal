@@ -65,6 +65,7 @@ node tests/extract-portalui.js                                     # FIRST: four
 for f in tests/*.test.js; do node "$f" || echo "FAILED $f"; done   # the suite
 node debug-tools/nlp-stress.js                                     # Riven, after any Riven change
 node debug-tools/attendance-matrix.js                              # 326 attendance phrasings
+node debug-tools/name-resolution.js                                # 83 ways to name a student
 ```
 
 `attendance-matrix.js` is the grid, not a sample: every way of asking who is or was

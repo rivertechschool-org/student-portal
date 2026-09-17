@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·o';
+      const RIVEN_BUILD = '2026-09-16·p';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -51853,6 +51853,16 @@
     }
 
     _showAmbiguityDialog(matches, originalInput) {
+      // PICKED BY ID, NOT BY NAME.
+      //
+      // Three pairs of students on this roster share an IDENTICAL full name -
+      // an old record and its replacement, one activated and one inactive. The
+      // picker used to hand the chosen name back and look it up again, so both
+      // rows resolved to whichever came first, and a prompt offering a choice
+      // quietly did not have one. The status badge is there for the same
+      // reason: with the names identical, "inactive" is the only thing on the
+      // row that tells them apart.
+      //
       // Phase 2: Handle multiple student matches
       this.terminalPrint(`I found ${matches.length} students that might match:`, '#ffd36a');
 
@@ -51861,11 +51871,11 @@
 
       matches.forEach((student, idx) => {
         html += `
-          <div onclick="app._resolveAmbiguity('${student.full_name}', '${this.escapeHtml(originalInput)}')"
+          <div onclick="app._resolveAmbiguity('${student.id}', '${this.escapeHtml(originalInput)}')"
                style="padding: 8px 12px; margin: 4px 0; background: rgba(106, 169, 255, 0.1); border-left: 3px solid #6aa9ff; border-radius: 4px; cursor: pointer; transition: all 0.2s;"
                onmouseover="this.style.background='rgba(106, 169, 255, 0.2)'"
                onmouseout="this.style.background='rgba(106, 169, 255, 0.1)'">
-            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(student.full_name)}${this._rivenIsMyStudent(student.id) ? ' <span style="font-size: 10px; font-weight: 600; color: #2f6b6d;">yours</span>' : ''}</div>
+            <div style="font-weight: bold;">${idx + 1}. ${this.escapeHtml(student.full_name)}${this._rivenIsMyStudent(student.id) ? ' <span style="font-size: 10px; font-weight: 600; color: #2f6b6d;">yours</span>' : ''}${student.account_status && student.account_status !== 'activated' ? ` <span style="font-size: 10px; font-weight: 600; color: #b08d5a;">${this.escapeHtml(student.account_status)}</span>` : ''}</div>
             <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${this.escapeHtml(student.email)} • ${student.rtc_balance || 0} RTC</div>
           </div>
         `;
@@ -51877,14 +51887,23 @@
       if (output) output.innerHTML += html;
     }
 
-    async _resolveAmbiguity(studentName, originalInput) {
-      // User clicked on a student from ambiguity list
-      this.terminalPrint(`Selected: ${studentName}`, '#8bffb0');
+    async _resolveAmbiguity(studentId, originalInput) {
+      // Takes an ID. Older transcripts restored from localStorage still carry
+      // onclicks built when this took a name, so a value that is not an id is
+      // looked up as one - the click still works rather than doing nothing.
+      const list = this._terminalAllStudents || [];
+      const chosen = list.find(s => s.id === studentId)
+        || list.find(s => s.full_name === studentId);
+      if (!chosen) {
+        this.terminalPrintError(`I can't find that student any more - try typing their full name.`);
+        return;
+      }
+      this.terminalPrint(`Selected: ${chosen.full_name}`, '#8bffb0');
 
       // Re-run the ORIGINAL request with the chosen student pinned, so the
       // intent survives ("compare evelyn and charlotte" stays a comparison
       // instead of degrading to /read).
-      this._terminalPinnedStudent = studentName;
+      this._terminalPinnedStudent = chosen.id;
       await this.executeTerminalCommand(originalInput);
       this._terminalPinnedStudent = null;
     }
@@ -52655,7 +52674,10 @@
       // A student chosen from the ambiguity dialog overrides fuzzy matching
       // for the re-run of the original request
       if (this._terminalPinnedStudent) {
-        const pinned = this._terminalAllStudents.find(s => s.full_name === this._terminalPinnedStudent);
+        // By id. Two students here can share a full name, and matching on the
+        // name would pin whichever the picker was trying to tell apart.
+        const pinned = this._terminalAllStudents.find(s => s.id === this._terminalPinnedStudent)
+          || this._terminalAllStudents.find(s => s.full_name === this._terminalPinnedStudent);
         if (pinned) return { student: pinned, score: 1, ambiguous: false };
       }
 
@@ -52680,6 +52702,33 @@
       const initials = tokens
         .map(w => w.replace(/^[^a-z]+|[^a-z]+$/g, ''))
         .filter(w => /^[a-z]$/.test(w) && w !== 'a' && w !== 'i');
+
+      // A SURNAME HINT SITTING RIGHT AFTER THE FIRST NAME.
+      //
+      // Four students share one first name here and only three distinct last
+      // initials between them, so one initial is worn by two people. "Marlowe
+      // Te" and "Marlowe Th" are how somebody picks between those two, and
+      // "Marlowe B's grades" is how they ask about a third.
+      //
+      // Neither reached the matcher. A two-letter token is below the prefix
+      // threshold, and the possessive normalizes to "bs" - not a word, not a
+      // single letter - so the initial vanished entirely and a question about
+      // ONE of four Marlowes came back asking which of the four.
+      //
+      // Two letters is far too short to match loosely anywhere in a sentence:
+      // "is", "in" and "at" would start finding surnames. So it only counts in
+      // the one position where it cannot be anything else - directly after the
+      // first name it belongs to - and that pairing is checked per student
+      // below, not here.
+      const _common = this._commonWords();
+      const nameHints = [];
+      for (let i = 1; i < tokens.length; i++) {
+        const prev = tokens[i - 1].replace(/^[^a-z]+|[^a-z]+$/g, '');
+        const here = tokens[i].replace(/^[^a-z]+|[^a-z]+$/g, '');
+        if (prev.length < 3 || !here || here.length > 3) continue;
+        if (stopwords.has(here) || _common.has(here)) continue;
+        nameHints.push({ prev, here });
+      }
 
       // Context gate: a fuzzy (typo) match to a name is only trusted when the
       // clause actually reads like a command. Stops greeting / common-word
@@ -52821,6 +52870,26 @@
             if (fullSim > 0.6) {
               score = Math.max(score, fullSim * 0.8);
             }
+          }
+        }
+
+        // The hint counts only when the word in front of it IS this student's
+        // first name. "Marlowe Te" narrows Marlowe; a stray "te" narrows
+        // nobody. Setting both hits is the point: bothParts is what lifts one
+        // person out of a group who all match on the first name.
+        for (const h of nameHints) {
+          if (!lastName) continue;
+          const firstMatches = h.prev === firstName ||
+            (firstName.length > h.prev.length && firstName.startsWith(h.prev));
+          if (!firstMatches) continue;
+          // "B's" and "bs" both mean the initial B, so try the possessive
+          // stripped as well as written.
+          const forms = (h.here.length >= 2 && h.here.endsWith('s'))
+            ? [h.here, h.here.slice(0, -1)] : [h.here];
+          if (forms.some(f => lastName.startsWith(f))) {
+            score = Math.max(score, 0.95);
+            firstHit = true;
+            lastHit = true;
           }
         }
 
