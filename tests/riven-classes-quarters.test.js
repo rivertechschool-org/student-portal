@@ -41,8 +41,8 @@ const check = (label, actual, expected) => {
 };
 const ok = (label, cond) => check(label, !!cond, true);
 
-function extract(name) {
-  const re = new RegExp('\\n    (?:async\\s+)?' + name + '\\s*\\(', 'g');
+function extract(name, indent = 4) {
+  const re = new RegExp('\\n {' + indent + '}(?:async\\s+)?' + name + '\\s*\\(', 'g');
   const m = re.exec(html);
   if (!m) throw new Error('method not found: ' + name);
   let i = m.index + m[0].length - 1, pd = 0;
@@ -77,10 +77,14 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g,
 // flag, and a deleted class is filtered out at load time, so a class Riven can
 // see is always is_active true - which is exactly why testing is_active here
 // used to pass while proving nothing.
-const CHESS = Object.freeze({ id: 'c1', name: 'Chess', teacher_id: 'dan', is_active: true, status: 'active' });
+// classes.teacher_id names a LOGIN id - its foreign key points at the login
+// table - so the class points at Dan's login id, not his profile id.
+const CHESS = Object.freeze({ id: 'c1', name: 'Chess', teacher_id: 'a-dan', is_active: true, status: 'active' });
 const STAFF = [
-  { id: 'dan', first_name: 'Dan', last_name: 'Pike', email: 'dan@x.com', user_type: 'teacher' },
-  { id: 'cait', first_name: 'Adeline', last_name: 'Ravenswood', email: 'cait@x.com', user_type: 'teacher' },
+  { id: 'dan', auth_user_id: 'a-dan', first_name: 'Dan', last_name: 'Pike',
+    email: 'dan@x.com', user_type: 'teacher' },
+  { id: 'cait', auth_user_id: 'a-cait', first_name: 'Adeline', last_name: 'Ravenswood',
+    email: 'cait@x.com', user_type: 'teacher' },
 ];
 const QUARTERS = [
   { id: 'q1', name: 'Quarter 1', is_current: true, is_archived: false, start_date: '2026-08-24', end_date: '2026-10-30' },
@@ -133,6 +137,10 @@ function makeApp({ role = 'admin', classRow = { ...CHESS }, staff = STAFF, quart
       },
     },
   };
+  // Both live at the app class's indent. terminalSetClassTeacher calls them,
+  // so a stub without them dies mid-run rather than failing an assertion.
+  app.staffHasId = extract('staffHasId', 6);
+  app.staffLoginId = extract('staffLoginId', 6);
   app._rivenRequireAdmin = extract('_rivenRequireAdmin');
   app._rivenClassIsOpen = extract('_rivenClassIsOpen');
   app._rivenPolicyError = extract('_rivenPolicyError');
@@ -178,7 +186,10 @@ const said = (text) => ({ original: text, _rawInput: text });
   {
     const app = makeApp({});
     await app.terminalSetClassTeacher.call(app, said('give chess to adeline'));
-    check('the class gets the new teacher', app.updates[0].patch, { teacher_id: 'cait' });
+    // Her LOGIN id. Writing the profile id here satisfies nothing: the column's
+    // foreign key points at the login table and the update fails outright.
+    check('the class gets the new teacher, by the id the column holds',
+          app.updates[0].patch, { teacher_id: 'a-cait' });
     ok('the confirmation names both', /Adeline Ravenswood/.test(app.confirmed) && /Chess/.test(app.confirmed));
     // The outgoing teacher loses three things at once and is not told by the app.
     ok('  and says what the outgoing teacher loses',
@@ -187,10 +198,36 @@ const said = (text) => ({ original: text, _rawInput: text });
   }
 
   {
+    // The class names Dan by his login id and the staff list is keyed on
+    // profile ids. Comparing one to the other said "not him", and handing a
+    // class to the person already holding it went through as a change.
     const app = makeApp({});
     await app.terminalSetClassTeacher.call(app, said('give chess to dan'));
     check('handing it to whoever already has it writes nothing', app.updates, []);
     ok('  and says so', /already teaches/.test(app.said[0]));
+  }
+
+  {
+    // The outgoing teacher is found by either id too, or the confirmation
+    // quietly drops the sentence saying what he is about to lose.
+    const app = makeApp({});
+    await app.terminalSetClassTeacher.call(app, said('give chess to adeline'));
+    ok('the outgoing teacher is still recognised across the two ids',
+       /Dan Pike/.test(app.confirmed));
+  }
+
+  {
+    // A profile with no login cannot hold a class: there is nothing for the
+    // foreign key to point at. Refuse while it can still be explained, rather
+    // than after the confirmation with a constraint error.
+    const app = makeApp({
+      staff: [{ id: 'nolo', first_name: 'Adeline', last_name: 'Ravenswood',
+                email: 'a@x.com', user_type: 'teacher' }],
+    });
+    await app.terminalSetClassTeacher.call(app, said('give chess to adeline'));
+    check('a teacher with no login is not given a class', app.updates, []);
+    ok('  and is told why', /no login yet/.test(app.errors[0]));
+    check('  and is not asked to confirm first', app.confirmed, null);
   }
 
   {
@@ -207,8 +244,8 @@ const said = (text) => ({ original: text, _rawInput: text });
   {
     const app = makeApp({
       staff: [
-        { id: 'a', first_name: 'Sam', last_name: 'One', user_type: 'teacher' },
-        { id: 'b', first_name: 'Sam', last_name: 'Two', user_type: 'teacher' },
+        { id: 'a', auth_user_id: 'a-a', first_name: 'Sam', last_name: 'One', user_type: 'teacher' },
+        { id: 'b', auth_user_id: 'a-b', first_name: 'Sam', last_name: 'Two', user_type: 'teacher' },
       ],
     });
     await app.terminalSetClassTeacher.call(app, said('give chess to sam'));

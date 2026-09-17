@@ -18078,13 +18078,13 @@
         // the creator is the primary teacher, so exclude them.
         const { data: allTeachers } = await this.supabaseQuery(() => this.auth.supabase
           .from('user_profiles')
-          .select('id, first_name, last_name, user_type')
+          .select('id, auth_user_id, first_name, last_name, user_type')
           .in('user_type', ['teacher', 'admin'])
           .order('last_name'));
         const secondarySelect = document.getElementById('class-secondary-teacher');
         if (secondarySelect && allTeachers) {
           allTeachers
-            .filter(t => t.id !== this.userInfo.user.id)
+            .filter(t => !this.staffHasId(t, this.userInfo.user.id))
             .forEach(t => {
               const opt = document.createElement('option');
               opt.value = t.id;
@@ -20675,12 +20675,15 @@
         // Load all teachers and admins for secondary teacher dropdown
         const { data: allTeachers } = await this.supabaseQuery(() => this.auth.supabase
           .from('user_profiles')
-          .select('id, first_name, last_name, user_type')
+          .select('id, auth_user_id, first_name, last_name, user_type')
           .in('user_type', ['teacher', 'admin'])
           .order('last_name'));
 
+        // The primary teacher is named by their login id and this list is keyed
+        // on profile ids, so the plain comparison could leave them in the list
+        // and let one person be both teachers of the same class.
         const teacherOptions = (allTeachers || [])
-          .filter(t => t.id !== classData.teacher_id) // exclude primary teacher
+          .filter(t => !this.staffHasId(t, classData.teacher_id))
           .map(t => `<option value="${t.id}" ${classData.secondary_teacher_id === t.id ? 'selected' : ''}>${t.last_name}, ${t.first_name}</option>`)
           .join('');
 
@@ -34929,6 +34932,27 @@
         this.renderAdminClasses(true);
       }
 
+      // Is this staff row the person that id refers to?
+      //
+      // A class names its teacher by their LOGIN id and its second teacher by
+      // their PROFILE id. Those are the same number for everyone here today,
+      // which is exactly why mixing them up goes unnoticed - so ask the person,
+      // never the column.
+      staffHasId(person, id) {
+        if (!person || !id) return false;
+        return person.id === id || person.auth_user_id === id;
+      }
+
+      // What may be written into classes.teacher_id.
+      //
+      // Its foreign key points at the login table, so a profile id there is not
+      // a wrong answer - it is a constraint violation, and the save fails
+      // outright. Null means this person cannot hold a class at all yet,
+      // because they have no login for the key to point at.
+      staffLoginId(person) {
+        return person && person.auth_user_id ? person.auth_user_id : null;
+      }
+
       // Who teaches this class. Named separately from the class card because
       // two grids draw it and they had drifted into saying it two ways.
       classTeacherNames(cls) {
@@ -35084,7 +35108,7 @@
         // Fetch all teachers
         const { data: teachers, error } = await this.supabaseQuery(() => this.auth.supabase
           .from('user_profiles')
-          .select('id, first_name, last_name, email')
+          .select('id, auth_user_id, first_name, last_name, email')
           .in('user_type', ['teacher', 'admin'])
           .order('last_name')
           .order('first_name'));
@@ -35094,11 +35118,21 @@
           return;
         }
 
-        const teacherOptions = teachers.map(t => `
-          <option value="${t.id}" ${t.id === currentTeacherId ? 'selected' : ''}>
-            ${t.last_name}, ${t.first_name} (${t.email})
-          </option>
-        `).join('');
+        // The option carries the LOGIN id, because that is what gets written.
+        // Recognising the teacher already on the class accepts either id: the
+        // class may name them by one and this list is built from the other.
+        const teacherOptions = (teachers || []).map(t => {
+          const loginId = this.staffLoginId(t);
+          const label = `${t.last_name}, ${t.first_name} (${t.email})`;
+          if (!loginId) {
+            // Offering them would produce a save that fails on a constraint
+            // and an error message about a foreign key. Say it here instead.
+            return `<option value="" disabled>${label} - no login yet</option>`;
+          }
+          return `<option value="${loginId}" ${this.staffHasId(t, currentTeacherId) ? 'selected' : ''}>
+            ${label}
+          </option>`;
+        }).join('');
 
         const modalContent = `
           <p style="color: var(--muted); margin-bottom: 20px;">Select a new teacher for <strong>${className}</strong></p>
@@ -35121,6 +35155,7 @@
       }
 
       async changeClassTeacher(classId) {
+        // Already a login id - the dropdown carries those deliberately.
         const newTeacherId = document.getElementById('new-teacher-select')?.value;
 
         if (!newTeacherId) {
@@ -62240,7 +62275,7 @@
       const raw = (entities.original || entities._rawInput || '').toLowerCase();
 
       const { data: staff, error } = await sb.from('user_profiles')
-        .select('id, first_name, last_name, email, user_type')
+        .select('id, auth_user_id, first_name, last_name, email, user_type')
         .in('user_type', ['teacher', 'admin']);
       if (error) { this.terminalPrintError('Could not read the staff list: ' + error.message); return; }
 
@@ -62267,13 +62302,25 @@
 
       const teacher = hits[0];
       const name = `${teacher.first_name || ''} ${teacher.last_name || ''}`.trim();
-      if (row.teacher_id === teacher.id) {
+      // Either of their two ids means them. Comparing one column to the other
+      // said "no" for a teacher already on the class, and the change went
+      // through as if it were a change.
+      if (this.staffHasId(teacher, row.teacher_id)) {
         this._showRivenMessage(`<b>${esc(name)}</b> already teaches ${esc(row.name)}.`, true);
         return;
       }
 
+      // classes.teacher_id must name a login. Without one the update fails on
+      // the foreign key after the confirmation, which is the worst moment.
+      const incomingId = this.staffLoginId(teacher);
+      if (!incomingId) {
+        this.terminalPrintError(
+          `${name} has no login yet, so they cannot be given a class. Activate their account first.`);
+        return;
+      }
+
       const before = row.teacher_id;
-      const outgoing = (staff || []).find(p => p.id === before);
+      const outgoing = (staff || []).find(p => this.staffHasId(p, before));
       const outName = outgoing ? `${outgoing.first_name || ''} ${outgoing.last_name || ''}`.trim() : null;
 
       this._requestConfirmation(
@@ -62282,7 +62329,7 @@
                    `and it leaves their class list.</span>` : ''),
         async () => {
           const { error: e } = await sb.from('classes')
-            .update({ teacher_id: teacher.id }).eq('id', row.id);
+            .update({ teacher_id: incomingId }).eq('id', row.id);
           if (e) throw this._rivenPolicyError(e);
           this._pushUndo(`the teacher of ${row.name}`, async () => {
             const { error: r } = await sb.from('classes')

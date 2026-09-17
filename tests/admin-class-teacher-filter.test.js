@@ -55,6 +55,9 @@ function method(name, indent = '      ') {
 
 const renderAdminClasses = method('renderAdminClasses');
 const classTeacherNames = method('classTeacherNames');
+const showChangeTeacherModal = method('showChangeTeacherModal');
+const staffHasId = method('staffHasId');
+const staffLoginId = method('staffLoginId');
 const filterAdminClasses = method('filterAdminClasses');
 const clearAdminClassFilters = method('clearAdminClassFilters');
 
@@ -114,9 +117,16 @@ const app = {
   gradeBandLabel(g) { return g === 'ms' ? 'Middle' : 'High'; },
   classDescription() { return ''; },
   classTeacherNames,
+  staffHasId,
+  staffLoginId,
+  showChangeTeacherModal,
   renderAdminClasses,
   filterAdminClasses,
   clearAdminClassFilters,
+  modal: null,
+  notified: [],
+  showModal(id, title, content) { this.modal = { id, title, content }; },
+  showNotification(msg, kind) { this.notified.push([kind, msg]); },
   supabaseQuery: async (fn) => await fn(),
   auth: {
     supabase: {
@@ -235,6 +245,57 @@ function dropdown(out) {
   app.clearAdminClassFilters();
   check('clearing resets every filter', app.adminClassFilters,
         { teacher: '', subject: '', gradeLevel: '', search: '', includePast: false });
+
+  // ====================================================================
+  // 7. Change Teacher: recognise the current one, and offer an id that
+  //    classes.teacher_id can actually hold.
+  //
+  // The button hands this the class's teacher_id, which is a LOGIN id, and
+  // the list it builds is keyed on PROFILE ids. Comparing the two meant the
+  // modal opened on "-- Select Teacher --" as though the class had no
+  // teacher; saving then wrote a profile id into a column whose foreign key
+  // points at the login table, which does not write the wrong teacher - it
+  // fails the constraint and saves nothing.
+  // ====================================================================
+  app.modal = null;
+  await app.showChangeTeacherModal('C1', 'Botany', 'a-alder');   // by LOGIN id
+  let m = app.modal.content;
+
+  ok('the modal opened', !!m && app.modal.id === 'change-teacher');
+  ok('the class name is in it', m.includes('Botany'));
+  // Exactly this: the option carrying Rosa's LOGIN id is the selected one.
+  // An either/or assertion here could pass on the wrong branch and report a
+  // preselection that is not happening.
+  const flat = m.replace(/\s+/g, ' ');
+  ok('the teacher already on the class is preselected',
+     flat.includes('value="a-alder" selected'));
+  ok('...and nobody else is', (flat.match(/selected/g) || []).length === 1);
+  ok('the options carry login ids, which is what the column holds',
+     m.includes('value="a-birch"') && m.includes('value="a-fell"'));
+  ok('...not profile ids', !m.includes('value="p-birch"'));
+
+  // Someone with no login at all cannot be a class's teacher: there is nothing
+  // for the foreign key to point at. Better said here than as a constraint
+  // error after pressing Save.
+  const NO_LOGIN = [{ id: 'p-gorse', auth_user_id: null, first_name: 'Kit',
+                      last_name: 'Gorse', email: 'kit@x.com', user_type: 'teacher' }];
+  const realFrom = app.auth.supabase.from;
+  app.auth.supabase.from = (t) => t === 'user_profiles' ? builder(NO_LOGIN) : realFrom(t);
+  app.modal = null;
+  await app.showChangeTeacherModal('C1', 'Botany', 'a-alder');
+  m = app.modal.content;
+  ok('a teacher with no login is not offered as a choice', m.includes('disabled'));
+  ok('...and the reason is on the row', m.includes('no login yet'));
+  ok('...and they carry no id to save', !m.includes('value="p-gorse"'));
+  app.auth.supabase.from = realFrom;
+
+  check('staffLoginId gives the login id', staffLoginId({ id: 'p', auth_user_id: 'a' }), 'a');
+  check('staffLoginId refuses a profile with no login',
+        staffLoginId({ id: 'p', auth_user_id: null }), null);
+  check('staffHasId matches the profile id', staffHasId({ id: 'p', auth_user_id: 'a' }, 'p'), true);
+  check('staffHasId matches the login id', staffHasId({ id: 'p', auth_user_id: 'a' }, 'a'), true);
+  check('staffHasId matches nobody else', staffHasId({ id: 'p', auth_user_id: 'a' }, 'z'), false);
+  check('staffHasId is not fooled by a missing id', staffHasId({ id: 'p' }, undefined), false);
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
