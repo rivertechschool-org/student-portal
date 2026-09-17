@@ -1952,3 +1952,41 @@ future bulk write: reads may take the prefix, writes must be told in words.
 `tests/riven-cancel-day.test.js` is at 49, covering both directions plus the
 teacher case and the no-prefix case.
 
+---
+
+## 2026-09-16 — the absence scan was reading the wrong register
+
+`/admin who was missing today?` started saying **School-wide** and returned the
+same list. The scope fix was working; the list barely moved because the people
+who were actually missing **were never in the source**.
+
+This school keeps two registers. `daily_attendance` is the morning one — did
+the child come to school at all. `class_attendance` is per-lesson. They answer
+different questions, and `terminalAttendanceIssues` only ever read the second.
+
+Measured on the day: **16 absent on the daily register, 6 on the class
+registers.** The answer named the 6. And because class registers are taken
+patchily, widening to the whole school added two marks and looked like nothing
+had changed — one bug wearing another one as camouflage.
+
+It now reads both when no class is named. **A named class is the exception**:
+"who's been absent in Chemistry" is a question about that lesson, and the daily
+register cannot answer it.
+
+### The counting trap, which is the part worth remembering
+
+A child out all day has **one daily row and one class row per lesson**.
+Counting both reports "5 absent" for one day off and ranks them above a child
+who has genuinely missed three days. Rows are deduped per student per **day**,
+with the daily register winning, so the number means days.
+
+The scope filter applies to both registers — reading a second table must not
+become a way round it, and that is asserted.
+
+`tests/riven-attendance-sources.test.js`, 10 assertions, verified by putting
+the bug back: the student who exists only on the daily register disappears
+again.
+
+**Worth checking elsewhere:** anything else answering an attendance question
+off `class_attendance` alone is answering from the sparser of the two records.
+

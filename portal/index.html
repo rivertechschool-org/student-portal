@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·f';
+      const RIVEN_BUILD = '2026-09-16·g';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -58391,6 +58391,21 @@
       const scopeLabel = classRow ? `${classRow.name}, ${sinceLabel}` : `${scope.school ? 'school-wide' : 'your classes'}, ${sinceLabel}`;
       this.terminalPrint(`Scanning attendance${whoLabel}…`, '#6aa9ff');
 
+      // TWO REGISTERS, AND THIS ONLY EVER READ ONE.
+      //
+      // class_attendance is the per-lesson register. daily_attendance is the
+      // morning one - whether the child came to school at all. They are
+      // different records and the second is the one that answers "who was
+      // missing today".
+      //
+      // Measured on the day this was found: 16 absent on the daily register,
+      // 6 on the class registers. The answer named the 6. Worse, class
+      // registers are taken patchily, so widening the scope to the whole
+      // school barely changed the list and made the fix look like it had not
+      // worked - the missing people were never in the source at all.
+      //
+      // A named class is the exception: "who's been absent in Chemistry" is a
+      // question about that lesson, and the daily register cannot answer it.
       let q = sb.from('class_attendance')
         .select('student_id, status, date')
         .gte('date', sinceDate)
@@ -58403,10 +58418,40 @@
 
       if (error) { this.terminalPrintError('Could not check attendance: ' + error.message); return; }
 
+      let dayRows = [];
+      if (!classRow) {
+        let dq = sb.from('daily_attendance')
+          .select('student_id, status, date')
+          .gte('date', sinceDate)
+          .neq('status', 'present')
+          .order('date', { ascending: false })
+          .limit(1000);
+        if (entities.untilDate) dq = dq.lte('date', entities.untilDate);
+        const { data: dd, error: de } = await dq;
+        // The class registers are still a real answer on their own, so a
+        // failure here narrows the answer rather than losing it.
+        if (de) console.warn('daily register unavailable, class registers only:', de);
+        dayRows = dd || [];
+      }
+
+      // Deduped per student per DAY, with the daily register winning.
+      //
+      // A child out all day has one daily row and one class row per lesson.
+      // Counting both would report "5 absent" for one day off and put them
+      // above a child who has actually missed three days.
+      const seen = new Set();
+      const merged = [];
+      for (const r of [...dayRows, ...(data || [])]) {
+        const key = `${r.student_id}|${r.date}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(r);
+      }
+
       // If class filter but the query was school-wide (fallback), restrict manually
       const filtered = (allowedIds && !classRow)
-        ? (data || []).filter(r => allowedIds.has(r.student_id))
-        : (data || []);
+        ? merged.filter(r => allowedIds.has(r.student_id))
+        : merged;
 
       if (!filtered.length) {
         this._showRivenMessage(`Good news — no absences, lates, or early exits recorded${this.escapeHtml(whoLabel)} (${this.escapeHtml(sinceLabel)}). 🎉`, true);
