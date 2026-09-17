@@ -66,6 +66,7 @@ for f in tests/*.test.js; do node "$f" || echo "FAILED $f"; done   # the suite
 node debug-tools/nlp-stress.js                                     # Riven, after any Riven change
 node debug-tools/attendance-matrix.js                              # 326 attendance phrasings
 node debug-tools/name-resolution.js                                # 83 ways to name a student
+node debug-tools/word-vs-name.js                                   # 700: no ordinary word is a person
 ```
 
 `attendance-matrix.js` is the grid, not a sample: every way of asking who is or was

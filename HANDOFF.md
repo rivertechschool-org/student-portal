@@ -2570,3 +2570,66 @@ commits that introduced it, and GitHub serves history too. Scrubbing that means
 rewriting history and force-pushing, which breaks every existing clone — a
 deliberate, coordinated job, not a side effect of this one.
 
+---
+
+## 2026-09-16 — an ordinary word is not a person
+
+**"Who is missing the next few days"** came back offering a choice of four
+students. The word was **"days"**.
+
+On the live roster it is one edit from a surname (similarity 0.78, over the 0.7
+bar) *and* a subsequence of a first name sharing its first two letters — so it
+matched by two routes at once. And because an ambiguous name is resolved
+**before** the intent is, the question was never answered at all. Riven just
+asked which child "days" was.
+
+### Why the existing guard did not catch it
+
+`_commonWords()` already carried this exact lesson, in a comment, about
+**"quarter"** — which collided with a surname on the roll and answered every
+quarter question with that student's card. The fix then was to add that one word
+to a list. Same shape, new word, a year of vocabulary still unguarded.
+
+And one pass had no guard at all. `_fuzzyBlocked` gated the three fuzzy passes,
+but **not** the prefix pass and **not** the compressed-nickname pass — and the
+nickname pass is the one that reached a first name "days" merely reads as a
+subsequence of.
+
+### The rule now
+
+> **A word that is ordinary English may match a name EXACTLY, and no other way.**
+
+The exact test is deliberately left ungated, so a student really called Mark is
+still found by "mark", and one whose surname really is an ordinary word is still
+found by it. What is refused is every route that turns a word which merely
+*looks* like a name into one.
+
+### `debug-tools/word-vs-name.js`
+
+The third grid. 113 words this school says all day × the sentence shapes they
+arrive in, against a roster **built to be as collidable as possible** — every
+surname one edit from a word in the corpus, every first name hiding one as a
+subsequence. 700 checks.
+
+It also asserts the exception, and fails loudly if the roster ever stops
+containing a name that is also an ordinary word — otherwise that half quietly
+stops being tested.
+
+### Two more found before anyone typed them
+
+Running the corpus against the **live roster** (167 students, in the scratchpad,
+never committed) turned up two words still reaching a student:
+
+- **"math"** — came back asking which of two children it meant
+- **"store"** — silently picked one
+
+Both are words somebody types twenty times a day. The whole school vocabulary —
+subjects, places, roles, RTC nouns, progress nouns — is now on the guard list
+and in the corpus. **113 of 113 clean against the real roster.**
+
+**That audit is worth re-running whenever the roll changes.** A new family can
+put a surname one edit from "grades" on the roster overnight, and nothing in
+this repo would notice; the script is
+`scratchpad/real_roster_audit.js` in this session's notes, and it is twenty
+lines — load the roster, loop the corpus, print any word that resolves.
+
