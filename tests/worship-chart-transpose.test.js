@@ -172,7 +172,17 @@ ok('section names are escaped', renderChart('/<b>V1', 'C').includes('&lt;b&gt;V1
 // ======================================================================
 // 5. Wired into the page
 // ======================================================================
-ok('the set list opens a song in its scheduled key', /openSong\('\$\{song\.id\}'\$\{l\.song_key/.test(page));
+// The set list still opens a song in the key it is booked in - but the key no
+// longer travels through an inline onclick, because esc() does not make a
+// string safe inside one: it turns ' into &#39;, the HTML parser hands the
+// decoded quote to the JS parser, and the literal ends early. It rides on a
+// data- attribute now, where it is only ever text.
+ok('the set list link carries the song', /data-song-id="\$\{esc\(song\.id\)\}"/.test(page));
+ok('  and the key it is booked in', /data-song-key="\$\{esc\(l\.song_key\)\}"/.test(page));
+ok('  and a listener opens it in that key',
+   /closest\('\.song-open'\)[\s\S]{0,240}openSong\(el\.dataset\.songId, el\.dataset\.songKey/.test(page));
+ok('  with no database text left in an inline handler',
+   !/onclick="openSong\('\$\{/.test(page));
 ok('the modal takes a key', /function openSong\(id, key, allowEdit\)/.test(page));
 // Editing is the library's job, so reading a chart off a rota offers none.
 ok('  and only the library may edit from it', /A\._chartCanEdit = !!allowEdit && A\.isAdmin;/.test(page));

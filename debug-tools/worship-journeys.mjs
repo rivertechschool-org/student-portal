@@ -15,10 +15,43 @@
 //
 // Run:  python3 -m http.server 8765 &   then   node debug-tools/worship-journeys.mjs
 //
+// Needs Playwright. It is looked up rather than hard-coded, so an ordinary
+// `npm i -g playwright && npx playwright install chromium` is enough; set
+// WORSHIP_JOURNEYS_CHROME to point at a browser you already have.
+//
 // The stub is deliberately dumb — it returns whole tables and records writes.
 // Anything that needs real RLS has to be checked against the live site.
 
-import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
+// PLAYWRIGHT IS FOUND, NOT ASSUMED.
+//
+// This used to import it from '/opt/node22/lib/node_modules/playwright/...',
+// an absolute path from the Linux sandbox it was written in. On any other
+// machine the file died on its first line with a module-not-found stack -
+// including on the Windows box this repo is normally worked on. CLAUDE.md
+// points at this file as "the pattern to copy", so the repo's own beta-testing
+// rule was unrunnable for anyone who tried to follow it.
+//
+// Now: the ordinary resolution first, then the two sandbox paths, and if none
+// of them work, a sentence saying what to install rather than a stack trace.
+let chromium;
+{
+  const CANDIDATES = [
+    'playwright',                                              // node_modules or a global link
+    'playwright-core',
+    '/opt/node22/lib/node_modules/playwright/index.mjs',       // the Linux sandbox
+    '/opt/node22/lib/node_modules/playwright-core/index.mjs',
+  ];
+  for (const spec of CANDIDATES) {
+    try { ({ chromium } = await import(spec)); break; } catch (_) { /* try the next */ }
+  }
+  if (!chromium) {
+    console.error(
+      'worship-journeys needs Playwright and could not find it.\n' +
+      '  npm i -g playwright && npx playwright install chromium\n' +
+      'Tried: ' + CANDIDATES.join(', '));
+    process.exit(2);
+  }
+}
 
 const pad = n => String(n).padStart(2, '0');
 const ds = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -183,7 +216,19 @@ const LUKE = { id: 'u-luke', first_name: 'Luke', last_name: 'Ashgrove', user_typ
 const DEE  = { id: 'u-dee',  first_name: 'Dee',  last_name: 'Ellis',    user_type: 'student' };
 const ANN  = { id: 'u-ann',  first_name: 'Ann',  last_name: 'Wexler',   user_type: 'student' };
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
+// The browser, likewise. WORSHIP_JOURNEYS_CHROME overrides; otherwise the
+// sandbox's copy, then the Chrome this machine already has, then whatever
+// Playwright installed for itself.
+const CHROME_CANDIDATES = [
+  process.env.WORSHIP_JOURNEYS_CHROME,
+  '/opt/pw-browsers/chromium',
+  'C:/Program Files/Google/Chrome/Application/chrome.exe',
+  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+].filter(Boolean);
+const { existsSync } = await import('node:fs');
+const executablePath = CHROME_CANDIDATES.find(p => existsSync(p));
+// No executablePath at all is valid: Playwright then uses its own download.
+const browser = await chromium.launch(executablePath ? { executablePath } : {});
 const page = await browser.newPage({ viewport: { width: 1000, height: 1200 } });
 const errors = [];
 page.on('pageerror', e => errors.push(String(e.message)));

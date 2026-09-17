@@ -243,7 +243,10 @@ ok('  and the leader is shown on the row', /led by/.test(page));
 ok('  but not offered on a database without the column', /if \(A\.songLeaderAvailable\) row\.leader_user_id/.test(page));
 
 // The songs tab is a list now.
-ok('songs render as rows', /class="songrow"/.test(page));
+// Matched loosely on the class list rather than the exact attribute: the row
+// also carries song-open now, and an assertion that breaks when a second class
+// is added is testing the spelling rather than the thing.
+ok('songs render as rows', /class="[^"]*\bsongrow\b/.test(page));
 ok('  and the card grid is gone', !/class="grid"/.test(page) && !/class="song"/.test(page));
 
 // Practice files are newer than the rest; a database without them loses that
@@ -278,7 +281,10 @@ ok('  and adding puts them on the team too', /from\('worship_members'\)\s*\n\s*\
 
 // Reading a chart off a rota must not put Delete under your thumb.
 ok('editing a song is the library\'s job', /A\._chartCanEdit \? `<div class="row"/.test(page));
-ok('  and only the library asks for it', /openSong\('\$\{s\.id\}', null, true\)/.test(page));
+// The edit flag rides on the row as data now rather than as a third argument
+// inside an inline handler - see the chart-transpose suite for why none of
+// these links build JavaScript out of database text any more.
+ok('  and only the library asks for it', /\bsong-open\b[^>]*data-song-edit="1"/.test(page));
 
 // The practice files a set list already implies.
 ok('practice links come from the set list', /From the set list/.test(page));

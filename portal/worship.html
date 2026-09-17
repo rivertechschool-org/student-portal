@@ -176,6 +176,34 @@ pre.chart{background:var(--bg);border:1px solid var(--border);border-radius:8px;
 
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// esc() makes a string safe to PUT somewhere. It says nothing about what the
+// string MEANS, and in an href the meaning is the scheme: esc('javascript:x')
+// is unchanged, because there is nothing in it to escape. Anyone who can write
+// a song row could put a "rehearsal track" link on the rota that runs code in
+// every teammate's browser when they tap it.
+//
+// So a link's href goes through here instead: http and https, or nothing.
+// Returning '' rather than '#' on purpose, so a bad URL renders as a dead
+// link rather than one that silently reloads the page.
+const safeUrl = u => {
+  const t = String(u == null ? '' : u).trim();
+  if (!t) return '';
+  try {
+    const parsed = new URL(t, window.location.href);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? t : '';
+  } catch (_) { return ''; }
+};
+
+// A string about to be dropped into a JS string literal inside an inline
+// handler. esc() is NOT enough there: it turns ' into &#39;, the HTML parser
+// decodes that back to a live quote before the JS parser ever sees it, and the
+// literal ends early. Proven in a browser, not reasoned about.
+//
+// Nothing should really be building inline handlers out of database text - the
+// call sites below use data- attributes instead - but this exists for the ones
+// that legitimately pass an id we generated ourselves.
+const jsStr = v => JSON.stringify(String(v == null ? '' : v)).replace(/[<>&]/g, c => '\\u00' + c.charCodeAt(0).toString(16));
 function toast(msg, bad){
   const t = $('toast');
   t.textContent = msg;
@@ -298,7 +326,29 @@ function parseChartLine(line, key){
   let text = '';
   let i = 0;
   while (i < line.length) {
-    const m = /^([1-7])(maj)?(?:\/([1-7])(maj)?)?/.exec(line.slice(i));
+    // A CHORD IS A LONE DIGIT. A NUMBER IS NOT.
+    //
+    // This matched a bare 1-7 anywhere and dropped the matched characters from
+    // the lyric, so "Bless the Lord, 10,000 reasons" came out as "Bless the
+    // Lord, 0,000 reasons" with a stray C over it, and "Psalm 23" lost its 23.
+    // Every numeral in a lyric did it, in some of the most-played songs here.
+    //
+    // Two rules that looked right and are not, both caught by the existing
+    // tests rather than by thinking harder:
+    //
+    //   "a degree is followed by a space" - no: it is written against the
+    //   syllable it is sung on, as in "1He picked me up".
+    //   "a degree starts a word"          - no: a chord can land mid-word, as
+    //   in "bag of bo1nes", and there is a test that says so.
+    //
+    // What actually separates the two is that a chord digit stands alone: no
+    // digit on either side of it. 10,000 is out because 1 is followed by 0 and
+    // 0 is preceded by 1; 23 is out both ways; bo1nes and 1He are in. Ordinals
+    // get their own guard, so "the 1st time" keeps its 1st.
+    const prevIsDigit = i > 0 && /[0-9]/.test(line[i - 1]);
+    const m = prevIsDigit
+      ? null
+      : /^([1-7])(maj)?(?:\/([1-7])(maj)?)?(?![0-9])(?!(?:st|nd|rd|th)\b)/.exec(line.slice(i));
     if (m) {
       let name = chordFor(+m[1], !!m[2], key);
       if (m[3]) {
@@ -666,7 +716,7 @@ function songsTab(){
   // A list, not a grid: a library is scanned down one column by title, and at
   // 29 songs and growing a wall of cards is slower to read than it looks.
   const rows = list.map(s => `
-    <div class="songrow" onclick="openSong('${s.id}', null, true)">
+    <div class="songrow song-open" data-song-id="${esc(s.id)}" data-song-edit="1">
       <div class="t">
         <div class="ti">${esc(s.title)}</div>
         <div class="ar">${esc(s.artist || '—')}${(s.tags || []).length ? ' · ' + esc((s.tags || []).join(', ')) : ''}</div>
@@ -706,13 +756,28 @@ function openSong(id, key, allowEdit){
   const s = A.songs.find(x => x.id === id);
   if (!s) return;
   A._chartSong = id;
+  // WHEN THE KEY IS NOT ONE WE CAN DRAW, SAY SO.
+  //
+  // KEY_SCALES holds the twelve major spellings and nothing else, so
+  // normaliseKey('Em') - or any minor key, which is how a good third of this
+  // repertoire is written - returns null. The chart then opened in C with no
+  // sign anything had been substituted, while the line above it still read
+  // "Key Em". Somebody reads that on a Sunday morning and plays the wrong key.
+  //
+  // Falling back to C is still the only thing the renderer can do. What changes
+  // is that the page now admits it: _chartAsked keeps what was actually booked
+  // so the modal can show a plain warning instead of a confident C.
+  const asked = key || s.default_key || null;
   A._chartKey = normaliseKey(key) || normaliseKey(s.default_key) || 'C';
+  A._chartAsked = (asked && !normaliseKey(asked)) ? String(asked) : null;
   A._chartCanEdit = !!allowEdit && A.isAdmin;
   drawSongModal();
 }
 
 function setChartKey(key){
   A._chartKey = key;
+  // An explicit press answers the question the warning was asking.
+  A._chartAsked = null;
   drawSongModal();
 }
 
@@ -731,9 +796,9 @@ function drawSongModal(){
       ${(s.tags || []).map(t => `<span class="chip">${esc(t)}</span>`).join('')}
     </div>
     <div class="row" style="margin-bottom:8px">
-      ${s.song_url ? `<a class="back" href="${esc(s.song_url)}" target="_blank" rel="noopener">🔗 Listen / watch</a>` : ''}
-      ${s.spotify_url ? `<a class="back" href="${esc(s.spotify_url)}" target="_blank" rel="noopener">🎧 Spotify</a>` : ''}
-      ${s.chord_chart_url ? `<a class="back" href="${esc(s.chord_chart_url)}" target="_blank" rel="noopener">📄 Chart link</a>` : ''}
+      ${safeUrl(s.song_url) ? `<a class="back" href="${esc(safeUrl(s.song_url))}" target="_blank" rel="noopener">🔗 Listen / watch</a>` : ''}
+      ${safeUrl(s.spotify_url) ? `<a class="back" href="${esc(safeUrl(s.spotify_url))}" target="_blank" rel="noopener">🎧 Spotify</a>` : ''}
+      ${safeUrl(s.chord_chart_url) ? `<a class="back" href="${esc(safeUrl(s.chord_chart_url))}" target="_blank" rel="noopener">📄 Chart link</a>` : ''}
     </div>
     ${s.notes ? `<div class="field"><label class="fld">Notes</label>${esc(s.notes)}</div>` : ''}
 
@@ -743,6 +808,7 @@ function drawSongModal(){
         ${KEYS.map(k => `<button class="${k === key ? 'on' : ''}" onclick="setChartKey('${k}')">${k}</button>`).join('')}
       </div>
       <div class="chart-box">${renderChart(s.chord_chart, key)}</div>
+      ${A._chartAsked ? `<div class="hint" style="margin-top:6px; color: var(--danger)">⚠️ This song is booked in <b>${esc(A._chartAsked)}</b>, which this chart cannot be drawn in — showing <b>${esc(key)}</b> instead. Pick the key you want above.</div>` : ''}
       <div class="hint" style="margin-top:6px">Stored once in numbers, drawn in whatever key you press. ${
         home && key !== home ? `The recording is in ${esc(home)}.` : ''}</div>
     ` : s.chord_chart ? `
@@ -797,7 +863,7 @@ function editSong(id, serviceId, key){
       <textarea id="sg-chart" style="min-height:160px;font-family:ui-monospace,Menlo,Consolas,monospace">${esc(s && s.chord_chart || '')}</textarea>
     </div>
     <button class="btn" onclick="saveSong(${s ? `'${s.id}'` : 'null'}${
-      serviceId ? `, '${serviceId}', '${esc(key || '')}'` : ', null, null'}, this)">Save${forService ? ' and add' : ''}</button>
+      serviceId ? `, '${serviceId}', ${jsStr(key || '')}` : ', null, null'}, this)">Save${forService ? ' and add' : ''}</button>
     <button class="btn sec" onclick="closeModal()">Cancel</button>
   `);
 }
@@ -1292,7 +1358,7 @@ function orderBlock(s, editable){
       <div class="item">
         <div class="num">${i + 1}</div>
         <div class="t">
-          ${song ? `<a href="#" onclick="openSong('${song.id}'${l.song_key ? `,'${esc(l.song_key)}'` : ''});return false;">${title}</a>`
+          ${song ? `<a href="#" class="song-open" data-song-id="${esc(song.id)}"${l.song_key ? ` data-song-key="${esc(l.song_key)}"` : ''}>${title}</a>`
                  : title}
           <div class="sub">${l.song_key ? 'Key ' + esc(l.song_key) : (song && song.default_key ? 'Key ' + esc(song.default_key) : 'No key set')}${
             leaderName(l) ? ' · led by ' + esc(leaderName(l)) : ''}${
@@ -1345,15 +1411,18 @@ function filesBlock(s, editable){
   const auto = setlist.map(l => {
     const song = A.songs.find(x => x.id === l.song_id);
     if (!song) return '';
+    // Same silent fallback as openSong had: a minor key here produced a link
+    // reading "Chart in C" for a song booked in Em. Label it with what the
+    // chart will actually be drawn in, and only claim a key we can draw.
     const key = normaliseKey(l.song_key) || normaliseKey(song.default_key) || 'C';
     const bits = [];
     if (song.chart_format === 'nashville' && song.chord_chart) {
-      bits.push(`<a href="#" onclick="openSong('${song.id}','${key}');return false;">🎹 Chart in ${esc(key)}</a>`);
+      bits.push(`<a href="#" class="song-open" data-song-id="${esc(song.id)}" data-song-key="${esc(key)}">🎹 Chart in ${esc(key)}</a>`);
     } else if (song.chord_chart_url) {
-      bits.push(`<a href="${esc(song.chord_chart_url)}" target="_blank" rel="noopener">📄 Chart</a>`);
+      bits.push(`<a href="${esc(safeUrl(song.chord_chart_url))}" target="_blank" rel="noopener">📄 Chart</a>`);
     }
-    if (song.song_url) bits.push(`<a href="${esc(song.song_url)}" target="_blank" rel="noopener">▶️ Listen</a>`);
-    if (song.spotify_url) bits.push(`<a href="${esc(song.spotify_url)}" target="_blank" rel="noopener">🎧 Spotify</a>`);
+    if (safeUrl(song.song_url)) bits.push(`<a href="${esc(safeUrl(song.song_url))}" target="_blank" rel="noopener">▶️ Listen</a>`);
+    if (safeUrl(song.spotify_url)) bits.push(`<a href="${esc(safeUrl(song.spotify_url))}" target="_blank" rel="noopener">🎧 Spotify</a>`);
     if (!bits.length) return `
       <div class="filerow"><span style="flex:1">${esc(song.title)}</span>
         <span style="color:var(--muted);font-size:.78rem">nothing to practise from yet</span></div>`;
@@ -1371,7 +1440,7 @@ function filesBlock(s, editable){
       ${auto ? '<div class="sub-h">Attached by hand</div>' : ''}
       ${files.length ? files.map(f => `
         <div class="filerow">
-          <a href="${esc(f.url)}" target="_blank" rel="noopener">${esc(f.label || f.url)}</a>
+          <a href="${esc(safeUrl(f.url))}" target="_blank" rel="noopener">${esc(f.label || f.url)}</a>
           ${editable ? `<a href="#" class="x" style="color:var(--muted)" onclick="removeServiceFile('${f.id}','${s.id}');return false;">✕</a>` : ''}
         </div>`).join('') : '<div class="empty">Nothing attached yet.</div>'}
       ${editable ? `
@@ -2214,9 +2283,30 @@ async function removeServiceSong(linkId, serviceId){
 // Modal
 // =========================================================================
 function showModal(title, bodyHtml){
-  $('modal').innerHTML = `<button class="close" onclick="closeModal()">&times;</button><h3>${title}</h3>${bodyHtml}`;
+  // The title is escaped HERE rather than at each call site. Every caller today
+  // passes text it escaped itself, so this changes nothing now - but it is an
+  // unguarded sink one careless caller away from a song-title injection, and
+  // the sink is the right place to close that.
+  $('modal').innerHTML = `<button class="close" onclick="closeModal()">&times;</button><h3>${esc(title)}</h3>${bodyHtml}`;
   $('modal-bg').classList.add('open');
 }
+
+// Opening a song from the order of service.
+//
+// This used to be an inline onclick with the song key interpolated into it.
+// esc() looked like enough and was not: it turns ' into &#39;, the HTML parser
+// decodes that back to a real quote before the JS parser sees the attribute,
+// and the string literal ends early. A key of  G'),...;//  ran arbitrary code
+// in the browser of everyone who opened the plan. Proven in a browser.
+//
+// The key now travels as a data- attribute, where it is just text, and never
+// appears in anything that gets parsed as JavaScript.
+document.addEventListener('click', (e) => {
+  const el = e.target.closest && e.target.closest('.song-open');
+  if (!el) return;
+  e.preventDefault();
+  openSong(el.dataset.songId, el.dataset.songKey || null, el.dataset.songEdit === '1');
+});
 function closeModal(){
   $('modal-bg').classList.remove('open');
   $('modal').innerHTML = '';

@@ -2720,3 +2720,121 @@ which is why it counts handlers rather than sections.
 is on now", "how long was she out for" are all answerable from this table and
 none of them are wired up. That is the obvious next piece.
 
+---
+
+## 2026-09-16 — Worship/Band reviewed, four faults fixed
+
+Asked to look the page over. Two parallel audits plus my own check of the
+backend. **The backend is in good shape** — I read every worship policy and
+every RPC definition rather than trusting the summary. Writes need
+`is_worship_admin()`, reads are signed-in-only, and the reply RPC derives the
+actor server-side, whitelists the status and verifies ownership. Two
+privilege-escalation paths were raised and **both are already closed**.
+
+Four things were real. Each was verified before it was fixed — in a browser
+where that was the only honest way to know.
+
+### 1. Script injection through a song key *(fixed here)*
+
+`esc()` was used inside an **inline onclick**. It turns `'` into `&#39;`, the
+HTML parser decodes that back to a live quote *before* the JS parser sees the
+attribute, and the string literal ends early. A key of `G'),…;//` ran arbitrary
+script in the browser of everyone who opened the plan.
+
+Proven in a real browser, twice: the first payload left unbalanced parentheses,
+so the handler was a syntax error and nothing ran — which looked like the claim
+was wrong. It was the *payload* that was wrong. A balanced one executed.
+
+All three song links now carry the id and key as **data- attributes**, read by
+one delegated listener. Two of them were never exploitable (they interpolate
+uuids) and were changed anyway, because leaving the pattern in place is how it
+gets copied onto a field that is free text.
+
+### 2. `javascript:` links *(fixed here)*
+
+`esc()` has no opinion about a **scheme** — there is nothing to escape in
+`javascript:alert(1)`. Anyone who could write a song row could plant a
+"rehearsal track" that ran code on click. New `safeUrl()` admits http and https
+and returns empty otherwise; every interpolated href goes through it, and the
+test scans for hrefs rather than listing them, so a new link is covered too.
+
+`showModal()` also escapes its own title now. Every caller already passed
+escaped text, so it was not exploitable — an unguarded sink one careless caller
+away, and the sink is the right place to close that.
+
+### 3. Drafts were readable by the whole school *(fixed in the backend repo)*
+
+The page says **"A draft is yours alone"** and filtered drafts out **in the
+browser** — after fetching them. The SELECT rule said everyone. Any signed-in
+student could read an unplanned service, its team and its notes in the network
+tab, no devtools skill required.
+
+The rule now lives where it is a rule, and the service's children go with it —
+a slot on a draft names a person and a position on a service nobody has
+announced. Probed on the live database as a student, rolled back: two services
+exist, one draft, and the student now sees one. The song *library* stays open
+on purpose: a song is not a plan.
+
+### 4. The chart parser ate numbers out of lyrics *(fixed here)*
+
+`"Bless the Lord, 10,000 reasons"` rendered as **`Bless the Lord, 0,000
+reasons`** with a stray C over it. `"Psalm 23"` lost its 23. Every numeral in a
+lyric did it.
+
+Two plausible rules were both wrong, and the existing tests caught both:
+
+- *"a degree is followed by a space"* — no: it is written against the syllable
+  it is sung on, `1He picked me up`.
+- *"a degree starts a word"* — no: a chord can land mid-word, `bag of bo1nes`,
+  and there is a test that says so.
+
+What actually separates them is that a chord digit **stands alone** — no digit
+on either side. Ordinals get their own guard, so "the 1st time" keeps its 1st.
+
+### Also: a minor key no longer becomes C in silence
+
+`KEY_SCALES` holds the twelve major spellings, so `normaliseKey('Em')` returns
+null and the chart opened in **C with nothing said**, while the line above it
+still read "Key Em". Someone reads that on a Sunday morning and plays the wrong
+key. The fallback is unchanged — it is the only thing the renderer can do — but
+the modal now says which key was booked and which one it is showing.
+
+**Open question for whoever knows the music:** proper minor-key support is a
+convention decision, not a code one. Nashville numbers in a minor key can be
+relative to the minor tonic or to the relative major, and guessing would be
+worse than the warning. Say which and it is a small change.
+
+### The journey harness could not run at all
+
+`debug-tools/worship-journeys.mjs` imported Playwright from
+`/opt/node22/lib/node_modules/...` and Chromium from `/opt/pw-browsers/...` —
+absolute paths from the Linux sandbox it was written in. CLAUDE.md points at
+this file as *"the pattern to copy"*, so the repo's own beta-testing rule died
+on its first line for anyone who followed it.
+
+Both are now looked up rather than assumed, with `WORSHIP_JOURNEYS_CHROME` as an
+override, and a missing Playwright prints the install line instead of a stack
+trace. **It still needs Playwright installed** — not installed here, so the
+journeys have not been re-run.
+
+### Tests
+
+`tests/worship-safety.test.js` (36) is new and covers all of the above. Three
+assertions in the existing suites pinned the old markup — the exact inline
+`onclick`, the exact class attribute, the exact third argument — and were
+re-expressed against behaviour. One of them was the same stale-source-assertion
+problem hit twice already today.
+
+### Reported by the audits, NOT verified and NOT fixed
+
+Worth someone's time, roughly in order: `toggleServiceStatus` mutates local
+state without re-reading, so a zero-row update leaves the badge saying
+"published" while the team sees nothing; `sort_order: existing.length` collides
+after any removal, so the last two songs swap between loads; a soft-deleted song
+renders as the literal word **"Song"** in every past order of service; a one-off
+service more than 14 days out is created as a draft and then appears on no
+screen at all — unreachable and unpublishable; and `loadServiceChildren` fetches
+every service's children unpaginated, which at around 1250 rows would silently
+drop the last song of *every* order of service at once. Plus sticky dialog state
+that survives a cancel.
+
