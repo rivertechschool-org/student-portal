@@ -3037,14 +3037,12 @@ own submissions either, so the screen looked like they had simply never
 submitted. That is why it "seems to be" a denial: it works perfectly for the 36
 students whose ids happen to match.
 
-### Both halves of the check were wrong the same way
+### The server had the same confusion, twice over
 
-```
-student_id = auth.uid()                      -- false for them
-AND EXISTS (... ce.student_id = auth.uid())  -- also false: enrolments are keyed on profile ids
-```
-
-So even a client sending the right id would have been refused.
+The rule that decides whether the row is yours was matching on the wrong one of
+those two ids — and so was the enrolment check behind it. So even a client
+sending the right id would have been refused. *(Details are in the backend repo,
+where they belong.)*
 
 ### And the client was sending the wrong id
 
@@ -3055,8 +3053,8 @@ not**, including the one behind `submitAssignment`. All fourteen now use it.
 
 ### Fixed
 
-- **`my_profile_id()`** in the backend repo resolves the caller's profile id
-  once, the way `worship_profile_id()` already did for that feature.
+- The backend now resolves the caller's profile id in one place, the way the
+  worship feature already did. *(Named and explained in the backend repo.)*
 - Applied to the submission journey **end to end**: handing work in, seeing it,
   editing it, plus the assignment, enrolment, homework and test rows a student
   has to read to get there.
@@ -3071,19 +3069,74 @@ visible **59**, other students' submissions visible **0**.
 `tests/student-record-id.test.js` scans for the pattern rather than listing the
 fourteen, so a NEW site that reaches for the auth uid fails it.
 
-### ⚠️ The wider finding — not fixed, and it is your call
+### The same confusion was school-wide
 
-**138 policies across roughly 60 tables compare a profile-id column straight to
-`auth.uid()`.** The same 37 students are wrong on every one of them. Tables
-include grades, attendance, notes, medical info, strikes, waivers, schedules,
-RTC balances, skill progress, discussions and notifications — and the parent
-policies have the same shape via `parent_child_links`.
+It was not only submissions. **See the next entry** — the whole surface has now
+been gone through.
 
-Some of those will be harmless (a table that only self-registered accounts ever
-touch). Some will be another version of this bug waiting for the right student.
-Working out which is which is a deliberate pass, not something to bundle into a
-fix for the journey that was reported — and every one of them is a permission
-boundary, so it wants probing table by table rather than a search and replace.
+---
 
-**The tool to do it with is now there:** `my_profile_id()` exists and is proven.
+## 2026-09-17 — all of it, not just submissions
+
+The submission denial was one instance of a school-wide confusion between a
+person's two ids. **The whole surface has now been gone through: 61 rules across
+34 tables, plus 20 deliberately left alone.**
+
+### What was actually wrong
+
+A student's record lives under their **profile** id. The login system knows them
+by a **different** id — unless they signed themselves up, in which case the two
+happen to be the same number. Roster-created students are the other shape: staff
+make the record first, and the login is attached later.
+
+**37 of 167 student profiles are that second shape, and 14 of them can sign in
+today.** Everything that asked "is this row yours?" was asking about the wrong
+id, so for those students the answer was always no.
+
+Measured on one real student before the fix — **all of it theirs, none of it
+visible to them**:
+
+| their own records | could see |
+| --- | --- |
+| 64 class-attendance rows | 0 |
+| 103 day-attendance rows | 0 |
+| 5 timetable rows | 0 |
+| 24 notifications | 0 |
+
+### How each one was decided
+
+**Not by the column's name — by what it actually points at.** A column that
+points at the login table is right as it stands, and 20 of them were left
+exactly alone. A column that points at the student record was wrong. The 16
+columns with no link declared at all were **measured against the live data**
+rather than guessed: every one that holds anything holds profile ids — 109, 131,
+115, 50 and 28 values that match a student record and no login, and **not one**
+the other way round.
+
+The check now accepts **either of the one person's two ids**, so it is right
+whichever a column turns out to hold, and it still matches exactly one person —
+nobody else's record id is your login id.
+
+### Nothing widened
+
+Every rule admits the same person it was written to admit; it just recognises
+them. Verified against two students and a parent, on the live database, rolled
+back:
+
+- the roster-created student went **0 → 64, 0 → 103, 0 → 5, 0 → 24**, with other
+  students' rows at **0** throughout
+- the self-registered student — the control — **did not move by a single row**
+- a student still **cannot alter** their own attendance record
+- a parent still sees **their own child and no other**
+- and nothing is left in the sweep that identifies a person the wrong way
+
+### The client half
+
+`shared/config.js` has carried `studentRecordId()` and its explanation for a
+while. Six call sites used it; fourteen did not. All twenty do now, and
+`tests/student-record-id.test.js` scans for the pattern rather than listing
+them, so a new site that reaches for the login id fails the suite.
+
+Checked before shipping: **none of the twenty sits on a table whose column
+points at the login system**, where the conversion would have broken it instead.
 
