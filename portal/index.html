@@ -44167,12 +44167,63 @@
     // overlap is nearly always a typo in one of the four numbers.
     _bellOverlaps(blocks) {
       const bad = [];
-      for (let i = 1; i < blocks.length; i++) {
-        const prev = blocks[i - 1], here = blocks[i];
-        const pEnd = this._bellTime(prev.ends_at), hStart = this._bellTime(here.starts_at);
-        if (pEnd && hStart && hStart < pEnd) bad.push([prev, here]);
+      const timed = blocks
+        .map(b => ({ b, s: this._bellTime(b.starts_at), e: this._bellTime(b.ends_at) }))
+        .filter(x => x.s && x.e);
+      // Every pair, because two blocks that genuinely clash need not be next to
+      // each other in the list. A dozen blocks makes this nothing.
+      for (let i = 0; i < timed.length; i++) {
+        for (let j = i + 1; j < timed.length; j++) {
+          const a = timed[i], c = timed[j];
+          if (a.s < c.e && c.s < a.e) bad.push(a.s <= c.s ? [a.b, c.b] : [c.b, a.b]);
+        }
       }
       return bad;
+    }
+
+    // The list is not in clock order. Worth saying - it is nearly always a
+    // block added or retimed since - but it is a different complaint from an
+    // overlap and it has a one-click answer, so it gets its own notice.
+    _bellOutOfOrder(blocks) {
+      const times = blocks.map(b => this._bellTime(b.starts_at)).filter(Boolean);
+      for (let i = 1; i < times.length; i++) {
+        if (times[i] < times[i - 1]) return true;
+      }
+      return false;
+    }
+
+    // Write a running order. Takes block keys in the order wanted and numbers
+    // them 10, 20, 30...
+    //
+    // Every row sharing a key moves together - the default and each day's
+    // override - because a day's rows are sorted by their own copy of
+    // sort_order, and leaving those behind would order Tuesday differently
+    // from every other day.
+    async _bellApplyOrder(keys) {
+      const rows = this._bellRows || [];
+      for (let i = 0; i < keys.length; i++) {
+        const want = (i + 1) * 10;
+        const mine = rows.filter(r => r.block_key === keys[i]);
+        // A key with no rows yet is one just inserted: write it authoritatively
+        // rather than trusting whatever provisional number it went in with.
+        if (mine.length && !mine.some(r => Number(r.sort_order) !== want)) continue;
+        const res = await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+          .update({ sort_order: want }).eq('block_key', keys[i]));
+        if (res.error) {
+          this.showNotification('Could not reorder: ' + res.error.message, 'error');
+          return false;
+        }
+      }
+      return true;
+    }
+
+    // The order the blocks are in now, as keys.
+    _bellOrder() {
+      return (this._bellRows || [])
+        .filter(r => r.day_of_week === null)
+        .slice()
+        .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0))
+        .map(r => r.block_key);
     }
 
     // STAFF DUTIES: who is on lunch, attendance, assembly and the gate.
@@ -44581,6 +44632,15 @@
         </div>`;
       }
 
+      if (day === null && this._bellOutOfOrder(shown)) {
+        html += `<div class="card" style="padding: 10px 14px; margin-bottom: 12px; border-left: 3px solid #6aa9ff; font-size: 13px;">
+          These are not in clock order. Move them with ↑ and ↓, or
+          <button class="btn btn-secondary" style="font-size: 11px; padding: 3px 8px;"
+                  onclick="app.sortBellByTime()">put them in time order</button>.
+          The order is the same on every day.
+        </div>`;
+      }
+
       html += `<div class="card" style="padding: 0; overflow-x: auto;">
         <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
           <thead>
@@ -44601,6 +44661,7 @@
 
       for (const b of shown) {
         const inherited = day !== null && b.day_of_week === null;
+        const at = shown.indexOf(b);
         const start = this._bellTime(b.starts_at), end = this._bellTime(b.ends_at);
         const mins = (start && end)
           ? Math.round((new Date(`2000-01-01T${end}`) - new Date(`2000-01-01T${start}`)) / 60000)
@@ -44627,6 +44688,12 @@
             <td style="padding: 8px 14px; text-align: right; white-space: nowrap;">
               ${day === null
                 ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
+                           title="Move up" ${at === 0 ? 'disabled' : ''}
+                           onclick="app.moveBellBlock('${this.escapeHtml(b.block_key)}', -1)">↑</button>
+                   <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
+                           title="Move down" ${at === shown.length - 1 ? 'disabled' : ''}
+                           onclick="app.moveBellBlock('${this.escapeHtml(b.block_key)}', 1)">↓</button>
+                   <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
                            onclick="app.removeBellBlock('${this.escapeHtml(b.block_key)}')">Remove</button>`
                 : `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
                            onclick="app.omitBellBlock('${this.escapeHtml(b.block_key)}')">Not on ${this.escapeHtml(dayName.slice(0, 3))}</button>
@@ -44677,6 +44744,29 @@
     setBellDay(dow) {
       this._bellDay = dow;
       this._renderBellBody();
+    }
+
+    // Up and down. The order belongs to the schedule rather than to one day,
+    // so moving a block moves it on every day - which is what makes the order
+    // mean anything.
+    async moveBellBlock(key, dir) {
+      const order = this._bellOrder();
+      const from = order.indexOf(key);
+      const to = from + dir;
+      if (from === -1 || to < 0 || to >= order.length) return;
+      order.splice(to, 0, order.splice(from, 1)[0]);
+      if (await this._bellApplyOrder(order)) await this.renderAdminBellSchedule();
+    }
+
+    // One click instead of six presses of Up.
+    async sortBellByTime() {
+      const order = (this._bellRows || [])
+        .filter(r => r.day_of_week === null)
+        .slice()
+        .sort((a, b) => String(this._bellTime(a.starts_at))
+          .localeCompare(String(this._bellTime(b.starts_at))))
+        .map(r => r.block_key);
+      if (await this._bellApplyOrder(order)) await this.renderAdminBellSchedule();
     }
 
     // Writing a time on a DAY creates that day's override; writing it on the
@@ -44742,13 +44832,22 @@
         while (rows.some(r => r.block_key === `${key}-${n}`)) n++;
         key = `${key}-${n}`;
       }
-      // Sits in clock order without renumbering anything else.
-      const after = rows.filter(r => r.day_of_week === null && this._bellTime(r.starts_at) <= start);
-      const sort_order = after.length ? Math.max(...after.map(r => r.sort_order)) + 5 : 5;
+      // Where it goes: after everything that starts before it, in the order
+      // the schedule is in now. Position first, numbers after - the numbers
+      // are then written for the whole list so they cannot drift apart again.
+      const order = this._bellOrder();
+      const defaults = rows.filter(r => r.day_of_week === null)
+        .slice()
+        .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+      let at = defaults.findIndex(r => this._bellTime(r.starts_at) > start);
+      if (at === -1) at = defaults.length;
 
       const res = await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
-        .insert({ block_key: key, label, period, day_of_week: null, starts_at: start, ends_at: end, sort_order }));
+        .insert({ block_key: key, label, period, day_of_week: null,
+                  starts_at: start, ends_at: end, sort_order: (at + 1) * 10 }));
       if (res.error) { this.showNotification('Could not add: ' + res.error.message, 'error'); return; }
+      order.splice(at, 0, key);
+      await this._bellApplyOrder(order);
       await this.renderAdminBellSchedule();
     }
 

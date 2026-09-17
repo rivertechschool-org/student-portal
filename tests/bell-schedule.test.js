@@ -65,6 +65,11 @@ app._bellTime = extract('_bellTime');
 app._bellSay = extract('_bellSay');
 app._bellResolve = extract('_bellResolve');
 app._bellOverlaps = extract('_bellOverlaps');
+app._bellOutOfOrder = extract('_bellOutOfOrder');
+app._bellOrder = extract('_bellOrder');
+app._bellApplyOrder = extract('_bellApplyOrder');
+app.moveBellBlock = extract('moveBellBlock');
+app.sortBellByTime = extract('sortBellByTime');
 app._bellDays = extract('_bellDays');
 
 const resolve = (rows, dow) => app._bellResolve.call(app, rows, dow)
@@ -78,6 +83,28 @@ const DEFAULTS = [
   { block_key: 'lunch', label: 'Lunch', period: null, day_of_week: null, starts_at: '12:15', ends_at: '12:55', omitted: false, sort_order: 45 },
   { block_key: 'p6', label: 'Period 6', period: 6, day_of_week: null, starts_at: '13:50:00', ends_at: '14:40:00', omitted: false, sort_order: 60 },
 ];
+
+// Records every sort_order written, so the assertions are about what reaches
+// the database rather than about what the screen happens to show afterwards.
+function orderingApp(rows) {
+  const a = Object.create(app);
+  a._bellRows = rows.map(r => ({ ...r }));
+  a.writes = [];
+  a.notified = [];
+  a.rendered = 0;
+  a.showNotification = (m, k) => a.notified.push([k, m]);
+  a.renderAdminBellSchedule = async () => { a.rendered++; };
+  a.supabaseQuery = async (fn) => await fn();
+  a.auth = { supabase: { from() {
+    const q = {
+      update(patch) { q._patch = patch; return q; },
+      eq(col, val) { q._col = col; q._val = val; return q; },
+      then(res) { a.writes.push({ [q._col]: q._val, ...q._patch }); return Promise.resolve({ error: null }).then(res); },
+    };
+    return q;
+  } } };
+  return a;
+}
 
 (async () => {
 
@@ -174,6 +201,113 @@ const DEFAULTS = [
     check('  Monday to Friday', days.map(d => d.dow), [1, 2, 3, 4, 5]);
   }
 
+  console.log('\n== an overlap is two blocks sharing clock time ==\n');
+
+  {
+    // THE BUG THIS BLOCK EXISTS FOR. Period 7 runs 13:40-14:20, genuinely last
+    // in the day, but was given a sort_order that put it above Period 1. The
+    // old check compared each row with the one BELOW IT IN THE LIST, so it
+    // reported that Period 7 "ends after Period 1 starts" - true of the list
+    // and false of the day. Nothing overlaps here.
+    const outOfOrder = [
+      { block_key: 'p7', label: 'Period 7', starts_at: '13:40:00', ends_at: '14:20:00', day_of_week: null, sort_order: 5 },
+      { block_key: 'p1', label: 'Period 1', starts_at: '08:45:00', ends_at: '09:35:00', day_of_week: null, sort_order: 10 },
+      { block_key: 'p2', label: 'Period 2', starts_at: '09:35:00', ends_at: '10:25:00', day_of_week: null, sort_order: 20 },
+    ];
+    check('a list in the wrong order is not an overlap',
+          app._bellOverlaps.call(app, outOfOrder), []);
+    ok('  but it is still worth saying', app._bellOutOfOrder.call(app, outOfOrder));
+
+    // One ending exactly when the next starts is a schedule, not a clash.
+    ok('touching blocks do not overlap',
+       app._bellOverlaps.call(app, outOfOrder.slice(1)).length === 0);
+  }
+
+  {
+    // A real clash, and deliberately NOT adjacent in the list, which the old
+    // adjacent-pairs walk could not see at all.
+    const clash = [
+      { block_key: 'a', label: 'Assembly', starts_at: '09:00', ends_at: '10:30', day_of_week: null, sort_order: 10 },
+      { block_key: 'b', label: 'Break', starts_at: '10:30', ends_at: '10:45', day_of_week: null, sort_order: 20 },
+      { block_key: 'c', label: 'Choir', starts_at: '09:30', ends_at: '09:45', day_of_week: null, sort_order: 30 },
+    ];
+    const bad = app._bellOverlaps.call(app, clash);
+    check('a genuine clash is found even two rows apart', bad.length, 1);
+    check('  and is named earlier-first', bad[0].map(x => x.label), ['Assembly', 'Choir']);
+    ok('a schedule in clock order is not flagged as out of order',
+       !app._bellOutOfOrder.call(app, [clash[0], clash[1]]));
+  }
+
+  console.log('\n== blocks can be moved ==\n');
+
+  // What the schedule looks like after the writes land. The write LIST would
+  // also encode the decision not to touch rows already holding the right
+  // number, which is an optimisation, not the behaviour under test.
+  const orderAfter = (a) => {
+    const by = new Map(a._bellRows.filter(r => r.day_of_week === null)
+      .map(r => [r.block_key, Number(r.sort_order) || 0]));
+    for (const w of a.writes) by.set(w.block_key, w.sort_order);
+    return [...by.entries()].sort((x, y) => x[1] - y[1]).map(x => x[0]);
+  };
+
+  const ORD = [
+    { block_key: 'p7', label: 'Period 7', starts_at: '13:40:00', ends_at: '14:20:00', day_of_week: null, sort_order: 5 },
+    { block_key: 'p1', label: 'Period 1', starts_at: '08:45:00', ends_at: '09:35:00', day_of_week: null, sort_order: 10 },
+    { block_key: 'p2', label: 'Period 2', starts_at: '09:35:00', ends_at: '10:25:00', day_of_week: null, sort_order: 20 },
+  ];
+
+  {
+    const a = orderingApp(ORD);
+    check('the order it is in now', a._bellOrder.call(a), ['p7', 'p1', 'p2']);
+
+    await a.moveBellBlock.call(a, 'p7', 1);
+    check('moving down puts it one lower', orderAfter(a), ['p1', 'p7', 'p2']);
+    check('  writing only the rows that actually change', a.writes,
+          [{ block_key: 'p7', sort_order: 20 }, { block_key: 'p2', sort_order: 30 }]);
+    check('  and redraws once', a.rendered, 1);
+  }
+
+  {
+    const a = orderingApp(ORD);
+    await a.moveBellBlock.call(a, 'p7', -1);
+    check('the top block cannot move up', a.writes, []);
+    check('  and nothing is redrawn', a.rendered, 0);
+    await a.moveBellBlock.call(a, 'p2', 1);
+    check('the bottom block cannot move down', a.writes, []);
+  }
+
+  {
+    // A day's override carries its own copy of sort_order, and _bellResolve
+    // sorts by it. Leaving those behind would order Tuesday differently from
+    // every other day, so every row sharing a key moves together - which
+    // .eq('block_key', …) does in one statement.
+    const a = orderingApp([...ORD,
+      { block_key: 'p7', label: 'Period 7', starts_at: '13:50', ends_at: '14:30', day_of_week: 2, sort_order: 5 }]);
+    await a.moveBellBlock.call(a, 'p7', 1);
+    ok('a move addresses the block by key, not by row',
+       a.writes.every(w => 'block_key' in w));
+    check('  so a day override moves with its default',
+          a.writes.find(w => w.block_key === 'p7').sort_order, 20);
+  }
+
+  {
+    const a = orderingApp(ORD);
+    await a.sortBellByTime.call(a);
+    check('time order puts the afternoon block last', orderAfter(a), ['p1', 'p2', 'p7']);
+    check('  and moves only the block that was adrift', a.writes,
+          [{ block_key: 'p7', sort_order: 30 }]);
+  }
+
+  {
+    // Already in clock order: nothing to write, and nothing to redraw around.
+    const a = orderingApp([
+      { block_key: 'p1', label: 'Period 1', starts_at: '08:45', ends_at: '09:35', day_of_week: null, sort_order: 10 },
+      { block_key: 'p2', label: 'Period 2', starts_at: '09:35', ends_at: '10:25', day_of_week: null, sort_order: 20 },
+    ]);
+    await a.sortBellByTime.call(a);
+    check('a schedule already in order is left alone', a.writes, []);
+  }
+
   console.log('\n== the section is wired up ==\n');
 
   ok('there is a container to render into', /id="admin-bell-schedule-section"/.test(html));
@@ -182,6 +316,8 @@ const DEFAULTS = [
   // The client gate is an affordance; the real control is the RLS policy in the
   // backend repo. Worth asserting that the affordance is at least there.
   ok('the editor writes to the schedule table', /from\('schedule_blocks'\)/.test(html));
+  ok('  and the rows carry move controls', /app\.moveBellBlock\('/.test(html));
+  ok('  with the ends of the list stopped', /at === 0 \? 'disabled'/.test(html));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
