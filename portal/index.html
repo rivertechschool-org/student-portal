@@ -42072,6 +42072,9 @@
           }
         }
         this._classDaily = dailyByStudent;
+        // Match Master needs to know which lesson it is copying INTO: "late"
+        // means a different thing in period 1 than in period 6.
+        this._classDailyPeriod = currentPeriod;
 
         // Get existing attendance session for this date and period
         let sessionQuery = this.auth.supabase
@@ -42404,21 +42407,69 @@
     // "Not taken" is not "present", and a guess made here is invisible the
     // moment it is saved - which is why the button this replaces, which set
     // every row to present regardless of the day, was worth losing.
+    // What the day's mark means for ONE period.
+    //
+    // "Late" and "left early" are facts about the DAY, not about this lesson.
+    // A student who arrived in period 2 was not late to period 6 - they were
+    // simply there, and a class register saying "arrived late" makes a claim
+    // about that lesson which nobody made. Copying the day's word verbatim is
+    // what Match Master used to do.
+    //
+    // The day records WHICH period they arrived in and which they left in -
+    // every late row on this register has one - so this is exact rather than a
+    // guess, and the day's own word is kept for the ONE lesson it is true of:
+    // they really were late to the period they arrived in, and really did
+    // leave the period they left in early.
+    //
+    //        arrived P3, left P6
+    //        P1   P2   P3     P4   P5   P6          P7
+    //        absent    late   present   left_early  absent
+    //
+    // With no period on screen there is no lesson to place them in, so the
+    // day's word stands - as it does if the day never recorded the period.
+    _dayStatusForPeriod(day, period) {
+      if (!day || !day.status) return null;
+      const s = day.status;
+      if (s !== 'late' && s !== 'left_early' && s !== 'late_left_early') return s;
+
+      const p = Number(period);
+      if (period === null || period === undefined || !Number.isFinite(p)) return s;
+
+      const arrived = day.arrived_at_period == null ? null : Number(day.arrived_at_period);
+      const left = day.left_at_period == null ? null : Number(day.left_at_period);
+      if (arrived === null && left === null) return s;
+
+      if (arrived !== null) {
+        if (p < arrived) return 'absent';            // not here yet
+        if (p === arrived) return left !== null && p === left ? s : 'late';
+      }
+      if (left !== null) {
+        if (p > left) return 'absent';               // already gone
+        if (p === left) return 'left_early';
+      }
+      return 'present';
+    }
+
     matchClassToMaster() {
       const daily = this._classDaily || {};
+      const period = this._classDailyPeriod;
       const selects = document.querySelectorAll('.class-attendance-status');
       if (!selects.length) return;
 
-      let set = 0, already = 0, missing = 0;
+      let set = 0, already = 0, missing = 0, placed = 0;
 
       selects.forEach(field => {
         const day = daily[field.dataset.studentId];
         if (!day || !day.status) { missing++; return; }
-        if (field.value === day.status) { already++; return; }
+        // Not the day's word - what the day's word means for THIS lesson.
+        const status = this._dayStatusForPeriod(day, period);
+        if (!status) { missing++; return; }
+        if (status !== day.status) placed++;
+        if (field.value === status) { already++; return; }
         // Through the painter, never the value alone: the mark is shown by two
         // buttons and the three-dot chip as well as the hidden field, and
         // writing one of the four leaves them contradicting each other.
-        this._paintClassAttendanceRow(field.closest('tr'), day.status);
+        this._paintClassAttendanceRow(field.closest('tr'), status);
         set++;
       });
 
@@ -42431,6 +42482,12 @@
       if (set) parts.push(`${set} set from the day`);
       if (already) parts.push(`${already} already matched`);
       if (missing) parts.push(`${missing} not on the day's register`);
+      // Otherwise a teacher sees "present" on a row whose day says "late" and
+      // assumes the button is broken.
+      if (placed) {
+        parts.push(`${placed} read against period ${period}` +
+          ` (arriving late or leaving early is a fact about the day, not this lesson)`);
+      }
       this.showNotification(parts.join(' \u00b7 ') + '. Press Save Attendance to keep it.', set ? 'success' : 'info');
     }
 

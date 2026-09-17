@@ -20,8 +20,17 @@
 //     a teacher to distrust the button, and they will go back to retyping.
 //
 // The status vocabulary is shared with the daily register (present, absent,
-// late, left_early, late_left_early), so this is a straight copy with no
-// mapping - if those two lists ever diverge, this test is where it shows up.
+// late, left_early, late_left_early) - but it is NOT a straight copy, and that
+// was the fourth rule missing from this list:
+//
+//   * LATE AND LEFT EARLY ARE FACTS ABOUT THE DAY, NOT ABOUT THIS LESSON.
+//     A student who arrived in period 2 was not late to period 6; they were
+//     simply there. Copying the word across put a claim on the class register
+//     that nobody made, and the teacher then had to undo it by hand on every
+//     row. The day records which period they arrived in and which they left
+//     in, so the answer is exact: absent before they arrived, present while
+//     they were here, absent after they left - and the day's own word kept for
+//     the one lesson it is actually true of.
 //
 // Run: node tests/class-match-master.test.js
 
@@ -56,6 +65,7 @@ function method(name, indent = '    ') {
 
 const matchClassToMaster = method('matchClassToMaster');
 const _paintClassAttendanceRow = method('_paintClassAttendanceRow');
+const _dayStatusForPeriod = method('_dayStatusForPeriod');
 
 // ---- the smallest DOM the method touches -------------------------------
 //
@@ -104,16 +114,18 @@ function buildRow(id, value) {
   return { field, buttons, more, select, glyph };
 }
 
-function run(rows, daily) {
+function run(rows, daily, period) {
   const built = rows.map(r => buildRow(r.id, r.value));
   const fields = built.map(b => b.field);
   global.document = { querySelectorAll: () => fields };
   const notes = [];
   const app = {
     _classDaily: daily,
+    _classDailyPeriod: period === undefined ? null : period,
     showNotification: (message, type) => notes.push({ message, type }),
     matchClassToMaster,
     _paintClassAttendanceRow,
+    _dayStatusForPeriod,
   };
   app.matchClassToMaster();
   return {
@@ -165,6 +177,74 @@ check('  and warns', r.note.type, 'warning');
 
 r = run([{ id: 'a', value: '' }], { a: {} });
 check('an empty daily row counts as silent', r.values, ['']);
+
+// ---- the day's word, read against this lesson --------------------------
+//
+// THE BUG THIS SECTION EXISTS FOR. A student who arrived late to SCHOOL was
+// marked "arrived late" in every class of the day, including the five that
+// happened after they got there.
+console.log('\n== late and left early are facts about the day ==\n');
+
+const dsp = (day, period) => _dayStatusForPeriod.call({}, day, period);
+
+// Arrived in period 3.
+const late3 = { status: 'late', arrived_at_period: 3 };
+check('before they arrived: absent', dsp(late3, 1), 'absent');
+check('the period they arrived in: late, which is the one lesson it is true of',
+      dsp(late3, 3), 'late');
+check('after they arrived: simply present', dsp(late3, 4), 'present');
+check('  and still present much later', dsp(late3, 7), 'present');
+
+// Left in period 5.
+const left5 = { status: 'left_early', left_at_period: 5 };
+check('before they left: present', dsp(left5, 2), 'present');
+check('the period they left in: left early', dsp(left5, 5), 'left_early');
+check('after they left: absent', dsp(left5, 6), 'absent');
+
+// Both, in one day: arrived P3, left P6.
+const both = { status: 'late_left_early', arrived_at_period: 3, left_at_period: 6 };
+check('before arriving', dsp(both, 2), 'absent');
+check('arriving', dsp(both, 3), 'late');
+check('in between', dsp(both, 4), 'present');
+check('leaving', dsp(both, 6), 'left_early');
+check('after leaving', dsp(both, 7), 'absent');
+
+// Arrived and left in the SAME period: the day's compound word is the only
+// one that says both, so it stands.
+check('arrived and left in one period keeps the compound word',
+      dsp({ status: 'late_left_early', arrived_at_period: 4, left_at_period: 4 }, 4),
+      'late_left_early');
+
+// Plain marks are not period-dependent and must pass straight through.
+check('present is present in every period', dsp({ status: 'present' }, 3), 'present');
+check('absent is absent in every period', dsp({ status: 'absent' }, 3), 'absent');
+
+// Nothing to read it against: the day's word stands rather than being guessed
+// into something more specific than the register knows.
+check('no period on screen leaves the day word alone', dsp(late3, null), 'late');
+check('a day that never recorded the period leaves it alone',
+      dsp({ status: 'late' }, 3), 'late');
+
+// And through the button itself, which is what the teacher presses.
+r = run(
+  [{ id: 'a', value: '' }, { id: 'b', value: '' }, { id: 'c', value: '' }],
+  { a: { status: 'late', arrived_at_period: 2 },
+    b: { status: 'left_early', left_at_period: 6 },
+    c: { status: 'present' } },
+  4
+);
+check('period 4: the late student is just present', r.values,
+      ['present', 'present', 'present']);
+ok('  and the button says it read them against the period',
+   /read against period 4/.test(r.note.message));
+ok('  explaining why, so it does not look broken',
+   /fact about the day, not this lesson/.test(r.note.message));
+
+r = run([{ id: 'a', value: '' }], { a: { status: 'late', arrived_at_period: 6 } }, 2);
+check('period 2, arriving in 6: absent, not late', r.values, ['absent']);
+
+r = run([{ id: 'a', value: '' }], { a: { status: 'present' } }, 4);
+ok('a plain day needs no explanation', !/read against period/.test(r.note.message));
 
 // ---- honest counts -----------------------------------------------------
 console.log('\n== the counts match what happened ==\n');
