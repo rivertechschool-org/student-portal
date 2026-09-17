@@ -49837,7 +49837,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-17·b';
+      const RIVEN_BUILD = '2026-09-17·c';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -63611,9 +63611,32 @@
     // For student-scoped operations, disambiguate by the student's actual
     // enrollment: if the picked class doesn't hold the student, try the
     // same-named siblings before giving up.
+    // "Luke and Evan will be absent today" — two people, no lesson named.
+    //
+    // NOT NAMING A CLASS IS THE ANSWER, NOT A MISSING ONE.
+    //
+    // This used to ask "Which class? Say it like 'mark Evan absent in Math'"
+    // for any sentence without a class in it. But a child who is off school is
+    // not off one lesson, and the school keeps two registers for exactly that
+    // distinction: daily_attendance is whether they came in at all,
+    // class_attendance is whether they came to the lesson.
+    //
+    // So the rule is the one people already speak by:
+    //
+    //   a class named        -> that lesson's register
+    //   "all their classes"  -> every lesson they are in
+    //   nothing named        -> the morning register, the whole day
+    //
+    // Which also means the "which class?" prompt is gone. It was asking for
+    // something the sentence had already answered.
     async terminalMarkAttendance(entities) {
-      const student = entities.student?.student;
-      if (!student) { this.terminalPrintError('Whose attendance? Tell me a student name.'); return; }
+      // Several people in one sentence, the same way terminalEnrollInBand
+      // reads them. "Luke and Evan are absent" is one thought, not two.
+      const single = entities.student?.student;
+      const people = (entities.students && entities.students.length >= 2)
+        ? entities.students.map(w => w.student || w).filter(Boolean)
+        : (single ? [single] : []);
+      if (!people.length) { this.terminalPrintError('Whose attendance? Tell me a student name.'); return; }
       const lower = entities.normalized || '';
       let status = null;
       if (/\bleft early\b/.test(lower)) status = 'left_early';
@@ -63625,12 +63648,66 @@
         : (lower.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1] || this._isoDaysAgo(0));
 
       const sb = this.auth.supabase;
+      const said = status.replace(/_/g, ' ');
+      const names = people.map(p => p.full_name).join(' and ');
+      const bulk = /\b(all|every)\b[^.]*\bclass/.test(lower) && !entities.classMatch;
+
+      // ── The whole day ───────────────────────────────────────────────────
+      if (!bulk && !entities.classMatch) {
+        const ids = people.map(p => p.id);
+        const { data: prevRows, error: prevErr } = await sb.from('daily_attendance')
+          .select('*').eq('date', date).in('student_id', ids);
+        if (prevErr) { this.terminalPrintError('Could not read the register: ' + prevErr.message); return; }
+        const before = new Map((prevRows || []).map(r => [r.student_id, r]));
+
+        const doDay = async () => {
+          // Upsert on (student_id, date), the same conflict target the daily
+          // register screen uses, so marking twice corrects rather than
+          // duplicates.
+          const { error } = await sb.from('daily_attendance').upsert(
+            people.map(p => ({ student_id: p.id, date, status, marked_by: this.userInfo.user.id })),
+            { onConflict: 'student_id,date' });
+          if (error) { this.terminalPrintError('Could not mark the register: ' + error.message); return; }
+
+          this._pushUndo(`marking ${names} ${said} for the day on ${date}`, async () => {
+            for (const p of people) {
+              const prev = before.get(p.id);
+              if (prev) {
+                const { id, ...rest } = prev;
+                await sb.from('daily_attendance').upsert(rest, { onConflict: 'student_id,date' });
+              } else {
+                await sb.from('daily_attendance').delete().eq('student_id', p.id).eq('date', date);
+              }
+            }
+          });
+
+          // Say which register it was. The two are easy to confuse, and the
+          // answer to "why is she still marked present in Maths" is this
+          // sentence.
+          const day = date === this._isoDaysAgo(0) ? 'today' : date;
+          this._naturalSuccess([
+            `Marked ${names} ${said} for ${day} — that's the day register, not one lesson.`,
+            `Done — ${names} ${people.length > 1 ? 'are' : 'is'} down as ${said} for the whole of ${day}.`
+          ]);
+        };
+
+        if (people.length > 1) {
+          this._requestConfirmation(
+            `Mark <b>${this.escapeHtml(names)}</b> as <b>${said}</b> for the whole day on <b>${date}</b>`,
+            doDay);
+        } else {
+          await doDay();
+        }
+        return;
+      }
+
+      // ── One lesson, or all of them ──────────────────────────────────────
       let targets = [];
       let skippedNote = '';
-      const bulk = /\b(all|every)\b[^.]*\bclass/.test(lower) && !entities.classMatch;
+      const first = people[0];
       if (bulk) {
         const { data: enr, error } = await sb.from('class_enrollments')
-          .select('class_id').eq('student_id', student.id).eq('status', 'active');
+          .select('class_id').eq('student_id', first.id).eq('status', 'active');
         if (error) { this.terminalPrintError('Could not read enrollments: ' + error.message); return; }
         const ids = [...new Set((enr || []).map(e => e.class_id))];
         // Closed classes hold active enrolments too, and a register for a
@@ -63645,21 +63722,14 @@
         if (shut) skips.push(`${shut} closed for the year`);
         if (skips.length) skippedNote = ` (skipping ${skips.join(' and ')})`;
         if (!targets.length) {
-          this.terminalPrintError(`${student.full_name} isn't in any class whose attendance you can mark — only the primary teacher (or an admin) can.`);
+          this.terminalPrintError(`${first.full_name} isn't in any class whose attendance you can mark — only the primary teacher (or an admin) can.`);
           return;
         }
       } else {
-        const res = await this._rivenRequireClass(entities, { studentId: student.id });
+        const res = await this._rivenRequireClass(entities, { studentId: first.id });
         if (res.asked) return;
-        const { row, enrollment } = res;
-        if (!row) {
-          this._showRivenMessage(`Which class? Say it like "mark ${this.escapeHtml(student.full_name.split(' ')[0])} ${status.replace(/_/g, ' ')} in Math".`, true);
-          return;
-        }
-        if (!enrollment || enrollment.status !== 'active') {
-          this.terminalPrintError(`${student.full_name} isn't actively enrolled in ${row.name} — I can only mark attendance for enrolled students.`);
-          return;
-        }
+        const { row } = res;
+        if (!row) { this.terminalPrintError(`I couldn't find that class.`); return; }
         if (!this._rivenCanManageClass(row, { attendance: true })) {
           this.terminalPrintError(`Only the primary teacher of ${row.name} (or an admin) can mark its attendance.`);
           return;
@@ -63668,41 +63738,63 @@
         targets = [row];
       }
 
+      // Enrolment is checked per person, because a sentence naming two of them
+      // can easily name one who is not in that class.
+      const enrolledIn = new Map();
+      for (const cls of targets) {
+        const { data: rows } = await sb.from('class_enrollments')
+          .select('student_id, status').eq('class_id', cls.id).in('student_id', people.map(p => p.id));
+        enrolledIn.set(cls.id, new Set((rows || []).filter(r => r.status === 'active').map(r => r.student_id)));
+      }
+      const notIn = people.filter(p => !targets.some(c => enrolledIn.get(c.id)?.has(p.id)));
+      const doing = people.filter(p => !notIn.includes(p));
+      if (!doing.length) {
+        this.terminalPrintError(`${names} ${people.length > 1 ? "aren't" : "isn't"} actively enrolled in ${targets.map(t => t.name).join(', ')} — I can only mark attendance for enrolled students.`);
+        return;
+      }
+      if (notIn.length) {
+        skippedNote += ` (${notIn.map(p => p.full_name).join(', ')} ${notIn.length > 1 ? 'are' : 'is'} not enrolled)`;
+      }
+
       const doIt = async () => {
         const undoOps = [];
         for (const cls of targets) {
-          const { data: prevRows } = await sb.from('class_attendance').select('*')
-            .eq('class_id', cls.id).eq('student_id', student.id).eq('date', date).is('period', null);
-          // Mirror the portal: delete-then-insert (unique index uses COALESCE(period,0))
-          await sb.from('class_attendance').delete()
-            .eq('class_id', cls.id).eq('student_id', student.id).eq('date', date).is('period', null);
-          const { error: insErr } = await sb.from('class_attendance').insert({
-            class_id: cls.id, student_id: student.id, date, period: null,
-            status, notes: null, marked_by: this.userInfo.user.id
-          });
-          if (insErr) throw insErr;
-          undoOps.push({ cls, prev: (prevRows || [])[0] || null });
+          for (const p of doing) {
+            if (!enrolledIn.get(cls.id)?.has(p.id)) continue;
+            const { data: prevRows } = await sb.from('class_attendance').select('*')
+              .eq('class_id', cls.id).eq('student_id', p.id).eq('date', date).is('period', null);
+            // Mirror the portal: delete-then-insert (unique index uses COALESCE(period,0))
+            await sb.from('class_attendance').delete()
+              .eq('class_id', cls.id).eq('student_id', p.id).eq('date', date).is('period', null);
+            const { error: insErr } = await sb.from('class_attendance').insert({
+              class_id: cls.id, student_id: p.id, date, period: null,
+              status, notes: null, marked_by: this.userInfo.user.id
+            });
+            if (insErr) throw insErr;
+            undoOps.push({ cls, student: p, prev: (prevRows || [])[0] || null });
+          }
         }
-        this._pushUndo(`marking ${student.full_name} ${status.replace(/_/g, ' ')} on ${date}`, async () => {
+        this._pushUndo(`marking ${doing.map(p => p.full_name).join(' and ')} ${said} on ${date}`, async () => {
           for (const op of undoOps) {
             await sb.from('class_attendance').delete()
-              .eq('class_id', op.cls.id).eq('student_id', student.id).eq('date', date).is('period', null);
+              .eq('class_id', op.cls.id).eq('student_id', op.student.id).eq('date', date).is('period', null);
             if (op.prev) {
               const { id, ...rest } = op.prev;
               await sb.from('class_attendance').insert(rest);
             }
           }
         });
-        const names = targets.map(t => t.name).join(', ');
+        const who = doing.map(p => p.full_name).join(' and ');
+        const where = targets.map(t => t.name).join(', ');
         this._naturalSuccess([
-          `Marked ${student.full_name} ${status.replace(/_/g, ' ')} in ${names} for ${date}.${skippedNote}`,
-          `Done — ${student.full_name} is recorded ${status.replace(/_/g, ' ')} (${names}, ${date}).${skippedNote}`
+          `Marked ${who} ${said} in ${where} for ${date}.${skippedNote}`,
+          `Done — ${who} ${doing.length > 1 ? 'are' : 'is'} recorded ${said} (${where}, ${date}).${skippedNote}`
         ]);
       };
 
-      if (targets.length > 1) {
+      if (targets.length > 1 || doing.length > 1) {
         this._requestConfirmation(
-          `Mark <b>${this.escapeHtml(student.full_name)}</b> as <b>${status.replace(/_/g, ' ')}</b> on <b>${date}</b> in ${targets.length} classes: ${this.escapeHtml(targets.map(t => t.name).join(', '))}${skippedNote}`,
+          `Mark <b>${this.escapeHtml(doing.map(p => p.full_name).join(', '))}</b> as <b>${said}</b> on <b>${date}</b> in ${targets.length === 1 ? this.escapeHtml(targets[0].name) : `${targets.length} classes: ${this.escapeHtml(targets.map(t => t.name).join(', '))}`}${skippedNote}`,
           doIt
         );
       } else {

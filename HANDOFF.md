@@ -2951,3 +2951,69 @@ so a graded test still meant clicking through every student. New apply op:
 Built so the Class Stats spelling page can hand Luke one paste per test.
 `debug-tools/rt-surface.js` has 13 new assertions (103 total, all pass);
 nlp-stress unchanged. `RIVEN_BUILD` is `2026-09-17·b`.
+
+---
+
+## 2026-09-17 — "Luke and Evan will be absent today"
+
+*(`RIVEN_BUILD` `2026-09-17·c` — another session shipped `·b` while this was in flight.)*
+
+Riven answered that with **"Which class? Say it like 'mark Evan absent in
+Math'."** Two things wrong with it.
+
+### It asked for something the sentence had already answered
+
+A child who is off school is not off one lesson. This school keeps **two
+registers** for exactly that distinction — `daily_attendance` is whether they
+came in at all, `class_attendance` is whether they came to the lesson — and
+marking only ever wrote the second.
+
+So the rule is now the one people already speak by:
+
+| what was said | which register |
+| --- | --- |
+| a class named | that lesson's |
+| "all their classes" | every lesson they are in |
+| **nothing named** | **the morning register, the whole day** |
+
+Which means **the "which class?" prompt is gone**. It was asking for something
+the sentence had answered by not saying it.
+
+The day write upserts on `(student_id, date)` — the same conflict target the
+daily register screen uses — so marking twice corrects rather than duplicates.
+The answer says which register it wrote, because the two are easy to confuse and
+"why is she still marked present in Maths?" is answered by that sentence.
+
+### It only ever read one name
+
+`terminalMarkAttendance` took `entities.student` and ignored `entities.students`,
+which the entity reader had already filled in. It now reads both, using the same
+idiom `terminalEnrollInBand` already used. Two or more people get a confirmation
+first; one person does not.
+
+Enrolment is checked **per person** for the lesson path, because a sentence
+naming two of them can easily name one who is not in that class — that person is
+named in the answer rather than silently dropped.
+
+Undo covers both registers, and restores what was there rather than deleting
+blindly: someone marked *present* before being marked absent goes back to
+*present*, and someone with no row at all has the row removed.
+
+### Verified
+
+`tests/riven-mark-day.test.js` (36) records every write, so it can assert
+**which** register was touched — the whole point of the change. Routing was
+checked separately through the real matcher: the reported sentence reaches
+`MARK_ATTENDANCE` with **both** people resolved, as do "X and Y are absent
+today", "mark X absent", "mark X absent in Math", "X is out today".
+
+### One thing left alone, deliberately
+
+**"X and Y were absent yesterday" routes to VIEW_ATTENDANCE, not a write.**
+I checked whether I had caused that by widening the copula patterns earlier —
+**I had not**: the same sentence behaves identically on the commit before those
+changes. It is genuinely ambiguous (a statement of fact, or a request to check),
+and the current behaviour errs toward the read. Over-firing a write on a musing
+is the worse failure, and `frontdoor-precision` exists to keep it that way. If
+you want it to record instead, say so and it is a small, deliberate change.
+
