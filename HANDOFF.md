@@ -2644,3 +2644,79 @@ collidable, which is a *stronger* test than the real one — the real roster
 happens to collide with a handful of words, while the fixture collides with
 every word in the corpus by construction.
 
+---
+
+## 2026-09-16 — Admin → Bell Schedule
+
+`class_schedule` and `activity_schedule` have said `(day_of_week, period)` since
+they were created, **with no times anywhere**. "Period 3" was an integer nothing
+could turn into a clock time, so nothing in the portal could say when a lesson
+starts, what is on right now, or how long somebody was away for.
+
+New admin card: **🔔 Bell Schedule**.
+
+### The shape, and why
+
+**One row per block per day, plus a default.** A block's default row applies on
+every weekday that has no row of its own; a day-specific row overrides it for
+that day alone. That is what makes a chapel Wednesday *one short row* instead of
+a second timetable, and it is why the editor has an "Every day" tab plus one per
+weekday.
+
+There is also a way for a day to say a block **does not run** — "there is no
+Period 6 on Friday" — rather than deleting the default and re-adding it on the
+four days it does. Deleting is how a schedule drifts out of agreement with
+itself; the editor shows switched-off blocks under the table with a **put back**
+button, so they never just vanish.
+
+Teaching periods carry the `period` integer, because that is what the class
+schedule joins on. Lunch, break and chapel do not — they are named blocks. The
+Add form says so.
+
+### Decisions taken with Jordan before building
+
+- times **can vary by day**, with a default and per-day overrides
+- **one school-wide** schedule, not per grade band
+- **periods plus named blocks** (lunch, recess, chapel, passing time)
+
+### Behaviour worth knowing
+
+- **Overlaps are pointed out, not refused.** A school can legitimately run two
+  things at once, so an overlap is a warning naming both blocks. Inserting
+  chapel on a Wednesday will trip it, which is the point — you probably need to
+  move the period after it.
+- **Editing a time while a day is selected creates that day's override.** The
+  row says where its time came from ("from Every day"), so nobody has to
+  remember which they are editing, and there is a **Use default** button to undo
+  it.
+- The editor is admin-only in the UI. As always here, that is an affordance —
+  the control is in the backend repo.
+
+### The backend half
+
+A new table for the schedule, with its own migration and access rules, applied
+to Supabase and committed in `student-portal-backend`. Its constraints were
+probed on the live database and rolled back. **No SQL or policy detail here —
+this repo is public.**
+
+### Verified
+
+`tests/bell-schedule.test.js` (32) covers the part with real logic in it: a day
+with nothing of its own gets the default, a day that differs overrides only
+itself, an omitted block disappears from that day and no other, blocks come back
+in clock order whatever order the database returns them, and times read back the
+way people say them. Driven in a real browser across all three views — default,
+a chapel Wednesday, a Friday that drops Period 6 — with no console errors.
+
+`tests/admin-cards-balanced.test.js` counted the admin cards against a
+hard-coded 13. It now counts them against the grid's own click handlers, since
+"somebody added a card" is not a bug and the number was going to be edited
+without being read. It caught that one card opens a modal rather than a section,
+which is why it counts handlers rather than sections.
+
+### Not done
+
+**Riven does not know about any of this yet.** "When does Period 3 start", "what
+is on now", "how long was she out for" are all answerable from this table and
+none of them are wired up. That is the obvious next piece.
+

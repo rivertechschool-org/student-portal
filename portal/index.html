@@ -2282,6 +2282,11 @@
               <!-- Will be populated by renderAdminFacilities() -->
             </section>
 
+            <!-- Admin Bell Schedule Section (Admin only) -->
+            <section id="admin-bell-schedule-section" class="hidden">
+              <!-- Will be populated by renderAdminBellSchedule() -->
+            </section>
+
             <!-- Admin RTC Management Section (Admin only) -->
             <section id="admin-rtc-management-section" class="hidden">
               <!-- Will be populated by renderAdminRTCManagement() -->
@@ -33102,6 +33107,18 @@
                   </div>
 
 
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #6aa9ff; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showAdminSection('bell-schedule')">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">🔔</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Bell Schedule</div>
+                      <div style="color: var(--muted); font-size: 11px;">Time blocks for periods &amp; breaks</div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #f39c12; transition: background 0.2s;"
                      onmouseover="this.style.background='rgba(243, 156, 18, 0.1)'" onmouseout="this.style.background='var(--card)'"
                      onclick="app.showAdminSection('rtc-management')">
@@ -33727,6 +33744,10 @@
           case 'settings':
             this.showSection('admin-settings');
             this.renderAdminSettings();
+            break;
+          case 'bell-schedule':
+            this.showSection('admin-bell-schedule');
+            this.renderAdminBellSchedule();
             break;
           case 'reports':
             this.showSection('admin-reports');
@@ -43960,6 +43981,361 @@
 
     // ==================== FACILITIES & ROOM BOOKING MANAGEMENT ====================
 
+    // THE BELL SCHEDULE: what time each block of the day runs.
+    //
+    // class_schedule has always said (day_of_week, period) and nothing else, so
+    // "Period 3" was an integer with no clock time behind it. This is where the
+    // times come from.
+    //
+    // A block has a DEFAULT row (day_of_week null) and optionally one OVERRIDE
+    // row per weekday. The default is what runs unless that day says otherwise,
+    // which is what makes a chapel Wednesday one short row instead of a second
+    // timetable. `omitted` is a day saying the block does not run at all.
+    _bellDays() {
+      return [
+        { dow: 1, name: 'Monday', short: 'Mon' },
+        { dow: 2, name: 'Tuesday', short: 'Tue' },
+        { dow: 3, name: 'Wednesday', short: 'Wed' },
+        { dow: 4, name: 'Thursday', short: 'Thu' },
+        { dow: 5, name: 'Friday', short: 'Fri' },
+      ];
+    }
+
+    // '14:40:00' and '14:40' both arrive from Postgres depending on the driver;
+    // an <input type="time"> only accepts HH:MM.
+    _bellTime(t) {
+      if (!t) return '';
+      const m = String(t).match(/^(\d{1,2}):(\d{2})/);
+      return m ? `${m[1].padStart(2, '0')}:${m[2]}` : '';
+    }
+
+    // 14:40 -> "2:40 pm". The editor takes 24-hour input because that is what
+    // the browser control gives; everything READ BACK is the way people say it.
+    _bellSay(t) {
+      const hhmm = this._bellTime(t);
+      if (!hhmm) return '—';
+      let [h, m] = hhmm.split(':').map(Number);
+      const suffix = h >= 12 ? 'pm' : 'am';
+      h = h % 12 || 12;
+      return `${h}:${m.toString().padStart(2, '0')} ${suffix}`;
+    }
+
+    // The schedule for one weekday: the override where there is one, the
+    // default everywhere else, and nothing at all where a day omits a block.
+    _bellResolve(rows, dow) {
+      const byKey = new Map();
+      for (const r of rows) {
+        if (r.day_of_week !== null && r.day_of_week !== dow) continue;
+        const cur = byKey.get(r.block_key);
+        // A row FOR this day beats the default; otherwise first one wins.
+        if (!cur || (r.day_of_week !== null && cur.day_of_week === null)) byKey.set(r.block_key, r);
+      }
+      return [...byKey.values()]
+        .filter(r => !r.omitted)
+        .sort((a, b) => (a.sort_order - b.sort_order) ||
+                        String(this._bellTime(a.starts_at)).localeCompare(this._bellTime(b.starts_at)));
+    }
+
+    // Blocks that overlap each other on a given day. Not refused - a school can
+    // legitimately run two things at once - but said out loud, because an
+    // overlap is nearly always a typo in one of the four numbers.
+    _bellOverlaps(blocks) {
+      const bad = [];
+      for (let i = 1; i < blocks.length; i++) {
+        const prev = blocks[i - 1], here = blocks[i];
+        const pEnd = this._bellTime(prev.ends_at), hStart = this._bellTime(here.starts_at);
+        if (pEnd && hStart && hStart < pEnd) bad.push([prev, here]);
+      }
+      return bad;
+    }
+
+    async renderAdminBellSchedule() {
+      const section = document.getElementById('admin-bell-schedule-section');
+      if (!section) { console.error('Admin bell schedule section not found'); return; }
+
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading the bell schedule…</p></div>';
+
+      const res = await this.supabaseQuery(() => this.auth.supabase
+        .from('schedule_blocks').select('*').order('sort_order'));
+      if (res.error) {
+        section.innerHTML = `<div class="card" style="padding: 20px;">Could not load the bell schedule: ${this.escapeHtml(res.error.message)}</div>`;
+        return;
+      }
+      this._bellRows = res.data || [];
+      this._bellDay = this._bellDay ?? null;   // null = the default schedule
+      this._renderBellBody();
+    }
+
+    _renderBellBody() {
+      const section = document.getElementById('admin-bell-schedule-section');
+      if (!section) return;
+      const rows = this._bellRows || [];
+      const day = this._bellDay;                    // null | 1..5
+      const days = this._bellDays();
+      const dayName = day === null ? 'Every day' : (days.find(d => d.dow === day)?.name || '');
+
+      // What is being edited: the defaults, or one day's overrides.
+      const shown = day === null
+        ? rows.filter(r => r.day_of_week === null).sort((a, b) => a.sort_order - b.sort_order)
+        : this._bellResolve(rows, day);
+      const overlaps = this._bellOverlaps(day === null ? shown : shown);
+
+      const tab = (label, value, count) => `
+        <button class="btn ${((day === null && value === null) || day === value) ? 'btn-primary' : 'btn-secondary'}"
+                style="font-size: 12px; padding: 6px 12px;"
+                onclick="app.setBellDay(${value === null ? 'null' : value})">
+          ${this.escapeHtml(label)}${count ? ` <span style="opacity:.7;">(${count})</span>` : ''}
+        </button>`;
+
+      const overrideCount = (dow) => rows.filter(r => r.day_of_week === dow).length;
+
+      let html = `
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px;">
+          <button class="btn btn-secondary" style="font-size: 12px; padding: 6px 12px;" onclick="app.showAdminSection('dashboard')">← Admin</button>
+          <h2 style="margin: 0;">🔔 Bell Schedule</h2>
+        </div>
+        <p style="color: var(--muted); font-size: 13px; margin: 0 0 14px;">
+          What time each block of the day runs. <b>Every day</b> is what runs unless a
+          weekday says otherwise — set a day only where it differs, and leave the rest alone.
+        </p>
+
+        <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px;">
+          ${tab('Every day', null, 0)}
+          ${days.map(d => tab(d.short, d.dow, overrideCount(d.dow))).join('')}
+        </div>`;
+
+      if (day !== null) {
+        html += `
+          <div class="card" style="padding: 10px 14px; margin-bottom: 12px; border-left: 3px solid #6aa9ff; font-size: 13px;">
+            Showing <b>${this.escapeHtml(dayName)}</b>. Rows in grey come from <b>Every day</b>;
+            change one and it becomes a ${this.escapeHtml(dayName)}-only time.
+          </div>`;
+      }
+
+      if (overlaps.length) {
+        html += `<div class="card" style="padding: 10px 14px; margin-bottom: 12px; border-left: 3px solid #ffd36a; font-size: 13px;">
+          ⚠️ ${overlaps.map(([a, b]) =>
+            `<b>${this.escapeHtml(a.label)}</b> ends after <b>${this.escapeHtml(b.label)}</b> starts`).join('; ')}.
+          That is allowed — two things can run at once — but check the times if you did not mean it.
+        </div>`;
+      }
+
+      html += `<div class="card" style="padding: 0; overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border);">
+              <th style="text-align: left; padding: 10px 14px;">Block</th>
+              <th style="text-align: left; padding: 10px 14px;">Starts</th>
+              <th style="text-align: left; padding: 10px 14px;">Ends</th>
+              <th style="text-align: left; padding: 10px 14px;">Length</th>
+              <th style="text-align: right; padding: 10px 14px;"></th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+      if (!shown.length) {
+        html += `<tr><td colspan="5" style="padding: 20px 14px; color: var(--muted);">
+          Nothing set yet. Add a block below.</td></tr>`;
+      }
+
+      for (const b of shown) {
+        const inherited = day !== null && b.day_of_week === null;
+        const start = this._bellTime(b.starts_at), end = this._bellTime(b.ends_at);
+        const mins = (start && end)
+          ? Math.round((new Date(`2000-01-01T${end}`) - new Date(`2000-01-01T${start}`)) / 60000)
+          : null;
+        html += `
+          <tr style="border-bottom: 1px solid var(--border); ${inherited ? 'opacity: .68;' : ''}">
+            <td style="padding: 8px 14px;">
+              <b>${this.escapeHtml(b.label)}</b>
+              ${b.period ? `<span style="color: var(--muted); font-size: 11px;"> · period ${b.period}</span>` : ''}
+              ${inherited ? '<span style="color: var(--muted); font-size: 11px;"> · from Every day</span>' : ''}
+            </td>
+            <td style="padding: 8px 14px;">
+              <input type="time" value="${start}" data-bell-key="${this.escapeHtml(b.block_key)}" data-bell-field="starts_at"
+                     onchange="app.setBellTime(this)" style="padding: 4px 6px; font-size: 13px;">
+            </td>
+            <td style="padding: 8px 14px;">
+              <input type="time" value="${end}" data-bell-key="${this.escapeHtml(b.block_key)}" data-bell-field="ends_at"
+                     onchange="app.setBellTime(this)" style="padding: 4px 6px; font-size: 13px;">
+            </td>
+            <td style="padding: 8px 14px; color: var(--muted);">
+              ${mins === null ? '—' : `${mins} min`}
+              <span style="font-size: 11px;"> · ${this.escapeHtml(this._bellSay(b.starts_at))}–${this.escapeHtml(this._bellSay(b.ends_at))}</span>
+            </td>
+            <td style="padding: 8px 14px; text-align: right; white-space: nowrap;">
+              ${day === null
+                ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
+                           onclick="app.removeBellBlock('${this.escapeHtml(b.block_key)}')">Remove</button>`
+                : `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
+                           onclick="app.omitBellBlock('${this.escapeHtml(b.block_key)}')">Not on ${this.escapeHtml(dayName.slice(0, 3))}</button>
+                   ${!inherited ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
+                           onclick="app.resetBellBlock('${this.escapeHtml(b.block_key)}')">Use default</button>` : ''}`}
+            </td>
+          </tr>`;
+      }
+
+      // Blocks this day has switched off - otherwise they vanish with no way back.
+      const off = day === null ? [] : rows.filter(r => r.day_of_week === day && r.omitted);
+      html += `</tbody></table></div>`;
+
+      if (off.length) {
+        html += `<div class="card" style="padding: 10px 14px; margin-top: 12px; font-size: 13px;">
+          <b>Not running on ${this.escapeHtml(dayName)}:</b>
+          ${off.map(r => `${this.escapeHtml(r.label)}
+            <button class="btn btn-secondary" style="font-size: 11px; padding: 2px 6px;"
+                    onclick="app.resetBellBlock('${this.escapeHtml(r.block_key)}')">put back</button>`).join(' · ')}
+        </div>`;
+      }
+
+      if (day === null) {
+        html += `
+          <div class="card" style="padding: 14px; margin-top: 12px;">
+            <div style="font-weight: 600; margin-bottom: 8px;">Add a block</div>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+              <input id="bell-new-label" placeholder="Chapel, Recess, Period 7…" maxlength="40"
+                     style="padding: 6px 8px; font-size: 13px; min-width: 190px;">
+              <select id="bell-new-period" style="padding: 6px 8px; font-size: 13px;">
+                <option value="">Not a teaching period</option>
+                ${[1, 2, 3, 4, 5, 6, 7, 8].map(p => `<option value="${p}">Period ${p}</option>`).join('')}
+              </select>
+              <input id="bell-new-start" type="time" style="padding: 6px 8px; font-size: 13px;">
+              <input id="bell-new-end" type="time" style="padding: 6px 8px; font-size: 13px;">
+              <button class="btn btn-primary" style="font-size: 13px;" onclick="app.addBellBlock()">Add</button>
+            </div>
+            <div style="color: var(--muted); font-size: 11px; margin-top: 8px;">
+              Pick a period number only for blocks a class can be timetabled into — that number is
+              what the class schedule joins on. Lunch and chapel have no period.
+            </div>
+          </div>`;
+      }
+
+      section.innerHTML = html;
+    }
+
+    setBellDay(dow) {
+      this._bellDay = dow;
+      this._renderBellBody();
+    }
+
+    // Writing a time on a DAY creates that day's override; writing it on the
+    // default edits the default. Same control, and which one it is is written
+    // on the row, so nobody has to remember.
+    async setBellTime(input) {
+      const key = input.getAttribute('data-bell-key');
+      const field = input.getAttribute('data-bell-field');
+      const value = input.value;
+      const day = this._bellDay;
+      const rows = this._bellRows || [];
+      if (!value) return;
+
+      const own = rows.find(r => r.block_key === key && r.day_of_week === day);
+      const base = own || rows.find(r => r.block_key === key && r.day_of_week === null);
+      if (!base) return;
+
+      const next = {
+        starts_at: this._bellTime(base.starts_at),
+        ends_at: this._bellTime(base.ends_at),
+        [field]: value,
+      };
+      if (next.starts_at && next.ends_at && next.ends_at <= next.starts_at) {
+        this.showNotification('A block has to end after it starts.', 'warning');
+        this._renderBellBody();
+        return;
+      }
+
+      const payload = {
+        block_key: key, label: base.label, period: base.period,
+        day_of_week: day, starts_at: next.starts_at, ends_at: next.ends_at,
+        omitted: false, sort_order: base.sort_order,
+      };
+      const res = own
+        ? await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+            .update(payload).eq('id', own.id))
+        : await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+            .insert(payload));
+      if (res.error) { this.showNotification('Could not save: ' + res.error.message, 'error'); return; }
+      await this.renderAdminBellSchedule();
+    }
+
+    async addBellBlock() {
+      const label = (document.getElementById('bell-new-label')?.value || '').trim();
+      const periodRaw = document.getElementById('bell-new-period')?.value || '';
+      const start = document.getElementById('bell-new-start')?.value || '';
+      const end = document.getElementById('bell-new-end')?.value || '';
+      if (!label) { this.showNotification('Give the block a name.', 'warning'); return; }
+      if (!start || !end) { this.showNotification('A block needs a start and an end.', 'warning'); return; }
+      if (end <= start) { this.showNotification('A block has to end after it starts.', 'warning'); return; }
+
+      const period = periodRaw ? parseInt(periodRaw, 10) : null;
+      const rows = this._bellRows || [];
+      if (period && rows.some(r => r.day_of_week === null && r.period === period)) {
+        this.showNotification(`Period ${period} already has a block.`, 'warning');
+        return;
+      }
+      // A key that is stable, readable in the database, and unique.
+      let key = period ? `p${period}` : label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24);
+      if (!key) key = 'block';
+      if (rows.some(r => r.block_key === key)) {
+        let n = 2;
+        while (rows.some(r => r.block_key === `${key}-${n}`)) n++;
+        key = `${key}-${n}`;
+      }
+      // Sits in clock order without renumbering anything else.
+      const after = rows.filter(r => r.day_of_week === null && this._bellTime(r.starts_at) <= start);
+      const sort_order = after.length ? Math.max(...after.map(r => r.sort_order)) + 5 : 5;
+
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+        .insert({ block_key: key, label, period, day_of_week: null, starts_at: start, ends_at: end, sort_order }));
+      if (res.error) { this.showNotification('Could not add: ' + res.error.message, 'error'); return; }
+      await this.renderAdminBellSchedule();
+    }
+
+    // Removing from the default removes the block everywhere, overrides and all,
+    // so it says so first.
+    async removeBellBlock(key) {
+      const rows = this._bellRows || [];
+      const base = rows.find(r => r.block_key === key && r.day_of_week === null);
+      const overrides = rows.filter(r => r.block_key === key && r.day_of_week !== null).length;
+      const extra = overrides ? ` It has ${overrides} day-specific time${overrides === 1 ? '' : 's'}, which go too.` : '';
+      if (!confirm(`Remove ${base ? base.label : key} from the schedule?${extra}`)) return;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+        .delete().eq('block_key', key));
+      if (res.error) { this.showNotification('Could not remove: ' + res.error.message, 'error'); return; }
+      await this.renderAdminBellSchedule();
+    }
+
+    // "There is no Period 6 on Friday": an override row that says so, rather
+    // than deleting the default and re-adding it on the other four days.
+    async omitBellBlock(key) {
+      const day = this._bellDay;
+      if (day === null) return;
+      const rows = this._bellRows || [];
+      const base = rows.find(r => r.block_key === key && r.day_of_week === null)
+                || rows.find(r => r.block_key === key);
+      const own = rows.find(r => r.block_key === key && r.day_of_week === day);
+      const payload = {
+        block_key: key, label: base?.label || key, period: base?.period ?? null,
+        day_of_week: day, starts_at: null, ends_at: null, omitted: true,
+        sort_order: base?.sort_order ?? 0,
+      };
+      const res = own
+        ? await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks').update(payload).eq('id', own.id))
+        : await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks').insert(payload));
+      if (res.error) { this.showNotification('Could not save: ' + res.error.message, 'error'); return; }
+      await this.renderAdminBellSchedule();
+    }
+
+    // Drop this day's override and go back to the default.
+    async resetBellBlock(key) {
+      const day = this._bellDay;
+      if (day === null) return;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+        .delete().eq('block_key', key).eq('day_of_week', day));
+      if (res.error) { this.showNotification('Could not reset: ' + res.error.message, 'error'); return; }
+      await this.renderAdminBellSchedule();
+    }
+
     async renderAdminFacilities() {
       const section = document.getElementById('admin-facilities-section');
       if (!section) { console.error('Admin facilities section not found'); return; }
@@ -49106,7 +49482,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·r';
+      const RIVEN_BUILD = '2026-09-16·s';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the

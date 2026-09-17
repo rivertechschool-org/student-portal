@@ -59,7 +59,20 @@ check('every <div> in the grid is closed', opens - closes, 0);
 // balance the total while still nesting.
 const cardStarts = [];
 block.forEach((l, i) => { if (l.includes('class="card"')) cardStarts.push(i); });
-check('grid still holds every card', cardStarts.length, 13);
+
+// Counted against the grid's own click targets rather than a number written
+// here. A hard-coded 13 only ever says "somebody added a card" — which is not a
+// bug — and the next person edits the number without reading why it existed.
+//
+// A card that does nothing when tapped is the real fault, so the check is that
+// every card carries a handler. Most open a section; one opens a modal
+// (parent-link requests), which is why this counts handlers and not sections.
+const handlers = block.join('\n').match(/onclick="app\.[a-zA-Z]+\(/g) || [];
+check('every card does something when tapped', cardStarts.length, handlers.length);
+
+const targets = block.join('\n').match(/showAdminSection\('[a-z-]+'\)/g) || [];
+check('  no two cards open the same section', new Set(targets).size, targets.length);
+check('  and the grid has not shrunk', cardStarts.length >= 13, true);
 
 for (const s of cardStarts) {
   let d = 0;
