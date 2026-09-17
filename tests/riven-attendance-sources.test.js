@@ -110,9 +110,8 @@ function makeApp({ school = false } = {}) {
       return q;
     } } },
   };
-  // The answer lists everyone now and hides the tail behind "show all", so
-  // the expander comes from the page rather than being stubbed - the point of
-  // several assertions below is what it does and does not hide.
+  // Still extracted: the answer no longer uses it, and several assertions
+  // below exist to keep it that way, so a stub would prove nothing.
   app._briefingExpand = extract('_briefingExpand');
   app.terminalAttendanceIssues = extract('terminalAttendanceIssues');
   return app;
@@ -207,15 +206,17 @@ const answer = (app) => app.said.join('\n');
     ok('the total is stated up front', /16 away from school/.test(out));
     // Everyone is in the message; the tail is collapsed, not dropped.
     check('every name is present', many.filter((_, i) => out.includes('Pupil ' + i)).length, 16);
-    ok('  with the tail behind "show all"', /and 6 more students/.test(out));
-    ok('  which is a real control, not a dead label', /onclick=/.test(out));
+    // No toggle, nothing to tap. "Who was missing today" is a question whose
+    // whole answer is the names; hiding a third of them behind a 12px line on
+    // a phone is a worse failure than a long bubble.
+    ok('  nothing is hidden behind a control', !/show all/.test(out));
+    ok('  and there is no toggle to miss', !/brf-/.test(out));
   }
 
   {
-    // A short list must not grow a pointless expander.
     const app = makeApp({ school: true });
     await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
-    ok('three names need no "show all"', !/show all/.test(answer(app)));
+    ok('a short list is just a short list', !/show all/.test(answer(app)));
   }
 
   console.log('\n== away from school is not the same as missed a lesson ==\n');

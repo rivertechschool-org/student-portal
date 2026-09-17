@@ -2068,3 +2068,33 @@ merge was right from the start; what was missing was the label.
 `tests/riven-attendance-sources.test.js` is at 22, with the 16-vs-17 case
 pinned exactly as it occurred.
 
+---
+
+## 2026-09-16 — the absence list stopped collapsing
+
+The "show all" toggle was reported as not expanding on a phone.
+
+**I could not reproduce it.** Driven in a real browser twice: once as a static
+page, once through the whole delivery path — the answer rendered by
+`terminalAttendanceIssues`, inserted by the real `_showRivenMessage`, then run
+through the real `_linkifyTerminalEntities` (which explicitly skips anything
+inside an `onclick`, so it was never the suspect it looked like). Both times:
+`display:none` → `block`, all 17 rows, toggle text flips to "show less", no
+console errors.
+
+So rather than ship a guess at *why* a control fails on someone's phone, the
+control is gone.
+
+`_briefingExpand` is right for the briefing, where a list is one section of a
+longer answer. It is wrong here: **"who was missing today" is a question whose
+whole reply is the names.** Hiding a third of them behind a 12px line of text,
+on a phone, at the door, is a worse failure than a long bubble — and a control
+that has to work before the answer is readable should not be between the person
+and the answer at all.
+
+Every row now renders. The count is in the headline, so length is never a
+surprise. Nothing to tap, nothing to miss.
+
+The tests assert the *absence* of a toggle now, so this cannot quietly come
+back as a tidy-up.
+
