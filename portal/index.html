@@ -17632,33 +17632,99 @@
         return subjectOk && gradeOk && dayOk;
       }
 
-      // class_schedule is a separate table, so the days are fetched once per
-      // set of classes on view and cached. renderClasses() is synchronous;
-      // this fills the cache and re-renders when it lands.
+      // class_schedule is a separate table, so when a class meets is fetched
+      // once per set of classes on view and cached. renderClasses() is
+      // synchronous; this fills the cache and re-renders when it lands.
       async loadClassDays() {
         const ids = (this.classes || []).map(c => c.id).filter(Boolean);
         const key = ids.slice().sort().join(',');
-        if (!ids.length) { this._classDays = {}; this._classDaysFor = key; return; }
+        if (!ids.length) { this._classDays = {}; this._classMeets = {}; this._classDaysFor = key; return; }
         if (this._classDaysFor === key) return;
         this._classDaysFor = key;                     // claim it before awaiting
         try {
-          const { data, error } = await this.auth.supabase
-            .from('class_schedule').select('class_id, day_of_week').in('class_id', ids);
-          if (error) throw error;
-          const map = {};
-          (data || []).forEach(r => {
+          const [sched] = await Promise.all([
+            this.auth.supabase.from('class_schedule')
+              .select('class_id, day_of_week, period').in('class_id', ids),
+            // What "Period 3" means in clock time. Everyone signed in may read
+            // it, so this is the same one query whoever is looking.
+            this.loadBellDefaults(),
+          ]);
+          if (sched.error) throw sched.error;
+          const days = {}, meets = {};
+          (sched.data || []).forEach(r => {
             const d = Number(r.day_of_week);
-            (map[r.class_id] = map[r.class_id] || []);
-            if (!map[r.class_id].includes(d)) map[r.class_id].push(d);
+            (days[r.class_id] = days[r.class_id] || []);
+            if (!days[r.class_id].includes(d)) days[r.class_id].push(d);
+            (meets[r.class_id] = meets[r.class_id] || []).push({ day: d, period: r.period });
           });
-          this._classDays = map;
+          this._classDays = days;
+          this._classMeets = meets;
         } catch (e) {
           // A failure here must not break the classes view — degrade to no day
           // filter rather than an empty page.
-          console.warn('Could not load class days, day filter unavailable:', e);
+          console.warn('Could not load class schedule, day filter unavailable:', e);
           this._classDays = {};
+          this._classMeets = {};
         }
         if (this.currentSection === 'classes') this.renderClasses();
+      }
+
+      // The bell schedule's default block for each period. Seven rows, read
+      // once per session.
+      async loadBellDefaults() {
+        if (this._bellDefaults) return this._bellDefaults;
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('schedule_blocks').select('period, label, starts_at, ends_at')
+            .is('day_of_week', null);
+          if (error) throw error;
+          const map = {};
+          (data || []).forEach(b => { if (b.period !== null && b.period !== undefined) map[b.period] = b; });
+          this._bellDefaults = map;
+        } catch (e) {
+          // Times are a nicety; the period itself is the fact. Carry on without.
+          console.warn('Could not load bell times; periods will show without them:', e);
+          this._bellDefaults = {};
+        }
+        return this._bellDefaults;
+      }
+
+      // "10:25–11:05 am". Both halves keep their suffix only when they differ,
+      // because "10:25 am–11:05 am" is not how anybody says it.
+      _bellRange(from, to) {
+        const a = this._bellSay(from), b = this._bellSay(to);
+        if (a === '—' || b === '—') return '';
+        return a.slice(-2) === b.slice(-2) ? `${a.slice(0, -3)}–${b}` : `${a}–${b}`;
+      }
+
+      // When this class meets: "Period 3 · 10:25–11:05 am · Mon, Wed".
+      //
+      // The period is what the class actually stores. The time comes from the
+      // bell schedule, which is the entire reason that screen exists. A period
+      // with no block there is shown WITHOUT a time rather than quietly reading
+      // as though it had one — one class is timetabled into a period nobody has
+      // given a time to, and saying so is how that gets noticed.
+      classScheduleLine(cls) {
+        const meets = (cls && cls.meets) || (this._classMeets || {})[cls && cls.id] || [];
+        if (!meets.length) return '';
+        const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const periods = [...new Set(meets.map(m => m.period).filter(p => p !== null && p !== undefined))]
+          .sort((a, b) => a - b);
+        const days = [...new Set(meets.map(m => m.day).filter(d => d !== null && d !== undefined && !isNaN(d)))]
+          .sort((a, b) => a - b);
+        const parts = [];
+        if (periods.length === 1) {
+          parts.push(`Period ${periods[0]}`);
+          const block = (this._bellDefaults || {})[periods[0]];
+          const range = block ? this._bellRange(block.starts_at, block.ends_at) : '';
+          parts.push(range || 'no time set');
+        } else if (periods.length > 1) {
+          // Several periods means several times; the numbers are the useful
+          // part and the times belong on the class itself.
+          parts.push(`Periods ${periods.join(', ')}`);
+        }
+        if (days.length) parts.push(days.map(d => DAYS[d] || '?').join(', '));
+        return parts.join(' · ');
       }
 
       renderClassFilterBar() {
@@ -17796,6 +17862,10 @@
               <span>🎓 ${this.gradeBandLabel(cls.grade_band) || 'All Grades'}</span>
               ${!isTeacher && cls.teacher_name ? `<span>🧑‍🏫 ${this.escapeHtml(cls.teacher_name)}</span>` : ''}
             </div>
+            ${(() => { const when = this.classScheduleLine(cls);
+               return when ? `<div class="class-stats" style="margin-top: 8px;">
+                 <span>🕐 ${this.escapeHtml(when)}</span>
+               </div>` : ''; })()}
             ${isTeacher ? `
               <div class="class-stats" style="margin-top: 8px;">
                 <span>👥 ${cls.student_count || 0}/${cls.max_students || 30}</span>
@@ -34611,8 +34681,22 @@
                   ? (staffById[cls.secondary_teacher_id] || null) : null;
               });
 
-              // Batch query enrollment counts (fixes N+1 timeout issue)
+              // When each class meets. Same two tables the Classes screen
+              // reads; without them an admin sees every class and no period.
               const classIds = allClasses.map(c => c.id);
+              const [schedRes] = await Promise.all([
+                this.supabaseQuery(() => this.auth.supabase.from('class_schedule')
+                  .select('class_id, day_of_week, period').in('class_id', classIds)),
+                this.loadBellDefaults(),
+              ]);
+              const meetsMap = {};
+              ((schedRes && schedRes.data) || []).forEach(r => {
+                (meetsMap[r.class_id] = meetsMap[r.class_id] || [])
+                  .push({ day: Number(r.day_of_week), period: r.period });
+              });
+              allClasses.forEach(cls => { cls.meets = meetsMap[cls.id] || []; });
+
+              // Batch query enrollment counts (fixes N+1 timeout issue)
               const { data: allEnrollments } = await this.supabaseQuery(() => this.auth.supabase
                 .from('class_enrollments')
                 .select('class_id')
@@ -34832,6 +34916,10 @@
                         <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
                         <span>👨‍🏫 ${this.classTeacherNames(cls)}</span>
                       </div>
+                      ${(() => { const when = this.classScheduleLine(cls);
+                         return when ? `<div class="class-stats" style="margin-top: 6px;">
+                           <span>🕐 ${this.escapeHtml(when)}</span>
+                         </div>` : ''; })()}
                     </div>
                     <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
                       style="margin-top: 10px; width: 100%;">
@@ -34859,6 +34947,10 @@
                         <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
                         <span>👨‍🏫 ${this.classTeacherNames(cls)}</span>
                       </div>
+                      ${(() => { const when = this.classScheduleLine(cls);
+                         return when ? `<div class="class-stats" style="margin-top: 6px;">
+                           <span>🕐 ${this.escapeHtml(when)}</span>
+                         </div>` : ''; })()}
                     </div>
                     <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
                       style="margin-top: 10px; width: 100%;">

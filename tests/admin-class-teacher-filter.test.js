@@ -101,7 +101,7 @@ const CLASSES = [
 // hands back whatever table was asked for.
 function builder(rows) {
   const b = {
-    select: () => b, eq: () => b, neq: () => b, in: () => b, order: () => b,
+    select: () => b, eq: () => b, neq: () => b, in: () => b, order: () => b, is: () => b,
     then: (res) => res({ data: rows, error: null }),
   };
   return b;
@@ -117,6 +117,16 @@ const app = {
   gradeBandLabel(g) { return g === 'ms' ? 'Middle' : 'High'; },
   classDescription() { return ''; },
   classTeacherNames,
+  // renderAdminClasses now reads the period too, so its whole call graph
+  // comes with it. The bell helpers sit at Riven's indent, not the app's.
+  escapeHtml: method('escapeHtml'),
+  classScheduleLine: method('classScheduleLine'),
+  loadBellDefaults: method('loadBellDefaults'),
+  _bellTime: method('_bellTime', '    '),
+  _bellSay: method('_bellSay', '    '),
+  _bellRange: method('_bellRange'),
+  _bellDefaults: null,
+  _classMeets: {},
   staffHasId,
   staffLoginId,
   showChangeTeacherModal,
@@ -134,6 +144,15 @@ const app = {
         if (table === 'classes') return builder(CLASSES.map(c => ({ ...c })));
         if (table === 'user_profiles') return builder(STAFF);
         if (table === 'class_enrollments') return builder([{ class_id: 'C1' }, { class_id: 'C1' }]);
+        // When each class meets. Read here too, so the cards can show a period.
+        if (table === 'class_schedule') {
+          return builder([{ class_id: 'C1', day_of_week: 1, period: 3 },
+                          { class_id: 'C3', day_of_week: 2, period: 6 }]);
+        }
+        if (table === 'schedule_blocks') {
+          return builder([{ period: 3, label: 'Period 3', starts_at: '10:25:00', ends_at: '11:05:00' },
+                          { period: 6, label: 'Period 6', starts_at: '13:00:00', ends_at: '13:40:00' }]);
+        }
         throw new Error('unexpected table ' + table);
       },
     },
@@ -149,6 +168,7 @@ async function render(filters) {
   section = { innerHTML: '' };
   app.adminClassesData = null;          // force the fetch path every time
   app.adminClassesStaff = null;
+  app._bellDefaults = null;             // and a cold bell cache, so the fetch is real
   app.adminClassFilters = Object.assign(
     { teacher: '', subject: '', gradeLevel: '', search: '', includePast: false },
     filters || {});
@@ -220,6 +240,14 @@ function dropdown(out) {
   out = await render();
   ok('a co-taught class names both', out.includes('Rosa Alder + Tom Birch'));
   ok('a singly-taught class names one', out.includes('Ada Fell'));
+
+  // The admin cards never showed a period either. This goes through the whole
+  // fetch, so it fails if the period column stops being selected.
+  ok('a class card shows the period it meets in',
+     out.includes('Period 3') && out.includes('10:25'));
+  ok('...on the right class', out.indexOf('Botany') < out.indexOf('Period 3'));
+  ok('a class with no schedule row shows no period line',
+     !/Latin[\s\S]{0,400}Period \d/.test(out));
 
   check('no teacher at all', classTeacherNames({ teacher: null, secondaryTeacher: null }),
         'No Teacher');
