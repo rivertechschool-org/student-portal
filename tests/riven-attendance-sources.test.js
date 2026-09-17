@@ -110,6 +110,10 @@ function makeApp({ school = false } = {}) {
       return q;
     } } },
   };
+  // The answer lists everyone now and hides the tail behind "show all", so
+  // the expander comes from the page rather than being stubbed - the point of
+  // several assertions below is what it does and does not hide.
+  app._briefingExpand = extract('_briefingExpand');
   app.terminalAttendanceIssues = extract('terminalAttendanceIssues');
   return app;
 }
@@ -173,6 +177,45 @@ const answer = (app) => app.said.join('\n');
        /if \(!classRow\) \{[\s\S]{0,400}daily_attendance/.test(body));
     ok('  and a failure there narrows the answer rather than losing it',
        /daily register unavailable/.test(body));
+  }
+
+  console.log('\n== sixteen absences is not ten names ==\n');
+
+  {
+    // The day this was reported: 16 on the daily register. The answer showed
+    // 10 and said nothing about the other 6 — a hard .slice(0, 10) with no
+    // indication, so a truncated answer was indistinguishable from a complete
+    // one.
+    const many = [];
+    for (let i = 0; i < 16; i++) many.push({ student_id: 's' + i, status: 'absent', date: TODAY });
+
+    const app = makeApp({ school: true });
+    app._terminalAllStudents = many.map((r, i) => ({ id: r.student_id, full_name: 'Pupil ' + i }));
+    app.auth.supabase.from = (table) => {
+      const q = {
+        select: () => q, gte: () => q, lte: () => q, neq: () => q,
+        order: () => q, limit: () => q, eq: () => q,
+        then: (res, rej) => Promise.resolve({
+          data: table === 'daily_attendance' ? many : [], error: null }).then(res, rej),
+      };
+      return q;
+    };
+    await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
+    const out = answer(app);
+
+    // The number that matters most was the one never shown.
+    ok('the total is stated up front', /16 students/.test(out));
+    // Everyone is in the message; the tail is collapsed, not dropped.
+    check('every name is present', many.filter((_, i) => out.includes('Pupil ' + i)).length, 16);
+    ok('  with the tail behind "show all"', /and 6 more students/.test(out));
+    ok('  which is a real control, not a dead label', /onclick=/.test(out));
+  }
+
+  {
+    // A short list must not grow a pointless expander.
+    const app = makeApp({ school: true });
+    await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
+    ok('three names need no "show all"', !/show all/.test(answer(app)));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

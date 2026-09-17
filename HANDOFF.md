@@ -1990,3 +1990,43 @@ again.
 **Worth checking elsewhere:** anything else answering an attendance question
 off `class_attendance` alone is answering from the sparser of the two records.
 
+---
+
+## 2026-09-16 — ten names is not sixteen absences
+
+The register fix took the answer from 6 to 10. It should have been 16. The
+query was right by then; the **display** was throwing six people away.
+
+`terminalAttendanceIssues` ended with a hard `.slice(0, 10)` and **said nothing
+about it**. So a truncated answer was indistinguishable from a complete one —
+and the number that matters most, *how many*, was the one figure never on
+screen.
+
+Now: the total leads the answer (`16 students — attendance issues
+(school-wide, today)`), every name is in the message, and the tail past ten
+collapses behind "…and 6 more students — show all" using `_briefingExpand`,
+which the briefing already uses for exactly this. A list of three grows no
+expander.
+
+### Three bugs stacked on one question
+
+Worth recording as a sequence, because each one hid the next:
+
+1. The scan read only the class registers, so the 16 were never in the source.
+2. Scope was own-classes-only, so even the class-register answer was short.
+3. The display capped at 10, so fixing 1 and 2 still could not show 16.
+
+Fixing any one alone looked like it had not worked. That is what made this take
+three rounds, and it is the argument for checking a *number* against the
+database rather than eyeballing whether a list "looks longer".
+
+### Swept, not fixed
+
+Other `.slice(0, N)` sites in Riven answers: pickers capping at 8 options and
+"did you mean" lists capping at 5 are fine. The homework list caps at 10 but
+**states its total in the header**, so it is honest about what it is holding
+back — worth moving to `_briefingExpand` one day, not urgent.
+
+`tests/riven-attendance-sources.test.js` is at 15, including a 16-student day
+asserting every name is present and the tail is collapsed rather than dropped.
+
