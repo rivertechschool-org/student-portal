@@ -2192,10 +2192,15 @@ absence scan, the class card and the notes window. All six now use
   testing a version of the parser that no longer exists. Adding
   `_rivenPastDate` and `_rivenMonthIndex` to their extract lists was the whole
   fix — but the failure is the feature.
-- **The live spot-check did not run.** The Supabase CLI is not on PATH in this
-  session, so nobody has confirmed against real rows that 2026-09-14 has a
-  register worth reading. The seam is covered by test instead: the typed
-  sentence goes through the real `_parseTimeframe` into the real
-  `terminalAttendanceIssues`, and the bounds it asks the database for are
-  asserted. Worth one real question in the app to be sure.
+- **Checked against the live register, and the numbers close the loop.** On
+  2026-09-14 the morning register has **10** not-present and no class-only
+  cases, so the answer is now "10 away from school (school-wide, September 14)".
+  The **59** in the screenshots is exactly the count of distinct students with a
+  non-present mark across 2026-08-17 → 2026-09-16 — the 30-day default, to the
+  number. That is the diagnosis confirmed from the other end rather than
+  inferred from the code.
+- **The CLI is `npx -y supabase@latest`, not a global binary** — nothing named
+  `supabase` is on PATH on this machine, which is why an earlier note in this
+  session claimed the check could not be run. It can; see
+  `reference_supabase_sql_via_cli`.
 
