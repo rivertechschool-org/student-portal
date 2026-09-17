@@ -3017,3 +3017,73 @@ and the current behaviour errs toward the read. Over-firing a write on a musing
 is the worse failure, and `frontdoor-precision` exists to keep it that way. If
 you want it to record instead, say so and it is a small, deliberate change.
 
+---
+
+## 2026-09-17 — the RLS denial on student submission
+
+Real, and it had a shape worth knowing.
+
+**A `student_id` column holds a `user_profiles.id`. `auth.uid()` is the AUTH
+row's id.** They are the same value only for accounts that self-registered,
+where the profile was created with `id` = the new auth uid. Roster-created
+students are the other shape: staff make the profile first with its own id, and
+`auth_user_id` is filled in later when the student claims a login.
+
+Measured on the live roster: **37 of 167 student profiles have
+`auth_user_id <> id`, and 14 of those can sign in today.**
+
+For those students, handing work in was refused — and they could not see their
+own submissions either, so the screen looked like they had simply never
+submitted. That is why it "seems to be" a denial: it works perfectly for the 36
+students whose ids happen to match.
+
+### Both halves of the check were wrong the same way
+
+```
+student_id = auth.uid()                      -- false for them
+AND EXISTS (... ce.student_id = auth.uid())  -- also false: enrolments are keyed on profile ids
+```
+
+So even a client sending the right id would have been refused.
+
+### And the client was sending the wrong id
+
+`shared/config.js` has carried `studentRecordId()` — with a long comment
+explaining exactly this, including the symptom *"No Classes Yet even when the
+teacher has enrolled them"*. **Six call sites had been converted. Fourteen had
+not**, including the one behind `submitAssignment`. All fourteen now use it.
+
+### Fixed
+
+- **`my_profile_id()`** in the backend repo resolves the caller's profile id
+  once, the way `worship_profile_id()` already did for that feature.
+- Applied to the submission journey **end to end**: handing work in, seeing it,
+  editing it, plus the assignment, enrolment, homework and test rows a student
+  has to read to get there.
+- **Nothing widened.** Each policy admits exactly the person it was written to
+  admit; it just identifies them correctly.
+
+Probed on the live database as a real student with a real assignment, rolled
+back. **Before:** insert refused, own submissions visible **0**. **After:**
+insert accepted, submitting as somebody else still refused, own submissions
+visible **59**, other students' submissions visible **0**.
+
+`tests/student-record-id.test.js` scans for the pattern rather than listing the
+fourteen, so a NEW site that reaches for the auth uid fails it.
+
+### ⚠️ The wider finding — not fixed, and it is your call
+
+**138 policies across roughly 60 tables compare a profile-id column straight to
+`auth.uid()`.** The same 37 students are wrong on every one of them. Tables
+include grades, attendance, notes, medical info, strikes, waivers, schedules,
+RTC balances, skill progress, discussions and notifications — and the parent
+policies have the same shape via `parent_child_links`.
+
+Some of those will be harmless (a table that only self-registered accounts ever
+touch). Some will be another version of this bug waiting for the right student.
+Working out which is which is a deliberate pass, not something to bundle into a
+fix for the journey that was reported — and every one of them is a permission
+boundary, so it wants probing table by table rather than a search and replace.
+
+**The tool to do it with is now there:** `my_profile_id()` exists and is proven.
+
