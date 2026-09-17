@@ -2479,9 +2479,10 @@ unrelated commit. **Flagged, not done.**
 ## 2026-09-16 — real names out of the public repo
 
 This repo is public and Pages serves every file verbatim. It named **35 real
-people across 36 files** — students, parents and staff — in test fixtures, in
-harness rosters, in code comments, and, worst of the four, **in text shown to
-every user**.
+people across 35 tracked files** — students, parents and staff — in test
+fixtures, in harness rosters, in code comments, and, worst of the four, **in
+text shown to every user**. (A 36th file, `MIGRATION_MAP.md`, was edited by the
+same pass but was never tracked — see the correction at the end of this entry.)
 
 That last category is the one to look at before assuming this was only a
 test-data problem. Real students' names were in:
@@ -2544,13 +2545,23 @@ and 0 over-blocked, plus five more.
   signature on every published report card. That is product text a school means
   to publish; renaming it would put a fake principal on a real document. Left
   alone on purpose.
-- **`MIGRATION_MAP.md` should probably not be in this repo at all.** It is a
-  generated 3081-line map of the private repo's 166 migrations, **394 of its
-  lines mention security, RLS, policies, attacks or bypasses**, and it named two
-  students — one of them *as the subject of a security remediation*. The
-  canonical copy already lives in the private backend repo, which is where
-  CLAUDE.md says it belongs. The names are scrubbed; **the file itself is a
-  decision for a human.**
+- **`MIGRATION_MAP.md` — I was wrong about this one.** I flagged it as a leak.
+  It is **gitignored**, has never been tracked, and `rivertech.me/MIGRATION_MAP.md`
+  returns 404. `.gitignore` even carries the reason in a comment: *"Backend
+  migration map + its generator live in the PRIVATE backend repo. Never commit
+  the map here: this repo is public and Pages serves every file."* Somebody had
+  already handled it properly and I did not check `git ls-files` before raising
+  it.
+
+  What was actually here was a **stale local copy** — 3081 lines against the
+  private repo's current 5732 — which my name scrub then edited, leaving a
+  name-mangled duplicate that could be mistaken for the real map. That local
+  file is deleted. The authoritative copy is tracked and clean in
+  `student-portal-backend`, regenerable there with `tools/gen-migration-map.js`.
+
+  **The check that settles this class of question is `git ls-files`, not `ls`.**
+  A file sitting in the working directory of a public repo is not necessarily
+  in it.
 
 ### What this does not undo
 
