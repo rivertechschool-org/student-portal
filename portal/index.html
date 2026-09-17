@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·h';
+      const RIVEN_BUILD = '2026-09-16·i';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -58439,13 +58439,24 @@
       // A child out all day has one daily row and one class row per lesson.
       // Counting both would report "5 absent" for one day off and put them
       // above a child who has actually missed three days.
+      // Each row remembers which register it came from, because they are not
+      // the same fact. Off school for the day is a phone call home; in school
+      // and missing one lesson is a word with the teacher. Reporting them as
+      // one number is what made "17" look wrong against a daily register
+      // reading 16 - the seventeenth child was in school all day.
       const seen = new Set();
       const merged = [];
-      for (const r of [...dayRows, ...(data || [])]) {
+      for (const r of dayRows) {
         const key = `${r.student_id}|${r.date}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        merged.push(r);
+        merged.push({ ...r, _daily: true });
+      }
+      for (const r of (data || [])) {
+        const key = `${r.student_id}|${r.date}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push({ ...r, _daily: false });
       }
 
       // If class filter but the query was school-wide (fallback), restrict manually
@@ -58463,7 +58474,8 @@
       const byStudent = {};
       filtered.forEach(r => {
         if (allowedIds && !allowedIds.has(r.student_id)) return;
-        const e = byStudent[r.student_id] = byStudent[r.student_id] || { absent: 0, late: 0, left: 0, last: r.date };
+        const e = byStudent[r.student_id] = byStudent[r.student_id] || { absent: 0, late: 0, left: 0, last: r.date, daily: false };
+        if (r._daily) e.daily = true;
         if (r.status === 'absent') e.absent++;
         else if (r.status === 'late' || r.status === 'late_left_early') e.late++;
         else e.left++;
@@ -58479,22 +58491,35 @@
       // _briefingExpand keeps the message short by hiding the tail behind
       // "show all", which is the same thing the briefing does and is honest
       // about what it is holding back.
+      // Off school first, then the ones who were in and missed a lesson. That
+      // is the order somebody acts in.
       const ranked = Object.entries(byStudent)
         .map(([id, e]) => ({ id, name: nameOf[id] || 'Unknown student', total: e.absent + e.late + e.left, ...e }))
-        .sort((x, y) => y.total - x.total);
+        .sort((x, y) => (y.daily - x.daily) || (y.total - x.total));
       const rows = ranked.map(s => {
         const parts = [];
         if (s.absent) parts.push(`❌ ${s.absent} absent`);
         if (s.late) parts.push(`⏰ ${s.late} late`);
         if (s.left) parts.push(`🚪 ${s.left} left early`);
-        return `<div style="padding: 6px 10px; margin: 4px 0; background: rgba(255,255,255,0.03); border-left: 3px solid ${s.absent ? '#ff6a6a' : '#ffd36a'}; border-radius: 4px;">
-          <b>${this.escapeHtml(s.name)}</b> — ${parts.join(' · ')} <span style="color: var(--muted); font-size: 11px;">(last: ${s.last})</span>
+        // Marked, because otherwise this row is indistinguishable from a child
+        // who never arrived - and they need opposite things done about them.
+        const where = s.daily ? '' :
+          ` <span style="color: var(--muted); font-size: 11px;">· in school, missed a class</span>`;
+        return `<div style="padding: 6px 10px; margin: 4px 0; background: rgba(255,255,255,0.03); border-left: 3px solid ${s.daily ? '#ff6a6a' : '#ffd36a'}; border-radius: 4px;">
+          <b>${this.escapeHtml(s.name)}</b> — ${parts.join(' · ')}${where} <span style="color: var(--muted); font-size: 11px;">(last: ${s.last})</span>
         </div>`;
       });
-      const absentCount = ranked.filter(s => s.absent).length;
-      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📉 ${ranked.length} student${ranked.length === 1 ? '' : 's'}` +
-        `${absentCount && absentCount !== ranked.length ? ` (${absentCount} absent)` : ''}` +
-        ` — attendance issues (${this.escapeHtml(scopeLabel)})</div>`;
+
+      // Two counts, because they are two different facts and one number for
+      // both reads as an error against the morning register.
+      const away = ranked.filter(s => s.daily).length;
+      const classOnly = ranked.length - away;
+      const headline = [
+        away ? `${away} away from school` : '',
+        classOnly ? `${classOnly} in school but missed a class` : '',
+      ].filter(Boolean).join(' · ');
+      let html = `<div style="font-weight: 600; margin-bottom: 8px;">📉 ${this.escapeHtml(headline)} ` +
+        `<span style="font-weight: 400; color: var(--muted);">(${this.escapeHtml(scopeLabel)})</span></div>`;
       html += this._briefingExpand(rows, 10, 'students', '');
       html += `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">Ask "show [name]'s attendance" for the full picture on anyone.</div>`;
       this._showRivenMessage(html, true);

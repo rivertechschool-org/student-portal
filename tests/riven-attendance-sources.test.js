@@ -204,7 +204,7 @@ const answer = (app) => app.said.join('\n');
     const out = answer(app);
 
     // The number that matters most was the one never shown.
-    ok('the total is stated up front', /16 students/.test(out));
+    ok('the total is stated up front', /16 away from school/.test(out));
     // Everyone is in the message; the tail is collapsed, not dropped.
     check('every name is present', many.filter((_, i) => out.includes('Pupil ' + i)).length, 16);
     ok('  with the tail behind "show all"', /and 6 more students/.test(out));
@@ -216,6 +216,68 @@ const answer = (app) => app.said.join('\n');
     const app = makeApp({ school: true });
     await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
     ok('three names need no "show all"', !/show all/.test(answer(app)));
+  }
+
+  console.log('\n== away from school is not the same as missed a lesson ==\n');
+
+  {
+    // THE 16-vs-17. The daily register said 16; the answer said 17. Both were
+    // right: 16 children were off school, and a seventeenth was in all day and
+    // missed one lesson. Reported as one number it reads as an error against
+    // the register everybody trusts.
+    const daily = [];
+    for (let i = 0; i < 16; i++) daily.push({ student_id: 'd' + i, status: 'absent', date: TODAY });
+    const cls = [{ student_id: 'inschool', status: 'absent', date: TODAY }];
+
+    const app = makeApp({ school: true });
+    app._terminalAllStudents = [
+      ...daily.map((r, i) => ({ id: r.student_id, full_name: 'Away ' + i })),
+      { id: 'inschool', full_name: 'Present Pupil' },
+    ];
+    app.auth.supabase.from = (table) => {
+      const q = {
+        select: () => q, gte: () => q, lte: () => q, neq: () => q,
+        order: () => q, limit: () => q, eq: () => q,
+        then: (res, rej) => Promise.resolve({
+          data: table === 'daily_attendance' ? daily : cls, error: null }).then(res, rej),
+      };
+      return q;
+    };
+    await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
+    const out = answer(app);
+
+    // The number the morning register shows is the number Riven leads with.
+    ok('it says 16 away from school', /16 away from school/.test(out));
+    ok('  and counts the other one separately', /1 in school but missed a class/.test(out));
+    ok('  never as a single 17', !/17 (students|away)/.test(out));
+
+    // The row itself has to say which it is - the two need opposite things
+    // doing about them.
+    const theirs = out.split('Present Pupil')[1] || '';
+    ok('the odd one out is marked on its row', /in school, missed a class/.test(theirs));
+
+    // And they sort below the children who never arrived, which is the order
+    // somebody works through them in.
+    ok('school absences come first', out.indexOf('Away 0') < out.indexOf('Present Pupil'));
+  }
+
+  {
+    // No class-only cases: no second clause, so an ordinary day reads cleanly.
+    const daily = [{ student_id: 'a', status: 'absent', date: TODAY }];
+    const app = makeApp({ school: true });
+    app._terminalAllStudents = [{ id: 'a', full_name: 'Solo Pupil' }];
+    app.auth.supabase.from = (table) => {
+      const q = {
+        select: () => q, gte: () => q, lte: () => q, neq: () => q,
+        order: () => q, limit: () => q, eq: () => q,
+        then: (res, rej) => Promise.resolve({
+          data: table === 'daily_attendance' ? daily : [], error: null }).then(res, rej),
+      };
+      return q;
+    };
+    await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
+    ok('one away, and nothing else said', /1 away from school/.test(answer(app)));
+    ok('  no empty second clause', !/missed a class/.test(answer(app)));
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

@@ -2030,3 +2030,41 @@ back — worth moving to `_briefingExpand` one day, not urgent.
 `tests/riven-attendance-sources.test.js` is at 15, including a 16-student day
 asserting every name is present and the tail is collapsed rather than dropped.
 
+---
+
+## 2026-09-16 — 17 was right, and still wrong
+
+The answer said 17; the morning register said 16. Checked against the database:
+
+```
+absent on the daily register                 16
+flagged in a class register                   6
+  ... of those, NOT absent from school        1
+merged total                                 17
+```
+
+Both numbers were correct. **16 children were off school, and a seventeenth was
+in all day and missed one lesson.** Merging two registers merged two different
+facts, and one number for both reads as an error against the register everybody
+trusts.
+
+They are also different jobs: off school is a phone call home, in school and
+missing a lesson is a word with the teacher. So the answer now counts them
+apart:
+
+> 📉 **16 away from school · 1 in school but missed a class** *(school-wide, today)*
+
+Each row carries which it is, the school absences sort first — the order
+somebody works through them in — and a day with no class-only cases shows no
+second clause at all.
+
+### Worth keeping in mind
+
+Every fix in this sequence was correct and every one still looked wrong,
+because the number moved without the meaning being explained: 6 → 10 → 17 → 16
++ 1. **When two sources are combined, say which is which in the answer.** The
+merge was right from the start; what was missing was the label.
+
+`tests/riven-attendance-sources.test.js` is at 22, with the 16-vs-17 case
+pinned exactly as it occurred.
+
