@@ -2272,3 +2272,59 @@ up to 200 bubbles, on a phone. `terminalShowAttendance` now uses
 `_showRivenMessage` like every other answer; the other seven are untouched and
 worth the same treatment.
 
+---
+
+## 2026-09-16 — "who is missing next week?"
+
+Answered "16 away from school · 1 in school but missed a class (school-wide,
+**today**)". Today's register, for a week that has not happened.
+
+**The matcher was one word short.** `VIEW_PLANNED_ABSENCES` already existed,
+weighted 7 against `ATTENDANCE_ISSUES`' 5, and would have won — except its two
+`who is …` patterns listed *out / away / absent / gone* and not **missing**. So
+nothing matched, the aggregate attendance pattern (`who … missing`) took it, and
+the register answered a question about the future.
+
+Fixed in both patterns, plus `anyone … missing`.
+
+**And a net behind the matcher.** Fixing the phrasings we have seen does nothing
+for the ones nobody has thought of yet, so `ATTENDANCE_ISSUES` now checks
+`_rivenPointsForward` first and hands the question to the planned list whatever
+the score said. It sits ahead of the today-default, which otherwise re-labels
+the answer "today" on the way past.
+
+`_rivenPointsForward` is deliberately narrow — only words that can *only* point
+forward. **"this week" is not one of them**: "anyone absent this week?" is
+usually about what has already happened, which is what the intent's own comment
+has always said.
+
+### `_rivenForwardWindow`
+
+The mirror of `_rivenPastDate`, and separate from it for the same reason: a date
+in a question about the past means the most recent one, a date in a question
+about the future means the next one. Named dates here go through
+`_rivenMonthDayDates`, which already resolves forwards.
+
+Handles `tomorrow`, `next week` (always the *next* Monday, even asked on a
+Monday), `next month`, `next friday`, `the rest of this week`, and a date said
+outright.
+
+The planned list now narrows to that window and says which one it is —
+**"Away next week (September 21 – 27)"** — and an empty window says *which*
+window came up empty, plus how many are further out. "Nobody is away" and
+"nobody is away next week" are different claims and only one of them is true.
+
+Overlap, not containment: a trip that starts before the window and runs into it
+is somebody who is away.
+
+Checked against the live table: two plans for Sep 17–18 and one for Sep 21–22,
+so "next week" shows the one and excludes the two, and "tomorrow" shows the two.
+
+### Worth knowing
+
+I made this one worse before I made it better. The bare-question gate added
+earlier the same day — "who was missing?" means today — also fires on "who *is*
+missing", which is why the answer was confidently labelled "today" rather than
+merely defaulting to 30 days. A gate that supplies a missing date has to know
+which direction the sentence is facing.
+

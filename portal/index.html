@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·m';
+      const RIVEN_BUILD = '2026-09-16·n';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52279,6 +52279,92 @@
       return hit;
     }
 
+    // Does this sentence point FORWARD?
+    //
+    // The attendance register only knows days that have happened. "Who is
+    // missing next week" asked of it gets today's absences with the word
+    // "today" in small grey letters at the end - a different question,
+    // answered confidently, which is the failure this page keeps repeating.
+    //
+    // Deliberately narrow: only words that can ONLY point forward. "this week"
+    // is not here, because "anyone absent this week?" is usually a question
+    // about what has already happened.
+    _rivenPointsForward(text) {
+      const t = String(text || '').toLowerCase();
+      return /\b(next week|next month|next term|next year|upcoming|coming up|tomorrow|going to be (out|away|absent|gone|missing)|will be (out|away|absent|gone|missing)|rest of (the|this) (week|month)|later this week|next (mon|tues?|wed(nes)?|thurs?|fri|sat(ur)?|sun)(day)?)\b/.test(t)
+        && !/\blast (week|month|term|year)\b/.test(t);
+    }
+
+    // The window a forward-looking question is asking about.
+    //
+    // The mirror of _rivenPastDate, and kept separate from it for the same
+    // reason: a date in a question about the past means the most recent one, a
+    // date in a question about the future means the next one. Named dates here
+    // go through _rivenMonthDayDates, which already resolves forwards because
+    // it serves "Meadow will be absent Sept 23".
+    //
+    // Returns { from, to, label } or null.
+    _rivenForwardWindow(text) {
+      const t = String(text || '').toLowerCase();
+      const at = (n) => this._isoDaysAgo(-n);           // n days AHEAD
+      const today = this._isoDaysAgo(0);
+      const MN = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                  'August', 'September', 'October', 'November', 'December'];
+      const say = (iso) => {
+        const [, m, d] = iso.split('-').map(Number);
+        return `${MN[m - 1]} ${d}`;
+      };
+      const span = (from, to, label) => ({ from, to, label: label || `${say(from)} – ${say(to)}` });
+
+      if (/\btomorrow\b/.test(t)) return span(at(1), at(1), `tomorrow (${say(at(1))})`);
+
+      if (/\bnext week\b/.test(t)) {
+        // Always the NEXT Monday, even when today is Monday.
+        const dow = new Date().getDay();
+        const toMon = (8 - dow) % 7 || 7;
+        return span(at(toMon), at(toMon + 6), `next week (${say(at(toMon))} – ${say(at(toMon + 6))})`);
+      }
+
+      if (/\b(rest of (the|this) week|later this week)\b/.test(t)) {
+        const dow = new Date().getDay();
+        const toSun = (7 - dow) % 7;
+        return span(today, at(toSun), 'the rest of this week');
+      }
+
+      if (/\bnext month\b/.test(t)) {
+        const n = new Date();
+        const y = n.getMonth() === 11 ? n.getFullYear() + 1 : n.getFullYear();
+        const mi = (n.getMonth() + 1) % 12;
+        const p = (x) => String(x).padStart(2, '0');
+        const last = new Date(y, mi + 1, 0).getDate();
+        return span(`${y}-${p(mi + 1)}-01`, `${y}-${p(mi + 1)}-${p(last)}`, `next month (${MN[mi]})`);
+      }
+
+      // "next monday", "this friday"
+      const wd = t.match(/\b(?:next|this|on)\s+(mon|tues?|wed(?:nes)?|thurs?|fri|sat(?:ur)?|sun)(?:day)?\b/);
+      if (wd) {
+        const KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+        const want = KEYS.findIndex(k => wd[1].startsWith(k));
+        if (want >= 0) {
+          const dow = new Date().getDay();
+          let ahead = (want - dow + 7) % 7;
+          // "next friday" said on a Friday means the one coming, not today.
+          if (ahead === 0 || /\bnext\b/.test(wd[0])) ahead = ahead === 0 ? 7 : ahead;
+          const d = at(ahead);
+          return span(d, d, `${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][want]} (${say(d)})`);
+        }
+      }
+
+      // A date said outright, read forwards.
+      const named = this._rivenMonthDayDates(t);
+      if (named && named.length) {
+        const from = named[0], to = named[named.length - 1];
+        return span(from, to, from === to ? say(from) : `${say(from)} – ${say(to)}`);
+      }
+
+      return null;
+    }
+
     _parseTimeframe(normalized) {
       // A date said out loud beats every relative window below, which is all
       // this used to know.
@@ -53756,10 +53842,14 @@
           w: 7,
           patterns: [
             /\b(planned|upcoming|expected|future)\s+absences?\b/,
-            /\bwho(?:'?s| is| are)\s+(?:going to be\s+)?(?:out|away|absent|gone)\b.{0,24}\b(next|upcoming|coming up|ahead|tomorrow)\b/,
-            /\banyone\s+(?:out|away|absent|off)\b.{0,20}\b(next week|next month|coming up|upcoming|tomorrow)\b/,
+            // "missing" and "off" belong here too. "/admin who is missing next
+            // week?" matched none of these, fell to ATTENDANCE_ISSUES, and was
+            // answered out of today's register - labelled "today", in grey, at
+            // the end of a headline about sixteen people who were absent now.
+            /\bwho(?:'?s| is| are)\s+(?:going to be\s+)?(?:out|away|absent|gone|missing|off)\b.{0,24}\b(next|upcoming|coming up|ahead|tomorrow)\b/,
+            /\banyone\s+(?:out|away|absent|off|missing|gone)\b.{0,20}\b(next week|next month|coming up|upcoming|tomorrow)\b/,
             /\bwho\s+will be\s+(?:out|away|missing|absent)\b/,
-            /\bwho(?:'?s| is)\s+(?:going to be\s+)?(?:out|away|absent)\s+(?:next|tomorrow)\b/,
+            /\bwho(?:'?s| is)\s+(?:going to be\s+)?(?:out|away|absent|missing|gone|off)\s+(?:next|tomorrow)\b/,
             // Asking about ONE person's dates. terminalShowPlannedAbsences
             // already narrows to a resolved student, so these answer with just
             // their stretches rather than the whole school's.
@@ -55380,6 +55470,22 @@
           break;
 
         case 'ATTENDANCE_ISSUES':
+          // FORWARD-LOOKING QUESTIONS DO NOT BELONG TO THE REGISTER.
+          //
+          // The register only knows days that have happened. "Who is missing
+          // next week" answered from it gets today's sixteen absences with the
+          // word "today" in grey at the end of the headline - which reads as
+          // the answer, not as a correction.
+          //
+          // The matcher should send these to VIEW_PLANNED_ABSENCES on its own,
+          // and now does for the phrasings that were missing. This stands
+          // behind it for the ones nobody has thought of yet: whatever the
+          // score said, a sentence pointing forward goes to the list of what
+          // is planned.
+          if (this._rivenPointsForward(entities.normalized || '')) {
+            await this.terminalShowPlannedAbsences(entities);
+            break;
+          }
           // "are my students here today" / "who isn't here today"
           if (!entities.sinceDate && /\btoday\b|\bare (all|my)\b|\bhas everyone\b|\beveryone (here|present)\b|\b(took|take|taken) (attendance|roll)\b/.test(entities.normalized || '')) {
             entities.sinceDate = this._isoDaysAgo(0);
@@ -61995,10 +62101,25 @@
       catch (err) { this.terminalPrintError('Could not read the upcoming absences: ' + err.message); return; }
       const who = this._rivenResolvedStudent(entities);
       if (who) rows = rows.filter(r => r.student_id === who.id);
+
+      // "Next week" is a narrower question than "what's coming up", and
+      // answering the wide one is how "who is missing next week" ends up
+      // showing a trip in November. Overlap, not containment: a plan that
+      // starts before the window and runs into it is somebody who is away.
+      const win = this._rivenForwardWindow(entities.normalized || entities.original || '');
+      const beyond = win ? rows.filter(r => r.start_date > win.to).length : 0;
+      if (win) rows = rows.filter(r => r.start_date <= win.to && r.end_date >= win.from);
+
       if (!rows.length) {
+        // Say which window came up empty. "Nobody is away" is a different
+        // claim from "nobody is away next week", and only one of them is true.
+        const where = win ? ` ${this.escapeHtml(win.label)}` : '';
+        const more = beyond
+          ? ` <span style="color: var(--muted);">${beyond} further out — ask "upcoming absences" for the list.</span>`
+          : '';
         this._showRivenMessage(who
-          ? `Nothing on the list for ${this.escapeHtml(who.full_name)}.`
-          : `Nobody is down as away. Say <em>"[name] is out monday to wednesday"</em> to add one.`, true);
+          ? `Nothing on the list for ${this.escapeHtml(who.full_name)}${where}.${more}`
+          : `Nobody is down as away${where}.${more || ` Say <em>"[name] is out monday to wednesday"</em> to add one.`}`, true);
         return;
       }
       const today = this._localDateStr(new Date());
@@ -62008,7 +62129,7 @@
         return `\u2022 <b>${this.escapeHtml(r.student_name)}</b> \u2014 ${this.escapeHtml(span)}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}${now}`;
       });
       this._showRivenMessage(
-        `<div style="font-weight: 600; margin-bottom: 8px;">\u{1F4C5} Upcoming absences</div>` +
+        `<div style="font-weight: 600; margin-bottom: 8px;">\u{1F4C5} ${win ? 'Away ' + this.escapeHtml(win.label) : 'Upcoming absences'}</div>` +
         `<div style="font-size: 13px;">${this._briefingExpand(lines, 8, 'absences')}</div>`, true);
     }
 

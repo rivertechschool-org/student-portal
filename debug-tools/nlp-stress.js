@@ -263,6 +263,14 @@ const T3 = [
   // Past tense. Every copula pattern on VIEW_ATTENDANCE used to say "is", so
   // "was X present <date>" matched nothing and the name alone carried it to
   // VIEW_STUDENT - which prints an account card and no attendance at all.
+  // Forward-looking. "who is MISSING next week" matched none of the planned
+  // patterns - they listed out/away/absent/gone - and fell to the register,
+  // which answered about today.
+  ['who is missing next week', 'VIEW_PLANNED_ABSENCES', null, true],
+  ['whos out tomorrow', 'VIEW_PLANNED_ABSENCES', null, true],
+  ['anyone missing next week', 'VIEW_PLANNED_ABSENCES', null, true],
+  // ...and the same shape about the past still belongs to the register.
+  ['who was missing yesterday', 'ATTENDANCE_ISSUES', null, true],
   ['was charlotte present september 9', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
   ['was charlotte here on monday', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
   ['was charlotte in school yesterday', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
