@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·l';
+      const RIVEN_BUILD = '2026-09-16·m';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -54069,14 +54069,18 @@
             /\b(absent|absence|absences)\b/,
             /\b(tardy|tardies|tardiness)\b/,
             /(miss|missed|skipped) (class|classes|school|days)/,
-            /\bis\b.+\b(here|present|in (school|class))\b/,
+            // is/was/were/are: "WAS Elizabeth present September 9" used to match
+            // nothing here and fall through to VIEW_STUDENT, which prints an
+            // account card - email, RTC balance, join date - so an attendance
+            // question came back answered, with nothing about attendance in it.
+            /\b(is|was|were|are)\b.+\b(here|present|absent|in (school|class))\b/,
             // question forms: "was jordan late?", "is he on time usually?" —
             // the statement form ("jordan was late") outscores this and
             // writes; leading-verb questions block the write and read here
             /\b(late|tardy|on time|left early)\b/,
             /\b(showing up|shown up|show up|showed up|been around|make it in|made it in|come to class|coming to class)\b/,
-            /\bis \w+ (out|absent)\b/,
-            /\bis \w+ (in|here) (today|now|right now|this morning|yet)\b/,
+            /\b(is|was|were|are) \w+ (out|absent)\b/,
+            /\b(is|was|were|are) \w+ (in|here) (today|now|right now|this morning|yet)\b/,
             /\b(skipping|ditching|cutting) (school|class)\b/,
             /\bwhen was \w+ (last )?(here|in|present)\b/,
           ],
@@ -55261,7 +55265,9 @@
           if (student) {
             // "is eli here today?" without an explicit timeframe means today
             let vSince = entities.sinceDate, vUntil = entities.untilDate, vLabel = entities.sinceLabel;
-            if (!vSince && /\bis\b.*\b(here|present|absent|in (school|class))\b/.test(entities.normalized || '')) {
+            // A bare "is/was she here?" with no date means today. With a date
+            // in it, _parseTimeframe has already set one and this stands aside.
+            if (!vSince && /\b(is|was|were|are)\b.*\b(here|present|absent|in (school|class))\b/.test(entities.normalized || '')) {
               vSince = vUntil = this._isoDaysAgo(0); vLabel = 'today';
             }
             await this.terminalShowAttendance(student.full_name, {
@@ -56088,13 +56094,27 @@
       const student = students[0];
       const fullName = student.full_name || `${student.first_name || ''} ${student.last_name || ''}`.trim();
 
-      // Default window: last 30 days
+      const sb = this.auth.supabase;
+
+      // "Was she in school" does not name a subject called School.
+      //
+      // The entity reader pulls "school" out of "in school" and hands it over
+      // as opts.subject. Taken at face value that filters away every lesson
+      // AND, worse, counts as a named subject - which switches off the morning
+      // register below. The one question daily_attendance exists to answer
+      // would come back "nothing recorded".
+      const subject = /^(school|class|classes|lesson|lessons)$/i.test(String(opts.subject || '').trim())
+        ? null : opts.subject;
+
       const sinceDate = opts.sinceDate || this._isoDaysAgo(30);
       const sinceLabel = opts.sinceLabel || 'last 30 days';
+      // "Was she present on September 9" is a yes/no about one day, and wants
+      // an answer, not a percentage.
+      const oneDay = !!(opts.sinceDate && opts.untilDate && opts.sinceDate === opts.untilDate);
 
       // class_attendance.class_id has no FK to classes, so PostgREST can't
       // embed classes(...) — fetch class names in a second query instead.
-      let q = this.auth.supabase
+      let q = sb
         .from('class_attendance')
         .select('status, date, notes, class_id')
         .eq('student_id', student.id)
@@ -56108,15 +56128,15 @@
       let records = data || [];
       const classIds = [...new Set(records.map(r => r.class_id).filter(Boolean))];
       if (classIds.length) {
-        const { data: classRows } = await this.auth.supabase
+        const { data: classRows } = await sb
           .from('classes').select('id, name, subject').in('id', classIds);
         const classMap = {};
         (classRows || []).forEach(c => { classMap[c.id] = c; });
         records = records.map(r => ({ ...r, classes: classMap[r.class_id] || null }));
       }
       // Subject filter ("in math") — match against class name or subject
-      if (opts.subject) {
-        const subj = opts.subject.toLowerCase();
+      if (subject) {
+        const subj = subject.toLowerCase();
         records = records.filter(r => {
           const n = (r.classes?.name || '').toLowerCase();
           const s = (r.classes?.subject || '').toLowerCase();
@@ -56124,28 +56144,141 @@
         });
       }
 
-      const scope = (opts.subject ? `${opts.subject} · ` : '') + sinceLabel;
-      if (records.length === 0) {
-        // Don't dead-end on a narrow timeframe — automatically widen so the
-        // teacher learns what IS recorded instead of just "nothing".
+      // THE MORNING REGISTER, which is the one that answers "was she here".
+      //
+      // This read class_attendance alone, so "was Elizabeth present September
+      // 9" could only ever answer from the lesson registers - and those are
+      // taken patchily. A child who was off school all day, with no lesson
+      // register taken, came back as "nothing recorded", and the empty-result
+      // branch below then quietly widened to the last 30 days and showed a
+      // month of somebody else's question.
+      //
+      // Same rule as the school-wide scan: daily_attendance is whether they
+      // came to school, class_attendance is whether they came to the lesson.
+      // A NAMED subject is the exception - "was she in my Chemistry lesson" is
+      // a question the morning register cannot answer.
+      let dayRows = [];
+      if (!subject) {
+        let dq = sb
+          .from('daily_attendance')
+          // excused / excuse_note, NOT notes: daily_attendance has no notes
+          // column. Asking for one is a 400, and the catch below would have
+          // turned that into "class registers only" - silently restoring the
+          // exact bug this is here to fix. Checked against the live schema.
+          .select('status, date, excused, excuse_note')
+          .eq('student_id', student.id)
+          .gte('date', sinceDate)
+          .order('date', { ascending: false })
+          .limit(100);
+        if (opts.untilDate) dq = dq.lte('date', opts.untilDate);
+        const { data: dd, error: de } = await dq;
+        // The lesson registers are a real answer on their own, so a failure
+        // here narrows the answer rather than losing it.
+        if (de) console.warn('daily register unavailable, class registers only:', de);
+        dayRows = (dd || []).map(r => ({
+          ...r,
+          notes: r.excuse_note || null,
+          // "Absent" and "absent, and the school knew why" are different
+          // things to be told.
+          excused: r.excused === true,
+        }));
+      }
+
+      // ONE ROW PER DAY.
+      //
+      // A child out all day has one daily row AND one row per lesson. Counted
+      // flat that is "5 absences" for one day off, and a percentage computed
+      // against it means nothing. Days are what people mean.
+      const rank = { absent: 4, late_left_early: 3, late: 2, left_early: 2, present: 1 };
+      const worst = (map, r) => {
+        const cur = map.get(r.date);
+        if (!cur || (rank[r.status] || 0) > (rank[cur.status] || 0)) map.set(r.date, r);
+      };
+      const dailyByDate = new Map();
+      const classByDate = new Map();
+      dayRows.forEach(r => worst(dailyByDate, r));
+      records.forEach(r => worst(classByDate, r));
+
+      const days = [...new Set([...dailyByDate.keys(), ...classByDate.keys()])]
+        .sort().reverse()
+        .map(date => {
+          const d = dailyByDate.get(date);
+          const c = classByDate.get(date);
+          const base = d || c;
+          // In school, but missed a lesson. Two different facts, and they need
+          // opposite things doing about them.
+          const alsoMissed = !!(d && d.status === 'present' && c && c.status !== 'present');
+          return {
+            date,
+            status: base.status,
+            daily: !!d,
+            className: (!d && c?.classes?.name) ? c.classes.name : null,
+            missed: alsoMissed ? (c.classes?.name || 'a class') : null,
+            missedStatus: alsoMissed ? c.status : null,
+            excused: !!(d && d.excused),
+            notes: base.notes || (alsoMissed ? c.notes : null) || null,
+          };
+        });
+
+      const scope = (subject ? `${subject} · ` : '') + sinceLabel;
+      const said = (s) => s.replace(/_/g, ' ');
+
+      if (!days.length) {
+        // A DAY THAT WAS ASKED ABOUT BY NAME IS NOT WIDENED.
+        //
+        // The old code answered an empty narrow window by re-running the last
+        // 30 days. For "was she here on the 9th" that is a different question
+        // answered confidently, which is the failure mode this page keeps
+        // hitting. Say what is true instead.
+        if (oneDay) {
+          this._showRivenMessage(
+            `Nothing is recorded for <b>${this.escapeHtml(fullName)}</b> on ${this.escapeHtml(sinceLabel)} — ` +
+            `either no register was taken that day, or they weren't enrolled yet. ` +
+            `<span style="color: var(--muted);">Ask "show ${this.escapeHtml((fullName.split(' ')[0] || 'their'))}'s attendance" for the full picture.</span>`, true);
+          return;
+        }
         if (opts.sinceDate) {
           this.terminalPrint(`Nothing recorded for ${fullName} (${scope}) — here's the last 30 days instead:`, '#ffd36a');
-          return this.terminalShowAttendance(name, { subject: opts.subject });
+          return this.terminalShowAttendance(name, { subject });
         }
         this.terminalPrint(`No attendance records for ${fullName} (${scope}). Nothing has been recorded for them yet.`, '#ffd36a');
         return;
       }
 
-      const counts = { present: 0, absent: 0, late: 0, left_early: 0, late_left_early: 0 };
-      records.forEach(r => { counts[r.status] = (counts[r.status] || 0) + 1; });
-      const total = records.length;
-      const presentPct = Math.round((counts.present / total) * 100);
       const statusIcon = { present: '✅', absent: '❌', late: '⏰', left_early: '🚪', late_left_early: '⏰🚪' };
 
-      const output = document.getElementById('terminal-output');
+      // ONE DAY: answer the question that was asked.
+      if (oneDay) {
+        const d = days[0];
+        const where = d.daily ? 'the morning register' : (d.className ? d.className : 'a lesson register');
+        let line;
+        if (d.status === 'present' && d.missed) {
+          line = `⚠️ <b>${this.escapeHtml(fullName)}</b> was in school on ${this.escapeHtml(sinceLabel)}, but was marked ` +
+                 `${this.escapeHtml(said(d.missedStatus))} in <b>${this.escapeHtml(d.missed)}</b>.`;
+        } else if (d.status === 'present') {
+          line = `✅ Yes — <b>${this.escapeHtml(fullName)}</b> was present on ${this.escapeHtml(sinceLabel)}.`;
+        } else if (d.status === 'absent') {
+          line = `❌ No — <b>${this.escapeHtml(fullName)}</b> was marked ` +
+                 `${d.excused ? 'absent, excused,' : 'absent'} on ${this.escapeHtml(sinceLabel)}.`;
+        } else {
+          line = `${statusIcon[d.status] || '📅'} <b>${this.escapeHtml(fullName)}</b> was marked ` +
+                 `${this.escapeHtml(said(d.status))} on ${this.escapeHtml(sinceLabel)}.`;
+        }
+        this._showRivenMessage(
+          `<div>${line}</div>` +
+          `<div style="color: var(--muted); font-size: 12px; margin-top: 4px;">from ${this.escapeHtml(where)}` +
+          `${d.notes ? ` · ${this.escapeHtml(d.notes)}` : ''}</div>`, true);
+        return;
+      }
+
+      const counts = { present: 0, absent: 0, late: 0, left_early: 0, late_left_early: 0 };
+      days.forEach(d => { counts[d.status] = (counts[d.status] || 0) + 1; });
+      const total = days.length;
+      const presentPct = Math.round((counts.present / total) * 100);
+
       let html = `
 <div style="margin-top: 12px; color: #8bffb0; font-weight: bold;">📅 Attendance - ${this.escapeHtml(fullName)}</div>
-<div style="color: #97a2b0; font-size: 11px; margin: 2px 0 8px;">${this.escapeHtml(scope)} · ${total} record${total !== 1 ? 's' : ''} · ${presentPct}% present</div>
+<div style="color: #97a2b0; font-size: 11px; margin: 2px 0 8px;">${this.escapeHtml(scope)} · ${total} day${total !== 1 ? 's' : ''} recorded · ${presentPct}% present</div>
 <div style="font-size: 12px; margin-bottom: 8px;">
   <span style="color:#8bffb0;">✅ ${counts.present} present</span> &nbsp;
   <span style="color:#ff6a6a;">❌ ${counts.absent} absent</span> &nbsp;
@@ -56153,19 +56286,27 @@
   <span style="color:#ffd36a;">🚪 ${counts.left_early + counts.late_left_early} left early</span>
 </div>
 <div style="font-size: 12px;">`;
-      records.slice(0, 12).forEach(r => {
-        const color = r.status === 'present' ? '#8bffb0' : r.status === 'absent' ? '#ff6a6a' : '#ffd36a';
-        const date = new Date(r.date + 'T12:00:00Z').toLocaleDateString();
-        const cls = r.classes?.name ? ` · ${this.escapeHtml(r.classes.name)}` : '';
-        const note = r.notes ? ` — ${this.escapeHtml(r.notes)}` : '';
+      days.slice(0, 12).forEach(d => {
+        const color = d.status === 'present' ? '#8bffb0' : d.status === 'absent' ? '#ff6a6a' : '#ffd36a';
+        const date = new Date(d.date + 'T12:00:00Z').toLocaleDateString();
+        // Say which register this came from. "Absent" off the morning register
+        // and "absent" in one lesson are different days.
+        const src = d.daily ? ' · school day' : (d.className ? ` · ${this.escapeHtml(d.className)}` : '');
+        const missed = d.missed ? ` <span style="color:#ffd36a;">· missed ${this.escapeHtml(d.missed)}</span>` : '';
+        const exc = (d.excused && d.status !== 'present')
+          ? ' <span style="color: var(--muted); font-size: 11px;">· excused</span>' : '';
+        const note = d.notes ? ` — ${this.escapeHtml(d.notes)}` : '';
         html += `
           <div style="padding: 6px 8px; margin: 3px 0; background: rgba(255,255,255,0.02); border-left: 3px solid ${color}; border-radius: 4px;">
-            <span style="color:${color};">${statusIcon[r.status] || '📅'} ${r.status.replace(/_/g, ' ')}</span>
-            <span style="color:#6aa9ff; font-size: 11px;">${date}</span>${cls}${note}
+            <span style="color:${color};">${statusIcon[d.status] || '📅'} ${this.escapeHtml(said(d.status))}</span>
+            <span style="color:#6aa9ff; font-size: 11px;">${date}</span>${src}${missed}${exc}${note}
           </div>`;
       });
       html += '</div>';
-      if (output) output.innerHTML += html;
+      // A Riven bubble, like every other answer. This used to do
+      // `output.innerHTML += html`, which re-parses the ENTIRE transcript on
+      // every attendance view - hundreds of nodes, on a phone, to append one.
+      this._showRivenMessage(html, true);
     }
 
     async terminalShowClassAttendance(entities) {

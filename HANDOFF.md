@@ -2204,3 +2204,71 @@ absence scan, the class card and the notes window. All six now use
   session claimed the check could not be run. It can; see
   `reference_supabase_sql_via_cli`.
 
+---
+
+## 2026-09-16 — "Was Elizabeth Beck present September 9"
+
+Riven got the misspelled surname right, then answered with her **account card**:
+email, RTC balance, status, join date, uuid. Nothing about attendance.
+
+Three faults, stacked, each of which would have been enough on its own.
+
+**1. It never reached attendance.** Every copula pattern on `VIEW_ATTENDANCE`
+said *is* — `/\bis\b.+\b(here|present|…)\b/`. The sentence says *was*. Nothing
+matched, so the name alone carried it to `VIEW_STUDENT`. The patterns now read
+`(is|was|were|are)`, and `present` was added to the noun set. Four routing cases
+are in `nlp-stress`.
+
+**2. It read the wrong register.** `terminalShowAttendance` queried
+`class_attendance` alone — the same fault as the school-wide scan, and the item
+previously flagged here as "anything else reading `class_attendance` alone".
+It now reads the morning register too, with the same rule: `daily_attendance`
+is whether they came to school, `class_attendance` is whether they came to the
+lesson, and a **named subject** is the exception.
+
+**3. An empty day became a month.** With nothing in the lesson registers for the
+9th, the empty branch re-ran itself for the last 30 days and rendered a month of
+summary. For a question about one day that is a different question answered
+confidently — the failure this page keeps repeating. A named day now says
+"nothing is recorded for her on September 9", and stops.
+
+### The answer's shape
+
+A yes/no question gets a yes or a no. "3 records · 67% present" is a report.
+`✅ Yes — Elizabeth Becker was present on September 9`, with the register it came
+from underneath. Absent, late, left early and *in school but missed a lesson*
+each get their own sentence, because they need different things doing about
+them.
+
+The multi-day view still summarises, but counts **days**, not register rows — a
+child out all day has one daily row and one row per lesson, and counting those
+flat reports five absences for one day off.
+
+### Two things the live database caught that no stub would have
+
+- **`daily_attendance` has no `notes` column.** It has `excused` and
+  `excuse_note`. The first version of this selected `notes`, which is a 400 —
+  and the warn-and-continue around that query would have turned it into "class
+  registers only", *silently restoring the exact bug being fixed*, with a
+  console line as the only trace. The test fixture had the same wrong column,
+  because I wrote it from the same wrong assumption. Both now match the live
+  schema, and a test asserts the select string.
+- **"in school" is parsed as a subject.** `nlp-stress` prints `subj=school` for
+  "was she in school yesterday". Taken at face value that filters every lesson
+  away *and* counts as a named subject, switching off the morning register — so
+  the one question `daily_attendance` exists to answer would come back "nothing
+  recorded". `school`, `class`, `classes`, `lesson`, `lessons` are now discarded
+  as subjects here.
+
+Verified against the live rows: Elizabeth Becker on 2026-09-09 is **present** on
+the morning register, with **no lesson rows at all** — so the old path would
+have found nothing and widened to a month even if routing had got it there.
+
+### Noted, not changed
+
+`output.innerHTML += html` on `#terminal-output` appears in **seven** other
+methods. Each one re-parses the entire transcript to append a single answer —
+up to 200 bubbles, on a phone. `terminalShowAttendance` now uses
+`_showRivenMessage` like every other answer; the other seven are untouched and
+worth the same treatment.
+

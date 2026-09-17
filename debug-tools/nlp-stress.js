@@ -260,6 +260,13 @@ const T3 = [
   ['show me charlotte attendance', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
   ['how many days has noah been absent', 'VIEW_ATTENDANCE', 'Noah Williams', true],
   ['evelyn tardies this month', 'VIEW_ATTENDANCE', 'Evelyn Hegelund', true],
+  // Past tense. Every copula pattern on VIEW_ATTENDANCE used to say "is", so
+  // "was X present <date>" matched nothing and the name alone carried it to
+  // VIEW_STUDENT - which prints an account card and no attendance at all.
+  ['was charlotte present september 9', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['was charlotte here on monday', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['was charlotte in school yesterday', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['is charlotte here today', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
   ['give me sam carter grade in math', 'VIEW_GRADES', 'Sam Carter', true],  // grade query: must NOT add RTC; routes to grades reader
   // legit award with attendance as the REASON still works (has rtc) ...
   ['give charlotte 5 rtc for good attendance', 'ADD_RTC', 'Charlotte Tebow', true],
