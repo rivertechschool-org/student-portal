@@ -25,6 +25,26 @@ Those belong in the private `student-portal-backend` repo. **If a change affects
 database allows or stores, it is not a change to this repo** — write the SQL, explain it in
 plain language, and hand it over rather than committing it here.
 
+## Don't read the roster
+
+**Do not query real student, family or staff records to build or check anything
+here** — not fixtures, not test corpora, not a quick audit. It is not a trade
+worth making, and it is not needed: every guard in this repo is written to work
+regardless of who is enrolled.
+
+- Fixtures use **invented names that reproduce a shape** — a first name shared
+  by four students, two of them sharing a last initial, a surname that is also
+  an ordinary word. `debug-tools/name-resolution.js` and
+  `debug-tools/word-vs-name.js` are the worked examples, and their rosters are
+  deliberately nastier than the real one.
+- The word list that stops "days" or "math" resolving to a child is
+  **roster-independent**: a word on it is blocked whatever names exist. Extend
+  it from the school's own vocabulary — class and subject names, the curriculum
+  files in `data/`, the portal's own labels — never from the roll.
+
+If you think you need the real names for something, that is the signal to
+reread this section.
+
 ## The two repos
 
 | | `student-portal` (here) | `student-portal-backend` |

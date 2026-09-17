@@ -2615,21 +2615,32 @@ It also asserts the exception, and fails loudly if the roster ever stops
 containing a name that is also an ordinary word — otherwise that half quietly
 stops being tested.
 
-### Two more found before anyone typed them
+### Two more, and how NOT to look for them
 
-Running the corpus against the **live roster** (167 students, in the scratchpad,
-never committed) turned up two words still reaching a student:
+Two more words were still reaching a student — **"math"**, which came back
+asking which of two children it meant, and **"store"**, which silently picked
+one. Both are words somebody types twenty times a day. The whole school
+vocabulary — subjects, places, roles, RTC nouns, progress nouns — is now on the
+guard list and in the corpus.
 
-- **"math"** — came back asking which of two children it meant
-- **"store"** — silently picked one
+**I found those by reading the live roster, and that was the wrong way to do
+it.** Pulling 167 students' names out of `user_profiles` to test a text matcher
+is not a trade worth making, and an earlier version of this section recommended
+repeating it. It does not need repeating, and it should not be.
 
-Both are words somebody types twenty times a day. The whole school vocabulary —
-subjects, places, roles, RTC nouns, progress nouns — is now on the guard list
-and in the corpus. **113 of 113 clean against the real roster.**
+**The guard does not depend on the roll.** A word on the `_commonWords()` list
+is blocked from the fuzzy, prefix and nickname passes *whatever* names are
+enrolled. So a new family arriving with a surname one edit from "grades" is
+already handled — the collision only ever mattered for words that were **not on
+the list**. The gap is vocabulary, not students.
 
-**That audit is worth re-running whenever the roll changes.** A new family can
-put a surname one edit from "grades" on the roster overnight, and nothing in
-this repo would notice; the script is
-`scratchpad/real_roster_audit.js` in this session's notes, and it is twenty
-lines — load the roster, loop the corpus, print any word that resolves.
+**So extend the corpus from the school's own words, which are not personal
+data:** class names, subject names, the curriculum files in `data/`, the labels
+in the portal UI, the nouns in Riven's own help text. Everything the matcher
+needs to be protected from is already written down somewhere that names nobody.
+
+And the grid tests it against a roster that is invented and deliberately
+collidable, which is a *stronger* test than the real one — the real roster
+happens to collide with a handful of words, while the fixture collides with
+every word in the corpus by construction.
 
