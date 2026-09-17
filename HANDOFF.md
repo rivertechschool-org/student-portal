@@ -2140,3 +2140,62 @@ Riven answer:** the transcript is persisted and replayed. Any markup Riven emits
 can exist twice in one document, with a counter that started over in between.
 Ids minted from in-memory counters are not unique there.
 
+---
+
+## 2026-09-16 — a date said out loud
+
+`/admin who was missing September 14th` answered with the last 30 days and 59
+names. `/admin who was missing?` answered with the same 59. Two different
+questions, one answer, and both of them confident.
+
+`_parseTimeframe` knew "yesterday", "last week", "3 days ago" and "on Monday",
+and nothing at all about a calendar date. The window it fell back to *was*
+disclosed — `(school-wide, last 30 days)` — in grey, 12px, at the end of the
+headline. That is what makes this worse than a refusal: an answer that comes
+back looks answered, and the four words saying otherwise are the ones a reader
+skips.
+
+**`_rivenPastDate` reads dates people name**, and `_parseTimeframe` consults it
+first, so every dated question benefits and not just the absence scan:
+`September 14th` · `Sept 14` · `14 September` · `9/14` · `9/14/26` ·
+`Sept 14-18` · `Sept 14 to 18` · `in September` · `the 14th`.
+
+**It reads backwards, on purpose.** `_rivenMonthDayDates` — the reader the
+absence and cancellation flows use — resolves an ambiguous month *forwards*,
+because "Meadow will be absent Sept 23" is a plan. A question is the other way
+round: nobody was missing next May. The two stay separate rather than one
+growing a flag meaning "except when it doesn't", and the test asserts both
+directions on the same words.
+
+The whole-month form insists on a preposition (`in September`, not `September`)
+because **"may" is a verb far more often than it is a month**, and a bare one
+would read "who may be absent" as a date in spring.
+
+**A bare "who was missing?" now means today.** The simple past asks about the
+occasion; the present perfect asks about the pattern, so "who *has been* absent"
+still gets the 30 days. The gate only fires when nothing else supplied a date.
+
+### The off-by-one that fell out of it
+
+Writing the test for the 30-day default turned up that it was computed with
+`toISOString()` — UTC. After about 5pm Pacific the UTC day has already rolled
+over, so "the last 30 days" quietly began a day late while the label still said
+30. That is the exact mistake `_isoDaysAgo` was written to prevent, and six
+places were still making it: the activity log, two attendance readouts, the
+absence scan, the class card and the notes window. All six now use
+`_isoDaysAgo`.
+
+### Two notes for next time
+
+- **The harness-closure test earned its keep.** `_parseTimeframe` gained a
+  collaborator and five harnesses blew up on the spot rather than silently
+  testing a version of the parser that no longer exists. Adding
+  `_rivenPastDate` and `_rivenMonthIndex` to their extract lists was the whole
+  fix — but the failure is the feature.
+- **The live spot-check did not run.** The Supabase CLI is not on PATH in this
+  session, so nobody has confirmed against real rows that 2026-09-14 has a
+  register worth reading. The seam is covered by test instead: the typed
+  sentence goes through the real `_parseTimeframe` into the real
+  `terminalAttendanceIssues`, and the bounds it asks the database for are
+  asserted. Worth one real question in the app to be sure.
+

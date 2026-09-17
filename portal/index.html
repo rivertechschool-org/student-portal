@@ -9749,7 +9749,7 @@
 
         const rangeDays = parseInt(document.getElementById('activity-log-range')?.value || '30', 10);
         const sinceIso = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString() : null;
-        const sinceDate = rangeDays > 0 ? new Date(Date.now() - rangeDays * 86400000).toISOString().slice(0, 10) : null;
+        const sinceDate = rangeDays > 0 ? this._isoDaysAgo(rangeDays) : null;
 
         // Build queries. Each returns a list of normalized event objects:
         // { ts, type, icon, color, title, detail, meta }. Failures degrade
@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·k';
+      const RIVEN_BUILD = '2026-09-16·l';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52137,7 +52137,154 @@
       return entities;
     }
 
+    // A date somebody names outright: "September 14th", "Sept 14", "9/14",
+    // "Sept 14-18", "in September", "the 14th".
+    //
+    // READ BACKWARDS, ALWAYS.
+    //
+    // _rivenMonthDayDates - the reader the absence and cancellation flows use -
+    // resolves an ambiguous month FORWARDS, because "Meadow will be absent Sept
+    // 23" is a plan. A question is the other way round: nobody was missing next
+    // May. So anything that would land in the future is pulled back a year, or
+    // for a bare "the 14th" a month, and the two readers stay separate rather
+    // than one of them growing a flag that means "except when it doesn't".
+    //
+    // This is the gap behind "/admin who was missing September 14th" answering
+    // with the last 30 days and never mentioning the 14th. Worse than a refusal:
+    // the window it actually used was four grey words at the end of the
+    // headline, so a different question came back looking like a wrong answer.
+    //
+    // Returns { sinceDate, untilDate, label }, or null.
+    _rivenPastDate(normalized) {
+      const t = String(normalized || '').toLowerCase();
+      // Cheap door: no digits and no month word means there is no date here.
+      if (!/\d/.test(t) && !/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/.test(t)) return null;
+
+      const today = this._isoDaysAgo(0);
+      const MON = '(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+      const DAY = '(\\d{1,2})(?:st|nd|rd|th)?';
+      const NAME = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                    'August', 'September', 'October', 'November', 'December'];
+
+      const iso = (y, mi, d) => `${y}-${String(mi + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      // The 31st of September is a mishearing, and so is the 29th of February
+      // in three years out of four.
+      const real = (y, mi, d) => {
+        const x = new Date(y, mi, d);
+        return x.getMonth() === mi && x.getDate() === d;
+      };
+      // The most recent year in which that day has already happened.
+      const past = (mi, d, year) => {
+        if (mi === null || mi < 0 || mi > 11 || !(d >= 1 && d <= 31)) return null;
+        let y = year || new Date().getFullYear();
+        if (!year && iso(y, mi, d) > today) y--;
+        return real(y, mi, d) ? iso(y, mi, d) : null;
+      };
+      const pretty = (isoDate) => {
+        const [y, m, d] = isoDate.split('-').map(Number);
+        return `${NAME[m - 1]} ${d}${String(y) === today.slice(0, 4) ? '' : ', ' + y}`;
+      };
+      // The regex is allowed to match rubbish - "marching 5" looks exactly like
+      // "march 5" to it - so every match gets offered to the resolver and the
+      // first one that survives wins. Stopping at the first MATCH instead would
+      // let a stray word eat the real date further along the sentence.
+      const firstResolved = (re, resolve) => {
+        let m;
+        re.lastIndex = 0;
+        while ((m = re.exec(t))) {
+          const got = resolve(m);
+          if (got) return got;
+        }
+        return null;
+      };
+
+      let hit;
+
+      // "Sept 14-18", "September 14 to October 2"
+      hit = firstResolved(new RegExp('\\b' + MON + '\\s+' + DAY +
+        '\\s*(?:to|through|thru|until|till|[-\\u2013\\u2014])\\s*(?:' + MON + '\\s+)?' + DAY + '\\b', 'g'), (m) => {
+        const mi1 = this._rivenMonthIndex(m[1]);
+        const mi2 = m[3] ? this._rivenMonthIndex(m[3]) : mi1;
+        const a = past(mi1, parseInt(m[2], 10));
+        let b = past(mi2, parseInt(m[4], 10));
+        // "Sept 28 - Oct 2" straddles a year end when both ends are resolved
+        // backwards on their own. Keep the end after the start rather than
+        // answering about a window that runs the wrong way.
+        if (a && b && b < a && m[3]) {
+          const y = Number(b.slice(0, 4)) + 1;
+          const d2 = parseInt(m[4], 10);
+          if (real(y, mi2, d2) && iso(y, mi2, d2) <= today) b = iso(y, mi2, d2);
+        }
+        return (a && b && b >= a) ? { sinceDate: a, untilDate: b, label: `${pretty(a)} – ${pretty(b)}` } : null;
+      });
+      if (hit) return hit;
+
+      // "9/14", "9/14/2026", "9/14/26"
+      hit = firstResolved(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/g, (m) => {
+        let y = m[3] ? parseInt(m[3], 10) : null;
+        if (y !== null && y < 100) y += 2000;
+        const d = past(parseInt(m[1], 10) - 1, parseInt(m[2], 10), y);
+        return d ? { sinceDate: d, untilDate: d, label: pretty(d) } : null;
+      });
+      if (hit) return hit;
+
+      // "Sept 14", "September 14th, 2025"
+      hit = firstResolved(new RegExp('\\b' + MON + '\\s+' + DAY + '(?:\\s*,?\\s*(\\d{4}))?\\b', 'g'), (m) => {
+        const d = past(this._rivenMonthIndex(m[1]), parseInt(m[2], 10), m[3] ? parseInt(m[3], 10) : null);
+        return d ? { sinceDate: d, untilDate: d, label: pretty(d) } : null;
+      });
+      if (hit) return hit;
+
+      // "14 September", "the 14th of September"
+      hit = firstResolved(new RegExp('\\b' + DAY + '\\s+(?:of\\s+)?' + MON + '\\b', 'g'), (m) => {
+        const d = past(this._rivenMonthIndex(m[2]), parseInt(m[1], 10));
+        return d ? { sinceDate: d, untilDate: d, label: pretty(d) } : null;
+      });
+      if (hit) return hit;
+
+      // A whole month: "in September", "during May 2025".
+      //
+      // The preposition is required, and that is not tidiness: "may" is a verb
+      // far more often than it is a month, and a bare one would read "who may
+      // be absent" as a date in spring.
+      hit = firstResolved(new RegExp('\\b(?:in|during|for|back in|through(?:out)?)\\s+' + MON +
+        '(?:\\s+(\\d{4}))?\\b', 'g'), (m) => {
+        const mi = this._rivenMonthIndex(m[1]);
+        if (mi === null) return null;
+        const first = past(mi, 1, m[2] ? parseInt(m[2], 10) : null);
+        if (!first) return null;
+        const y = Number(first.slice(0, 4));
+        const last = iso(y, mi, new Date(y, mi + 1, 0).getDate());
+        return {
+          sinceDate: first,
+          // The month we are standing in ends today, not on the 30th.
+          untilDate: last > today ? today : last,
+          label: NAME[mi] + (String(y) === today.slice(0, 4) ? '' : ' ' + y),
+        };
+      });
+      if (hit) return hit;
+
+      // "the 14th" - this month if it has happened, otherwise last month. A
+      // bare number is not enough: it takes "the" AND an ordinal ending, or
+      // every roll number and room number in a sentence becomes a date.
+      hit = firstResolved(/\bthe\s+(\d{1,2})(?:st|nd|rd|th)\b/g, (m) => {
+        const d = parseInt(m[1], 10);
+        const now = new Date();
+        let y = now.getFullYear(), mi = now.getMonth();
+        if (!real(y, mi, d) || iso(y, mi, d) > today) { mi--; if (mi < 0) { mi = 11; y--; } }
+        if (!real(y, mi, d)) return null;
+        const got = iso(y, mi, d);
+        return { sinceDate: got, untilDate: got, label: pretty(got) };
+      });
+      return hit;
+    }
+
     _parseTimeframe(normalized) {
+      // A date said out loud beats every relative window below, which is all
+      // this used to know.
+      const named = this._rivenPastDate(normalized);
+      if (named) return named;
+
       const dayMs = 86400000;
       const unitDays = { day: 1, days: 1, week: 7, weeks: 7, month: 30, months: 30, year: 365, years: 365 };
       let days = null, label = null;
@@ -55238,6 +55385,21 @@
             entities.untilDate = this._isoDaysAgo(1);
             entities.sinceLabel = 'yesterday';
           }
+          // A bare "who was missing?" is a question about TODAY.
+          //
+          // It used to fall through to the 30-day default and come back with 59
+          // names - a different question, answered confidently. The window was
+          // disclosed, but as four grey words at the end of the headline, so it
+          // read as a wrong answer rather than a wide one.
+          //
+          // The simple past asks about the occasion; the present perfect asks
+          // about the pattern. "Who HAS BEEN absent" still gets the 30 days.
+          if (!entities.sinceDate &&
+              /\bwho(?:'s|\s+(?:was|wasn'?t|were|weren'?t|is|isn'?t|are|aren'?t))\b(?!\s+been\b)/.test(entities.normalized || '')) {
+            entities.sinceDate = this._isoDaysAgo(0);
+            entities.untilDate = this._isoDaysAgo(0);
+            entities.sinceLabel = 'today';
+          }
           await this.terminalAttendanceIssues(entities);
           break;
 
@@ -55927,7 +56089,7 @@
       const fullName = student.full_name || `${student.first_name || ''} ${student.last_name || ''}`.trim();
 
       // Default window: last 30 days
-      const sinceDate = opts.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const sinceDate = opts.sinceDate || this._isoDaysAgo(30);
       const sinceLabel = opts.sinceLabel || 'last 30 days';
 
       // class_attendance.class_id has no FK to classes, so PostgREST can't
@@ -56022,7 +56184,7 @@
         return;
       }
       const studentIds = enr.map(e => e.student_id);
-      const sinceDate = entities.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      const sinceDate = entities.sinceDate || this._isoDaysAgo(30);
       const sinceLabel = entities.sinceLabel || 'last 30 days';
 
       const { data: att } = await sb.from('class_attendance')
@@ -58359,7 +58521,11 @@
 
     async terminalAttendanceIssues(entities) {
       const sb = this.auth.supabase;
-      const sinceDate = entities.sinceDate || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+      // _isoDaysAgo, not toISOString(). The default window is computed from
+      // the LOCAL date: after about 5pm Pacific the UTC day has already rolled
+      // over, so "the last 30 days" silently began a day late - and the label
+      // still said 30. Same reason the rest of this page stopped doing it.
+      const sinceDate = entities.sinceDate || this._isoDaysAgo(30);
       const sinceLabel = entities.sinceLabel || 'last 30 days';
 
       // Class filter: "who's been absent in [class]?" — narrow to enrolled students
@@ -63231,7 +63397,7 @@
         }
 
         // Attendance summary (last 30 days, class-specific)
-        const sinceDate = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+        const sinceDate = this._isoDaysAgo(30);
         let attHtml = '';
         if (studentIds.length) {
           const { data: att } = await sb.from('class_attendance')
@@ -65901,7 +66067,7 @@
     }
 
     async terminalTopEarners(entities, count) {
-      const since = entities.sinceDate || new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+      const since = entities.sinceDate || this._isoDaysAgo(7);
       const label = entities.sinceLabel || 'this week';
       const limit = count || 10;
       this.terminalPrint(`Loading top earners (${label})…`, '#6aa9ff');

@@ -46,7 +46,7 @@ global.localStorage = {
   removeItem: k => { delete store[k]; },
 };
 
-const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe',
+const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
   '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen',
   // _extractEntities grew these after this harness was written, and a
   // missing one is a run-time death, not a failing assertion. The full

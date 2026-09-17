@@ -37,7 +37,7 @@ function bodyOf(name) {
 }
 const mk = (n) => { const b = bodyOf(n); return new Function(...b.args.split(',').map(x => x.trim()).filter(Boolean), b.body); };
 
-const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe',
+const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
   '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen',
   '_rivenMatchGroup', '_rivenGroupCanon',
   '_rivenParseNewClassName', '_rivenParseClassRosterRef',
