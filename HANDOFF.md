@@ -2328,3 +2328,83 @@ missing", which is why the answer was confidently labelled "today" rather than
 merely defaulting to 30 days. A gate that supplies a missing date has to know
 which direction the sentence is facing.
 
+---
+
+## 2026-09-16 — the attendance question, decided in one place
+
+Five reports in one afternoon were the same question asked five ways:
+
+| asked | answered with |
+| --- | --- |
+| who was missing September 14th | the last 30 days |
+| who was missing? | the last 30 days |
+| was Elizabeth Beck present September 9 | her account card |
+| who is missing next week | today's register |
+| will Meadow be missing the next couple days | "what did you mean?" |
+
+Each got fixed with one more regex on one of three intents, and the next
+phrasing broke anyway — because **the phrasings are a cross product and the
+patterns were a list.** So I stopped patching and enumerated it.
+
+### `debug-tools/attendance-matrix.js`
+
+Three axes — WHO (everyone / one student) × WHEN (a past day, a past window,
+today, a future day, a future window) × HOW (was, is, will be, going to be, did,
+a bare noun) — and the five reported sentences as their own section.
+
+**It scored the shipped pattern lists at 96 of 316.** Not five bugs. Two hundred
+and twenty, of which five had been noticed.
+
+The failures grouped into five causes, not two hundred: the register patterns
+had no word for *out / away / here*; there was no `will <name> be …` shape at
+all; `who will be out` matched the **write** intent PLAN_ABSENCE; questions in
+the present tense tripped the speculative-write guard; and the forward cue list
+had never heard of "the next couple days", "in the next 3 days", "this coming
+week" or "over the weekend".
+
+### The rule underneath, which is two lines
+
+```
+Looking BACK or at TODAY -> the register. Everyone = ATTENDANCE_ISSUES,
+                                          one person = VIEW_ATTENDANCE.
+Looking FORWARD          -> the plan.     VIEW_PLANNED_ABSENCES, either way.
+```
+
+`_rivenAttendanceQuestion` decides it once, from one vocabulary, before anything
+bids. **326 of 326.**
+
+### What it must not take, and how I found out
+
+Deciding an intent before anything else bids is a strong move, and the first
+version of it quietly took four things that are not attendance questions:
+
+- `give charlotte 5 rtc for good attendance` — an **RTC award**
+- `notes about attendance` — the notes list
+- `attendance for english: all here except malakai` — a register being **taken**
+- `who's here in lower ms today` — that cohort's own roster (`DAILY_ROSTER`
+  answers it better, and `requiresGroup` is what keeps it there)
+
+`nlp-stress` and `frontdoor-precision` caught all four — frontdoor went to **70
+over-blocked**, which is every write on the page. Those four sentences are now
+permanent negative cases in the grid, so nobody deletes a bail-out line to make
+some new phrasing work.
+
+### Two things that cost time and are worth knowing
+
+- **`entities.student` is a wrapper** — `{ student, score, ambiguous }`. Reading
+  it as `entities.student.full_name` gives `undefined` for every sentence, which
+  looks exactly like "the name never resolved". I went hunting a resolver bug
+  that was not there. `nlp-stress` gets this right; copy its line.
+- **A harness without the cohort fixture waves through the over-capture it
+  exists to catch.** `_rivenMatchGroup` returns null when `_terminalAllGroups`
+  is empty, so "who's here in lower ms" looked school-wide. Same trap as
+  "a fixture that substitutes for a load".
+
+### And the assertions that went stale
+
+Two tests asserted on the *text of the patterns*. The moment the decision moved,
+their `html.indexOf("intent: 'VIEW_ATTENDANCE'")` started landing inside the new
+method's own return statement, and they failed while the behaviour was right.
+Both now assert behaviour. **Source-text assertions go stale pointing at the
+wrong layer and then say "broken" when the answer is correct.**
+

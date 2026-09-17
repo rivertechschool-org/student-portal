@@ -156,17 +156,26 @@ const TODAY = app._isoDaysAgo.call(app, 0);
   console.log('\n== the pattern that missed "missing" ==\n');
 
   {
-    const block = html.slice(html.indexOf("intent: 'VIEW_PLANNED_ABSENCES'"));
-    const patterns = block.slice(0, block.indexOf('        }'));
-    ok('the who-is pattern admits "missing"',
-       /who\(\?:'\?s\| is\| are\)[^\n]*missing/.test(patterns));
-    ok('  and "anyone" does too', /anyone[^\n]*missing/.test(patterns));
-    // The sentence from the screenshot, against the real pattern list.
-    const res = [...patterns.matchAll(/^\s*\/(.+)\/,\s*$/gm)]
-      .map(m => { try { return new RegExp(m[1]); } catch (_) { return null; } })
-      .filter(Boolean);
-    ok('the sentence now matches at least one of them',
-       res.some(r => r.test('/admin who is missing next week?'.replace('/admin ', ''))));
+    // Asserted on BEHAVIOUR, not on the text of a pattern.
+    //
+    // This block used to slice the source at the first `intent:
+    // 'VIEW_PLANNED_ABSENCES'` and read the regexes there. That stopped being
+    // the decision the day _rivenAttendanceQuestion was added — the slice
+    // started landing inside that method's own return statement, and the
+    // assertions failed while the behaviour was correct. Which is the argument
+    // against source-text assertions generally: they go stale pointing at the
+    // wrong layer, and say "broken" when the answer is right.
+    const decide = extract('_rivenAttendanceQuestion');
+    const someone = { student: { student: { id: 'x', full_name: 'Meadow Lawler' }, score: 1 } };
+    const route = (t, e) => decide.call(app, t, e || {})?.intent || null;
+
+    check('the sentence from the screenshot', route('who is missing next week'), 'VIEW_PLANNED_ABSENCES');
+    check('  said as "anyone"', route('anyone missing next week'), 'VIEW_PLANNED_ABSENCES');
+    check('  said as "out"', route('whos out next week'), 'VIEW_PLANNED_ABSENCES');
+    check('  and about one person', route('will meadow be missing next week', someone), 'VIEW_PLANNED_ABSENCES');
+    // The same shapes pointing backwards still belong to the register.
+    check('backwards, everyone', route('who was missing yesterday'), 'ATTENDANCE_ISSUES');
+    check('backwards, one person', route('was meadow here yesterday', someone), 'VIEW_ATTENDANCE');
   }
 
   console.log('\n== and a net behind the matcher ==\n');

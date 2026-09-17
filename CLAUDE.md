@@ -64,7 +64,14 @@ Nothing here runs in CI, so these are on you. All of them are plain `node`, no i
 node tests/extract-portalui.js                                     # FIRST: four suites read its output
 for f in tests/*.test.js; do node "$f" || echo "FAILED $f"; done   # the suite
 node debug-tools/nlp-stress.js                                     # Riven, after any Riven change
+node debug-tools/attendance-matrix.js                              # 326 attendance phrasings
 ```
+
+`attendance-matrix.js` is the grid, not a sample: every way of asking who is or was
+away, crossed with every way of saying when. Five bug reports in one afternoon were
+that same question phrased differently, each fixed with one more regex, each followed
+by another report. If you are about to add a regex to an attendance intent, add the
+phrasing to the grid first and see how much else is already broken.
 
 `tests/portalui.js` is generated and deliberately not committed. Skip that first line and
 the nav suites read a stale copy, or none at all, and fail for a reason that has nothing to

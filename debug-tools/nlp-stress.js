@@ -40,7 +40,7 @@ function extract(name) {
 
 const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_rivenPastDate','_rivenMonthIndex','_fuzzyFindStudent','_rivenIsMyStudent','_rivenOwnRank','_calculateSimilarity',
-  '_levenshteinDistance','_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
+  '_levenshteinDistance','_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
   '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance',
   '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef',

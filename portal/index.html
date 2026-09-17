@@ -49106,7 +49106,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·n';
+      const RIVEN_BUILD = '2026-09-16·o';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -52279,6 +52279,101 @@
       return hit;
     }
 
+    // THE ATTENDANCE QUESTION, DECIDED IN ONE PLACE.
+    //
+    // Five bug reports in one afternoon were this same question asked five
+    // ways: "who was missing September 14th", "who was missing?", "was
+    // Elizabeth Beck present September 9", "who is missing next week", "will
+    // Meadow be missing the next couple days". Each was fixed by adding a
+    // regex to one of three intents, and the next phrasing broke anyway,
+    // because the phrasings are a CROSS PRODUCT and the patterns were a list.
+    //
+    // debug-tools/attendance-matrix.js enumerates that product - who × when ×
+    // how it is asked - and scored the pattern lists at 96 of 316.
+    //
+    // The rule underneath is two lines:
+    //
+    //   Looking BACK or at TODAY -> the register. Everyone = ATTENDANCE_ISSUES,
+    //                                             one person = VIEW_ATTENDANCE.
+    //   Looking FORWARD          -> the plan.     VIEW_PLANNED_ABSENCES, either.
+    //
+    // The register only knows days that have happened and the plan only knows
+    // days that have not, so every one of those five failures was a question
+    // being answered by the wrong side of that line. Deciding it once, from one
+    // vocabulary, is the only version of this that does not rot.
+    //
+    // Returns a matcher result, or null to let the weighted patterns bid.
+    _rivenAttendanceQuestion(normalized, entities) {
+      const q = String(normalized || '').trim().replace(/^\/\w+\s+/, '');
+      if (!q) return null;
+
+      // One vocabulary for "not in the room", including the positive forms -
+      // "was she here" and "was she absent" are the same question.
+      const AWAY = '(?:out|away|absent|absences|missing|miss|missed|gone|off|here|present|' +
+                   'in\\s+school|in\\s+class|at\\s+school|attendance|tardy|tardies|late|skipping|skipped)';
+      if (!new RegExp('\\b' + AWAY + '\\b').test(q)) return null;
+
+      // WHAT THIS IS NOT.
+      //
+      // Deciding an intent before anything else bids on it is a strong move,
+      // and the first version of it quietly took four things that were not
+      // attendance questions at all. Each line below is one of them, measured
+      // by debug-tools/nlp-stress.js rather than imagined:
+      //
+      //   "give charlotte 5 rtc for good attendance"  -> an RTC award
+      //   "notes about attendance"                    -> the notes list
+      //   "attendance for english: all here except …" -> a register being TAKEN
+      //   "who's here in lower ms today"              -> that cohort's roster
+      //
+      // The last one is the subtle one. DAILY_ROSTER answers the same question
+      // for a named cohort and answers it better, so a sentence that names one
+      // belongs to it, not here.
+      if (/\brtc\b/.test(q)) return null;
+      if (/\bnotes?\b/.test(q)) return null;
+      if (/^(?:give|award|grant|add|credit|mark|dock|take|deduct|subtract|remove|delete|set|enrol|enroll|unenroll|drop|create|rename|move|transfer|revoke|charge|fine|assign|post|announce|broadcast|notify|tell|log|record|put)\b/.test(q)) return null;
+      // "all here except malakai" is a full register being taken, not read.
+      if (/\b(?:all|everyone|everybody)\b[\s\S]{0,12}\b(?:here|present|in)\b/.test(q)) return null;
+      if (/\bexcept\b/.test(q)) return null;
+      if (entities && entities.groupMatch) return null;
+
+      // WHO IS BEING ASKED ABOUT.
+      //
+      // Both shapes must be INTERROGATIVE. That is what keeps a command out:
+      // "mark meadow absent" and "meadow is out monday to wednesday" are
+      // writes, and neither starts with a question word or an auxiliary.
+      const askAll = /^(?:who|whos|anyone|anybody|any\s+(?:students?|kids?|one))\b/.test(q)
+        || /^(?:is|are|was|were|will|has|have|does|do|did)\s+(?:anyone|anybody|any\s+(?:students?|kids?))\b/.test(q)
+        || /^(?:how many|which)\s+(?:students?|kids?)\b/.test(q);
+
+      // "attendance" on its own is NOT enough to make it a question about one
+      // student - that is what took the RTC award and the notes list. It has to
+      // be asked for: led by an auxiliary, or possessed by a name.
+      const askOne = !!(entities && entities.student) && (
+        /^(?:is|are|was|were|will|does|do|did|has|have)\b/.test(q)
+        || /^(?:show|see|pull up|what\s?s|what is|hows|how\s?s|give me)\b[\s\S]{0,40}\battendance\b/.test(q)
+        || /^\w+(?:'s|s)?\s+attendance\b/.test(q)
+        || /^(?:what|which)\s+(?:days?|dates?)\b/.test(q)
+        || /^(?:when|how many days)\b/.test(q));
+
+      if (!askAll && !askOne) return null;
+
+      // WHICH WAY IT FACES.
+      //
+      // _rivenPointsForward carries the shared cue list. The three extra tests
+      // here are shapes that are forward by grammar rather than by a time word:
+      // asking WHICH DAYS somebody is away, asking WHEN they are away, and the
+      // planned-absence nouns themselves.
+      const forward = this._rivenPointsForward(q)
+        || /^(?:what|which)\s+(?:days?|dates?)\b[\s\S]{0,24}\b(?:is|are|will)\b/.test(q)
+        || /^when\s+(?:is|are|will)\b/.test(q)
+        || /\b(?:planned|upcoming|expected|future)\s+absences?\b/.test(q);
+
+      if (forward) return { intent: 'VIEW_PLANNED_ABSENCES', confidence: 0.9 };
+      return askOne
+        ? { intent: 'VIEW_ATTENDANCE', confidence: 0.9 }
+        : { intent: 'ATTENDANCE_ISSUES', confidence: 0.9 };
+    }
+
     // Does this sentence point FORWARD?
     //
     // The attendance register only knows days that have happened. "Who is
@@ -52291,8 +52386,17 @@
     // about what has already happened.
     _rivenPointsForward(text) {
       const t = String(text || '').toLowerCase();
-      return /\b(next week|next month|next term|next year|upcoming|coming up|tomorrow|going to be (out|away|absent|gone|missing)|will be (out|away|absent|gone|missing)|rest of (the|this) (week|month)|later this week|next (mon|tues?|wed(nes)?|thurs?|fri|sat(ur)?|sun)(day)?)\b/.test(t)
-        && !/\blast (week|month|term|year)\b/.test(t);
+      return (
+        // Named stretches of time that can only be ahead.
+        /\b(next week|next month|next term|next year|this coming week|the coming week|upcoming|coming up|tomorrow|over the weekend|this weekend|rest of (the|this) (week|month)|later this week|next (mon|tues?|wed(nes)?|thurs?|fri|sat(ur)?|sun)(day)?)\b/.test(t)
+        // "the next couple days", "the next few days", "in the next 3 days".
+        || /\b(?:in |within )?(?:the )?next (couple|few|several|\d+)\s*(?:of )?\s*(days?|weeks?|months?)\b/.test(t)
+        // "will be out", and "WILL Meadow BE out" - the auxiliary and the
+        // verb split by the person being asked about, which is how anyone
+        // actually asks it.
+        || /\b(will|wont|won't)\s+(?:\w+\s+){0,3}be\b/.test(t)
+        || /\b(?:is|are|s)\s+(?:\w+\s+){0,3}going to be\b/.test(t)
+      ) && !/\blast (week|month|term|year)\b/.test(t);
     }
 
     // The window a forward-looking question is asking about.
@@ -52318,7 +52422,24 @@
 
       if (/\btomorrow\b/.test(t)) return span(at(1), at(1), `tomorrow (${say(at(1))})`);
 
-      if (/\bnext week\b/.test(t)) {
+      // "the next couple days", "the next few days", "in the next 3 days".
+      // Counted from today, because that is what somebody standing in the
+      // corridor on Wednesday means by it.
+      const run = t.match(/\b(?:in |within )?(?:the )?next (couple|few|several|\d+)\s*(?:of )?\s*(day|days|week|weeks|month|months)\b/);
+      if (run) {
+        const n = run[1] === 'couple' ? 2 : run[1] === 'few' ? 3 : run[1] === 'several' ? 5 : parseInt(run[1], 10);
+        const mult = /^week/.test(run[2]) ? 7 : /^month/.test(run[2]) ? 30 : 1;
+        const days = Math.max(1, Math.min(365, n * mult));
+        return span(today, at(days), `the next ${run[1] === 'couple' ? 'couple of ' : run[1] === 'few' ? 'few ' : run[1] === 'several' ? 'several ' : n + ' '}${run[2].replace(/s$/, '')}${days === 1 ? '' : 's'}`);
+      }
+
+      if (/\b(this|the) (coming )?weekend\b|\bover the weekend\b/.test(t)) {
+        const dow = new Date().getDay();
+        const toSat = (6 - dow + 7) % 7;
+        return span(at(toSat), at(toSat + 1), 'the weekend');
+      }
+
+      if (/\b(next week|this coming week|the coming week)\b/.test(t)) {
         // Always the NEXT Monday, even when today is Monday.
         const dow = new Date().getDay();
         const toMon = (8 - dow) % 7 || 7;
@@ -52848,6 +52969,13 @@
     }
 
     _matchIntent(normalized, entities) {
+      // The attendance question is decided before anything bids on it. See
+      // _rivenAttendanceQuestion: the phrasings are a cross product and the
+      // pattern lists were a list, so the lists lost. Only interrogative
+      // shapes reach it, so no command is ever turned into a read.
+      const attendanceRead = this._rivenAttendanceQuestion(normalized, entities);
+      if (attendanceRead) return attendanceRead;
+
       // Safety guard: when the message is about attendance/grades and does NOT
       // mention RTC currency, never let it trigger a balance change. Stops
       // "give eli's attendance in math over the last 5 weeks" from awarding RTC.

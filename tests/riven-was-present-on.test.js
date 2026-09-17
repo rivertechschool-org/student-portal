@@ -134,14 +134,22 @@ function optsFor(text) {
   console.log('\n== the sentence from the screenshot reaches attendance ==\n');
 
   {
-    // The intent patterns, read out of the shipped source. "was" had no way in.
-    const block = html.slice(html.indexOf("intent: 'VIEW_ATTENDANCE'"));
-    const patterns = block.slice(0, block.indexOf(']'));
-    ok('the copula pattern admits the past tense', /\(is\|was\|were\|are\)/.test(patterns));
-    ok('  and it covers "present"', /here\|present\|absent\|in \(school\|class\)/.test(patterns));
-    // The three that used to be "is" only.
-    check('no bare /\\bis / copula patterns are left',
-          (patterns.match(/\/\\bis[ \\]/g) || []).length, 0);
+    // Asserted on BEHAVIOUR. This used to slice the source at the first
+    // `intent: 'VIEW_ATTENDANCE'` and read the regexes there, which stopped
+    // being the decision the day _rivenAttendanceQuestion was added — the
+    // slice landed inside that method's own return statement and the
+    // assertions failed while the behaviour was right.
+    const decide = extract('_rivenAttendanceQuestion');
+    const someone = { student: { student: { id: 'eb', full_name: 'Elizabeth Becker' }, score: 1 } };
+    const route = (t) => decide.call({ _rivenPointsForward: extract('_rivenPointsForward') },
+                                     t, someone)?.intent || null;
+
+    check('the sentence from the screenshot', route(`was elizabeth beck present ${PM} 9`), 'VIEW_ATTENDANCE');
+    check('  the present tense too', route('is elizabeth here today'), 'VIEW_ATTENDANCE');
+    check('  and the plural', route('were they absent yesterday'), 'VIEW_ATTENDANCE');
+    check('  "did she miss school"', route('did elizabeth miss school yesterday'), 'VIEW_ATTENDANCE');
+    // Forward-facing goes to the plan instead, whatever the person's name.
+    check('  but "will she be out" is the plan', route('will elizabeth be out tomorrow'), 'VIEW_PLANNED_ABSENCES');
   }
 
   console.log('\n== the morning register is read ==\n');
