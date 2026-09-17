@@ -2282,6 +2282,11 @@
               <!-- Will be populated by renderAdminFacilities() -->
             </section>
 
+            <!-- Staff Duties Section (Teachers & Admins) -->
+            <section id="staff-duties-section" class="hidden">
+              <!-- Will be populated by renderStaffDuties() -->
+            </section>
+
             <!-- Admin Bell Schedule Section (Admin only) -->
             <section id="admin-bell-schedule-section" class="hidden">
               <!-- Will be populated by renderAdminBellSchedule() -->
@@ -5920,6 +5925,9 @@
             break;
           case 'profile':
             this.renderProfile();
+            break;
+          case 'staff-duties':
+            this.renderStaffDuties();
             break;
           case 'student-management':
             this.renderStudentManagement();
@@ -33107,6 +33115,18 @@
                   </div>
 
 
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #2f6b6d; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(47, 107, 109, 0.12)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showSection('staff-duties'); app.renderStaffDuties();">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">🧭</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Staff Duties</div>
+                      <div style="color: var(--muted); font-size: 11px;">Lunch, attendance, assembly, gate</div>
+                    </div>
+                  </div>
+                </div>
+
                 <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #6aa9ff; transition: background 0.2s;"
                      onmouseover="this.style.background='rgba(106, 169, 255, 0.1)'" onmouseout="this.style.background='var(--card)'"
                      onclick="app.showAdminSection('bell-schedule')">
@@ -44049,6 +44069,341 @@
       return bad;
     }
 
+    // STAFF DUTIES: who is on lunch, attendance, assembly and the gate.
+    //
+    // One section, two jobs. A teacher opens it and sees their own week; an
+    // admin sees the same thing and can also edit it. Same as the worship page
+    // settled on, and for the same reason: two screens showing one rota is how
+    // two screens start disagreeing.
+    //
+    // A duty has POSITIONS, and a position on a weekday can hold MORE THAN ONE
+    // person - two adults on the playground at lunch is normal. A duty is
+    // school-wide, or pinned to one cohort, which matters here because six of
+    // the eleven cohorts only attend on a single weekday.
+    _dutyDays() {
+      return [
+        { dow: 1, name: 'Monday', short: 'Mon' },
+        { dow: 2, name: 'Tuesday', short: 'Tue' },
+        { dow: 3, name: 'Wednesday', short: 'Wed' },
+        { dow: 4, name: 'Thursday', short: 'Thu' },
+        { dow: 5, name: 'Friday', short: 'Fri' },
+      ];
+    }
+
+    // The rota comes back one row per (duty × position × assignment), because
+    // that is what a join gives. Fold it into the shape the screen draws:
+    // duties, each with positions, each with people per weekday.
+    _dutyTree(rows) {
+      const duties = new Map();
+      for (const r of rows || []) {
+        if (!duties.has(r.duty_id)) {
+          duties.set(r.duty_id, {
+            id: r.duty_id, name: r.duty_name,
+            group_id: r.group_id, group_name: r.group_name,
+            block_key: r.block_key, starts_at: r.starts_at, ends_at: r.ends_at,
+            notes: r.notes, sort: r.duty_sort, positions: new Map(),
+          });
+        }
+        const d = duties.get(r.duty_id);
+        // A LEFT JOIN, so a duty with no positions and a position with nobody
+        // on it both arrive as a row with nulls. Both are real states - a duty
+        // being set up, a post nobody covers yet - and both must survive.
+        if (!r.position_id) continue;
+        if (!d.positions.has(r.position_id)) {
+          d.positions.set(r.position_id, { id: r.position_id, name: r.position_name, sort: r.position_sort, byDay: {} });
+        }
+        if (r.day_of_week && r.user_id) {
+          const p = d.positions.get(r.position_id);
+          (p.byDay[r.day_of_week] = p.byDay[r.day_of_week] || []).push({ id: r.user_id, name: r.full_name });
+        }
+      }
+      return [...duties.values()]
+        .map(d => ({ ...d, positions: [...d.positions.values()].sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name)) }))
+        .sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
+    }
+
+    // Every slot this person is on, in weekday order.
+    _myDuties(tree, userId) {
+      const out = [];
+      for (const d of tree) {
+        for (const p of d.positions) {
+          for (const dow of Object.keys(p.byDay)) {
+            const people = p.byDay[dow];
+            if (!people.some(x => x.id === userId)) continue;
+            out.push({
+              dow: Number(dow), duty: d, position: p,
+              // Who else is on it. A rota that says "you are on the gate" without
+              // saying who else is is half the information you went looking for.
+              alongside: people.filter(x => x.id !== userId).map(x => x.name),
+            });
+          }
+        }
+      }
+      return out.sort((a, b) => a.dow - b.dow || a.duty.sort - b.duty.sort || a.position.sort - b.position.sort);
+    }
+
+    _dutyWhen(d) {
+      const t = (v) => {
+        if (!v) return '';
+        const m = String(v).match(/^(\d{1,2}):(\d{2})/);
+        if (!m) return '';
+        let h = Number(m[1]);
+        const suffix = h >= 12 ? 'pm' : 'am';
+        h = h % 12 || 12;
+        return `${h}:${m[2]} ${suffix}`;
+      };
+      if (d.starts_at && d.ends_at) return `${t(d.starts_at)}–${t(d.ends_at)}`;
+      // Named rather than timed: the bell schedule owns the clock, so if the
+      // bell moves the duty moves with it and nothing here needs editing.
+      if (d.block_key) {
+        const b = (this._bellRows || []).find(r => r.block_key === d.block_key && r.day_of_week === null);
+        return b ? `${b.label} · ${t(b.starts_at)}–${t(b.ends_at)}` : d.block_key;
+      }
+      return '';
+    }
+
+    async renderStaffDuties() {
+      const section = document.getElementById('staff-duties-section');
+      if (!section) { console.error('Staff duties section not found'); return; }
+      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading duties…</p></div>';
+
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+      const [rotaRes, bellRes, groupRes, peopleRes] = await Promise.all([
+        this.supabaseQuery(() => this.auth.supabase.rpc('staff_duty_rota')),
+        this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks').select('*').is('day_of_week', null).order('sort_order')),
+        isAdmin ? this.supabaseQuery(() => this.auth.supabase.from('student_groups').select('id, name').order('name')) : Promise.resolve({ data: [] }),
+        isAdmin ? this.supabaseQuery(() => this.auth.supabase.rpc('staff_duty_people')) : Promise.resolve({ data: [] }),
+      ]);
+      if (rotaRes.error) {
+        section.innerHTML = `<div class="card" style="padding: 20px;">Could not load the duty rota: ${this.escapeHtml(rotaRes.error.message)}</div>`;
+        return;
+      }
+      this._dutyRows = rotaRes.data || [];
+      this._bellRows = bellRes.data || [];
+      this._dutyGroups = groupRes.data || [];
+      this._dutyPeople = peopleRes.data || [];
+      this._dutyIsAdmin = isAdmin;
+      this._dutyTab = this._dutyTab || 'mine';
+      this._renderDutyBody();
+    }
+
+    _renderDutyBody() {
+      const section = document.getElementById('staff-duties-section');
+      if (!section) return;
+      const tree = this._dutyTree(this._dutyRows);
+      const me = this.userInfo?.profile?.id || this.userInfo?.user?.id;
+      const mine = this._myDuties(tree, me);
+      const days = this._dutyDays();
+      const isAdmin = this._dutyIsAdmin;
+      const tab = this._dutyTab;
+
+      let html = `
+        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 6px; flex-wrap: wrap;">
+          <h2 style="margin: 0;">🧭 Staff Duties</h2>
+        </div>
+        <div style="display: flex; gap: 6px; margin-bottom: 14px; flex-wrap: wrap;">
+          <button class="btn ${tab === 'mine' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; padding: 6px 12px;"
+                  onclick="app.setDutyTab('mine')">My duties${mine.length ? ` (${mine.length})` : ''}</button>
+          <button class="btn ${tab === 'all' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; padding: 6px 12px;"
+                  onclick="app.setDutyTab('all')">Everyone</button>
+          ${isAdmin ? `<button class="btn ${tab === 'edit' ? 'btn-primary' : 'btn-secondary'}" style="font-size: 12px; padding: 6px 12px;"
+                  onclick="app.setDutyTab('edit')">Set up</button>` : ''}
+        </div>`;
+
+      if (tab === 'mine') {
+        if (!mine.length) {
+          html += `<div class="card" style="padding: 18px;">You're not on any duties at the moment.
+            <span style="color: var(--muted);">Tap <b>Everyone</b> to see the whole rota.</span></div>`;
+        } else {
+          for (const day of days) {
+            const onThisDay = mine.filter(m => m.dow === day.dow);
+            if (!onThisDay.length) continue;
+            html += `<div style="font-weight: 600; margin: 12px 0 6px;">${this.escapeHtml(day.name)}</div>`;
+            for (const m of onThisDay) {
+              const when = this._dutyWhen(m.duty);
+              html += `
+                <div class="card" style="padding: 10px 14px; margin: 6px 0; border-left: 3px solid #2f6b6d;">
+                  <div><b>${this.escapeHtml(m.duty.name)}</b> — ${this.escapeHtml(m.position.name)}</div>
+                  <div style="color: var(--muted); font-size: 12px; margin-top: 2px;">
+                    ${when ? this.escapeHtml(when) : ''}${m.duty.group_name ? `${when ? ' · ' : ''}${this.escapeHtml(m.duty.group_name)}` : ''}${
+                      m.alongside.length ? ` · with ${this.escapeHtml(m.alongside.join(', '))}` : ''}
+                  </div>
+                  ${m.duty.notes ? `<div style="color: var(--muted); font-size: 12px; margin-top: 4px;">${this.escapeHtml(m.duty.notes)}</div>` : ''}
+                </div>`;
+            }
+          }
+        }
+      }
+
+      if (tab === 'all' || tab === 'edit') {
+        const editing = tab === 'edit';
+        if (!tree.length) {
+          html += `<div class="card" style="padding: 18px;">No duties set up yet.${editing ? '' : ' An admin sets these up.'}</div>`;
+        }
+        for (const d of tree) {
+          const when = this._dutyWhen(d);
+          html += `
+            <div class="card" style="padding: 0; margin-bottom: 14px; overflow-x: auto;">
+              <div style="padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;">
+                <b style="font-size: 15px;">${this.escapeHtml(d.name)}</b>
+                <span style="color: var(--muted); font-size: 12px;">
+                  ${when ? this.escapeHtml(when) : ''}${d.group_name ? `${when ? ' · ' : ''}${this.escapeHtml(d.group_name)}` : `${when ? ' · ' : ''}whole school`}
+                </span>
+                ${editing ? `<span style="margin-left:auto; display:flex; gap:6px;">
+                  <button class="btn btn-secondary" style="font-size:11px; padding:3px 8px;" onclick="app.editDuty('${d.id}')">Edit</button>
+                  <button class="btn btn-secondary" style="font-size:11px; padding:3px 8px;" onclick="app.addDutyPosition('${d.id}')">+ Position</button>
+                  <button class="btn btn-secondary" style="font-size:11px; padding:3px 8px;" onclick="app.deleteDuty('${d.id}')">Remove</button>
+                </span>` : ''}
+              </div>
+              ${d.notes ? `<div style="padding: 8px 14px; color: var(--muted); font-size: 12px;">${this.escapeHtml(d.notes)}</div>` : ''}
+              <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+                <thead><tr style="border-bottom: 1px solid var(--border);">
+                  <th style="text-align:left; padding: 8px 14px; min-width: 130px;">Position</th>
+                  ${days.map(x => `<th style="text-align:left; padding: 8px 10px;">${this.escapeHtml(x.short)}</th>`).join('')}
+                </tr></thead>
+                <tbody>`;
+          if (!d.positions.length) {
+            html += `<tr><td colspan="6" style="padding: 14px; color: var(--muted);">
+              No positions yet.${editing ? ' Add one above.' : ''}</td></tr>`;
+          }
+          for (const p of d.positions) {
+            html += `<tr style="border-bottom: 1px solid var(--border);">
+              <td style="padding: 8px 14px;"><b>${this.escapeHtml(p.name)}</b>
+                ${editing ? `<a href="#" style="font-size:11px; margin-left:6px; color:var(--muted);"
+                    onclick="app.deleteDutyPosition('${p.id}');return false;">remove</a>` : ''}</td>`;
+            for (const x of days) {
+              const people = p.byDay[x.dow] || [];
+              html += `<td style="padding: 6px 10px; vertical-align: top;">
+                ${people.map(pr => `<div style="white-space: nowrap;">${
+                    pr.id === me ? `<b>${this.escapeHtml(pr.name)}</b>` : this.escapeHtml(pr.name)}${
+                    editing ? ` <a href="#" style="color:var(--muted);" onclick="app.unassignDuty('${p.id}',${x.dow},'${pr.id}');return false;">×</a>` : ''}</div>`).join('')}
+                ${editing ? `<a href="#" style="font-size:11px; color:#2f6b6d;" onclick="app.assignDuty('${p.id}',${x.dow});return false;">+ add</a>`
+                          : (people.length ? '' : '<span style="color:var(--muted);">—</span>')}
+              </td>`;
+            }
+            html += `</tr>`;
+          }
+          html += `</tbody></table></div>`;
+        }
+        if (editing) {
+          html += `
+            <div class="card" style="padding: 14px;">
+              <div style="font-weight: 600; margin-bottom: 8px;">Add a duty</div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                <input id="duty-new-name" placeholder="Lunch, Morning attendance, Assembly…" maxlength="60"
+                       style="padding: 6px 8px; font-size: 13px; min-width: 210px;">
+                <select id="duty-new-group" style="padding: 6px 8px; font-size: 13px;">
+                  <option value="">Whole school</option>
+                  ${this._dutyGroups.map(g => `<option value="${this.escapeHtml(g.id)}">${this.escapeHtml(g.name)}</option>`).join('')}
+                </select>
+                <select id="duty-new-block" style="padding: 6px 8px; font-size: 13px;">
+                  <option value="">No set time</option>
+                  ${this._bellRows.map(b => `<option value="${this.escapeHtml(b.block_key)}">During ${this.escapeHtml(b.label)}</option>`).join('')}
+                </select>
+                <button class="btn btn-primary" style="font-size: 13px;" onclick="app.addDuty()">Add</button>
+              </div>
+              <div style="color: var(--muted); font-size: 11px; margin-top: 8px;">
+                Tie a duty to a block from the <b>Bell Schedule</b> and it follows the bell — change the times there
+                and the duty moves with them.
+              </div>
+            </div>`;
+        }
+      }
+
+      section.innerHTML = html;
+    }
+
+    setDutyTab(tab) { this._dutyTab = tab; this._renderDutyBody(); }
+
+    async addDuty() {
+      const name = (document.getElementById('duty-new-name')?.value || '').trim();
+      if (!name) { this.showNotification('Give the duty a name.', 'warning'); return; }
+      const group_id = document.getElementById('duty-new-group')?.value || null;
+      const block_key = document.getElementById('duty-new-block')?.value || null;
+      const sort_order = (this._dutyRows || []).reduce((n, r) => Math.max(n, r.duty_sort || 0), 0) + 10;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duties')
+        .insert({ name, group_id: group_id || null, block_key: block_key || null, sort_order }));
+      if (res.error) { this.showNotification('Could not add: ' + res.error.message, 'error'); return; }
+      await this.renderStaffDuties();
+    }
+
+    async editDuty(id) {
+      const d = this._dutyTree(this._dutyRows).find(x => x.id === id);
+      if (!d) return;
+      const name = prompt('Duty name', d.name);
+      if (name === null) return;
+      if (!name.trim()) { this.showNotification('A duty needs a name.', 'warning'); return; }
+      const notes = prompt('Notes for the people on it (blank for none)', d.notes || '');
+      if (notes === null) return;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duties')
+        .update({ name: name.trim(), notes: notes.trim() || null }).eq('id', id));
+      if (res.error) { this.showNotification('Could not save: ' + res.error.message, 'error'); return; }
+      await this.renderStaffDuties();
+    }
+
+    async deleteDuty(id) {
+      const d = this._dutyTree(this._dutyRows).find(x => x.id === id);
+      const n = d ? d.positions.reduce((t, p) => t + Object.values(p.byDay).reduce((k, a) => k + a.length, 0), 0) : 0;
+      // Say what goes with it. Removing a duty takes its positions and everyone
+      // standing on them, and that is not obvious from the word "Remove".
+      if (!confirm(`Remove ${d ? d.name : 'this duty'}?` + (n ? ` ${n} assignment${n === 1 ? '' : 's'} go with it.` : ''))) return;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duties').delete().eq('id', id));
+      if (res.error) { this.showNotification('Could not remove: ' + res.error.message, 'error'); return; }
+      await this.renderStaffDuties();
+    }
+
+    async addDutyPosition(dutyId) {
+      const name = prompt('Position name (Playground, Front gate, Hall…)');
+      if (name === null) return;
+      if (!name.trim()) return;
+      const d = this._dutyTree(this._dutyRows).find(x => x.id === dutyId);
+      const sort_order = d ? d.positions.reduce((n, p) => Math.max(n, p.sort || 0), 0) + 10 : 10;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duty_positions')
+        .insert({ duty_id: dutyId, name: name.trim(), sort_order }));
+      if (res.error) {
+        // The unique index is on the duty, so this is the readable half of it.
+        const msg = /duplicate key/.test(res.error.message || '')
+          ? 'That duty already has a position with that name.' : res.error.message;
+        this.showNotification('Could not add: ' + msg, 'error');
+        return;
+      }
+      await this.renderStaffDuties();
+    }
+
+    async deleteDutyPosition(positionId) {
+      if (!confirm('Remove this position and everyone assigned to it?')) return;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duty_positions').delete().eq('id', positionId));
+      if (res.error) { this.showNotification('Could not remove: ' + res.error.message, 'error'); return; }
+      await this.renderStaffDuties();
+    }
+
+    // More than one person can stand on a slot, so this adds rather than
+    // replaces, and the picker leaves out whoever is already on it.
+    async assignDuty(positionId, dow) {
+      const tree = this._dutyTree(this._dutyRows);
+      let pos = null;
+      for (const d of tree) { const p = d.positions.find(x => x.id === positionId); if (p) { pos = p; break; } }
+      const already = new Set(((pos && pos.byDay[dow]) || []).map(x => x.id));
+      const free = (this._dutyPeople || []).filter(p => !already.has(p.user_id));
+      if (!free.length) { this.showNotification('Everyone is already on that slot.', 'warning'); return; }
+      const listed = free.map((p, i) => `${i + 1}. ${p.full_name}`).join('\n');
+      const pick = prompt(`Who is on ${this._dutyDays().find(d => d.dow === dow)?.name}?\n\n${listed}\n\nType a number.`);
+      if (pick === null) return;
+      const idx = parseInt(pick, 10) - 1;
+      if (!(idx >= 0 && idx < free.length)) { this.showNotification('That was not one of the numbers.', 'warning'); return; }
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duty_assignments')
+        .insert({ position_id: positionId, day_of_week: dow, user_id: free[idx].user_id }));
+      if (res.error) { this.showNotification('Could not assign: ' + res.error.message, 'error'); return; }
+      await this.renderStaffDuties();
+    }
+
+    async unassignDuty(positionId, dow, userId) {
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('staff_duty_assignments')
+        .delete().eq('position_id', positionId).eq('day_of_week', dow).eq('user_id', userId));
+      if (res.error) { this.showNotification('Could not remove: ' + res.error.message, 'error'); return; }
+      await this.renderStaffDuties();
+    }
+
     async renderAdminBellSchedule() {
       const section = document.getElementById('admin-bell-schedule-section');
       if (!section) { console.error('Admin bell schedule section not found'); return; }
@@ -49482,7 +49837,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-16·s';
+      const RIVEN_BUILD = '2026-09-17·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the

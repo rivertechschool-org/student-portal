@@ -2838,3 +2838,85 @@ every service's children unpaginated, which at around 1250 rows would silently
 drop the last song of *every* order of service at once. Plus sticky dialog state
 that survives a cancel.
 
+---
+
+## 2026-09-17 — Staff Duties
+
+Lunch, morning attendance, assembly, the gate. **Admins set them up and assign
+people; teachers open the same screen and see their own week.**
+
+One section, three tabs — **My duties**, **Everyone**, and **Set up** for admins
+only. Same shape the worship page settled on, for the same reason: two screens
+showing one rota is how two screens start disagreeing.
+
+### The shape, and the three decisions behind it
+
+Agreed before building:
+
+- **Weekly**, and **a slot can hold more than one person** — two adults on the
+  playground at lunch is the normal case.
+- **Positions per duty** — Lunch has Playground and Canteen; the gate has its
+  own posts.
+- **School-wide or one cohort**, per duty.
+
+That last one is not decoration: **six of the eleven cohorts are Homeschool
+groups that only attend on one weekday**, so "Homeschool Younger Thursday
+attendance" is a different duty from the full-time one, run by different people
+on a different day.
+
+### Where the time comes from
+
+A duty can point at a **bell-schedule block** instead of carrying its own times,
+so lunch duty follows the bell — move the bell and the duty moves with it,
+nothing here needs editing. Duties that do not line up with a block (the gate at
+going-home time) carry their own start and end. Both optional.
+
+### Who sees it
+
+The nav item is **teachers and admins**, and the database says the same:
+read is teacher-or-admin, writes are admin. Which adult is on the gate at three
+o'clock is a staff working document, and nothing in the product asks for the
+student body to have it. The nav item sits **above** Worship / Band, which is
+deliberately last in the More launcher and has a test saying so — I moved mine
+rather than displacing it.
+
+### Details worth knowing
+
+- **Your own row says who is on it with you.** A rota that tells you you are on
+  the gate without saying who else is is half of what you went looking for.
+- A duty with no positions, and a position with nobody on it, are both real
+  states of a rota being built. The read is a LEFT join, so both arrive as rows
+  full of nulls, and both survive rather than reading as corrupt.
+- Removing a duty says how many assignments go with it before it does.
+- The same person cannot be added twice to one slot; two different people can.
+  The screen's picker leaves out whoever is already on it.
+
+### Verified
+
+`tests/staff-duties.test.js` (32) covers the fold from join-rows to what the
+screen draws, which is where the behaviour is. The constraints were probed on
+the live database and rolled back: two people on one slot accepted, the same
+person twice refused, a duplicate position name refused whatever the casing, a
+Saturday refused, and deleting a duty took its positions and assignments with
+it. Driven in a real browser as a teacher and as an admin, across all three
+tabs, no console errors.
+
+**The schema and its access rules are a migration in the private repo** — as
+always, nothing about either is written here.
+
+### Not built
+
+**Cover.** The rota is the regular weekly pattern; there is no way yet to say
+"X is away on Thursday the 25th, Y is covering". That is the obvious next piece
+and the tables are shaped to take it — a per-date override table keyed on
+(position, date) alongside the weekly rows, the same way the bell schedule does
+days.
+
+### One trap, for the next person
+
+`tests/worship-team.test.js` failed after I edited `shared/config.js`, with an
+assertion that had nothing to do with my change. The nav suites read
+`tests/portalui.js`, which is **generated** — CLAUDE.md says to run
+`node tests/extract-portalui.js` first and it means it. I skipped it and spent
+a few minutes reading a stale file.
+

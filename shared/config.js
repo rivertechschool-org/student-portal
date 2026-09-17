@@ -856,6 +856,11 @@ class PortalUI {
             // tool already had.
             { icon: '🏃', label: 'PE Assessment', app: 'portal', section: 'pe-assessment', url: `${toolPath}pe-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
             { icon: '🤖', label: 'Tech Projects', app: 'portal', section: 'tech-assessment', url: `${toolPath}tech-assessment.html`, roles: ['teacher', 'admin'], secondary: true },
+            // Staff duties are a staff working document - which adult is on the
+            // gate at three o'clock is not something the student body needs, and
+            // the read rule in the database says the same. A teacher opens it on
+            // their own week; an admin gets the editor in the same screen.
+            { icon: '🧭', label: 'Staff Duties', app: 'portal', section: 'staff-duties', roles: ['teacher', 'admin'], secondary: true },
             // Worship / Band is its own page for students and staff alike, so it
             // sits in the More launcher at the foot of the Portal tab in both
             // portals rather than in the bar. The page decides what each person
