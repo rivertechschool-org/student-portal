@@ -34560,7 +34560,10 @@
             teacher: '',
             subject: '',
             gradeLevel: '',
-            search: ''
+            search: '',
+            // Someone who has left still owns the classes they taught, so the
+            // way back to them is kept - just not switched on.
+            includePast: false
           };
         }
 
@@ -34577,24 +34580,33 @@
 
             if (error) throw error;
 
+            // The staff roster, in one query. Small (about a dozen rows) and
+            // it is what the filter should have been listing all along: the
+            // people who teach here, rather than the ids found on the classes.
+            const { data: staff } = await this.supabaseQuery(() => this.auth.supabase
+              .from('user_profiles')
+              .select('id, auth_user_id, first_name, last_name, user_type, account_status')
+              .in('user_type', ['teacher', 'admin'])
+              .order('last_name', { ascending: true })
+              .order('first_name', { ascending: true }));
+            this.adminClassesStaff = staff || [];
+
             if (allClasses && allClasses.length > 0) {
-              // Batch query teacher info (fixes N+1 timeout issue)
-              const teacherIds = [...new Set(allClasses.map(c => c.teacher_id).filter(Boolean))];
-              if (teacherIds.length > 0) {
-                const { data: teachers } = await this.supabaseQuery(() => this.auth.supabase
-                  .from('user_profiles')
-                  .select('id, first_name, last_name')
-                  .in('id', teacherIds));
+              // teacher_id holds a login id; secondary_teacher_id holds a
+              // profile id. Every member of staff has the same number in both
+              // today, which is precisely why keying on one of them works right
+              // up until somebody is added a different way. Key on both.
+              const staffById = {};
+              (staff || []).forEach(t => {
+                staffById[t.id] = t;
+                if (t.auth_user_id) staffById[t.auth_user_id] = t;
+              });
 
-                const teacherMap = {};
-                (teachers || []).forEach(t => {
-                  teacherMap[t.id] = t;
-                });
-
-                allClasses.forEach(cls => {
-                  cls.teacher = cls.teacher_id ? teacherMap[cls.teacher_id] : null;
-                });
-              }
+              allClasses.forEach(cls => {
+                cls.teacher = cls.teacher_id ? (staffById[cls.teacher_id] || null) : null;
+                cls.secondaryTeacher = cls.secondary_teacher_id
+                  ? (staffById[cls.secondary_teacher_id] || null) : null;
+              });
 
               // Batch query enrollment counts (fixes N+1 timeout issue)
               const classIds = allClasses.map(c => c.id);
@@ -34637,7 +34649,29 @@
         }
 
         // Get unique values for filter dropdowns
-        const teachers = [...new Map(allClasses.filter(c => c.teacher).map(c => [c.teacher_id, c.teacher])).values()];
+        const staffList = this.adminClassesStaff || [];
+        const idsOf = t => [t.id, t.auth_user_id].filter(Boolean);
+        const holdsAClass = t => {
+          const mine = idsOf(t);
+          return allClasses.some(c => mine.includes(c.teacher_id)
+                                   || mine.includes(c.secondary_teacher_id));
+        };
+        // An admin is not a teacher unless they are actually teaching something.
+        const belongsInFilter = t => t.user_type === 'teacher' || holdsAClass(t);
+        const hasLeft = t => String(t.account_status || '').toLowerCase() === 'inactive';
+
+        const currentTeachers = staffList.filter(t => belongsInFilter(t) && !hasLeft(t));
+        const pastTeachers    = staffList.filter(t => belongsInFilter(t) && hasLeft(t));
+
+        // The selected teacher is matched on either of their ids, because the
+        // two columns a class can name them in do not hold the same one.
+        const selectedTeacher = staffList.find(t => t.id === this.adminClassFilters.teacher);
+        const selectedIds = selectedTeacher ? idsOf(selectedTeacher)
+                          : (this.adminClassFilters.teacher ? [this.adminClassFilters.teacher] : []);
+        // Never hide the person the filter is currently set to - the dropdown
+        // would read "All Teachers" while a filter was quietly still applied.
+        const showPastTeachers = this.adminClassFilters.includePast
+                              || (selectedTeacher ? hasLeft(selectedTeacher) : false);
         const subjects = [...new Set(allClasses.map(c => c.subject).filter(Boolean))].sort();
         // Ordered by the bands' own sort_order, not alphabetically.
         const bandOrder = (this._gradeBands || []).map(x => x.code);
@@ -34650,8 +34684,11 @@
 
         // Apply filters
         let filteredClasses = allClasses.filter(cls => {
-          // Teacher filter
-          if (this.adminClassFilters.teacher && cls.teacher_id !== this.adminClassFilters.teacher) {
+          // Teacher filter. Co-teaching is real here, so a class counts as
+          // theirs whichever of the two slots they are in.
+          if (selectedIds.length
+              && !selectedIds.includes(cls.teacher_id)
+              && !selectedIds.includes(cls.secondary_teacher_id)) {
             return false;
           }
           // Subject filter
@@ -34667,8 +34704,9 @@
             const search = this.adminClassFilters.search.toLowerCase();
             const matchesName = cls.name?.toLowerCase().includes(search);
             const matchesDesc = cls.description?.toLowerCase().includes(search);
-            const matchesTeacher = cls.teacher ?
-              `${cls.teacher.first_name} ${cls.teacher.last_name}`.toLowerCase().includes(search) : false;
+            const nameOf = t => t ? `${t.first_name} ${t.last_name}`.toLowerCase() : '';
+            const matchesTeacher = nameOf(cls.teacher).includes(search)
+                                || nameOf(cls.secondaryTeacher).includes(search);
             if (!matchesName && !matchesDesc && !matchesTeacher) {
               return false;
             }
@@ -34719,12 +34757,29 @@
                   <select id="admin-class-teacher-filter" onchange="app.filterAdminClasses()"
                     style="width: 100%; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--card-bg); color: var(--text-color);">
                     <option value="">All Teachers</option>
-                    ${teachers.sort((a, b) => a.last_name.localeCompare(b.last_name)).map(t => `
+                    ${currentTeachers.map(t => `
                       <option value="${t.id}" ${this.adminClassFilters.teacher === t.id ? 'selected' : ''}>
-                        ${t.last_name}, ${t.first_name}
+                        ${t.last_name}, ${t.first_name}${t.user_type === 'admin' ? ' (admin)' : ''}
                       </option>
                     `).join('')}
+                    ${showPastTeachers && pastTeachers.length > 0 ? `
+                      <optgroup label="No longer teaching here">
+                        ${pastTeachers.map(t => `
+                          <option value="${t.id}" ${this.adminClassFilters.teacher === t.id ? 'selected' : ''}>
+                            ${t.last_name}, ${t.first_name}
+                          </option>
+                        `).join('')}
+                      </optgroup>
+                    ` : ''}
                   </select>
+                  ${pastTeachers.length > 0 ? `
+                    <label style="display: flex; align-items: center; gap: 5px; margin-top: 6px; font-size: 11px; color: var(--muted); cursor: pointer;">
+                      <input type="checkbox" id="admin-class-past-teachers"
+                        ${this.adminClassFilters.includePast ? 'checked' : ''}
+                        onchange="app.filterAdminClasses()">
+                      Include ${pastTeachers.length} who left
+                    </label>
+                  ` : ''}
                 </div>
                 <div style="min-width: 150px;">
                   <label style="display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px;">📚 Subject</label>
@@ -34772,7 +34827,7 @@
                       </div>
                       <div class="class-stats" style="margin-top: 8px;">
                         <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
-                        <span>👨‍🏫 ${cls.teacher?.first_name || 'No'} ${cls.teacher?.last_name || 'Teacher'}</span>
+                        <span>👨‍🏫 ${this.classTeacherNames(cls)}</span>
                       </div>
                     </div>
                     <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
@@ -34799,7 +34854,7 @@
                       </div>
                       <div class="class-stats" style="margin-top: 8px;">
                         <span>👥 ${cls.student_count}/${cls.max_students || 30}</span>
-                        <span>👨‍🏫 ${cls.teacher?.first_name || 'No'} ${cls.teacher?.last_name || 'Teacher'}</span>
+                        <span>👨‍🏫 ${this.classTeacherNames(cls)}</span>
                       </div>
                     </div>
                     <button class="btn btn-secondary small" onclick="event.stopPropagation(); app.showChangeTeacherModal('${cls.id}', '${cls.name.replace(/'/g, "\\'")}', '${cls.teacher_id || ''}')"
@@ -34842,7 +34897,12 @@
           teacher: document.getElementById('admin-class-teacher-filter')?.value || '',
           subject: document.getElementById('admin-class-subject-filter')?.value || '',
           gradeLevel: document.getElementById('admin-class-grade-filter')?.value || '',
-          search: searchInput?.value || ''
+          search: searchInput?.value || '',
+          // The checkbox is only drawn when somebody has left, so fall back to
+          // what it was rather than to false - otherwise it resets itself.
+          includePast: document.getElementById('admin-class-past-teachers')
+            ? document.getElementById('admin-class-past-teachers').checked
+            : !!this.adminClassFilters?.includePast
         };
 
         // Re-render with filters (skip fetch)
@@ -34863,9 +34923,20 @@
           teacher: '',
           subject: '',
           gradeLevel: '',
-          search: ''
+          search: '',
+          includePast: false
         };
         this.renderAdminClasses(true);
+      }
+
+      // Who teaches this class. Named separately from the class card because
+      // two grids draw it and they had drifted into saying it two ways.
+      classTeacherNames(cls) {
+        const name = t => t ? `${t.first_name || ''} ${t.last_name || ''}`.trim() : '';
+        const primary = name(cls.teacher);
+        const second = name(cls.secondaryTeacher);
+        if (primary && second) return `${primary} + ${second}`;
+        return primary || second || 'No Teacher';
       }
 
       async showDeletedClasses() {
