@@ -66,7 +66,7 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g,
 
 const STAFF = [
   { id: 'dan', first_name: 'Dan', last_name: 'Pike', email: 'dan@x.com', user_type: 'teacher', account_status: 'activated' },
-  { id: 'cait', first_name: 'Caitlin', last_name: 'Pennock', email: 'cait@x.com', user_type: 'admin', account_status: 'activated' },
+  { id: 'cait', first_name: 'Adeline', last_name: 'Ravenswood', email: 'cait@x.com', user_type: 'admin', account_status: 'activated' },
 ];
 
 function makeApp({ role = 'admin', staff = STAFF, meId = 'me' } = {}) {
@@ -181,14 +181,14 @@ const said = (text) => ({ original: text, _rawInput: text });
 
   {
     const app = makeApp({});
-    await app.terminalChangeStaffRole.call(app, said('make caitlin pennock an admin'), 'admin');
+    await app.terminalChangeStaffRole.call(app, said('make adeline ravenswood an admin'), 'admin');
     check('somebody already an admin is left alone', app.updates, []);
     ok('  and told so', /already an admin/.test(app.said[0]));
   }
 
   {
     const app = makeApp({});
-    await app.terminalChangeStaffRole.call(app, said('demote caitlin pennock'), 'teacher');
+    await app.terminalChangeStaffRole.call(app, said('demote adeline ravenswood'), 'teacher');
     check('demoting writes the teacher role', app.updates[0].patch, { user_type: 'teacher' });
     ok('  and says what they keep', /keep their own classes/.test(app.confirmed));
   }
@@ -196,7 +196,7 @@ const said = (text) => ({ original: text, _rawInput: text });
   {
     // Locking yourself out of the screen that would undo it.
     const app = makeApp({ meId: 'cait' });
-    await app.terminalChangeStaffRole.call(app, said('demote caitlin pennock'), 'teacher');
+    await app.terminalChangeStaffRole.call(app, said('demote adeline ravenswood'), 'teacher');
     check('you cannot demote yourself', app.updates, []);
     ok('  and it explains why', /will not be able to undo it/.test(app.errors[0]));
   }

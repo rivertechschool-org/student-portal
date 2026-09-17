@@ -138,7 +138,7 @@ console.log('\n== THE FLUSH CANNOT CARRY A STUDENT NAME ==');
     byIntent: { ADD_RTC: 3, VIEW_ATTENDANCE: 1 },
     misses: [
       { t: Date.now(), k: 'miss', s: 'is jordan vibing today', shape },
-      { t: Date.now(), k: 'weak', s: 'whats up with charlotte tebow', shape: 'whats' },
+      { t: Date.now(), k: 'weak', s: 'whats up with clementine vasquez', shape: 'whats' },
       { t: Date.now(), k: 'miss', s: 'mia wilson seems off', shape: null }, // no shape -> not sent
     ],
     since: Date.now(),
@@ -146,7 +146,7 @@ console.log('\n== THE FLUSH CANNOT CARRY A STUDENT NAME ==');
   const rows = app._rivenFlushPayload(st);
   const blob = JSON.stringify(rows).toLowerCase();
 
-  for (const name of ['jordan', 'charlotte', 'tebow', 'mia', 'wilson']) {
+  for (const name of ['jordan', 'clementine', 'vasquez', 'mia', 'wilson']) {
     check(!blob.includes(name), `flush payload contains no "${name}"`);
   }
   check(!blob.includes('vibing today'), 'flush payload contains no raw sentence');

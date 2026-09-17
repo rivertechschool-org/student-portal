@@ -64,7 +64,7 @@ function extract(name) {
 }
 
 const STUDENT = {
-  id: 's1', first_name: 'Jonathan', last_name: 'Smith', username: 'jsmith',
+  id: 's1', first_name: 'Bartholomew', last_name: 'Smith', username: 'jsmith',
   email: 'j@example.com', grade_level: '7', enrollment_type: 'full-time',
   account_status: 'activated', auth_user_id: 'auth-1',
 };
@@ -143,14 +143,14 @@ function makeApp(role, { fields = {} } = {}) {
     // The point of the split: they still have the field they actually use.
     ok('but the email stays theirs to fix', !/id="hub-email"[^>]*disabled/.test(app.html));
     ok('and the form says who does set the rest', /set by the office/.test(app.html));
-    ok('  while still showing the values', /value="Jonathan"/.test(app.html));
+    ok('  while still showing the values', /value="Bartholomew"/.test(app.html));
   }
 
   console.log('\n== the save ==\n');
 
   {
     const app = makeApp('admin', { fields: {
-      'hub-first-name': 'Jonathan', 'hub-last-name': 'Smithe', 'hub-email': 'j@example.com',
+      'hub-first-name': 'Bartholomew', 'hub-last-name': 'Smithe', 'hub-email': 'j@example.com',
       'hub-grade-level': '8', 'hub-enrollment-type': 'homeschool',
     } });
     await app.saveStudentHubProfile.call(app);
@@ -162,7 +162,7 @@ function makeApp(role, { fields = {} } = {}) {
     // A disabled input still HAS a value, so the form would happily post the
     // protected columns back. Sending them at all is what the database judges.
     const app = makeApp('teacher', { fields: {
-      'hub-first-name': 'Jonathan', 'hub-last-name': 'Smith', 'hub-email': 'new@example.com',
+      'hub-first-name': 'Bartholomew', 'hub-last-name': 'Smith', 'hub-email': 'new@example.com',
       'hub-grade-level': '7', 'hub-enrollment-type': 'full-time',
     } });
     await app.saveStudentHubProfile.call(app);

@@ -55,8 +55,8 @@ const app = { _nlpContext: {} };
 for (const n of METHODS) { const f = mk(n); app[n] = function (...a) { return f.apply(app, a); }; }
 
 // The bank's examples use these names; make them real students.
-const roster = [['Jordan', 'Reed'], ['Charlotte', 'Tebow'], ['Eli', 'Morris'], ['Dylan', 'Price'],
-  ['Evelyn', 'Hegelund'], ['Phoenix', 'Gray'], ['Noah', 'Williams'], ['Olivia', 'Brown'],
+const roster = [['Jordan', 'Reed'], ['Clementine', 'Vasquez'], ['Ari', 'Mercer'], ['Rory', 'Price'],
+  ['Rosalind', 'Ashgrove'], ['Orion', 'Gray'], ['Noah', 'Williams'], ['Olivia', 'Brown'],
   ['Mia', 'Wilson'], ['Sam', 'Carter']];
 app._terminalAllStudents = roster.map(([f, l], i) => ({
   full_name: `${f} ${l}`, first_name: f, last_name: l, rtc_balance: 100 + i,

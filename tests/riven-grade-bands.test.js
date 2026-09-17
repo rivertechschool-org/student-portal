@@ -3,7 +3,7 @@
 // WHAT WENT WRONG
 //
 // "Add her to my Math class tagged Old Middle School" produced a picker of
-// four rows, every one of them reading "Math · Jordan Ezell". Two problems at
+// four rows, every one of them reading "Math · Robin Castellan". Two problems at
 // once, and the second is the worse one:
 //
 //   * Three of the five classes named "Math" are CLOSED for the year. The
@@ -89,7 +89,7 @@ function makeApp(classes = MATHS, bands = BANDS) {
   const app = {
     userInfo: { user: { id: 'me' }, profile: { id: 'p', user_type: 'admin' } },
     _terminalAllClasses: classes,
-    _terminalAllStudents: [{ id: 's1', first_name: 'Josey', last_name: 'Baker', full_name: 'Josey Baker' }],
+    _terminalAllStudents: [{ id: 's1', first_name: 'Posy', last_name: 'Marlin', full_name: 'Posy Marlin' }],
     _terminalGradeBands: bands,
     _notesPeople: null,
     escapeHtml: (t) => String(t == null ? '' : t),
@@ -126,7 +126,7 @@ function makeApp(classes = MATHS, bands = BANDS) {
     // names two more. Guessing which is how a child lands in the wrong year.
     check('a half-named group is not guessed at', band('the middle school classes'), null);
     check('  nor elementary on its own', band('elementary classes'), null);
-    check('a sentence with no year group in it', band('add josey to math'), null);
+    check('a sentence with no year group in it', band('add posy to math'), null);
   }
 
   console.log('\n== the table has to actually be loaded ==\n');
@@ -138,7 +138,7 @@ function makeApp(classes = MATHS, bands = BANDS) {
     // into the SELF-HEAL block only - the one that runs when some other load
     // failed - so on a healthy session it never ran, _terminalGradeBands stayed
     // undefined, every sentence resolved to no band, and ENROLL_BAND's guard
-    // skipped it every time. "Add Josey to every Old Middle class" fell through
+    // skipped it every time. "Add Posy to every Old Middle class" fell through
     // to an ordinary class match on the word "middle" and offered a picker of
     // Younger Middle School classes.
     //
@@ -175,7 +175,7 @@ function makeApp(classes = MATHS, bands = BANDS) {
     // "Old Middle", as actually typed. Not "Old Middle School".
     const app = makeApp();
     check('the short form names the right year group',
-          app._rivenBandFromText.call(app, 'add josey to every old middle class')?.code, 'old_middle');
+          app._rivenBandFromText.call(app, 'add posy to every old middle class')?.code, 'old_middle');
     // It must NOT come out as young_middle, which is what the screenshot showed.
     ok('  and is never read as young middle',
        app._rivenBandFromText.call(app, 'every old middle class')?.code !== 'young_middle');
@@ -256,7 +256,7 @@ function makeApp(classes = MATHS, bands = BANDS) {
     const src = html.slice(html.indexOf("intent: 'ENROLL_BAND'"));
     const block = src.slice(0, src.indexOf("intent: 'ENROLL_STUDENT'"));
     ok('the intent needs a student', /requiresStudent: true/.test(block));
-    // Without this it would swallow "add josey to all MY classes".
+    // Without this it would swallow "add posy to all MY classes".
     ok('  and needs a year group to be named', /requiresBand: true/.test(block));
     ok('  and outranks a single enrolment', /w: 8/.test(block));
   }

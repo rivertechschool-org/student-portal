@@ -6,9 +6,9 @@
 //
 //   "who was missing September 14th"        -> answered about the last 30 days
 //   "who was missing?"                      -> answered about the last 30 days
-//   "was Elizabeth Beck present September 9" -> answered with her account card
+//   "was Josephine Beck present September 9" -> answered with her account card
 //   "who is missing next week"              -> answered about today
-//   "will Meadow be missing the next couple days" -> asked what I meant
+//   "will Willow be missing the next couple days" -> asked what I meant
 //
 // Each was fixed by hand, one regex at a time, and the next phrasing broke
 // anyway. That is what this file is for: enumerate the grid instead of waiting
@@ -80,7 +80,7 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
 const app = { _nlpContext: {} };
 for (const name of methods) { const fn = extract(name); app[name] = function (...a) { return fn.apply(app, a); }; }
 
-const roster = [['Meadow', 'Lawler'], ['Charlotte', 'Tebow'], ['Noah', 'Williams'], ['Elizabeth', 'Becker']];
+const roster = [['Willow', 'Fenmore'], ['Clementine', 'Vasquez'], ['Noah', 'Williams'], ['Josephine', 'Wexler']];
 app._terminalAllStudents = roster.map(([f, l], i) => ({
   full_name: `${f} ${l}`, first_name: f, last_name: l,
   rtc_balance: 100 + i, email: `${f.toLowerCase()}@x.com`, status: 'active', id: 'id' + i,
@@ -215,7 +215,7 @@ console.log('== one student ==');
 for (const tpl of ONE) {
   for (const w of WHEN) {
     if (!tpl.dirs.includes(w.dir)) continue;
-    run(tpl.s('meadow', w.t).replace(/\s+/g, ' ').trim(), 'one', w.dir);
+    run(tpl.s('willow', w.t).replace(/\s+/g, ' ').trim(), 'one', w.dir);
   }
 }
 
@@ -223,9 +223,9 @@ console.log('== the five that were reported ==');
 const REPORTED = [
   ['who was missing september 14th', 'everyone', 'back'],
   ['who was missing', 'everyone', 'back'],
-  ['was elizabeth beck present september 9', 'one', 'back'],
+  ['was josephine beck present september 9', 'one', 'back'],
   ['who is missing next week', 'everyone', 'fwd'],
-  ['will meadow be missing within the next couple days', 'one', 'fwd'],
+  ['will willow be missing within the next couple days', 'one', 'fwd'],
 ];
 for (const [s, who, dir] of REPORTED) run(s, who, dir);
 
@@ -237,14 +237,14 @@ console.log('== what it must NOT take ==');
 // they are checked here so nobody deletes one of those lines to make some new
 // phrasing work.
 const NOT_OURS = [
-  ['give charlotte 5 rtc for good attendance', 'an RTC award'],
-  ['give charlotte 5 for good attendance', 'an RTC award without the unit'],
+  ['give clementine 5 rtc for good attendance', 'an RTC award'],
+  ['give clementine 5 for good attendance', 'an RTC award without the unit'],
   ['notes about attendance', 'the notes list'],
-  ['attendance for english and math: all here except malakai and magnolia', 'a register being TAKEN'],
-  ['mark meadow absent', 'a register write'],
+  ['attendance for english and math: all here except zephyr and marigold', 'a register being TAKEN'],
+  ['mark willow absent', 'a register write'],
   ['mark everyone in math present', 'a group register write'],
-  ['meadow is out monday to wednesday', 'planning an absence'],
-  ['meadow will be absent sept 23', 'planning an absence, future tense'],
+  ['willow is out monday to wednesday', 'planning an absence'],
+  ['willow will be absent sept 23', 'planning an absence, future tense'],
   ['whos here in lower ms today', 'that cohort roster'],
   ['who is absent in upper elementary', 'that cohort roster'],
 ];

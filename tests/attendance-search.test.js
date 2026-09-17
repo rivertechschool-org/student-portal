@@ -82,10 +82,10 @@ const body = html.slice(start, end + '\n    }\n'.length).trim();
 const filterAttendanceRoster = eval(`(function ${body.slice('filterAttendanceRoster'.length)})`);
 
 const students = [
-  { id: 'a', name: 'Anne Becker', grade: '5', type: 'Full-Time', excused: true },
-  { id: 'b', name: 'Jack Becker', grade: '1', type: 'Homeschool', excused: false },
-  { id: 'c', name: 'Gabriel Chiarizio', grade: '4', type: 'Full-Time' },
-  { id: 'd', name: 'Penny Mays', grade: '5', type: 'Homeschool' },
+  { id: 'a', name: 'Nadia Wexler', grade: '5', type: 'Full-Time', excused: true },
+  { id: 'b', name: 'Felix Wexler', grade: '1', type: 'Homeschool', excused: false },
+  { id: 'c', name: 'Emeric Calloway', grade: '4', type: 'Full-Time' },
+  { id: 'd', name: 'Penny Prentice', grade: '5', type: 'Homeschool' },
 ];
 
 const input = new El('input');
@@ -111,11 +111,11 @@ const run = (q) => {
   filterAttendanceRoster.call(app, 'daily-attendance');
 };
 
-run('becker');
+run('wexler');
 check('surname matches both siblings', visible().join(','), 'a,b');
 check('  ...and reports the count', countEl.textContent, '2 of 4 shown');
 
-run('gabriel');
+run('emeric');
 check('first name matches one', visible().join(','), 'c');
 
 run('homeschool');
@@ -124,7 +124,7 @@ check('the enrolment line is searchable too', visible().join(','), 'b,d');
 run('5');
 check('grade is searchable', visible().join(','), 'a,d');
 
-run('BECKER');
+run('WEXLER');
 check('matching ignores case', visible().join(','), 'a,b');
 
 run('zzzz');
@@ -143,10 +143,10 @@ check("unexcused student's note is still closed",
       notes.find((n) => n.attrs['data-student-id'] === 'b').style.display, 'none');
 
 // A filtered-out student must not leave their note row behind.
-run('gabriel');
+run('emeric');
 check('a hidden student hides their note row too',
       notes.every((n) => n.hidden), true);
-run('anne');
+run('nadia');
 check('a matched student un-hides their note row',
       notes.find((n) => n.attrs['data-student-id'] === 'a').hidden, false);
 
@@ -160,7 +160,7 @@ check('enrolment is reachable through the search box', visible().join(','), 'b,d
 run('full-time');
 check('  ...and so is the other half', visible().join(','), 'a,c');
 
-run('becker');
+run('wexler');
 check('a surname still narrows to the pair', visible().join(','), 'a,b');
 run('');
 check('and clearing restores everyone', visible().join(','), 'a,b,c,d');

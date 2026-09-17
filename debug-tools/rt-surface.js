@@ -130,10 +130,10 @@ const app = {
   auth: { supabase: { from: qb, rpc: async (name, args) => { WRITES.push({ rpc: name, args }); return { data: null, error: null }; } } },
   userInfo: { user: { id: 't1' }, profile: { id: 'p1', user_type: 'teacher' } },
   _terminalAllStudents: [
-    { id: 's1', first_name: 'Jordan', last_name: 'Games', full_name: 'Jordan Games', rtc_balance: 100 },
-    { id: 's2', first_name: 'Elijah', last_name: 'Douglas', full_name: 'Elijah Douglas', rtc_balance: 40 },
-    { id: 's3', first_name: 'Eli', last_name: 'Morris', full_name: 'Eli Morris', rtc_balance: 55 },
-    { id: 's4', first_name: 'Hegelund', last_name: 'Gamer', full_name: 'Hegelund Gamer', rtc_balance: 10 },
+    { id: 's1', first_name: 'Quinn', last_name: 'Sable', full_name: 'Quinn Sable', rtc_balance: 100 },
+    { id: 's2', first_name: 'Arian', last_name: 'Delgado', full_name: 'Arian Delgado', rtc_balance: 40 },
+    { id: 's3', first_name: 'Ari', last_name: 'Mercer', full_name: 'Ari Mercer', rtc_balance: 55 },
+    { id: 's4', first_name: 'Ashgrove', last_name: 'Gamer', full_name: 'Ashgrove Gamer', rtc_balance: 10 },
   ],
   _terminalAllClasses: [
     { id: 'c1', name: 'Filmmaking', subject: 'Art', teacher_id: 't1', secondary_teacher_id: null, is_active: true, status: 'open', teacher_name: 'Luke H' },
@@ -189,10 +189,10 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   console.log('== /rt structured surface ==');
 
   // ---- strict resolution: the whole point of the surface
-  t('exact full name resolves', app._rtResolveStudent('Jordan Games').student?.id === 's1');
-  t('unique first name resolves', app._rtResolveStudent('Jordan').student?.id === 's1');
-  t('"eli" is NOT fuzzy-matched to Elijah', app._rtResolveStudent('eli').student?.id === 's3');
-  t('last-initial form resolves', app._rtResolveStudent('Elijah D').student?.id === 's2');
+  t('exact full name resolves', app._rtResolveStudent('Quinn Sable').student?.id === 's1');
+  t('unique first name resolves', app._rtResolveStudent('Quinn').student?.id === 's1');
+  t('"ari" is NOT fuzzy-matched to Arian', app._rtResolveStudent('ari').student?.id === 's3');
+  t('last-initial form resolves', app._rtResolveStudent('Arian D').student?.id === 's2');
   t('unknown name errors, never guesses', app._rtResolveStudent('Zebediah').error === 'not_found');
   t('typo errors rather than fuzzy-matching', app._rtResolveStudent('Jordn Games').error === 'not_found');
   t('id resolves', app._rtResolveStudent('s4').student?.id === 's4');
@@ -207,11 +207,11 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   t('classes returns only mine with schedule + counts',
     cls.classes.length === 2 && cls.classes[0].schedule.includes('Tue:P3') && cls.classes[0].students === 3, cls);
   const ros = await rt('{"op":"roster","class":"Filmmaking"}');
-  t('roster lists 3 students sorted', ros.count === 3 && ros.students[0].name === 'Eli Morris', ros);
-  const stu = await rt('{"op":"students","match":"eli"}');
-  t('student search finds both Elis', stu.count === 2, stu);
+  t('roster lists 3 students sorted', ros.count === 3 && ros.students[0].name === 'Ari Mercer', ros);
+  const stu = await rt('{"op":"students","match":"ari"}');
+  t('student search finds both Aris', stu.count === 2, stu);
   const gr = await rt('{"op":"grades","class":"Filmmaking"}');
-  t('grades reports participation + nulls', gr.count === 3 && gr.grades.find(g => g.student === 'Jordan Games').participation.pct === 92, gr);
+  t('grades reports participation + nulls', gr.count === 3 && gr.grades.find(g => g.student === 'Quinn Sable').participation.pct === 92, gr);
   const nt = await rt('{"op":"notes","class":"Filmmaking"}');
   t('notes filtered by class', nt.count === 3, nt);
   const att = await rt('{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}');
@@ -227,10 +227,10 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
 
   // ---- dry-run planner
   const plan = await rt(JSON.stringify({ op: 'plan', ops: [
-    { op: 'award', student: 'Jordan Games', amount: 5, reason: 'gold' },
+    { op: 'award', student: 'Quinn Sable', amount: 5, reason: 'gold' },
     { op: 'group_award', class: 'Filmmaking', amount: 5 },
-    { op: 'note', student: 'Eli Morris', class: 'Filmmaking', text: 'Making noise', sentiment: 'negative', category: 'behavior' },
-    { op: 'grade', student: 'Jordan Games', class: 'Filmmaking', component: 'participation', value: 'B' },
+    { op: 'note', student: 'Ari Mercer', class: 'Filmmaking', text: 'Making noise', sentiment: 'negative', category: 'behavior' },
+    { op: 'grade', student: 'Quinn Sable', class: 'Filmmaking', component: 'participation', value: 'B' },
   ] }));
   t('plan never executes', plan.executed === false && plan.dry_run === true, { e: plan.executed });
   t('plan resolves all 4 steps', plan.ok === true && plan.steps_planned === 4, plan.errors);
@@ -242,8 +242,8 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
     plan.needs_review.some(x => x.kind === 'grade_change'), plan.needs_review);
 
   const plan2 = await rt(JSON.stringify({ op: 'plan', ops: [
-    { op: 'deduct', student: 'Eli Morris', amount: 3 },
-    { op: 'grade', student: 'Hegelund Gamer', class: 'Filmmaking', component: 'participation', value: 80 },
+    { op: 'deduct', student: 'Ari Mercer', amount: 3 },
+    { op: 'grade', student: 'Ashgrove Gamer', class: 'Filmmaking', component: 'participation', value: 80 },
     { op: 'award', student: 'Nobody', amount: 5 },
   ] }));
   t('deduction itemized for review', plan2.needs_review.some(x => x.kind === 'rtc_deduction'), plan2.needs_review);
@@ -251,22 +251,22 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   t('unknown student fails the plan', plan2.ok === false && plan2.errors.some(e => e.error === 'not_found'), plan2.errors);
   t('a failing plan still reports its good steps', plan2.steps.length === 1, plan2.steps);
 
-  const plan3 = await rt(JSON.stringify({ op: 'plan', ops: [{ op: 'award', student: 'eli', amount: -5 }] }));
+  const plan3 = await rt(JSON.stringify({ op: 'plan', ops: [{ op: 'award', student: 'ari', amount: -5 }] }));
   t('negative award amount rejected', plan3.errors.some(e => e.error === 'bad_amount'), plan3.errors);
 
   // ---- class_with: name a class by who sits in it
-  const cw = await rt('{"op":"roster","class_with":["Jordan Games","Eli Morris"]}');
+  const cw = await rt('{"op":"roster","class_with":["Quinn Sable","Ari Mercer"]}');
   t('class_with identifies the section from its roster', cw.class?.name === 'Filmmaking' && cw.count === 3, cw);
-  const cw2 = await rt('{"op":"roster","class_with":["Jordan Games"]}');
+  const cw2 = await rt('{"op":"roster","class_with":["Quinn Sable"]}');
   t('class_with spanning 2 classes is ambiguous, not a guess', cw2.error === 'ambiguous' && cw2.candidates.length === 2, cw2);
-  const cw3 = await rt('{"op":"roster","class_with":["Hegelund Gamer"]}');
+  const cw3 = await rt('{"op":"roster","class_with":["Ashgrove Gamer"]}');
   t('class_with matching no class errors', cw3.error === 'not_found', cw3);
   const cw4 = await rt('{"op":"roster","class_with":["Nobody At All"]}');
   t('unresolvable student inside class_with errors', cw4.error === 'not_found', cw4);
 
   const cwPlan = await rt(JSON.stringify({ op: 'plan', ops: [
-    { op: 'group_award', class_with: ['Jordan Games', 'Eli Morris'], amount: 5 },
-    { op: 'note', student: 'Eli Morris', class_with: ['Jordan Games', 'Eli Morris'], text: 'Noisy', sentiment: 'negative' },
+    { op: 'group_award', class_with: ['Quinn Sable', 'Ari Mercer'], amount: 5 },
+    { op: 'note', student: 'Ari Mercer', class_with: ['Quinn Sable', 'Ari Mercer'], text: 'Noisy', sentiment: 'negative' },
   ] }));
   t('class_with works inside plan ops', cwPlan.ok === true && cwPlan.steps[0].class === 'Filmmaking' && cwPlan.steps[1].class === 'Filmmaking', cwPlan);
 
@@ -274,16 +274,16 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   const bun = await rt(JSON.stringify({ op: 'bundle',
     reads: [
       { op: 'classes', as: 'classes' },
-      { op: 'students', match: 'eli', as: 'elis' },
-      { op: 'roster', class_with: ['Jordan Games', 'Eli Morris'], as: 'roster' },
-      { op: 'grades', class_with: ['Jordan Games', 'Eli Morris'], as: 'grades' },
-      { op: 'attendance', class_with: ['Jordan Games', 'Eli Morris'], as: 'attendance' },
+      { op: 'students', match: 'ari', as: 'aris' },
+      { op: 'roster', class_with: ['Quinn Sable', 'Ari Mercer'], as: 'roster' },
+      { op: 'grades', class_with: ['Quinn Sable', 'Ari Mercer'], as: 'grades' },
+      { op: 'attendance', class_with: ['Quinn Sable', 'Ari Mercer'], as: 'attendance' },
       { op: 'roster', class: 'Film', as: 'broken' },
     ],
-    plan: { ops: [{ op: 'award', student: 'Jordan Games', amount: 5 }] }
+    plan: { ops: [{ op: 'award', student: 'Quinn Sable', amount: 5 }] }
   }));
   t('bundle returns every read under its key',
-    Object.keys(bun.reads).length === 6 && bun.reads.classes.classes.length === 2 && bun.reads.elis.count === 2, Object.keys(bun.reads || {}));
+    Object.keys(bun.reads).length === 6 && bun.reads.classes.classes.length === 2 && bun.reads.aris.count === 2, Object.keys(bun.reads || {}));
   t('bundle resolves class_with reads', bun.reads.roster.count === 3 && bun.reads.grades.count === 3, bun.reads.roster);
   t('a failing read does not abort the bundle', bun.reads.broken.error === 'ambiguous' && bun.reads.classes.classes.length === 2, bun.reads.broken);
   t('bundle carries the dry-run plan', bun.plan.dry_run === true && bun.plan.steps_planned === 1, bun.plan);
@@ -293,7 +293,7 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
 
   // regression: a class closed for the year polluted class_with candidates and
   // made a live lookup ambiguous, even though it cannot appear in "classes"
-  const closed = await rt('{"op":"roster","class_with":["Jordan Games","Eli Morris"]}');
+  const closed = await rt('{"op":"roster","class_with":["Quinn Sable","Ari Mercer"]}');
   t('closed class excluded from class_with candidates', closed.class?.name === 'Filmmaking', closed);
   const amb2 = await rt('{"op":"roster","class":"Film"}');
   t('ambiguity message pluralises "classes" correctly', /matches \d+ classes /.test(amb2.message), amb2.message);
@@ -304,7 +304,7 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
     ops: [
       { op: 'create_class', name: 'Film Club', subject: 'Art' },
       { op: 'enroll', class: 'Film Club', from_class: 'Filmmaking Advanced' },
-      { op: 'award', student: 'Jordan Games', amount: 5, reason: 'gold' }
+      { op: 'award', student: 'Quinn Sable', amount: 5, reason: 'gold' }
     ],
     reads: [{ op: 'classes', as: 'after' }] }));
   t('apply asks for ONE confirmation, not one per op', ap.awaiting_confirmation === true && !!app._pending, ap);
@@ -325,16 +325,16 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   // a plan error must block every write
   WRITES.length = 0; app._pending = null;
   const blocked = await rt(JSON.stringify({ op: 'apply',
-    ops: [{ op: 'award', student: 'Jordan Games', amount: 5 }, { op: 'award', student: 'Ghost Person', amount: 5 }] }));
+    ops: [{ op: 'award', student: 'Quinn Sable', amount: 5 }, { op: 'award', student: 'Ghost Person', amount: 5 }] }));
   t('one bad op blocks the entire batch', blocked.blocked === true && blocked.executed === false, blocked);
   t('a blocked batch writes nothing and never asks to confirm', WRITES.length === 0 && !app._pending, WRITES.length);
 
   // ---- grade_review: notes and grades side by side, without linking them
   const gv = await rt('{"op":"grade_review","class":"Filmmaking"}');
   t('grade_review covers the whole roster', gv.count === 3 && gv.with_notes === 2, gv);
-  t('concerns sort to the top', gv.students[0].student === 'Eli Morris' && gv.students[0].note_counts.negative === 2, gv.students.map(x => x.student));
+  t('concerns sort to the top', gv.students[0].student === 'Ari Mercer' && gv.students[0].note_counts.negative === 2, gv.students.map(x => x.student));
   t('grade_review shows current grades beside the notes',
-    gv.students.find(x => x.student === 'Jordan Games').participation.pct === 92, gv.students);
+    gv.students.find(x => x.student === 'Quinn Sable').participation.pct === 92, gv.students);
   t('notes from another class are not counted',
     gv.students[0].note_counts.total === 2, gv.students[0].note_counts);
   t('a student with no notes still appears',

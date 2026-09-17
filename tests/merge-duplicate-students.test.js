@@ -57,28 +57,28 @@ function extract(name) {
 // The real shape: the self-made row has the login and the Dojo progress, the
 // pre-added row has the enrolments and a year of attendance.
 const GROUP = {
-  name: 'Ruthie Argon',
+  name: 'Tillie Vermeer',
   profiles: [
-    { id: 'old', first_name: 'Ruthie', last_name: 'Argon', email: null, account_status: 'inactive',
+    { id: 'old', first_name: 'Tillie', last_name: 'Vermeer', email: null, account_status: 'inactive',
       has_login: false, created_at: '2026-09-02T00:00:00Z', records: 6 },
-    { id: 'new', first_name: 'ruthie', last_name: 'argon', email: 'r@x.com', account_status: 'activated',
+    { id: 'new', first_name: 'tillie', last_name: 'vermeer', email: 'r@x.com', account_status: 'activated',
       has_login: true, created_at: '2026-09-05T00:00:00Z', records: 32 },
   ],
 };
 
 // The pair the automatic list will never surface: same child, different name.
 const ROSTER = [
-  { id: 'eli',  first_name: 'Eli',    last_name: 'Killackey', grade_level: '6',
+  { id: 'ari',  first_name: 'Ari',    last_name: 'Kessler', grade_level: '6',
     email: null, account_status: 'inactive', has_login: false,
     date_of_birth: '2014-03-02', created_at: '2026-01-04T00:00:00Z', records: 88 },
-  { id: 'elij', first_name: 'Elijah', last_name: 'Killackey', grade_level: '6',
+  { id: 'elij', first_name: 'Arian', last_name: 'Kessler', grade_level: '6',
     email: 'e@x.com', account_status: 'activated', has_login: true,
     date_of_birth: '2014-03-02', created_at: '2026-09-08T00:00:00Z', records: 3 },
   // Two different children who would score alike on any name-similarity test.
-  { id: 'samh', first_name: 'Sam',      last_name: 'Hahn', grade_level: '4',
+  { id: 'samh', first_name: 'Sam',      last_name: 'Ostrander', grade_level: '4',
     email: null, account_status: 'inactive', has_login: false,
     date_of_birth: '2016-05-09', created_at: '2025-11-13T00:00:00Z', records: 40 },
-  { id: 'sama', first_name: 'Samantha', last_name: 'Hahn', grade_level: '8',
+  { id: 'sama', first_name: 'Rosalie', last_name: 'Ostrander', grade_level: '8',
     email: null, account_status: 'activated', has_login: true,
     date_of_birth: '2012-07-21', created_at: '2025-11-13T00:00:00Z', records: 227 },
 ];
@@ -86,15 +86,15 @@ const ROSTER = [
 // Two genuine conflicts, one field only the removed profile has, and a couple
 // of tables of records.
 const PREVIEW = {
-  a: { id: 'eli', first_name: 'Eli', last_name: 'Killackey', login_email: null, records: 88 },
-  b: { id: 'elij', first_name: 'Elijah', last_name: 'Killackey', login_email: 'eli@x.com', records: 3 },
+  a: { id: 'ari', first_name: 'Ari', last_name: 'Kessler', login_email: null, records: 88 },
+  b: { id: 'elij', first_name: 'Arian', last_name: 'Kessler', login_email: 'ari@x.com', records: 3 },
   fields: [
-    { column: 'email', a: 'office@x.com', b: 'eli@x.com', status: 'conflict',
-      a_label: 'office@x.com', b_label: 'eli@x.com' },
-    { column: 'first_name', a: 'Eli', b: 'Elijah', status: 'conflict',
-      a_label: 'Eli', b_label: 'Elijah' },
+    { column: 'email', a: 'office@x.com', b: 'ari@x.com', status: 'conflict',
+      a_label: 'office@x.com', b_label: 'ari@x.com' },
+    { column: 'first_name', a: 'Ari', b: 'Arian', status: 'conflict',
+      a_label: 'Ari', b_label: 'Arian' },
     { column: 'auth_user_id', a: null, b: 'auth-2', status: 'only_b',
-      a_label: null, b_label: 'eli@x.com' },
+      a_label: null, b_label: 'ari@x.com' },
   ],
   tables: [
     { table: 'daily_attendance', column: 'student_id', a_rows: 76, b_rows: 2 },
@@ -162,7 +162,7 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
     await app.showDuplicateStudents.call(app);
     check('it asks the database for the groups', app.calls[0].fn, 'rt_duplicate_students');
     const out = app.modal;
-    ok('both profiles are listed', /Ruthie/.test(out) && /ruthie/.test(out));
+    ok('both profiles are listed', /Tillie/.test(out) && /tillie/.test(out));
     // The number that decides it.
     ok('each says how much it is carrying', /32 records/.test(out) && /6 records/.test(out));
     ok('and which one can sign in', /has login/.test(out));
@@ -208,11 +208,11 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   console.log('\n== merging ==\n');
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij' });
-    await app.openMergeReview.call(app, 'eli', 'elij');
+    const app = makeApp({ keep: 'ari', drop: 'elij' });
+    await app.openMergeReview.call(app, 'ari', 'elij');
     await app.submitReviewedMerge.call(app);
     const call = app.calls.find(c => c.fn === 'rt_merge_student');
-    check('it merges in the reviewed direction', [call.args.p_keep, call.args.p_drop], ['eli', 'elij']);
+    check('it merges in the reviewed direction', [call.args.p_keep, call.args.p_drop], ['ari', 'elij']);
     const said = app.notices.join(' ');
     ok('it reports what moved', /31 records moved/.test(said));
     ok('  including what was dropped as duplicate', /1 duplicate dropped/.test(said));
@@ -220,14 +220,14 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   }
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij', rpcError: 'boom' });
-    await app.openMergeReview.call(app, 'eli', 'elij');
+    const app = makeApp({ keep: 'ari', drop: 'elij', rpcError: 'boom' });
+    await app.openMergeReview.call(app, 'ari', 'elij');
     ok('a preview that fails says so', app.notices.some(n => /Couldn't compare them/.test(n)));
   }
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij' });
-    await app.openMergeReview.call(app, 'eli', 'elij');
+    const app = makeApp({ keep: 'ari', drop: 'elij' });
+    await app.openMergeReview.call(app, 'ari', 'elij');
     // Fail only the merge, after the preview has already been fetched.
     app.auth.supabase.rpc = (fn, args) => {
       app.calls.push({ fn, args });
@@ -275,18 +275,18 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
     const out = app.modal;
     ok('the picker is offered above the automatic list', /Merge any two profiles/.test(out));
     ok('  with every student in both lists',
-      (out.match(/Killackey, Eli\b/g) || []).length === 2);
+      (out.match(/Kessler, Ari\b/g) || []).length === 2);
     // A name alone cannot answer "which one has the history".
     ok('  each option says what it carries', /88 records/.test(out) && /3 records/.test(out));
     ok('  and which can sign in', /has login/.test(out));
     ok('the picker says what it is for',
-      /Eli and Elijah/.test(out) && /cannot spot/.test(out));
+      /Ari and Arian/.test(out) && /cannot spot/.test(out));
   }
 
   {
-    // Eli / Elijah: same birthday, one row nearly empty. The case the automatic
+    // Ari / Arian: same birthday, one row nearly empty. The case the automatic
     // finder cannot see.
-    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    const app = makeApp({ keep: 'ari', drop: 'elij' });
     app._renderMergePreview.call(app);
     const p = app._preview.innerHTML;
     ok('the preview names both sides', /Keeping/.test(p) && /Removing/.test(p));
@@ -298,7 +298,7 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
 
   {
     // Removing the row with the history is a real mistake, so say so.
-    const app = makeApp({ keep: 'elij', drop: 'eli' });
+    const app = makeApp({ keep: 'elij', drop: 'ari' });
     app._renderMergePreview.call(app);
     ok('it warns when the removed row holds more',
       /more records than the one being kept/.test(app._preview.innerHTML));
@@ -313,7 +313,7 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   }
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'eli' });
+    const app = makeApp({ keep: 'ari', drop: 'ari' });
     app._renderMergePreview.call(app);
     ok('the same profile twice is refused in the preview',
       /same profile/.test(app._preview.innerHTML));
@@ -330,7 +330,7 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
 
   {
     // Picking no longer merges: it opens the review.
-    const app = makeApp({ keep: 'eli', drop: 'elij' });
+    const app = makeApp({ keep: 'ari', drop: 'elij' });
     await app.mergePickedStudents.call(app);
     check('picking two opens the review, it does not merge', app.calls.map(c => c.fn), ['rt_merge_preview']);
   }
@@ -346,13 +346,13 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   console.log('\n== the review ==\n');
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij' });
-    await app.openMergeReview.call(app, 'eli', 'elij');
+    const app = makeApp({ keep: 'ari', drop: 'elij' });
+    await app.openMergeReview.call(app, 'ari', 'elij');
     const out = app.modal;
     ok('both sides are named', /KEEPING/.test(out) && /REMOVING/.test(out));
     // Only the fields that actually disagree are questions.
     ok('it counts what needs deciding', /2 things to decide/.test(out));
-    ok('  and shows each side of a conflict', /office@x\.com/.test(out) && /eli@x\.com/.test(out));
+    ok('  and shows each side of a conflict', /office@x\.com/.test(out) && /ari@x\.com/.test(out));
     ok('  labelling the sign-in by address, not by id', /Sign-in/.test(out));
     ok('the kept profile is the default', /value="keep" checked/.test(out));
     ok('fields only one side has are settled, not asked',
@@ -363,15 +363,15 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   }
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij' });
-    await app.openMergeReview.call(app, 'eli', 'elij');
+    const app = makeApp({ keep: 'ari', drop: 'elij' });
+    await app.openMergeReview.call(app, 'ari', 'elij');
     // Nothing chosen: the survivor keeps everything it already has.
     await app.submitReviewedMerge.call(app);
     const call = app.calls.find(c => c.fn === 'rt_merge_student');
     check('submitting with no changes sends no field choices', call.args.p_fields, {});
 
-    const app2 = makeApp({ keep: 'eli', drop: 'elij' });
-    await app2.openMergeReview.call(app2, 'eli', 'elij');
+    const app2 = makeApp({ keep: 'ari', drop: 'elij' });
+    await app2.openMergeReview.call(app2, 'ari', 'elij');
     app2._setMergeChoice.call(app2, 'auth_user_id', 'drop');
     app2._setMergeChoice.call(app2, 'first_name', 'drop');
     await app2.submitReviewedMerge.call(app2);
@@ -381,8 +381,8 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
 
     // Switching back is a removal, not a 'keep' entry: the function only ever
     // receives the columns it should take from the removed row.
-    const app3 = makeApp({ keep: 'eli', drop: 'elij' });
-    await app3.openMergeReview.call(app3, 'eli', 'elij');
+    const app3 = makeApp({ keep: 'ari', drop: 'elij' });
+    await app3.openMergeReview.call(app3, 'ari', 'elij');
     app3._setMergeChoice.call(app3, 'first_name', 'drop');
     app3._setMergeChoice.call(app3, 'first_name', 'keep');
     await app3.submitReviewedMerge.call(app3);
@@ -391,8 +391,8 @@ function makeApp({ picked = null, confirms = true, rpcError = null, keep = '', d
   }
 
   {
-    const app = makeApp({ keep: 'eli', drop: 'elij', confirms: false });
-    await app.openMergeReview.call(app, 'eli', 'elij');
+    const app = makeApp({ keep: 'ari', drop: 'elij', confirms: false });
+    await app.openMergeReview.call(app, 'ari', 'elij');
     await app.submitReviewedMerge.call(app);
     check('declining at the last step writes nothing',
       app.calls.filter(c => c.fn === 'rt_merge_student'), []);

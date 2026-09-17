@@ -1,6 +1,6 @@
 // The ways people actually write a date.
 //
-// "Meadow will be absent Sept 23" answered with the help text. So did "Meadow
+// "Willow will be absent Sept 23" answered with the help text. So did "Willow
 // will be gone September 23". The intent matched fine both times — it was the
 // date that came back null, and a null date looks exactly like a sentence
 // Riven did not understand.
@@ -99,10 +99,10 @@ const nextDow = (dow) => {
   console.log('\n== the two sentences from the screenshot ==\n');
 
   {
-    const a = call('_rivenResolveAbsenceSpans', 'meadow will be absent sept 23');
+    const a = call('_rivenResolveAbsenceSpans', 'willow will be absent sept 23');
     check('"absent Sept 23"', a, [{ start: iso(8, 23), end: iso(8, 23) }]);
 
-    const b = call('_rivenResolveAbsenceSpans', 'meadow will be gone september 23');
+    const b = call('_rivenResolveAbsenceSpans', 'willow will be gone september 23');
     check('"gone September 23"', b, [{ start: iso(8, 23), end: iso(8, 23) }]);
   }
 
@@ -145,15 +145,15 @@ const nextDow = (dow) => {
   console.log('\n== ranges, written the way people write them ==\n');
 
   {
-    const noSpaces = call('_rivenResolveAbsenceSpans', 'meadow is out monday-thursday');
+    const noSpaces = call('_rivenResolveAbsenceSpans', 'willow is out monday-thursday');
     ok('"monday-thursday" is a range, not a single day',
        noSpaces && noSpaces.length === 1 && noSpaces[0].start !== noSpaces[0].end);
     check('  starting Monday', noSpaces[0].start, nextDow(1));
 
-    const spaced = call('_rivenResolveAbsenceSpans', 'meadow is out monday - thursday');
+    const spaced = call('_rivenResolveAbsenceSpans', 'willow is out monday - thursday');
     check('  and spacing makes no difference', spaced, noSpaces);
 
-    const worded = call('_rivenResolveAbsenceSpans', 'meadow is out monday to thursday');
+    const worded = call('_rivenResolveAbsenceSpans', 'willow is out monday to thursday');
     check('  nor does saying "to"', worded, noSpaces);
   }
 
@@ -177,7 +177,7 @@ const nextDow = (dow) => {
   // down as absent on a date nobody mentioned.
   check('a single letter is never a day', call('_rivenDayCodes', 'out m'), []);
   check('an ordinary word is not a run of days', call('_rivenDayCodes', 'mrs smith'), []);
-  check('  nor is a name', call('_rivenDayCodes', 'meadow will be away'), []);
+  check('  nor is a name', call('_rivenDayCodes', 'willow will be away'), []);
   check('  nor a repeated letter', call('_rivenDayCodes', 'mm'), []);
 
   console.log('\n== schedules read the same shorthand ==\n');

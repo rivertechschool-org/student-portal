@@ -7,9 +7,9 @@
 //
 // THE SHAPE PROBLEM
 //
-// "give chess to caitlin" is, after normalisation, "add chess to caitlin" -
+// "give chess to adeline" is, after normalisation, "add chess to adeline" -
 // _normalizeInput rewrites give to add before any pattern sees it. That is
-// character-for-character the same shape as "add eli to chess", which enrols a
+// character-for-character the same shape as "add ari to chess", which enrols a
 // student. Three things keep them apart, and all three are asserted here:
 // a student being named knocks this out, a cohort being named knocks it out,
 // and the person's name has to be the last thing in the sentence.
@@ -80,7 +80,7 @@ const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g,
 const CHESS = Object.freeze({ id: 'c1', name: 'Chess', teacher_id: 'dan', is_active: true, status: 'active' });
 const STAFF = [
   { id: 'dan', first_name: 'Dan', last_name: 'Pike', email: 'dan@x.com', user_type: 'teacher' },
-  { id: 'cait', first_name: 'Caitlin', last_name: 'Pennock', email: 'cait@x.com', user_type: 'teacher' },
+  { id: 'cait', first_name: 'Adeline', last_name: 'Ravenswood', email: 'cait@x.com', user_type: 'teacher' },
 ];
 const QUARTERS = [
   { id: 'q1', name: 'Quarter 1', is_current: true, is_archived: false, start_date: '2026-08-24', end_date: '2026-10-30' },
@@ -157,7 +157,7 @@ const said = (text) => ({ original: text, _rawInput: text });
 
   {
     const app = makeApp({ role: 'teacher' });
-    await app.terminalSetClassTeacher.call(app, said('give chess to caitlin'));
+    await app.terminalSetClassTeacher.call(app, said('give chess to adeline'));
     await app.terminalReopenClass.call(app, said('reopen chess'));
     await app.terminalSetCurrentQuarter.call(app, said('set the quarter to quarter 2'));
     check('a teacher changes none of it', app.updates.concat(app.switched), []);
@@ -177,9 +177,9 @@ const said = (text) => ({ original: text, _rawInput: text });
 
   {
     const app = makeApp({});
-    await app.terminalSetClassTeacher.call(app, said('give chess to caitlin'));
+    await app.terminalSetClassTeacher.call(app, said('give chess to adeline'));
     check('the class gets the new teacher', app.updates[0].patch, { teacher_id: 'cait' });
-    ok('the confirmation names both', /Caitlin Pennock/.test(app.confirmed) && /Chess/.test(app.confirmed));
+    ok('the confirmation names both', /Adeline Ravenswood/.test(app.confirmed) && /Chess/.test(app.confirmed));
     // The outgoing teacher loses three things at once and is not told by the app.
     ok('  and says what the outgoing teacher loses',
       /Dan Pike/.test(app.confirmed) && /register/.test(app.confirmed));
@@ -199,7 +199,7 @@ const said = (text) => ({ original: text, _rawInput: text });
     const app = makeApp({
       staff: [{ id: 'x', first_name: 'Chess', last_name: 'Someone', user_type: 'teacher' }],
     });
-    await app.terminalSetClassTeacher.call(app, said('give chess to caitlin'));
+    await app.terminalSetClassTeacher.call(app, said('give chess to adeline'));
     check('the class name is not read as a teacher name', app.updates, []);
     ok('  and it asks who', /Which teacher/.test(app.errors[0]));
   }

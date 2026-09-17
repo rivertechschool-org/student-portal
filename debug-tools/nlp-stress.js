@@ -52,8 +52,8 @@ for (const name of methods) { const fn = extract(name); app[name] = function (..
 
 // Realistic roster (real students seen in transcripts + stress cases)
 const roster = [
-  ['Charlotte','Tebow'], ['Eli','Morris'], ['Elijah','Douglas'], ['Elijah','Killackey'],
-  ['Evelyn','Hegelund'], ['John','Smith'], ['Johnny','Appleseed'],
+  ['Clementine','Vasquez'], ['Ari','Mercer'], ['Arian','Delgado'], ['Arian','Kessler'],
+  ['Rosalind','Ashgrove'], ['John','Smith'], ['Johnny','Appleseed'],
   ['Sarah','Jones'], ['Sam','Carter'], ['Samuel','Brooks'],
   ['Sophia','Nguyen'], ['Sofia','Martinez'], ['Liam','Jones'],
   ['Olivia','Brown'], ['Noah','Williams'], ['Ava','Davis'],
@@ -125,36 +125,36 @@ function run(input) {
 // [input, expectedIntent, expectedStudent(optional substring), resetContext?]
 const T = [
   // the reported bug + neighbours
-  ['Eli', 'VIEW_STUDENT', 'Eli Morris', true],
-  ['Eli d', 'VIEW_STUDENT', 'Elijah Douglas', true],     // D initial -> Douglas, not Eli Morris
-  ['Eli K', 'VIEW_STUDENT', 'Elijah Killackey', true],   // K initial -> Killackey
-  ['Elijah k', 'VIEW_STUDENT', 'Elijah Killackey', true],
-  ['Eli douglas', 'VIEW_STUDENT', 'Elijah Douglas', true],
-  ['elijah', 'AMBIGUOUS', null, true],                   // Douglas vs Killackey, no initial -> ask
-  ['eli morris', 'VIEW_STUDENT', 'Eli Morris', true],
-  ['give eli k 5', 'ADD_RTC', 'Elijah Killackey', true],
-  ['eli morris', 'VIEW_STUDENT', 'Eli Morris', true],
-  ['charlott', 'VIEW_STUDENT', 'Charlotte Tebow', true],
-  ['char', 'VIEW_STUDENT', 'Charlotte Tebow', true],
+  ['Ari', 'VIEW_STUDENT', 'Ari Mercer', true],
+  ['Ari d', 'VIEW_STUDENT', 'Arian Delgado', true],     // D initial -> Delgado, not Ari Mercer
+  ['Ari K', 'VIEW_STUDENT', 'Arian Kessler', true],   // K initial -> Kessler
+  ['Arian k', 'VIEW_STUDENT', 'Arian Kessler', true],
+  ['Ari delgado', 'VIEW_STUDENT', 'Arian Delgado', true],
+  ['arian', 'AMBIGUOUS', null, true],                   // Delgado vs Kessler, no initial -> ask
+  ['ari mercer', 'VIEW_STUDENT', 'Ari Mercer', true],
+  ['give ari k 5', 'ADD_RTC', 'Arian Kessler', true],
+  ['ari mercer', 'VIEW_STUDENT', 'Ari Mercer', true],
+  ['clementi', 'VIEW_STUDENT', 'Clementine Vasquez', true],
+  ['clem', 'VIEW_STUDENT', 'Clementine Vasquez', true],
   // bare names / view
-  ['Charlotte', 'VIEW_STUDENT', 'Charlotte Tebow', true],
-  ['show me evelyn', 'VIEW_STUDENT', 'Evelyn Hegelund', true],
-  ['how much gold does charlotte have', 'VIEW_STUDENT', 'Charlotte Tebow', true],
-  ["what's evelyn's balance", 'VIEW_STUDENT', 'Evelyn Hegelund', true],
-  ['read evelyn to me', 'VIEW_STUDENT', 'Evelyn Hegelund', true],
+  ['Clementine', 'VIEW_STUDENT', 'Clementine Vasquez', true],
+  ['show me rosalind', 'VIEW_STUDENT', 'Rosalind Ashgrove', true],
+  ['how much gold does clementine have', 'VIEW_STUDENT', 'Clementine Vasquez', true],
+  ["what's rosalind's balance", 'VIEW_STUDENT', 'Rosalind Ashgrove', true],
+  ['read rosalind to me', 'VIEW_STUDENT', 'Rosalind Ashgrove', true],
   ['tell me about sam carter', 'VIEW_STUDENT', 'Sam Carter', true],
   ['look up olivia', 'VIEW_STUDENT', 'Olivia Brown', true],
   ['pull up mia', 'VIEW_STUDENT', 'Mia Wilson', true],
   // add
-  ['give charlotte 2 rtc', 'ADD_RTC', 'Charlotte Tebow', true],
-  ['+5 gold to evelyn', 'ADD_RTC', 'Evelyn Hegelund', true],
+  ['give clementine 2 rtc', 'ADD_RTC', 'Clementine Vasquez', true],
+  ['+5 gold to rosalind', 'ADD_RTC', 'Rosalind Ashgrove', true],
   ['award sam 10 for great work', 'ADD_RTC', 'Sam Carter', true],
   ['add 3 to olivia', 'ADD_RTC', 'Olivia Brown', true],
   ['7 rtc to noah', 'ADD_RTC', 'Noah Williams', true],
-  ['give evelyn hegelund 50', 'ADD_RTC', 'Evelyn Hegelund', true],
+  ['give rosalind ashgrove 50', 'ADD_RTC', 'Rosalind Ashgrove', true],
   ['plus 4 for mia', 'ADD_RTC', 'Mia Wilson', true],
   // subtract
-  ['remove 5 from evelyn', 'SUBTRACT_RTC', 'Evelyn Hegelund', true],
+  ['remove 5 from rosalind', 'SUBTRACT_RTC', 'Rosalind Ashgrove', true],
   ['take 3 rtc from sam carter', 'SUBTRACT_RTC', 'Sam Carter', true],
   ['-2 from olivia', 'SUBTRACT_RTC', 'Olivia Brown', true],
   ['subtract 10 from noah', 'SUBTRACT_RTC', 'Noah Williams', true],
@@ -168,49 +168,49 @@ const T = [
   ['leaderboard', 'VIEW_TOP', null, true],
   ['who has rtc', 'LIST_STUDENTS', null, true],
   // history
-  ["show charlotte's history", 'VIEW_HISTORY', 'Charlotte Tebow', true],
-  ['evelyn transactions', 'VIEW_HISTORY', 'Evelyn Hegelund', true],
+  ["show clementine's history", 'VIEW_HISTORY', 'Clementine Vasquez', true],
+  ['rosalind transactions', 'VIEW_HISTORY', 'Rosalind Ashgrove', true],
   // no-student action -> still the action intent (so it prompts)
   ['add 2 rtc', 'ADD_RTC', null, true],
   ['remove 5', 'SUBTRACT_RTC', null, true],
   // genuinely ambiguous (two Jones) -> should ask
   ['jones', 'AMBIGUOUS', null, true],
   // typos in names
-  ['evlyn', 'VIEW_STUDENT', 'Evelyn Hegelund', true],
+  ['roslind', 'VIEW_STUDENT', 'Rosalind Ashgrove', true],
   ['give sara 5', 'ADD_RTC', 'Sarah Jones', true],
   ['sophia', 'VIEW_STUDENT', null, true],  // Sophia vs Sofia — ambiguous acceptable; checked loosely below
 ];
 
 // Aggressive / messy natural language (round 2)
 const T2 = [
-  ['can you give charlotte 5 rtc please', 'ADD_RTC', 'Charlotte Tebow', true],
+  ['can you give clementine 5 rtc please', 'ADD_RTC', 'Clementine Vasquez', true],
   ['could you add 3 rtc to noah', 'ADD_RTC', 'Noah Williams', true],
   ['would you mark noah absent today', 'MARK_ATTENDANCE', 'Noah Williams', true],
   // ...but only the leading auxiliary is forgiven. A question mark, a
   // deliberation and a refusal all still block the write.
-  ['can you give charlotte 5 rtc?', 'SPECULATIVE_WRITE', null, true],
+  ['can you give clementine 5 rtc?', 'SPECULATIVE_WRITE', null, true],
   // ...and a penalty is not forgiven its wrapper at all. An award said politely
   // goes through; a deduction said politely is asked about first, because the
   // cost of being wrong is not symmetrical.
-  ['could you dock eli 3 rtc', 'SPECULATIVE_WRITE', null, true],
-  ['could you take 3 rtc from eli', 'SPECULATIVE_WRITE', null, true],
-  ['should i give charlotte 5 rtc', 'SPECULATIVE_WRITE', null, true],
-  ["don't give charlotte 5 rtc", 'SPECULATIVE_WRITE', null, true],
-  ['please add 10 to evelyn', 'ADD_RTC', 'Evelyn Hegelund', true],
+  ['could you dock ari 3 rtc', 'SPECULATIVE_WRITE', null, true],
+  ['could you take 3 rtc from ari', 'SPECULATIVE_WRITE', null, true],
+  ['should i give clementine 5 rtc', 'SPECULATIVE_WRITE', null, true],
+  ["don't give clementine 5 rtc", 'SPECULATIVE_WRITE', null, true],
+  ['please add 10 to rosalind', 'ADD_RTC', 'Rosalind Ashgrove', true],
   ['could you show me sam carter', 'VIEW_STUDENT', 'Sam Carter', true],
   ['i want to give olivia 3 coins', 'ADD_RTC', 'Olivia Brown', true],
-  ['give 5 to charlotte', 'ADD_RTC', 'Charlotte Tebow', true],
-  ['charlotte gets 5 rtc', 'ADD_RTC', 'Charlotte Tebow', true],
-  ['bump evelyn by 5', 'ADD_RTC', 'Evelyn Hegelund', true],
+  ['give 5 to clementine', 'ADD_RTC', 'Clementine Vasquez', true],
+  ['clementine gets 5 rtc', 'ADD_RTC', 'Clementine Vasquez', true],
+  ['bump rosalind by 5', 'ADD_RTC', 'Rosalind Ashgrove', true],
   ['dock olivia 5', 'SUBTRACT_RTC', 'Olivia Brown', true],
   ['how many points does noah have', 'VIEW_STUDENT', 'Noah Williams', true],
-  ['whats charlottes balance', 'VIEW_STUDENT', 'Charlotte Tebow', true],
+  ['whats clementines balance', 'VIEW_STUDENT', 'Clementine Vasquez', true],
   ['check on mia', 'VIEW_STUDENT', 'Mia Wilson', true],
   ['lookup lucas anderson', 'VIEW_STUDENT', 'Lucas Anderson', true],
   ['give sam carter 20 rtc for helping', 'ADD_RTC', 'Sam Carter', true],
   ['take away 5 from olivia', 'SUBTRACT_RTC', 'Olivia Brown', true],
-  ['evelyn +10', 'ADD_RTC', 'Evelyn Hegelund', true],
-  ['evelyn -10', 'SUBTRACT_RTC', 'Evelyn Hegelund', true],
+  ['rosalind +10', 'ADD_RTC', 'Rosalind Ashgrove', true],
+  ['rosalind -10', 'SUBTRACT_RTC', 'Rosalind Ashgrove', true],
   ['show top 3', 'VIEW_TOP', null, true],
   ['list students', 'LIST_STUDENTS', null, true],
   ['stats', 'VIEW_STATS', null, true],
@@ -222,11 +222,11 @@ const T2 = [
 
 // Context follow-up chain (no reset between these)
 const CHAIN = [
-  ['how much gold does charlotte have', 'VIEW_STUDENT', 'Charlotte Tebow'],
-  ['give her 5 gold', 'ADD_RTC', 'Charlotte Tebow'],
-  ['read her to me again', 'VIEW_STUDENT', 'Charlotte Tebow'],
-  ['remove 5 gold from her', 'SUBTRACT_RTC', 'Charlotte Tebow'],
-  ['her history', 'VIEW_HISTORY', 'Charlotte Tebow'],
+  ['how much gold does clementine have', 'VIEW_STUDENT', 'Clementine Vasquez'],
+  ['give her 5 gold', 'ADD_RTC', 'Clementine Vasquez'],
+  ['read her to me again', 'VIEW_STUDENT', 'Clementine Vasquez'],
+  ['remove 5 gold from her', 'SUBTRACT_RTC', 'Clementine Vasquez'],
+  ['her history', 'VIEW_HISTORY', 'Clementine Vasquez'],
 ];
 
 let pass = 0, fail = 0; const fails = [];
@@ -255,11 +255,11 @@ for (const [inp, ei, es, r] of T2) {
 // Round 3: safety + attendance + undo
 const T3 = [
   // 🚨 SAFETY: info-questions must never mutate RTC
-  ["give eli's attendance in math over the last 5 weeks", 'VIEW_ATTENDANCE', 'Eli Morris', true],
+  ["give ari's attendance in math over the last 5 weeks", 'VIEW_ATTENDANCE', 'Ari Mercer', true],
   ["what's his recent attendance like", 'NONE', null, true],   // no context -> 'his' unresolved -> safe NONE (contextual case in follow-up test)
-  ['show me charlotte attendance', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['show me clementine attendance', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
   ['how many days has noah been absent', 'VIEW_ATTENDANCE', 'Noah Williams', true],
-  ['evelyn tardies this month', 'VIEW_ATTENDANCE', 'Evelyn Hegelund', true],
+  ['rosalind tardies this month', 'VIEW_ATTENDANCE', 'Rosalind Ashgrove', true],
   // Past tense. Every copula pattern on VIEW_ATTENDANCE used to say "is", so
   // "was X present <date>" matched nothing and the name alone carried it to
   // VIEW_STUDENT - which prints an account card and no attendance at all.
@@ -271,18 +271,18 @@ const T3 = [
   ['anyone missing next week', 'VIEW_PLANNED_ABSENCES', null, true],
   // ...and the same shape about the past still belongs to the register.
   ['who was missing yesterday', 'ATTENDANCE_ISSUES', null, true],
-  ['was charlotte present september 9', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
-  ['was charlotte here on monday', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
-  ['was charlotte in school yesterday', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
-  ['is charlotte here today', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['was clementine present september 9', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
+  ['was clementine here on monday', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
+  ['was clementine in school yesterday', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
+  ['is clementine here today', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
   ['give me sam carter grade in math', 'VIEW_GRADES', 'Sam Carter', true],  // grade query: must NOT add RTC; routes to grades reader
   // legit award with attendance as the REASON still works (has rtc) ...
-  ['give charlotte 5 rtc for good attendance', 'ADD_RTC', 'Charlotte Tebow', true],
+  ['give clementine 5 rtc for good attendance', 'ADD_RTC', 'Clementine Vasquez', true],
   // ... but without a currency word, an attendance mention blocks the mutation (safe)
-  ['give charlotte 5 for good attendance', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['give clementine 5 for good attendance', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
   // normal awards unaffected
-  ['give charlotte 5 rtc', 'ADD_RTC', 'Charlotte Tebow', true],
-  ['give charlotte 5', 'ADD_RTC', 'Charlotte Tebow', true],
+  ['give clementine 5 rtc', 'ADD_RTC', 'Clementine Vasquez', true],
+  ['give clementine 5', 'ADD_RTC', 'Clementine Vasquez', true],
   // UNDO
   ['undo that', 'UNDO_RTC', null, true],
   ['undo', 'UNDO_RTC', null, true],
@@ -301,9 +301,9 @@ for (const [inp, ei, es, r] of T3) {
 console.log('\n== entity extraction (subject / timeframe) ==');
 function ent(input){ app._nlpContext={}; const n=app._normalizeInput(input); return app._extractEntities(app._resolvePronouns(n), input); }
 const E = [
-  ["eli's attendance in math over the last 5 weeks", {subject:'math', amount:null, sinceNotNull:true}],
+  ["ari's attendance in math over the last 5 weeks", {subject:'math', amount:null, sinceNotNull:true}],
   ['noah attendance past 3 days', {subject:null, amount:null, sinceNotNull:true}],
-  ['give charlotte 5 rtc', {amount:5}],
+  ['give clementine 5 rtc', {amount:5}],
   ['top 5 students', {amount:5}],
 ];
 for (const [inp, exp] of E){
@@ -319,11 +319,11 @@ for (const [inp, exp] of E){
 console.log('\n== pronoun attendance follow-up ==');
 app._nlpContext = {};
 {
-  let g = run('show me eli');                          // sets context to Eli Morris
-  let g2 = run("what's his recent attendance like");   // 'his' -> Eli Morris, attendance
-  const ok = g2.intent === 'VIEW_ATTENDANCE' && g2.student === 'Eli Morris';
-  ok?pass++:(fail++, fails.push({input:"his recent attendance (after 'show me eli')", expIntent:'VIEW_ATTENDANCE', expStu:'Eli Morris', got:g2}));
-  console.log(`  ${ok?' ok ':'FAIL'} "show me eli" then "what's his recent attendance" -> ${g2.intent} ${g2.student||''}`);
+  let g = run('show me ari');                          // sets context to Ari Mercer
+  let g2 = run("what's his recent attendance like");   // 'his' -> Ari Mercer, attendance
+  const ok = g2.intent === 'VIEW_ATTENDANCE' && g2.student === 'Ari Mercer';
+  ok?pass++:(fail++, fails.push({input:"his recent attendance (after 'show me ari')", expIntent:'VIEW_ATTENDANCE', expStu:'Ari Mercer', got:g2}));
+  console.log(`  ${ok?' ok ':'FAIL'} "show me ari" then "what's his recent attendance" -> ${g2.intent} ${g2.student||''}`);
 }
 
 console.log('\n== context follow-up chain ==');
@@ -374,60 +374,60 @@ const T6 = [
   ['hello', 'SMALLTALK:greeting', null, true],
   ['thanks riven', 'SMALLTALK:thanks', null, true],
   ['what can you do', 'SMALLTALK:capabilities', null, true],
-  ['hi, give charlotte 5 rtc', 'ADD_RTC', 'Charlotte Tebow', true],   // greeting peeled off
-  ['history for charlotte', 'VIEW_HISTORY', 'Charlotte Tebow', true], // "hi" must NOT match inside "history"
+  ['hi, give clementine 5 rtc', 'ADD_RTC', 'Clementine Vasquez', true],   // greeting peeled off
+  ['history for clementine', 'VIEW_HISTORY', 'Clementine Vasquez', true], // "hi" must NOT match inside "history"
   // corrections
   ['No not what I meant', 'CORRECTION', null, true],
   ['no, undo that', 'UNDO_RTC', null, true],   // explicit undo wins over correction
   // historical balance
-  ['How much RTC did charlotte have yesterday?', 'BALANCE_AT', 'Charlotte Tebow', true],
+  ['How much RTC did clementine have yesterday?', 'BALANCE_AT', 'Clementine Vasquez', true],
   ['how much gold did sam have last week', 'BALANCE_AT', 'Sam Carter', true],
   ['how much gold does sam have', 'VIEW_STUDENT', 'Sam Carter', true], // no timeframe -> current
   // unsupported actions: honest decline, never a student card / never RTC
-  ['Mark charlotte as present for all classes yesterday.', 'MARK_ATTENDANCE', 'Charlotte Tebow', true],
+  ['Mark clementine as present for all classes yesterday.', 'MARK_ATTENDANCE', 'Clementine Vasquez', true],
   ['mark noah absent today', 'MARK_ATTENDANCE', 'Noah Williams', true],
   // Planned absences vs marking one now. The whole distinction is the date:
   // "out today" is a register being dictated, "out monday" is a note about a
   // day that has not happened.
   ['noah is out next monday', 'PLAN_ABSENCE', 'Noah Williams', true],
-  ['charlotte is out monday to wednesday', 'PLAN_ABSENCE', 'Charlotte Tebow', true],
+  ['clementine is out monday to wednesday', 'PLAN_ABSENCE', 'Clementine Vasquez', true],
   ['noah has a dentist appointment on friday', 'PLAN_ABSENCE', 'Noah Williams', true],
   ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
-  ['charlotte wont be in tomorrow', 'PLAN_ABSENCE', 'Charlotte Tebow', true],
+  ['clementine wont be in tomorrow', 'PLAN_ABSENCE', 'Clementine Vasquez', true],
   // Enrolment is a property of the STUDENT. Reported from the phone: this
   // came back as "I found 3 classes that could match" and a picker, because
   // "homeschool" is ten letters long and every partial class match takes any
   // distinctive word on its own.
   ['Is Noah a full time or homeschool student?', 'ENROLLMENT_TYPE', 'Noah Williams', true],
-  ['is charlotte homeschool', 'ENROLLMENT_TYPE', 'Charlotte Tebow', true],
+  ['is clementine homeschool', 'ENROLLMENT_TYPE', 'Clementine Vasquez', true],
   ['what enrollment type is noah', 'ENROLLMENT_TYPE', 'Noah Williams', true],
   // The student RECORD. Riven could read most of it and change almost none
   // of it; these are the commands that closed that, and the reads beside
   // them that they must not swallow.
   ['what days does noah attend', 'VIEW_SCHEDULE', 'Noah Williams', true],
-  ['when does charlotte come in', 'VIEW_SCHEDULE', 'Charlotte Tebow', true],
+  ['when does clementine come in', 'VIEW_SCHEDULE', 'Clementine Vasquez', true],
   ['who are noahs parents', 'VIEW_PARENTS', 'Noah Williams', true],
-  ['how do i contact charlottes parents', 'VIEW_PARENTS', 'Charlotte Tebow', true],
+  ['how do i contact clementines parents', 'VIEW_PARENTS', 'Clementine Vasquez', true],
   ['make noah homeschool', 'SET_ENROLLMENT_TYPE', 'Noah Williams', true],
-  ['set charlotte to full time', 'SET_ENROLLMENT_TYPE', 'Charlotte Tebow', true],
+  ['set clementine to full time', 'SET_ENROLLMENT_TYPE', 'Clementine Vasquez', true],
   ['noah attends monday wednesday friday', 'SET_SCHEDULE', 'Noah Williams', true],
-  ['change charlottes days to tuesday and thursday', 'SET_SCHEDULE', 'Charlotte Tebow', true],
+  ['change clementines days to tuesday and thursday', 'SET_SCHEDULE', 'Clementine Vasquez', true],
   ['move noah to 8th grade', 'SET_GRADE_LEVEL', 'Noah Williams', true],
-  ['change charlottes last name to tebowe', 'RENAME_STUDENT', 'Charlotte Tebow', true],
+  ['change clementines last name to tebowe', 'RENAME_STUDENT', 'Clementine Vasquez', true],
   // The lines these must not cross. A mark is not a year group, and asking
   // what something IS is never an instruction to change it.
   ["set noah's final grade in math to 95", 'SET_GRADE', 'Noah Williams', true],
-  ['what grade is charlotte in math', 'VIEW_GRADES', 'Charlotte Tebow', true],
+  ['what grade is clementine in math', 'VIEW_GRADES', 'Clementine Vasquez', true],
   // The student lifecycle. Withdrawing is the heaviest thing an admin does to
   // a record - classes archived, attending days cleared, activities ended -
   // so it must be reachable by the sentences people actually say, and must
   // never be reached by one of the reads beside it.
   ['mark noah as a past student', 'WITHDRAW_STUDENT', 'Noah Williams', true],
-  ['charlotte has left the school', 'WITHDRAW_STUDENT', 'Charlotte Tebow', true],
+  ['clementine has left the school', 'WITHDRAW_STUDENT', 'Clementine Vasquez', true],
   ['reinstate noah', 'REINSTATE_STUDENT', 'Noah Williams', true],
-  ['give charlotte a new pin', 'REGENERATE_PIN', 'Charlotte Tebow', true],
+  ['give clementine a new pin', 'REGENERATE_PIN', 'Clementine Vasquez', true],
   ['noah forgot his pin', 'REGENERATE_PIN', 'Noah Williams', true],
-  ['new parent link code for charlotte', 'REISSUE_PARENT_CODE', 'Charlotte Tebow', true],
+  ['new parent link code for clementine', 'REISSUE_PARENT_CODE', 'Clementine Vasquez', true],
   // Two people in one sentence. The matcher answers with whichever name
   // scores best - here the parent, who happens to share a roster name -
   // and terminalUnlinkParent then takes the student from after 'from'.
@@ -437,12 +437,12 @@ const T6 = [
   // The day itself. These are teacher commands, said while something is
   // happening, so they have to work in the words people use standing up.
   ['excuse noah today', 'EXCUSE_ABSENCE', 'Noah Williams', true],
-  ['charlotte has been picked up', 'MARK_PICKED_UP', 'Charlotte Tebow', true],
+  ['clementine has been picked up', 'MARK_PICKED_UP', 'Clementine Vasquez', true],
   ['noah went home', 'MARK_PICKED_UP', 'Noah Williams', true],
   ['cancel math today', 'CANCEL_CLASS', null, true],
   ['math is back on today', 'UNCANCEL_CLASS', null, true],
   ['report card for noah', 'REPORT_CARD', 'Noah Williams', true],
-  ['transcript for charlotte', 'TRANSCRIPT', 'Charlotte Tebow', true],
+  ['transcript for clementine', 'TRANSCRIPT', 'Clementine Vasquez', true],
   // And the line none of them may cross: marking the register today is
   // still MARK_ATTENDANCE, not an excuse and not a pickup.
   ['noah is out today', 'MARK_ATTENDANCE', 'Noah Williams', true],
@@ -450,7 +450,7 @@ const T6 = [
   // enrolling somebody into it - "give" is normalised to "add" before any
   // pattern sees it - so the lines that must NOT move are as much a part of
   // this batch as the ones that must.
-  ['maths teacher is now caitlin', 'SET_CLASS_TEACHER', null, true],
+  ['maths teacher is now adeline', 'SET_CLASS_TEACHER', null, true],
   ['reopen math', 'REOPEN_CLASS', null, true],
   // "quarter" is one edit from "Carter", who is on this roster. An ordinary
   // English word is never a name, whatever else the sentence says, so these
@@ -474,7 +474,7 @@ const T6 = [
   // student's standing in a CLASS for a quarter - that one takes a letter and
   // a subject, this one takes points and an assignment.
   ['noah got 18 out of 20 on chapter 4', 'GRADE_SUBMISSION', 'Noah Williams', true],
-  ['give charlotte 45/50 on the essay', 'GRADE_SUBMISSION', 'Charlotte Tebow', true],
+  ['give clementine 45/50 on the essay', 'GRADE_SUBMISSION', 'Clementine Vasquez', true],
   ["set noah's final grade in math to 95", 'SET_GRADE', 'Noah Williams', true],
   // Enrolment applications. Siblings share surnames, so these must survive a
   // roster match on a student who is not the applicant.
@@ -485,11 +485,11 @@ const T6 = [
   // Strikes. The one thing a teacher does about a child in the moment that is
   // not attendance.
   ['give noah a strike for throwing chalk', 'ISSUE_STRIKE', 'Noah Williams', true],
-  ['take charlottes strike off', 'REMOVE_STRIKE', 'Charlotte Tebow', true],
+  ['take clementines strike off', 'REMOVE_STRIKE', 'Clementine Vasquez', true],
   ['how many strikes does noah have', 'VIEW_STRIKES', 'Noah Williams', true],
   // Staff. Promoting is the only command that changes what somebody ELSE is
   // allowed to do.
-  ['make caitlin pennock an admin', 'PROMOTE_STAFF', null, true],
+  ['make adeline ravenswood an admin', 'PROMOTE_STAFF', null, true],
   ['demote dan pike from admin', 'DEMOTE_STAFF', null, true],
   ['deactivate dan pikes teacher account', 'DEACTIVATE_STAFF', null, true],
   // The two waiting queues. Enrolment applications are a THIRD queue with
@@ -502,29 +502,29 @@ const T6 = [
   ['enrollment breakdown', 'ENROLLMENT_COUNTS', null, true],
   // And the lines that must not move: naming a class still names a class,
   // and the cohort word still narrows one when it is part of a real name.
-  ['what classes is charlotte in', 'VIEW_ENROLLMENTS', 'Charlotte Tebow', true],
-  ['add charlotte to creative writing older homeschool', 'ENROLL_STUDENT', 'Charlotte Tebow', true],
+  ['what classes is clementine in', 'VIEW_ENROLLMENTS', 'Clementine Vasquez', true],
+  ['add clementine to creative writing older homeschool', 'ENROLL_STUDENT', 'Clementine Vasquez', true],
   // Asking WHICH DAYS someone is away is a read of the same list, and it used
   // to be refused instead: "are ... missing" is a PLAN_ABSENCE phrasing, so
   // notIfQuestion fired and Riven answered "that's phrased as a question, so I
   // left everything alone" - declining to do something nobody had asked for,
   // while sitting on the answer. Reported from the phone, verbatim.
-  // Verbatim from the report. This roster has no Jonathan, so the student
+  // Verbatim from the report. This roster has no Bartholomew, so the student
   // comes back unresolved - the point here is the INTENT, and the named-student
   // cases below prove the list gets narrowed to one child.
-  ['What days are Jonathan missing?', 'VIEW_PLANNED_ABSENCES', null, true],
+  ['What days are Bartholomew missing?', 'VIEW_PLANNED_ABSENCES', null, true],
   ['what days is noah out', 'VIEW_PLANNED_ABSENCES', 'Noah Williams', true],
-  ['which dates is charlotte away', 'VIEW_PLANNED_ABSENCES', 'Charlotte Tebow', true],
+  ['which dates is clementine away', 'VIEW_PLANNED_ABSENCES', 'Clementine Vasquez', true],
   ['when is noah out', 'VIEW_PLANNED_ABSENCES', 'Noah Williams', true],
-  ['how many days is charlotte going to be out', 'VIEW_PLANNED_ABSENCES', 'Charlotte Tebow', true],
+  ['how many days is clementine going to be out', 'VIEW_PLANNED_ABSENCES', 'Clementine Vasquez', true],
   // The lines the tense guard defends: same shape, past tense, and they belong
   // to the register rather than to the upcoming list. Both answered this way
   // before the read patterns existed, and must keep answering this way.
   ['how many days has noah been absent', 'VIEW_ATTENDANCE', 'Noah Williams', true],
-  ['what days was charlotte absent', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['what days was clementine absent', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
   ['Put 30 gold in the bank', 'CAPABILITY', null, true],
-  ['Give charlotte 30 gold in the bank', 'CAPABILITY', null, true],
-  ["Let's add charlotte to a math class.", 'ENROLL_STUDENT', 'Charlotte Tebow', true],
+  ['Give clementine 30 gold in the bank', 'CAPABILITY', null, true],
+  ["Let's add clementine to a math class.", 'ENROLL_STUDENT', 'Clementine Vasquez', true],
   ['enroll noah in filmmaking', 'ENROLL_STUDENT', 'Noah Williams', true],
   // Was UNKNOWN_ACTION, from before Riven could message anyone. There is a
   // SEND_MESSAGE capability now, and with nobody resolvable it answers "Who do
@@ -536,21 +536,21 @@ const T6 = [
   ['Which students have had recent bad attendance?', 'ATTENDANCE_ISSUES', null, true],
   ['anyone absent this week?', 'ATTENDANCE_ISSUES', null, true],
   // classes
-  ['What classes is charlotte in?', 'VIEW_ENROLLMENTS', 'Charlotte Tebow', true],
+  ['What classes is clementine in?', 'VIEW_ENROLLMENTS', 'Clementine Vasquez', true],
   ['What math classes do we have in the system?', 'LIST_CLASSES', null, true],
   ['list all classes', 'LIST_CLASSES', null, true],
   // tenure
-  ['How long has charlotte been at River Tech?', 'STUDENT_TENURE', 'Charlotte Tebow', true],
+  ['How long has clementine been at River Tech?', 'STUDENT_TENURE', 'Clementine Vasquez', true],
   // compare + transfer (multi-student)
-  ['Compare how much gold evelyn and charlotte have', 'COMPARE_STUDENTS', null, true],
+  ['Compare how much gold rosalind and clementine have', 'COMPARE_STUDENTS', null, true],
   ['compare sam and noah', 'COMPARE_STUDENTS', null, true],
-  ['Give 2 gold from evelyn to charlotte', 'TRANSFER_RTC', null, true],
+  ['Give 2 gold from rosalind to clementine', 'TRANSFER_RTC', null, true],
   ['transfer 10 rtc from sam to noah', 'TRANSFER_RTC', null, true],
   ['move 5 from olivia to mia', 'TRANSFER_RTC', null, true],
   // notes with quoted content / give-phrasing
-  ['Give charlotte a note in math class "Working on pre-calc"', 'ADD_NOTE', null, true],
+  ['Give clementine a note in math class "Working on pre-calc"', 'ADD_NOTE', null, true],
   // plain mutations still work
-  ['give charlotte 5 rtc', 'ADD_RTC', 'Charlotte Tebow', true],
+  ['give clementine 5 rtc', 'ADD_RTC', 'Clementine Vasquez', true],
   ['remove 3 from noah', 'SUBTRACT_RTC', 'Noah Williams', true],
 ];
 let p6 = 0, f6 = 0;
@@ -568,7 +568,7 @@ if (f6) process.exitCode = 1;
 
 // context follow-up regression: aggregate after a single-student query
 app._nlpContext = {};
-run('show me charlotte');
+run('show me clementine');
 const agg = run('which students have bad attendance');
 const aggOk = agg.intent === 'ATTENDANCE_ISSUES' && !agg.student;
 console.log(`  ${aggOk ? ' ok ' : 'FAIL'} context student NOT reused for aggregate -> ${agg.intent} ${agg.student || '(no student)'}`)
@@ -588,60 +588,60 @@ if (!poisonOk) process.exitCode = 1;
 console.log('\n== round 7: write capabilities ==');
 const T7 = [
   // attendance writes
-  ['mark charlotte present in math today', 'MARK_ATTENDANCE', 'Charlotte Tebow', true],
+  ['mark clementine present in math today', 'MARK_ATTENDANCE', 'Clementine Vasquez', true],
   ['mark noah absent in robotics yesterday', 'MARK_ATTENDANCE', 'Noah Williams', true],
   ['mark sam as late for math', 'MARK_ATTENDANCE', 'Sam Carter', true],
-  ['mark charlotte as present for all classes yesterday', 'MARK_ATTENDANCE', 'Charlotte Tebow', true],
+  ['mark clementine as present for all classes yesterday', 'MARK_ATTENDANCE', 'Clementine Vasquez', true],
   // enrollment
-  ['add charlotte to robotics', 'ENROLL_STUDENT', 'Charlotte Tebow', true],
+  ['add clementine to robotics', 'ENROLL_STUDENT', 'Clementine Vasquez', true],
   ['enroll noah in math', 'ENROLL_STUDENT', 'Noah Williams', true],
-  ["let's add charlotte to the math class", 'ENROLL_STUDENT', 'Charlotte Tebow', true],
-  ['remove charlotte from robotics', 'UNENROLL_STUDENT', 'Charlotte Tebow', true],
+  ["let's add clementine to the math class", 'ENROLL_STUDENT', 'Clementine Vasquez', true],
+  ['remove clementine from robotics', 'UNENROLL_STUDENT', 'Clementine Vasquez', true],
   ['drop noah from math', 'UNENROLL_STUDENT', 'Noah Williams', true],
   // these must STAY RTC despite to/from + class words
-  ['add 5 rtc to charlotte in math class', 'ADD_RTC', 'Charlotte Tebow', true],
+  ['add 5 rtc to clementine in math class', 'ADD_RTC', 'Clementine Vasquez', true],
   ['take 3 rtc from sam', 'SUBTRACT_RTC', 'Sam Carter', true],
-  ['give 2 rtc from evelyn to charlotte', 'TRANSFER_RTC', null, true],
+  ['give 2 rtc from rosalind to clementine', 'TRANSFER_RTC', null, true],
   // classes
   ['create a class called Chess Club', 'CREATE_CLASS', null, true],
   ['make a new class named Pottery subject Art', 'CREATE_CLASS', null, true],
   ['archive the robotics class', 'DELETE_CLASS', null, true],
   // grades
-  ["set charlotte's final grade in math to 95", 'SET_GRADE', 'Charlotte Tebow', true],
+  ["set clementine's final grade in math to 95", 'SET_GRADE', 'Clementine Vasquez', true],
   ['give noah a b+ participation grade in robotics', 'SET_GRADE', 'Noah Williams', true],
   ["change sam's academic grade in math to 88", 'SET_GRADE', 'Sam Carter', true],
-  ["what are charlotte's grades", 'VIEW_GRADES', 'Charlotte Tebow', true],
+  ["what are clementine's grades", 'VIEW_GRADES', 'Clementine Vasquez', true],
   ['grades for the math class', 'VIEW_GRADES', null, true],
   // STUDENT_BRIEFING — the whole picture for one student. These used to land on
   // VIEW_STUDENT, which prints an ACCOUNT card (email, RTC, join date): a
   // confident answer with nothing academic in it.
-  ['how is charlotte doing', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
-  ["how's charlotte doing?", 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
-  ['what does charlotte need to be working on', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
-  ['what should eli morris be working on', 'STUDENT_BRIEFING', 'Eli Morris', true],
-  ['is charlotte struggling', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
-  ['what is charlotte behind on', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
-  ['catch me up on charlotte', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
-  ['how is charlotte coming along', 'STUDENT_BRIEFING', 'Charlotte Tebow', true],
+  ['how is clementine doing', 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
+  ["how's clementine doing?", 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
+  ['what does clementine need to be working on', 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
+  ['what should ari mercer be working on', 'STUDENT_BRIEFING', 'Ari Mercer', true],
+  ['is clementine struggling', 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
+  ['what is clementine behind on', 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
+  ['catch me up on clementine', 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
+  ['how is clementine coming along', 'STUDENT_BRIEFING', 'Clementine Vasquez', true],
   // ...and the boundaries it must NOT cross. A named subject stays with the
   // grades reader (VIEW_GRADES carries a w:7 sub-pattern for "...doing in X"),
   // and with no student named these stay aggregate/teacher-wide.
-  ['how is charlotte doing in math', 'VIEW_GRADES', 'Charlotte Tebow', true],
+  ['how is clementine doing in math', 'VIEW_GRADES', 'Clementine Vasquez', true],
   ['catch me up', 'BRIEFING', null, true],
-  ['charlotte', 'VIEW_STUDENT', 'Charlotte Tebow', true],
-  ['compare charlotte and noah grades', 'COMPARE_STUDENTS', null, true],
+  ['clementine', 'VIEW_STUDENT', 'Clementine Vasquez', true],
+  ['compare clementine and noah grades', 'COMPARE_STUDENTS', null, true],
   // roster
   ["who's in robotics?", 'VIEW_ROSTER', null, true],
   ['show me the math roster', 'VIEW_ROSTER', null, true],
   // contact
-  ["change charlotte's phone to 555-123-4567", 'UPDATE_CONTACT', 'Charlotte Tebow', true],
+  ["change clementine's phone to 555-123-4567", 'UPDATE_CONTACT', 'Clementine Vasquez', true],
   ["update noah's email to noah@new.com", 'UPDATE_CONTACT', 'Noah Williams', true],
-  ["what's charlotte's phone number", 'VIEW_CONTACT', 'Charlotte Tebow', true],
+  ["what's clementine's phone number", 'VIEW_CONTACT', 'Clementine Vasquez', true],
   // unchanged behaviors
-  ['show me charlotte attendance', 'VIEW_ATTENDANCE', 'Charlotte Tebow', true],
+  ['show me clementine attendance', 'VIEW_ATTENDANCE', 'Clementine Vasquez', true],
   ['which students have bad attendance', 'ATTENDANCE_ISSUES', null, true],
-  ['what classes is charlotte in', 'VIEW_ENROLLMENTS', 'Charlotte Tebow', true],
-  ['note for charlotte: did great today', 'ADD_NOTE', 'Charlotte Tebow', true],
+  ['what classes is clementine in', 'VIEW_ENROLLMENTS', 'Clementine Vasquez', true],
+  ['note for clementine: did great today', 'ADD_NOTE', 'Clementine Vasquez', true],
   ['put 30 rtc in the bank', 'CAPABILITY', null, true],
 ];
 let p7 = 0, f7 = 0;
@@ -667,15 +667,15 @@ const T8 = [
   ['the high school math class', 'VIEW_ROSTER', null, true],      // bare class mention -> roster
   // "what about X" reuse is pipeline-level (not in run()), checked live
   // grades without the word "grade"
-  ['Give charlotte a b in participation and a c in skill', 'SET_GRADE', 'Charlotte Tebow', true],
+  ['Give clementine a b in participation and a c in skill', 'SET_GRADE', 'Clementine Vasquez', true],
   ['give noah a c in skill grade in math', 'SET_GRADE', 'Noah Williams', true],
-  ['give charlotte a b in part', 'SET_GRADE', 'Charlotte Tebow', true],
-  ['give charlotte a b in participation for math', 'SET_GRADE', 'Charlotte Tebow', true],  // was hijacked by ENROLL
+  ['give clementine a b in part', 'SET_GRADE', 'Clementine Vasquez', true],
+  ['give clementine a b in participation for math', 'SET_GRADE', 'Clementine Vasquez', true],  // was hijacked by ENROLL
   // reads stay reads
   ['give me sam carter grade in math', 'VIEW_GRADES', 'Sam Carter', true],
-  ['what are charlotte grades in math?', 'VIEW_GRADES', 'Charlotte Tebow', true],
+  ['what are clementine grades in math?', 'VIEW_GRADES', 'Clementine Vasquez', true],
   // enrollment still works
-  ['add charlotte to robotics', 'ENROLL_STUDENT', 'Charlotte Tebow', true],
+  ['add clementine to robotics', 'ENROLL_STUDENT', 'Clementine Vasquez', true],
   ['remove noah from math', 'UNENROLL_STUDENT', 'Noah Williams', true],
 ];
 let p8 = 0, f8 = 0;
@@ -714,8 +714,8 @@ const T9 = [
   ['tell me about the robotics class', 'CLASS_INFO', null, true],
   ['mark everyone in math present today', 'MARK_ATTENDANCE_GROUP', null, true],
   ['take attendance for robotics', 'MARK_ATTENDANCE_GROUP', null, true],
-  ['mark charlotte present in math', 'MARK_ATTENDANCE', 'Charlotte Tebow', true],   // per-student unaffected
-  ['what did charlotte get on her last test?', 'CAPABILITY', null, true],
+  ['mark clementine present in math', 'MARK_ATTENDANCE', 'Clementine Vasquez', true],   // per-student unaffected
+  ['what did clementine get on her last test?', 'CAPABILITY', null, true],
   ['show me noah test scores', 'CAPABILITY', null, true],
   ['yes', 'SMALLTALK:stray_yes', null, true],
 ];
@@ -730,9 +730,9 @@ for (const [inp, ei, es, r] of T9) {
 }
 // multi-award pair detection
 app._nlpContext = {};
-const ma = run('give 5 rtc to charlotte and noah');
+const ma = run('give 5 rtc to clementine and noah');
 const maOk = ma.intent === 'ADD_RTC' && ma.pair && ma.pair.length === 2;
-console.log(`  ${maOk ? ' ok ' : 'FAIL'} "give 5 rtc to charlotte and noah" -> ${ma.intent} pair=${JSON.stringify(ma.pair)}`);
+console.log(`  ${maOk ? ' ok ' : 'FAIL'} "give 5 rtc to clementine and noah" -> ${ma.intent} pair=${JSON.stringify(ma.pair)}`);
 maOk ? p9++ : f9++;
 console.log(`round 9: ${p9} pass, ${f9} fail`);
 if (f9) process.exitCode = 1;
@@ -750,20 +750,20 @@ t10('pinned class returns single non-ambiguous match', !!(pinned && pinned.pinne
 app._terminalPinnedClass = null;
 // teacher-name narrowing without "with" (possessive)
 app._terminalAllClasses.push(
-  { id: 'c5', name: 'English', subject: 'English', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Caitlin Relvas' },
+  { id: 'c5', name: 'English', subject: 'English', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Marguerite Relvas' },
   { id: 'c6', name: 'English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' },
   { id: 'c7', name: 'English', subject: 'English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'MS Teacher' }
 );
-const caitlin = app._rivenMatchClass('pull up caitlins english class');
-t10('"caitlins english" narrows to Caitlin Relvas', !!(caitlin && !caitlin.ambiguous && caitlin.id === 'c5'));
+const adeline = app._rivenMatchClass('pull up marguerites english class');
+t10('"marguerites english" narrows to Marguerite Relvas', !!(adeline && !adeline.ambiguous && adeline.id === 'c5'));
 // intents
 app._nlpContext = {};
 const ci1 = run('which math class is that?');
 t10(`"which math class is that?" -> CLASS_INFO (got ${ci1.intent})`, ci1.intent === 'CLASS_INFO');
-const ci2 = run('which math class is charlotte in?');
-t10(`"which math class is charlotte in?" -> CLASS_INFO (got ${ci2.intent})`, ci2.intent === 'CLASS_INFO');
-const ve = run('what classes is charlotte in?');
-t10(`"what classes is charlotte in?" still VIEW_ENROLLMENTS (got ${ve.intent})`, ve.intent === 'VIEW_ENROLLMENTS');
+const ci2 = run('which math class is clementine in?');
+t10(`"which math class is clementine in?" -> CLASS_INFO (got ${ci2.intent})`, ci2.intent === 'CLASS_INFO');
+const ve = run('what classes is clementine in?');
+t10(`"what classes is clementine in?" still VIEW_ENROLLMENTS (got ${ve.intent})`, ve.intent === 'VIEW_ENROLLMENTS');
 const br = run('anything I should know?');
 t10(`"anything I should know?" -> BRIEFING (got ${br.intent})`, br.intent === 'BRIEFING');
 const br2 = run('catch me up');
@@ -803,8 +803,8 @@ const gn = run('everyone in the math class needs 5 rtc');
 t11(`"everyone in math needs 5 rtc" -> GROUP_RTC (got ${gn.intent})`, gn.intent === 'GROUP_RTC');
 // "that class" context reference
 app._nlpContext = { lastClass: { id: 'c2', name: 'Robotics', timestamp: Date.now() } };
-const tc = run('add charlotte to that class');
-t11(`"add charlotte to that class" -> ENROLL_STUDENT (got ${tc.intent})`, tc.intent === 'ENROLL_STUDENT');
+const tc = run('add clementine to that class');
+t11(`"add clementine to that class" -> ENROLL_STUDENT (got ${tc.intent})`, tc.intent === 'ENROLL_STUDENT');
 console.log(`round 11: ${p11} pass, ${f11} fail`);
 
 
@@ -814,7 +814,7 @@ let p12 = 0, f12 = 0;
 const t12 = (label, ok) => { ok ? p12++ : f12++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 // THE bug: roster then "give them all 2 gold" must be a GROUP award and must
 // NOT inject the stale single student from before
-app._nlpContext = { lastStudent: { id: 'idX', full_name: 'Chev Moen', first_name: 'Chev', last_name: 'Moen' }, timestamp: Date.now() - 5000,
+app._nlpContext = { lastStudent: { id: 'idX', full_name: 'Chet Aldo', first_name: 'Chet', last_name: 'Aldo' }, timestamp: Date.now() - 5000,
                     lastGroup: { label: 'Math', classId: 'c1', studentIds: ['a','b'], timestamp: Date.now() } };
 const r12a = run('give them all 2 gold');
 t12(`"give them all 2 gold" -> GROUP_RTC, no student (got ${r12a.intent}, student=${r12a.student || 'null'})`, r12a.intent === 'GROUP_RTC' && !r12a.student);
@@ -823,14 +823,14 @@ t12(`"give all math class 2 gold" -> GROUP_RTC (got ${r12b.intent})`, r12b.inten
 const r12c = run('give the class 2 rtc');
 t12(`"give the class 2 rtc" -> GROUP_RTC (got ${r12c.intent})`, r12c.intent === 'GROUP_RTC');
 // single award still works with group context present
-const r12d = run('give charlotte 2 rtc');
-t12(`"give charlotte 2 rtc" stays ADD_RTC (got ${r12d.intent} ${r12d.student})`, r12d.intent === 'ADD_RTC' && r12d.student === 'Charlotte Tebow');
+const r12d = run('give clementine 2 rtc');
+t12(`"give clementine 2 rtc" stays ADD_RTC (got ${r12d.intent} ${r12d.student})`, r12d.intent === 'ADD_RTC' && r12d.student === 'Clementine Vasquez');
 // class typo beats weak student match
 app._nlpContext = {};
 const ty = run('robotcs');
 t12(`"robotcs" (typo) -> VIEW_ROSTER for Robotics (got ${ty.intent})`, ty.intent === 'VIEW_ROSTER');
-const ty2 = run('charlote');
-t12(`"charlote" (typo) still VIEW_STUDENT Charlotte (got ${ty2.intent} ${ty2.student})`, ty2.intent === 'VIEW_STUDENT' && ty2.student === 'Charlotte Tebow');
+const ty2 = run('clementne');
+t12(`"clementne" (typo) still VIEW_STUDENT Clementine (got ${ty2.intent} ${ty2.student})`, ty2.intent === 'VIEW_STUDENT' && ty2.student === 'Clementine Vasquez');
 console.log(`round 12: ${p12} pass, ${f12} fail`);
 
 
@@ -838,14 +838,14 @@ console.log(`round 12: ${p12} pass, ${f12} fail`);
 console.log('\n== round 13: nickname + repeat ==');
 let p13 = 0, f13 = 0;
 const t13 = (label, ok) => { ok ? p13++ : f13++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
-app._terminalAllStudents.push({ id: 'idD', first_name: 'Daenerys', last_name: 'Hegelund', full_name: 'Daenerys Hegelund', rtc_balance: 374, email: 'd@x.com' });
+app._terminalAllStudents.push({ id: 'idD', first_name: 'Seraphina', last_name: 'Ashgrove', full_name: 'Seraphina Ashgrove', rtc_balance: 374, email: 'd@x.com' });
 app._nlpContext = {};
-const nick = run('how much gold does daeny have');
-t13(`"daeny" -> Daenerys (got ${nick.intent} ${nick.student || 'null'})`, nick.intent === 'VIEW_STUDENT' && nick.student === 'Daenerys Hegelund');
-const nick2 = run('hey how much gold does daeny have');
-t13(`greeting + "daeny" works (got ${nick2.intent} ${nick2.student || 'null'})`, nick2.intent === 'VIEW_STUDENT' && nick2.student === 'Daenerys Hegelund');
-const rm = run('remove 4 gold from daenerys');
-t13(`"remove 4 gold from daenerys" -> SUBTRACT_RTC (got ${rm.intent})`, rm.intent === 'SUBTRACT_RTC' && rm.student === 'Daenerys Hegelund');
+const nick = run('how much gold does serphi have');
+t13(`"serphi" -> Seraphina (got ${nick.intent} ${nick.student || 'null'})`, nick.intent === 'VIEW_STUDENT' && nick.student === 'Seraphina Ashgrove');
+const nick2 = run('hey how much gold does serphi have');
+t13(`greeting + "serphi" works (got ${nick2.intent} ${nick2.student || 'null'})`, nick2.intent === 'VIEW_STUDENT' && nick2.student === 'Seraphina Ashgrove');
+const rm = run('remove 4 gold from seraphina');
+t13(`"remove 4 gold from seraphina" -> SUBTRACT_RTC (got ${rm.intent})`, rm.intent === 'SUBTRACT_RTC' && rm.student === 'Seraphina Ashgrove');
 const rep = run('do it again');
 t13(`"do it again" -> REPEAT (got ${rep.intent})`, rep.intent === 'REPEAT');
 const rep2 = run('again');
@@ -858,15 +858,15 @@ console.log('\n== round 14: cycle-1 fixes ==');
 let p14 = 0, f14 = 0;
 const t14 = (label, ok) => { ok ? p14++ : f14++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
-const w1 = run('give charlotte five rtc');
+const w1 = run('give clementine five rtc');
 t14(`word numbers: "five rtc" -> ADD_RTC amount 5 (got ${w1.intent} amt=${w1.amount})`, w1.intent === 'ADD_RTC' && w1.amount === 5);
 const w2 = run('one more time');
 t14(`"one more time" still REPEAT (got ${w2.intent})`, w2.intent === 'REPEAT');
 const nm = run('never mind');
 t14(`"never mind" -> dismiss, never undo (got ${nm.intent})`, nm.intent === 'SMALLTALK:dismiss');
-const ih = run('is charlotte here today?');
-t14(`"is charlotte here today?" -> VIEW_ATTENDANCE (got ${ih.intent})`, ih.intent === 'VIEW_ATTENDANCE' && ih.student === 'Charlotte Tebow');
-const mv = run('move charlotte from math to robotics');
+const ih = run('is clementine here today?');
+t14(`"is clementine here today?" -> VIEW_ATTENDANCE (got ${ih.intent})`, ih.intent === 'VIEW_ATTENDANCE' && ih.student === 'Clementine Vasquez');
+const mv = run('move clementine from math to robotics');
 t14(`"move X from math to robotics" -> MOVE_STUDENT (got ${mv.intent})`, mv.intent === 'MOVE_STUDENT');
 const al = run('what did you just do?');
 t14(`"what did you just do?" -> ACTIVITY_LOG (got ${al.intent})`, al.intent === 'ACTIVITY_LOG');
@@ -877,18 +877,18 @@ t14(`"math vs robotics" -> CLASS_VS (got ${cv.intent})`, cv.intent === 'CLASS_VS
 const tp = run('top 5 in math');
 t14(`"top 5 in math" -> VIEW_TOP w/ class (got ${tp.intent})`, tp.intent === 'VIEW_TOP');
 // weekday timeframe
-const ents = app._extractEntities(app._normalizeInput('what was charlotte attendance on monday'), 'what was charlotte attendance on monday');
+const ents = app._extractEntities(app._normalizeInput('what was clementine attendance on monday'), 'what was clementine attendance on monday');
 t14(`weekday parse: sinceDate === untilDate (${ents.sinceDate} / ${ents.untilDate})`, !!ents.sinceDate && ents.sinceDate === ents.untilDate);
 // transfer still wins for money
 app._nlpContext = {};
-const tr = run('move 5 rtc from charlotte to noah');
+const tr = run('move 5 rtc from clementine to noah');
 t14(`"move 5 rtc from A to B" still TRANSFER_RTC (got ${tr.intent})`, tr.intent === 'TRANSFER_RTC');
 console.log(`round 14: ${p14} pass, ${f14} fail`);
 
 
 // specific-name-wins regression
-app._terminalAllClasses.push({ id: 'c8', name: 'College Dual Math', subject: 'Mathematics', teacher_id: 't2', secondary_teacher_id: null, is_active: true, teacher_name: 'Jordan Ezell' });
-const cdm = app._rivenMatchClass('move charlotte from math to college dual math'.split(' to ')[1]);
+app._terminalAllClasses.push({ id: 'c8', name: 'College Dual Math', subject: 'Mathematics', teacher_id: 't2', secondary_teacher_id: null, is_active: true, teacher_name: 'Robin Castellan' });
+const cdm = app._rivenMatchClass('move clementine from math to college dual math'.split(' to ')[1]);
 const cdmOk = cdm && !cdm.ambiguous && cdm.id === 'c8';
 console.log(`  ${cdmOk ? ' ok ' : 'FAIL'} "college dual math" resolves to the specific class, not plain Math`);
 if (!cdmOk) process.exitCode = 1;
@@ -900,30 +900,30 @@ let p15 = 0, f15 = 0;
 const t15 = (label, ok) => { ok ? p15++ : f15++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
 // note-command guard: an explicit note command never mutates anything else
-const n1 = run('note that charlotte was absent today');
+const n1 = run('note that clementine was absent today');
 t15(`"note that X was absent" -> ADD_NOTE, never MARK_ATTENDANCE (got ${n1.intent})`, n1.intent === 'ADD_NOTE');
-const n2 = run('take a note: charlotte owes 5 problems');
+const n2 = run('take a note: clementine owes 5 problems');
 t15(`"take a note: X owes 5" -> ADD_NOTE, never SUBTRACT_RTC (got ${n2.intent})`, n2.intent === 'ADD_NOTE');
-const n3 = run('log a note that charlotte got a b in participation');
+const n3 = run('log a note that clementine got a b in participation');
 t15(`note command beats SET_GRADE (got ${n3.intent})`, n3.intent === 'ADD_NOTE');
 // bank guard: "bank" makes RTC phrasing a banking request
-const b1 = run('give charlotte 30 gold in the bank');
+const b1 = run('give clementine 30 gold in the bank');
 t15(`"give X 30 gold in the bank" -> bank capability, not ADD_RTC (got ${b1.intent})`, b1.intent === 'CAPABILITY');
 // from-to structure belongs to MOVE, never half-enroll
-const m1 = run('move charlotte from math to robotics');
+const m1 = run('move clementine from math to robotics');
 t15(`from..to -> MOVE_STUDENT, not ENROLL/UNENROLL (got ${m1.intent})`, m1.intent === 'MOVE_STUDENT');
 // topical noun beats generic catch-all regardless of position
-const g1x = run('show me charlottes grades');
+const g1x = run('show me clementines grades');
 t15(`"show X's grades" -> VIEW_GRADES, not VIEW_STUDENT (got ${g1x.intent})`, g1x.intent === 'VIEW_GRADES');
-const g2x = run('show me charlottes notes about attendance');
+const g2x = run('show me clementines notes about attendance');
 t15(`"notes about attendance" -> VIEW_NOTES, not VIEW_ATTENDANCE (got ${g2x.intent})`, g2x.intent === 'VIEW_NOTES');
-const g3x = run('delete the note about charlotte');
+const g3x = run('delete the note about clementine');
 t15(`"delete the note about X" -> DELETE_NOTE (got ${g3x.intent})`, g3x.intent === 'DELETE_NOTE');
 // RTC phrasing still subtracts even when "notes" appears as plain noun
-const g4x = run('remove 5 rtc from charlotte for not taking notes');
+const g4x = run('remove 5 rtc from clementine for not taking notes');
 t15(`"remove 5 rtc ... for not taking notes" still SUBTRACT_RTC (got ${g4x.intent})`, g4x.intent === 'SUBTRACT_RTC');
 // margin/score surfaced for the embedding fallback hook
-const sc = app._matchIntent('show me charlottes grades', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const sc = app._matchIntent('show me clementines grades', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t15(`matcher exposes score+margin (score=${sc && sc.score}, margin=${sc && sc.margin})`, !!sc && typeof sc.score === 'number' && typeof sc.margin === 'number');
 console.log(`round 15: ${p15} pass, ${f15} fail`);
 
@@ -933,20 +933,20 @@ console.log('\n== round 16: attendance questions + semantic hooks ==');
 let p16 = 0, f16 = 0;
 const t16 = (label, ok) => { ok ? p16++ : f16++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
-const q1 = run('was charlotte late today?');
+const q1 = run('was clementine late today?');
 t16(`"was X late today?" -> VIEW_ATTENDANCE read (got ${q1.intent})`, q1.intent === 'VIEW_ATTENDANCE');
-const q2 = run('is charlotte usually on time?');
+const q2 = run('is clementine usually on time?');
 t16(`"is X usually on time?" -> VIEW_ATTENDANCE (got ${q2.intent})`, q2.intent === 'VIEW_ATTENDANCE');
-const q3 = run('charlotte was late today');
+const q3 = run('clementine was late today');
 t16(`statement "X was late" still MARK_ATTENDANCE write (got ${q3.intent})`, q3.intent === 'MARK_ATTENDANCE');
-const q4 = run('mark charlotte late in math');
+const q4 = run('mark clementine late in math');
 t16(`"mark X late in math" still MARK_ATTENDANCE (got ${q4.intent})`, q4.intent === 'MARK_ATTENDANCE');
 // lastResort flags exist so the semantic layer can pre-empt the guess
-const lr1 = app._matchIntent('blarghle flurp charlotte zoop', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const lr1 = app._matchIntent('blarghle flurp clementine zoop', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t16(`generic student-card fallback is tagged lastResort (got ${lr1 && lr1.intent}/${lr1 && lr1.lastResort})`, !!lr1 && lr1.intent === 'VIEW_STUDENT' && lr1.lastResort === true);
 // UNKNOWN_ACTION no longer tagged lastResort — removing that flag was the
 // Phase 1 fix so "remind me to call X's parents" doesn't mis-route via semantic
-const lr2 = app._matchIntent('please excuse charlotte for tomorrow', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const lr2 = app._matchIntent('please excuse clementine for tomorrow', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t16(`UNKNOWN_ACTION is NOT tagged lastResort (got ${lr2 && lr2.intent}/${lr2 && lr2.lastResort})`, !!lr2 && lr2.intent === 'UNKNOWN_ACTION' && lr2.lastResort !== true);
 console.log(`round 16: ${p16} pass, ${f16} fail`);
 
@@ -956,9 +956,9 @@ console.log('\n== round 17: possessives + rtc fallback ==');
 let p17 = 0, f17 = 0;
 const t17 = (label, ok) => { ok ? p17++ : f17++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
-const ps1 = run('show me charlottes grades');
-t17(`"charlottes" (no apostrophe) -> exact-score match, no hedge (got ${ps1.intent} ${ps1.student} score path)`, ps1.intent === 'VIEW_GRADES' && ps1.student === 'Charlotte Tebow');
-const ps2 = app._fuzzyFindStudent('charlottes grades', 'charlottes grades');
+const ps1 = run('show me clementines grades');
+t17(`"clementines" (no apostrophe) -> exact-score match, no hedge (got ${ps1.intent} ${ps1.student} score path)`, ps1.intent === 'VIEW_GRADES' && ps1.student === 'Clementine Vasquez');
+const ps2 = app._fuzzyFindStudent('clementines grades', 'clementines grades');
 t17(`bare possessive scores >= 0.95 (got ${ps2 && ps2.score})`, !!ps2 && ps2.score >= 0.95);
 // "hook X up with some rtc" used to be the example here, because it fell
 // through to the generic VIEW_STUDENT catch-all - and the weak-win band exists
@@ -966,11 +966,11 @@ t17(`bare possessive scores >= 0.95 (got ${ps2 && ps2.score})`, !!ps2 && ps2.sco
 // now ("a student card loses the request"), so the band needs an example that
 // is still genuinely a guess. Both halves are asserted: the band still works,
 // and the phrase that left it stayed left.
-const rf1 = app._matchIntent('check on charlotte', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const rf1 = app._matchIntent('check on clementine', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t17(`a generic-pattern win is weak (score<=15), so the semantic layer may pre-empt it (got ${rf1 && rf1.intent} score=${rf1 && rf1.score})`, !!rf1 && rf1.intent === 'VIEW_STUDENT' && rf1.score <= 15);
-const rf1b = app._matchIntent('hook charlotte up with some rtc', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const rf1b = app._matchIntent('hook clementine up with some rtc', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t17(`"hook X up with some rtc" is an award, not a student card (got ${rf1b && rf1b.intent})`, !!rf1b && rf1b.intent === 'ADD_RTC');
-const rf2 = run('give charlotte 5 rtc');
+const rf2 = run('give clementine 5 rtc');
 t17(`writes always score above the pre-empt band (ADD_RTC executes) (got ${rf2.intent})`, rf2.intent === 'ADD_RTC');
 console.log(`round 17: ${p17} pass, ${f17} fail`);
 
@@ -999,17 +999,17 @@ console.log('\n== round 19: class pronoun + pair enroll ==');
 let p19 = 0, f19 = 0;
 const t19 = (label, ok) => { ok ? p19++ : f19++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = { lastClass: { id: 'c1', name: 'Math', timestamp: 2000 } };
-const cp1 = run('add charlotte to it');
-t19(`"add charlotte to it" -> ENROLL_STUDENT via lastClass (got ${cp1.intent})`, cp1.intent === 'ENROLL_STUDENT');
+const cp1 = run('add clementine to it');
+t19(`"add clementine to it" -> ENROLL_STUDENT via lastClass (got ${cp1.intent})`, cp1.intent === 'ENROLL_STUDENT');
 const cp2 = run('who is in it');
 t19(`"who is in it" -> VIEW_ROSTER via lastClass (got ${cp2.intent})`, cp2.intent === 'VIEW_ROSTER');
 app._nlpContext = { lastClass: { id: 'c1', name: 'Math', timestamp: 2000 } };
-const cp3 = run('add charlotte and noah to it');
-t19(`"add charlotte and noah to it" -> ENROLL_STUDENT with pair (got ${cp3.intent} pair=${JSON.stringify(cp3.pair)})`, cp3.intent === 'ENROLL_STUDENT' && Array.isArray(cp3.pair) && cp3.pair.length === 2);
+const cp3 = run('add clementine and noah to it');
+t19(`"add clementine and noah to it" -> ENROLL_STUDENT with pair (got ${cp3.intent} pair=${JSON.stringify(cp3.pair)})`, cp3.intent === 'ENROLL_STUDENT' && Array.isArray(cp3.pair) && cp3.pair.length === 2);
 app._nlpContext = {};
 const cp4 = run('do it again');
 t19(`"do it again" still REPEAT, not class pronoun (got ${cp4.intent})`, cp4.intent === 'REPEAT');
-const cp5 = run('remove 4 rtc from charlotte');
+const cp5 = run('remove 4 rtc from clementine');
 t19(`"remove 4 rtc from X" unaffected (got ${cp5.intent})`, cp5.intent === 'SUBTRACT_RTC');
 console.log(`round 19: ${p19} pass, ${f19} fail`);
 
@@ -1020,13 +1020,13 @@ let p20 = 0, f20 = 0;
 const t20 = (label, ok) => { ok ? p20++ : f20++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._terminalAllClasses.push({ id: 'c9', name: 'Cycle Three Test', subject: 'science', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Test Teacher' });
 app._nlpContext = {};
-const wn1 = run('add charlotte and noah to cycle three test');
+const wn1 = run('add clementine and noah to cycle three test');
 t20(`"add X and Y to cycle three test" -> ENROLL, no phantom amount (got ${wn1.intent} amt=${wn1.amount})`, wn1.intent === 'ENROLL_STUDENT' && wn1.amount == null);
-const wn2 = run('add charlotte to cycle three test');
+const wn2 = run('add clementine to cycle three test');
 t20(`single enroll into number-named class (got ${wn2.intent} amt=${wn2.amount})`, wn2.intent === 'ENROLL_STUDENT' && wn2.amount == null);
-const wn3 = run('give charlotte 5 rtc in cycle three test');
+const wn3 = run('give clementine 5 rtc in cycle three test');
 t20(`real amount survives next to number-named class (got ${wn3.intent} amt=${wn3.amount})`, wn3.intent === 'ADD_RTC' && wn3.amount === 5);
-const cm = app._rivenMatchClass('add charlotte to cycle 3 test');
+const cm = app._rivenMatchClass('add clementine to cycle 3 test');
 t20(`_rivenMatchClass resolves "cycle 3 test" as a FULL match (got ${cm && cm.name}, ambiguous=${cm && !!cm.ambiguous})`, !!cm && !cm.ambiguous && cm.id === 'c9');
 console.log(`round 20: ${p20} pass, ${f20} fail`);
 
@@ -1054,7 +1054,7 @@ const h1 = run('i would like to test how this works. what can i do?');
 t21(`"test how this works, what can i do" -> HELP, not tests capability (got ${h1.intent})`, h1.intent === 'HELP');
 const h2 = run('what can you do');
 t21(`"what can you do" -> help or capabilities smalltalk (got ${h2.intent})`, h2.intent === 'HELP' || h2.intent === 'SMALLTALK:capabilities');
-const cap1 = run('what did charlotte get on her test');
+const cap1 = run('what did clementine get on her test');
 t21(`"what did X get on her test" still tests capability (got ${cap1.intent}/${cap1.capability})`, cap1.intent === 'CAPABILITY' && cap1.capability === 'tests');
 // owned-class preference: teacher t1 owns c1 (Math); plain "math" ambiguity prefers t1's
 const ownedRows = [
@@ -1102,10 +1102,10 @@ const wv1 = run('show me all my classes');
 t23(`"show me all my classes" -> LIST_CLASSES (got ${wv1.intent})`, wv1.intent === 'LIST_CLASSES');
 const wv1i = app._matchIntent('show me all my classes', {});
 t23(`...with topical weight w=5, OUTSIDE the semantic pre-empt band (got w=${wv1i && wv1i.w})`, !!wv1i && wv1i.w >= 4);
-const wv2 = app._matchIntent('check on charlotte', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const wv2 = app._matchIntent('check on clementine', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t23(`generic catch-all match stays IN the band (got ${wv2 && wv2.intent} w=${wv2 && wv2.w})`, !!wv2 && wv2.intent === 'VIEW_STUDENT' && wv2.w <= 3);
 // ...and a phrase promoted to its own pattern is out of the band for good.
-const wv2b = app._matchIntent('hook charlotte up with some rtc', { student: { student: { full_name: 'Charlotte Tebow' } } });
+const wv2b = app._matchIntent('hook clementine up with some rtc', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t23(`an explicit pattern sits OUTSIDE the band (got ${wv2b && wv2b.intent} w=${wv2b && wv2b.w})`, !!wv2b && wv2b.intent === 'ADD_RTC' && wv2b.w >= 4);
 const wv3 = run('can you understand me?');
 t23(`"can you understand me?" -> HELP (got ${wv3.intent})`, wv3.intent === 'HELP');
@@ -1119,13 +1119,13 @@ console.log('\n== round 24: email + membership + neighbours ==');
 let p24 = 0, f24 = 0;
 const t24 = (label, ok) => { ok ? p24++ : f24++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
-const e1 = run('whats charlottes email?');
+const e1 = run('whats clementines email?');
 t24(`"whats X's email" -> VIEW_CONTACT (got ${e1.intent})`, e1.intent === 'VIEW_CONTACT');
-const e2 = run('is charlotte in math?');
+const e2 = run('is clementine in math?');
 t24(`"is X in math?" -> VIEW_ENROLLMENTS (got ${e2.intent})`, e2.intent === 'VIEW_ENROLLMENTS');
-const e3 = run('is charlotte in school today?');
+const e3 = run('is clementine in school today?');
 t24(`"is X in school today?" still VIEW_ATTENDANCE (got ${e3.intent})`, e3.intent === 'VIEW_ATTENDANCE');
-const e4 = run('update charlottes email to a@b.com');
+const e4 = run('update clementines email to a@b.com');
 t24(`"update X's email to..." still UPDATE_CONTACT write (got ${e4.intent})`, e4.intent === 'UPDATE_CONTACT');
 console.log(`round 24: ${p24} pass, ${f24} fail`);
 
@@ -1135,34 +1135,34 @@ console.log("\n== round 25: write protection + noun typos ==");
 let p25 = 0, f25 = 0;
 const t25 = (label, ok) => { ok ? p25++ : f25++; console.log(`  ${ok ? " ok " : "FAIL"} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
-const tn1 = run("show me charlottes attendnace");
+const tn1 = run("show me clementines attendnace");
 t25(`"attendnace" typo -> VIEW_ATTENDANCE (got ${tn1.intent})`, tn1.intent === "VIEW_ATTENDANCE");
-const tn2 = run("what are charlottes grdes");
+const tn2 = run("what are clementines grdes");
 t25(`"grdes" typo -> VIEW_GRADES (got ${tn2.intent})`, tn2.intent === "VIEW_GRADES");
-const tn3 = run("give charlotte 3 gold for helping");
+const tn3 = run("give clementine 3 gold for helping");
 t25(`plain award still ADD_RTC with w<=3 (got ${tn3.intent})`, tn3.intent === "ADD_RTC");
 const tn4 = run("how much gold does noah have");
 t25(`names untouched by the noun typo pass (got ${tn4.intent} ${tn4.student})`, tn4.intent === "VIEW_STUDENT" && tn4.student === "Noah Williams");
 console.log(`round 25: ${p25} pass, ${f25} fail`);
 
 // round 25b: real words survive the typo corrector
-const tn5 = run("set charlotte's final grade in math to 95");
+const tn5 = run("set clementine's final grade in math to 95");
 const tn5ok = tn5.intent === 'SET_GRADE';
 console.log(`  ${tn5ok ? ' ok ' : 'FAIL'} "set X's final grade to 95" stays SET_GRADE after noun-typo pass (got ${tn5.intent})`);
 if (!tn5ok) process.exitCode = 1;
 
 
-// ── Round 26: transcript fixes — Games/game, both-of-them, purchases, dany ──
+// ── Round 26: transcript fixes — Games/game, both-of-them, purchases, sena ──
 console.log('\n== round 26: surname-vs-class, both, purchases ==');
 let p26 = 0, f26 = 0;
 const t26 = (label, ok) => { ok ? p26++ : f26++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 // surname must not typo-match a class word
-app._terminalAllStudents.push({ id: 'idG', first_name: 'Jordan', last_name: 'Games', full_name: 'Jordan Games', rtc_balance: 175, email: 'j@x.com' });
-app._terminalAllClasses.push({ id: 'cAI', name: 'AI Game Design', subject: 'Computer Science', teacher_id: 't2', secondary_teacher_id: null, is_active: true, teacher_name: 'Jordan Ezell' });
+app._terminalAllStudents.push({ id: 'idG', first_name: 'Quinn', last_name: 'Sable', full_name: 'Quinn Sable', rtc_balance: 175, email: 'j@x.com' });
+app._terminalAllClasses.push({ id: 'cAI', name: 'AI Game Design', subject: 'Computer Science', teacher_id: 't2', secondary_teacher_id: null, is_active: true, teacher_name: 'Robin Castellan' });
 app._nlpContext = {};
-const sg1 = run('what are jordan games grades');
-t26(`"jordan games grades" -> VIEW_GRADES for the STUDENT, no class hijack (got ${sg1.intent} ${sg1.student})`, sg1.intent === 'VIEW_GRADES' && sg1.student === 'Jordan Games');
-const cmG = app._rivenMatchClass('show all jordan games classes');
+const sg1 = run('what are quinn sable grades');
+t26(`"quinn sable grades" -> VIEW_GRADES for the STUDENT, no class hijack (got ${sg1.intent} ${sg1.student})`, sg1.intent === 'VIEW_GRADES' && sg1.student === 'Quinn Sable');
+const cmG = app._rivenMatchClass('show all quinn sable classes');
 t26(`"games" never typo-matches "AI Game Design" (got ${cmG ? cmG.name : 'null'})`, !cmG || cmG.name !== 'AI Game Design');
 // "both of them" targets the last pair
 app._nlpContext = { lastStudent: app._terminalAllStudents[0], timestamp: 2000,
@@ -1177,15 +1177,15 @@ app._nlpContext = {};
 // names reach the executor: terminalBuyPrivilege handles one buyer, and until
 // it was guarded a named pair silently charged whichever one resolved first.
 // The decline itself is asserted in tests/riven-pair-purchase.test.js.
-const pu1 = run('charlotte and noah are buying a privilege for 2 gold');
+const pu1 = run('clementine and noah are buying a privilege for 2 gold');
 t26(`"X and Y are buying a privilege" -> BUY_PRIVILEGE, both names kept (got ${pu1.intent} pair=${JSON.stringify(pu1.pair)})`, pu1.intent === 'BUY_PRIVILEGE' && Array.isArray(pu1.pair) && pu1.pair.length === 2);
-const pu2 = run('charlotte bought a snack for 3');
+const pu2 = run('clementine bought a snack for 3');
 t26(`"X bought a snack for 3" -> SUBTRACT (got ${pu2.intent})`, pu2.intent === 'SUBTRACT_RTC');
-const pu3 = run('give charlotte 5 for buying supplies');
+const pu3 = run('give clementine 5 for buying supplies');
 t26(`"give X 5 for buying supplies" stays ADD (buy-verb after amount) (got ${pu3.intent})`, pu3.intent === 'ADD_RTC');
 // compressed nickname
-const dn1 = app._fuzzyFindStudent('how much gold does dany have', 'how much gold does dany have');
-t26(`"dany" -> Daenerys via subsequence nickname (got ${dn1 && dn1.student && dn1.student.full_name})`, !!dn1 && dn1.student && dn1.student.full_name === 'Daenerys Hegelund');
+const dn1 = app._fuzzyFindStudent('how much gold does sena have', 'how much gold does sena have');
+t26(`"sena" -> Seraphina via subsequence nickname (got ${dn1 && dn1.student && dn1.student.full_name})`, !!dn1 && dn1.student && dn1.student.full_name === 'Seraphina Ashgrove');
 console.log(`round 26: ${p26} pass, ${f26} fail`);
 
 // round 26b: quantifier words never become subject filters
@@ -1201,18 +1201,18 @@ console.log('\n== round 27: shop round ==');
 let p27 = 0, f27 = 0;
 const t27 = (label, ok) => { ok ? p27++ : f27++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 app._nlpContext = {};
-const ch1 = run('how much gold does charlotte and noah and olivia and mia have');
+const ch1 = run('how much gold does clementine and noah and olivia and mia have');
 t27(`4-student chain -> all four found (got ${ch1.intent} pair=${JSON.stringify(ch1.pair)})`, ch1.intent === 'VIEW_STUDENT' && Array.isArray(ch1.pair) && ch1.pair.length === 4);
-const ch2 = run('give charlotte, noah and mia 5 rtc each');
+const ch2 = run('give clementine, noah and mia 5 rtc each');
 t27(`comma chain award -> ADD with 3 students (got ${ch2.intent} pair=${JSON.stringify(ch2.pair)})`, ch2.intent === 'ADD_RTC' && Array.isArray(ch2.pair) && ch2.pair.length === 3);
-const ch3 = run('charge charlotte 5 rtc for buying a treat');
+const ch3 = run('charge clementine 5 rtc for buying a treat');
 t27(`"charge X 5 for buying a treat" -> SUBTRACT, no clarify (got ${ch3.intent})`, ch3.intent === 'SUBTRACT_RTC');
-const ch4 = run('compare charlotte and noah');
+const ch4 = run('compare clementine and noah');
 t27(`plain compare still works with chain extractor (got ${ch4.intent} pair=${JSON.stringify(ch4.pair)})`, ch4.intent === 'COMPARE_STUDENTS' && ch4.pair && ch4.pair.length === 2);
 const ch5 = app._matchSmalltalk('im about to run shop now');
 t27(`"im about to run shop now" -> fyi smalltalk ack (got ${ch5 && ch5.key})`, !!ch5 && ch5.key === 'fyi');
-const ch6 = run('transfer 5 rtc from charlotte to noah');
-t27(`transfers unaffected by chain extractor (got ${ch6.intent} from=${ch6.from} to=${ch6.to})`, ch6.intent === 'TRANSFER_RTC' && ch6.from === 'Charlotte Tebow' && ch6.to === 'Noah Williams');
+const ch6 = run('transfer 5 rtc from clementine to noah');
+t27(`transfers unaffected by chain extractor (got ${ch6.intent} from=${ch6.from} to=${ch6.to})`, ch6.intent === 'TRANSFER_RTC' && ch6.from === 'Clementine Vasquez' && ch6.to === 'Noah Williams');
 console.log(`round 27: ${p27} pass, ${f27} fail`);
 
 // ── Round 28: Phase 1 fixes — pronoun guard, relay, attendance quick-phrases ─
@@ -1221,14 +1221,14 @@ let p28 = 0, f28 = 0;
 const t28 = (label, ok) => { ok ? p28++ : f28++; console.log(`  ${ok ? ' ok ' : 'FAIL'} ${label}`); if (!ok) process.exitCode = 1; };
 
 // add students used in round 28 tests
-app._terminalAllStudents.push({ id: 'idDy', first_name: 'Dylan', last_name: 'Gilmore', full_name: 'Dylan Gilmore', rtc_balance: 1489, email: 'dylan@x.com' });
-app._terminalAllStudents.push({ id: 'idPh', first_name: 'Phoenix', last_name: 'Foss', full_name: 'Phoenix Foss', rtc_balance: 2880, email: 'phoenix@x.com' });
+app._terminalAllStudents.push({ id: 'idDy', first_name: 'Rory', last_name: 'Whitlow', full_name: 'Rory Whitlow', rtc_balance: 1489, email: 'rory@x.com' });
+app._terminalAllStudents.push({ id: 'idPh', first_name: 'Orion', last_name: 'Blackwell', full_name: 'Orion Blackwell', rtc_balance: 2880, email: 'orion@x.com' });
 
 // 1A: Pronoun guard — named student in input overrides pronoun injection
-app._nlpContext = { lastStudent: { full_name: 'Charlotte Tebow', first_name: 'Charlotte', last_name: 'Tebow', id: 's1' }, timestamp: Date.now() };
-const pg1 = run('dock eli 5 for his phone being out');
-t28(`"dock eli 5 for his phone" -> SUBTRACT_RTC student=Eli (not Charlotte) (got ${pg1.intent}/${pg1.student})`,
-  pg1.intent === 'SUBTRACT_RTC' && pg1.student && pg1.student.includes('Eli'));
+app._nlpContext = { lastStudent: { full_name: 'Clementine Vasquez', first_name: 'Clementine', last_name: 'Vasquez', id: 's1' }, timestamp: Date.now() };
+const pg1 = run('dock ari 5 for his phone being out');
+t28(`"dock ari 5 for his phone" -> SUBTRACT_RTC student=Ari (not Clementine) (got ${pg1.intent}/${pg1.student})`,
+  pg1.intent === 'SUBTRACT_RTC' && pg1.student && pg1.student.includes('Ari'));
 
 const pg2 = run('give noah 10 for her presentation');
 t28(`"give noah 10 for her presentation" -> ADD Noah (pronoun 'her' ignored when 'noah' is named) (got ${pg2.intent}/${pg2.student})`,
@@ -1236,18 +1236,18 @@ t28(`"give noah 10 for her presentation" -> ADD Noah (pronoun 'her' ignored when
 
 // 1B: Attendance quick-phrases
 app._nlpContext = {};
-const att1 = run('eli just walked in late');
-t28(`"eli just walked in late" -> MARK_ATTENDANCE (got ${att1.intent})`, att1.intent === 'MARK_ATTENDANCE');
+const att1 = run('ari just walked in late');
+t28(`"ari just walked in late" -> MARK_ATTENDANCE (got ${att1.intent})`, att1.intent === 'MARK_ATTENDANCE');
 
-const att2 = run('jordan is out today');
-t28(`"jordan is out today" -> MARK_ATTENDANCE (got ${att2.intent})`, att2.intent === 'MARK_ATTENDANCE');
+const att2 = run('quinn is out today');
+t28(`"quinn is out today" -> MARK_ATTENDANCE (got ${att2.intent})`, att2.intent === 'MARK_ATTENDANCE');
 
 const att3 = run('noah is here');
 t28(`"noah is here" -> MARK_ATTENDANCE (got ${att3.intent}/${att3.student})`, att3.intent === 'MARK_ATTENDANCE');
 
 // question form must still be a READ, not a write
-const att4 = run('is charlotte here today?');
-t28(`"is charlotte here today?" stays VIEW_ATTENDANCE read (got ${att4.intent})`, att4.intent === 'VIEW_ATTENDANCE');
+const att4 = run('is clementine here today?');
+t28(`"is clementine here today?" stays VIEW_ATTENDANCE read (got ${att4.intent})`, att4.intent === 'VIEW_ATTENDANCE');
 
 // 1B: "walked in late" variant
 const att5 = run('sam walked in late');
@@ -1255,27 +1255,27 @@ t28(`"sam walked in late" -> MARK_ATTENDANCE (got ${att5.intent})`, att5.intent 
 
 // 1D: "how much does X have" -> VIEW_STUDENT (not REVOKE_PRIVILEGE)
 app._nlpContext = {};
-const hm1 = run('how much does charlotte have');
-t28(`"how much does charlotte have" -> VIEW_STUDENT (got ${hm1.intent})`, hm1.intent === 'VIEW_STUDENT');
+const hm1 = run('how much does clementine have');
+t28(`"how much does clementine have" -> VIEW_STUDENT (got ${hm1.intent})`, hm1.intent === 'VIEW_STUDENT');
 
 const hm2 = run('how much did noah have last week');
 t28(`"how much did noah have last week" -> VIEW_STUDENT or BALANCE_AT (got ${hm2.intent})`,
   hm2.intent === 'VIEW_STUDENT' || hm2.intent === 'BALANCE_AT');
 
 // 1D: Slang award verbs
-const sl1 = run('bless jordan 15');
-t28(`"bless jordan 15" -> ADD_RTC (got ${sl1.intent})`, sl1.intent === 'ADD_RTC');
+const sl1 = run('bless quinn 15');
+t28(`"bless quinn 15" -> ADD_RTC (got ${sl1.intent})`, sl1.intent === 'ADD_RTC');
 
 const sl2 = run('spot noah 5 for helping');
 t28(`"spot noah 5" -> ADD_RTC (got ${sl2.intent})`, sl2.intent === 'ADD_RTC');
 
 // 1C: RELAY_ACTION intent fires for "same for X" (no amount)
 app._nlpContext = {};
-const rl1 = run('same for dylan');
-t28(`"same for dylan" -> RELAY_ACTION (got ${rl1.intent})`, rl1.intent === 'RELAY_ACTION');
+const rl1 = run('same for rory');
+t28(`"same for rory" -> RELAY_ACTION (got ${rl1.intent})`, rl1.intent === 'RELAY_ACTION');
 
-const rl2 = run('do it for charlotte too');
-t28(`"do it for charlotte too" -> RELAY_ACTION (got ${rl2.intent})`, rl2.intent === 'RELAY_ACTION');
+const rl2 = run('do it for clementine too');
+t28(`"do it for clementine too" -> RELAY_ACTION (got ${rl2.intent})`, rl2.intent === 'RELAY_ACTION');
 
 // RELAY with amount must NOT override an explicit "give X N too"
 const rl3 = run('give noah 5 too');
@@ -1283,8 +1283,8 @@ t28(`"give noah 5 too" stays ADD_RTC (not RELAY) (got ${rl3.intent})`, rl3.inten
 
 // 1D: VIEW_HISTORY spending query
 app._nlpContext = {};
-const sp1 = run('is dylan spending or saving his rtc');
-t28(`"is dylan spending his rtc" -> VIEW_HISTORY (got ${sp1.intent})`, sp1.intent === 'VIEW_HISTORY');
+const sp1 = run('is rory spending or saving his rtc');
+t28(`"is rory spending his rtc" -> VIEW_HISTORY (got ${sp1.intent})`, sp1.intent === 'VIEW_HISTORY');
 
 // 1E: at-risk / struggling -> ATTENDANCE_ISSUES
 const ar1 = run('who is struggling right now');
@@ -1294,12 +1294,12 @@ const ar2 = run('which students are falling behind');
 t28(`"which students are falling behind" -> ATTENDANCE_ISSUES (got ${ar2.intent})`, ar2.intent === 'ATTENDANCE_ISSUES');
 
 // 1E: 3-student compare routes to COMPARE_STUDENTS (intent check only — executor handles list)
-const cmp3 = run('compare charlotte and noah and olivia');
-t28(`"compare charlotte noah olivia" -> COMPARE_STUDENTS with 3 (got ${cmp3.intent} pair=${JSON.stringify(cmp3.pair)})`,
+const cmp3 = run('compare clementine and noah and olivia');
+t28(`"compare clementine noah olivia" -> COMPARE_STUDENTS with 3 (got ${cmp3.intent} pair=${JSON.stringify(cmp3.pair)})`,
   cmp3.intent === 'COMPARE_STUDENTS' && cmp3.pair && cmp3.pair.length >= 3);
 
 // UNKNOWN_ACTION no longer tagged lastResort (verified in round 16 now)
-const ua1 = app._matchIntent('remind me to call dylans parents', { student: { student: { full_name: 'Dylan Gilmore' } } });
+const ua1 = app._matchIntent('remind me to call dylans parents', { student: { student: { full_name: 'Rory Whitlow' } } });
 t28(`"remind me..." -> UNKNOWN_ACTION without lastResort (got ${ua1?.intent}/${ua1?.lastResort})`,
   ua1?.intent === 'UNKNOWN_ACTION' && !ua1.lastResort);
 
@@ -1313,16 +1313,16 @@ const t29 = (msg, ok) => { ok ? p29++ : f29++; if (!ok) console.log(`  FAIL ${ms
 
 // 29A: After multi-award, lastStudent should be set to the last student
 app._nlpContext = {};
-const maw1 = run('add 5 rtc to charlotte and noah for group work');
+const maw1 = run('add 5 rtc to clementine and noah for group work');
 // Simulate _updateContext being called (it's called by _executeIntent, not just _matchIntent)
 // Just check that the intent routes correctly to ADD_RTC with a pair
-t29(`"add 5 rtc to charlotte and noah" -> ADD_RTC with pair (got ${maw1.intent} pair=${JSON.stringify(maw1.pair?.map(p=>p.student?.full_name||p.full_name))})`,
+t29(`"add 5 rtc to clementine and noah" -> ADD_RTC with pair (got ${maw1.intent} pair=${JSON.stringify(maw1.pair?.map(p=>p.student?.full_name||p.full_name))})`,
   maw1.intent === 'ADD_RTC' && maw1.pair?.length >= 2);
 
 // 29B: Homework queries route to VIEW_HOMEWORK
 app._nlpContext = {};
-const hw1 = run('what homework does eli have coming up');
-t29(`"what homework does eli have coming up" -> VIEW_HOMEWORK (got ${hw1.intent})`, hw1.intent === 'VIEW_HOMEWORK');
+const hw1 = run('what homework does ari have coming up');
+t29(`"what homework does ari have coming up" -> VIEW_HOMEWORK (got ${hw1.intent})`, hw1.intent === 'VIEW_HOMEWORK');
 
 const hw2 = run('any overdue homework in math class');
 t29(`"any overdue homework in math class" -> VIEW_HOMEWORK (got ${hw2.intent})`, hw2.intent === 'VIEW_HOMEWORK');
@@ -1330,8 +1330,8 @@ t29(`"any overdue homework in math class" -> VIEW_HOMEWORK (got ${hw2.intent})`,
 const hw3 = run('does jordan have any assignments due');
 t29(`"does jordan have any assignments due" -> VIEW_HOMEWORK (got ${hw3.intent})`, hw3.intent === 'VIEW_HOMEWORK');
 
-const hw4 = run('show me pending hw for charlotte');
-t29(`"show me pending hw for charlotte" -> VIEW_HOMEWORK (got ${hw4.intent})`, hw4.intent === 'VIEW_HOMEWORK');
+const hw4 = run('show me pending hw for clementine');
+t29(`"show me pending hw for clementine" -> VIEW_HOMEWORK (got ${hw4.intent})`, hw4.intent === 'VIEW_HOMEWORK');
 
 const hw5 = run('what hw is due this week');
 t29(`"what hw is due this week" -> VIEW_HOMEWORK (got ${hw5.intent})`, hw5.intent === 'VIEW_HOMEWORK');
@@ -1352,7 +1352,7 @@ t29(`"let do attendance" -> NAVIGATE (got ${nav4.intent})`, nav4.intent === 'NAV
 
 // 29D: "both of them" still routes pair to VIEW_NOTES / VIEW_ENROLLMENTS
 // (entities.students is set via the "both" check — intent check only here)
-app._nlpContext = { lastPair: [app._fuzzyFindStudent('charlotte')?.student, app._fuzzyFindStudent('noah')?.student].filter(Boolean) };
+app._nlpContext = { lastPair: [app._fuzzyFindStudent('clementine')?.student, app._fuzzyFindStudent('noah')?.student].filter(Boolean) };
 const ni1 = run('notes on both of them');
 t29(`"notes on both of them" -> VIEW_NOTES (got ${ni1.intent})`, ni1.intent === 'VIEW_NOTES');
 
@@ -1381,12 +1381,12 @@ app._nlpContext = {};
 const sm4 = run('message Jordan\'s parents');
 t30(`"message Jordan's parents" -> SEND_MESSAGE (got ${sm4.intent})`, sm4.intent === 'SEND_MESSAGE');
 
-const sm5 = run('contact Charlotte\'s family');
-t30(`"contact Charlotte's family" -> SEND_MESSAGE (got ${sm5.intent})`, sm5.intent === 'SEND_MESSAGE');
+const sm5 = run('contact Clementine\'s family');
+t30(`"contact Clementine's family" -> SEND_MESSAGE (got ${sm5.intent})`, sm5.intent === 'SEND_MESSAGE');
 
 // Send/compose forms
-const sm6 = run('send a message to Dylan');
-t30(`"send a message to Dylan" -> SEND_MESSAGE (got ${sm6.intent})`, sm6.intent === 'SEND_MESSAGE');
+const sm6 = run('send a message to Rory');
+t30(`"send a message to Rory" -> SEND_MESSAGE (got ${sm6.intent})`, sm6.intent === 'SEND_MESSAGE');
 
 const sm7 = run('reach out to Noah');
 t30(`"reach out to Noah" -> SEND_MESSAGE (got ${sm7.intent})`, sm7.intent === 'SEND_MESSAGE');
@@ -1430,7 +1430,7 @@ t31('shape "the kids were wonderful" == observation', app._classifyClauseShape('
 
 // common-word typo detector
 t31('_isCommonWordTypo("ther") == true', app._isCommonWordTypo('ther') === true);
-t31('_isCommonWordTypo("daenerys") == false', app._isCommonWordTypo('daenerys') === false);
+t31('_isCommonWordTypo("seraphina") == false', app._isCommonWordTypo('seraphina') === false);
 
 // segmentation splits a compound message into pieces
 const segs = app._segmentClauses('hi there! how are you? give theo 5 rtc and also mark him late');
@@ -1440,9 +1440,9 @@ app._terminalAllStudents = _savedRoster;
 console.log(`round 31: ${p31} pass, ${f31} fail`);
 
 // ── round 32: a last initial survives trailing punctuation ────────────────
-// "note for eli d: making noise" tokenized the initial as "d:", which failed
+// "note for ari d: making noise" tokenized the initial as "d:", which failed
 // the /^[a-z]$/ initial test — so the disambiguating initial was dropped and
-// the note filed itself on whichever Eli scored higher. Silent, and wrong on
+// the note filed itself on whichever Ari scored higher. Silent, and wrong on
 // exactly the commands (notes, grades) where being wrong matters most.
 console.log('\n== round 32: last initial survives trailing punctuation ==');
 let p32 = 0, f32 = 0;
@@ -1450,23 +1450,23 @@ const t32 = (label, ok) => { ok ? p32++ : f32++; if (!ok) console.log('  FAIL', 
 app._nlpContext = {};
 const _roster32 = app._terminalAllStudents;
 app._terminalAllStudents = [
-  { full_name: 'Elijah Douglas', first_name: 'Elijah', last_name: 'Douglas', rtc_balance: 10, status: 'active', id: 'ed1' },
-  { full_name: 'Eli Morris', first_name: 'Eli', last_name: 'Morris', rtc_balance: 10, status: 'active', id: 'em1' },
+  { full_name: 'Arian Delgado', first_name: 'Arian', last_name: 'Delgado', rtc_balance: 10, status: 'active', id: 'ed1' },
+  { full_name: 'Ari Mercer', first_name: 'Ari', last_name: 'Mercer', rtc_balance: 10, status: 'active', id: 'em1' },
 ];
 const who32 = (text) => {
   const ff = app._fuzzyFindStudent(app._normalizeInput(text), text);
   return ff && ff.student ? ff.student.full_name : (ff && ff.ambiguous ? 'AMBIGUOUS' : 'null');
 };
 [
-  ['note for eli d: making noise during class', 'Elijah Douglas'],
-  ['add behavior note for eli d, negative: making noise', 'Elijah Douglas'],
-  ['note for eli d. making noise', 'Elijah Douglas'],
-  ['set eli d’s participation grade to b', 'Elijah Douglas'],
+  ['note for ari d: making noise during class', 'Arian Delgado'],
+  ['add behavior note for ari d, negative: making noise', 'Arian Delgado'],
+  ['note for ari d. making noise', 'Arian Delgado'],
+  ['set ari d’s participation grade to b', 'Arian Delgado'],
   // the plain forms that already worked must keep working
-  ['give eli d 5 gold', 'Elijah Douglas'],
-  ['eli d', 'Elijah Douglas'],
-  // and a bare "eli" with no initial must still reach Eli Morris exactly
-  ['give eli morris 5 gold', 'Eli Morris'],
+  ['give ari d 5 gold', 'Arian Delgado'],
+  ['ari d', 'Arian Delgado'],
+  // and a bare "ari" with no initial must still reach Ari Mercer exactly
+  ['give ari mercer 5 gold', 'Ari Mercer'],
 ].forEach(([text, want]) => {
   const got = who32(text);
   t32(`"${text}" -> ${want} (got ${got})`, got === want);
@@ -1536,7 +1536,7 @@ const q = (text) => {
   t33(`"${text}" -> ${want} (got ${got})`, got === want);
 });
 
-// An "all" inside a REASON is not a group target. "give charlotte 5 rtc for
+// An "all" inside a REASON is not a group target. "give clementine 5 rtc for
 // all her hard work" must stay a plain award — the first cut of this fix
 // turned it (and "set her grade to 5 for all assignments") into a clarify
 // prompt, which is worse than the bug it was fixing.
@@ -1556,7 +1556,7 @@ const ex = (piece) => { const st = app._rivenFindExcluded(piece); return st ? st
 [
   ["marigold wasnt here", 'Marigold Vance'],
   ["marigold", 'Marigold Vance'],
-  ["marigold mays was absent", 'Marigold Vance'],
+  ["marigold prentice was absent", 'Marigold Vance'],
   ["rowan petrie", 'Rowan Petrie'],
 ].forEach(([piece, want]) => {
   const got = ex(piece);
@@ -1621,7 +1621,7 @@ const grp = (text) => {
   ['give elementary 5 rtc', 'AMBIGUOUS:2'],
   ['mark homeschool present', 'AMBIGUOUS:2'],
   // and a command with no cohort in it must not invent one
-  ['give charlotte 5 rtc', 'null'],
+  ['give clementine 5 rtc', 'null'],
   ['take attendance for chess', 'null'],
 ].forEach(([text, want]) => {
   const got = grp(text);
@@ -1734,7 +1734,7 @@ app._terminalAllClasses = [
   // reads that mention attendance must STAY reads
   ['show attendance for lower ms english', 'VIEW_ATTENDANCE'],
   ['attendance report for chess', 'VIEW_ATTENDANCE'],
-  ['was jordan absent yesterday', 'VIEW_ATTENDANCE'],
+  ['was quinn absent yesterday', 'VIEW_ATTENDANCE'],
 ].forEach(([text, want]) => {
   const got = run(text).intent;
   t36(`"${text}" -> ${want} (got ${got})`, got === want);
@@ -1822,8 +1822,8 @@ console.log(`round 37: ${p37} pass, ${f37} fail`);
 
 // ── round 38: a class name is not a person ────────────────────────────────
 // "Create a new class Lower MS Bible with the Lower MS group in it" opened a
-// pick-a-student dialog offering Logan Troup and Meadow Lawler. "group" is
-// one edit from the surname "Troup". A class being CREATED has no row yet, so
+// pick-a-student dialog offering Hollis Drake and Willow Fenmore. "group" is
+// one edit from the surname "Drake". A class being CREATED has no row yet, so
 // nothing consumed its name or its roster clause before the fuzzy student
 // matcher ran over the whole sentence.
 console.log('\n== round 38: class and cohort words are not student names ==');
@@ -1832,8 +1832,8 @@ const t38 = (label, ok) => { ok ? p38++ : f38++; if (!ok) console.log('  FAIL', 
 app._nlpContext = {};
 const _s38 = app._terminalAllStudents, _c38 = app._terminalAllClasses, _g38 = app._terminalAllGroups;
 app._terminalAllStudents = [
-  { full_name:'Logan Troup', first_name:'Logan', last_name:'Troup', rtc_balance:0, status:'active', id:'lt' },
-  { full_name:'Meadow Lawler', first_name:'Meadow', last_name:'Lawler', rtc_balance:5, status:'active', id:'ml' },
+  { full_name:'Hollis Drake', first_name:'Hollis', last_name:'Drake', rtc_balance:0, status:'active', id:'lt' },
+  { full_name:'Willow Fenmore', first_name:'Willow', last_name:'Fenmore', rtc_balance:5, status:'active', id:'ml' },
   { full_name:'Jordan Ellis', first_name:'Jordan', last_name:'Ellis', rtc_balance:5, status:'active', id:'je' },
 ];
 app._terminalAllClasses = [
@@ -1856,8 +1856,8 @@ const seen = (text) => {
   // and a real person is still found, including the one whose surname started this
   ['give jordan 5 rtc', 'ADD_RTC/Jordan Ellis'],
   ['add jordan to Lower MS English', 'ENROLL_STUDENT/Jordan Ellis'],
-  ['mark meadow present', 'MARK_ATTENDANCE/Meadow Lawler'],
-  ['give logan troup 3 gold', 'ADD_RTC/Logan Troup'],
+  ['mark willow present', 'MARK_ATTENDANCE/Willow Fenmore'],
+  ['give hollis drake 3 gold', 'ADD_RTC/Hollis Drake'],
 ].forEach(([text, want]) => {
   const got = seen(text);
   t38(`"${text}" -> ${want} (got ${got})`, got === want);
@@ -1866,7 +1866,7 @@ app._terminalAllStudents = _s38; app._terminalAllClasses = _c38; app._terminalAl
 console.log(`round 38: ${p38} pass, ${f38} fail`);
 
 // ── round 39: an unresolved name is not a person ──────────────────────────
-// "Attendance for English and math: all here except malakai and magnolia."
+// "Attendance for English and math: all here except zephyr and marigold."
 // died on `undefined.toLowerCase()`. _fuzzyFindStudent answers in two shapes:
 // { student } when it pinned somebody down, { ambiguous, matches } when it
 // did not. The executors unwrapped it as `entities.student?.student ||
@@ -1891,8 +1891,8 @@ t39('a bare student object still works',
   app._rivenResolvedStudent({ student: { full_name: 'Ada Reyes' } })?.full_name === 'Ada Reyes');
 
 app._terminalAllStudents = [
-  { full_name:'Malakai Kaufman', first_name:'Malakai', last_name:'Kaufman', rtc_balance:0, status:'active', id:'mk' },
-  { full_name:'Magnolia Mays', first_name:'Magnolia', last_name:'Mays', rtc_balance:0, status:'active', id:'mg' },
+  { full_name:'Zephyr Lindqvist', first_name:'Zephyr', last_name:'Lindqvist', rtc_balance:0, status:'active', id:'mk' },
+  { full_name:'Marigold Prentice', first_name:'Marigold', last_name:'Prentice', rtc_balance:0, status:'active', id:'mg' },
   { full_name:'Ada Reyes', first_name:'Ada', last_name:'Reyes', rtc_balance:0, status:'active', id:'ad' },
 ];
 app._terminalAllClasses = [
@@ -1904,7 +1904,7 @@ app._terminalAllGroups = [];
 
 // the sentence has to reach the WRITE — "all here" with no "mark" verb
 t39('"all here except …" is a full-register write',
-  run('Attendance for English and math: all here except malakai and magnolia.').intent === 'MARK_ATTENDANCE_GROUP');
+  run('Attendance for English and math: all here except zephyr and marigold.').intent === 'MARK_ATTENDANCE_GROUP');
 t39('"everyone here today" too',
   run('English: everyone here today').intent === 'MARK_ATTENDANCE_GROUP');
 
@@ -2006,7 +2006,7 @@ app._terminalAllClasses = [
 // no cohort named, nothing changes: these are the readings that already worked
 [
   ['attendance report for chess', 'VIEW_ATTENDANCE'],
-  ['was jordan absent yesterday', 'VIEW_ATTENDANCE'],
+  ['was quinn absent yesterday', 'VIEW_ATTENDANCE'],
   ['which students have bad attendance', 'ATTENDANCE_ISSUES'],
 ].forEach(([text, want]) => {
   const got = run(text).intent;

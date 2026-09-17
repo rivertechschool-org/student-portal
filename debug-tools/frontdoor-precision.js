@@ -28,10 +28,10 @@
 //   Bucket D is the one a naive bench omits, and omitting it is how a precision
 //   fix quietly destroys recall. The first version of this bench shipped without
 //   it, and the negative-cue guards it motivated blocked four REAL commands:
-//     "don't forget to give eli 5 rtc"      ← idiom: means DO it
-//     "give eli 5 rtc he never gives up"    ← "never" describing the student
+//     "don't forget to give ari 5 rtc"      ← idiom: means DO it
+//     "give ari 5 rtc he never gives up"    ← "never" describing the student
 //     "give noah 5 rtc instead of a warning"← comparison, not a refusal
-//     "mark charlotte present she never misses"
+//     "mark clementine present she never misses"
 //   None were visible until D existed. A guard bench needs both directions.
 //
 // THREE metrics, because a false positive's cost is not uniform:
@@ -171,8 +171,8 @@ const BLAST_RADIUS = new Set(['GROUP_RTC', 'MARK_ATTENDANCE_GROUP', 'CLOSE_ALL_C
 
 // Same roster/classes as nlp-stress.js so findings are comparable across benches.
 const roster = [
-  ['Charlotte', 'Tebow'], ['Eli', 'Morris'], ['Elijah', 'Douglas'], ['Elijah', 'Killackey'],
-  ['Evelyn', 'Hegelund'], ['John', 'Smith'], ['Johnny', 'Appleseed'],
+  ['Clementine', 'Vasquez'], ['Ari', 'Mercer'], ['Arian', 'Delgado'], ['Arian', 'Kessler'],
+  ['Rosalind', 'Ashgrove'], ['John', 'Smith'], ['Johnny', 'Appleseed'],
   ['Sarah', 'Jones'], ['Sam', 'Carter'], ['Samuel', 'Brooks'],
   ['Sophia', 'Nguyen'], ['Sofia', 'Martinez'], ['Liam', 'Jones'],
   ['Olivia', 'Brown'], ['Noah', 'Williams'], ['Ava', 'Davis'],
@@ -259,7 +259,7 @@ function decideOne(input) {
 }
 
 // Full path including the compound-command split. A false positive in the RIGHT
-// half of "show me eli's grades and give him 5 rtc" is invisible to a bench that
+// half of "show me ari's grades and give him 5 rtc" is invisible to a bench that
 // only ever hands _matchIntent the whole string.
 function decide(input, { prior = [], keepContext = false } = {}) {
   if (!keepContext) app._nlpContext = {};
@@ -301,27 +301,27 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   // The short form, as actually typed, with "every" and a singular class.
   ['add noah to every old middle class', 'WRITE', 'ENROLL_BAND'],
   ['enroll mia in every high school class', 'WRITE', 'ENROLL_BAND'],
-  ['put eli in all junior high classes', 'WRITE', 'ENROLL_BAND'],
-  ['give charlotte 5 rtc', 'WRITE', 'ADD_RTC'],
+  ['put ari in all junior high classes', 'WRITE', 'ENROLL_BAND'],
+  ['give clementine 5 rtc', 'WRITE', 'ADD_RTC'],
   ['award noah 10 rtc for great work', 'WRITE', 'ADD_RTC'],
-  ['give eli 3 gold', 'WRITE', 'ADD_RTC'],
+  ['give ari 3 gold', 'WRITE', 'ADD_RTC'],
   ['+5 rtc for mia', 'WRITE', 'ADD_RTC'],
-  ['dock eli 3 rtc', 'WRITE', 'SUBTRACT_RTC'],
+  ['dock ari 3 rtc', 'WRITE', 'SUBTRACT_RTC'],
   ['take 5 rtc from mia', 'WRITE', 'SUBTRACT_RTC'],
   ['remove 4 rtc from noah', 'WRITE', 'SUBTRACT_RTC'],
-  ['fine charlotte 2 rtc for her phone', 'WRITE', 'SUBTRACT_RTC'],
-  ['give 5 rtc from charlotte to noah', 'WRITE', 'TRANSFER_RTC'],
-  ['mark charlotte present in math', 'WRITE', 'MARK_ATTENDANCE'],
-  ['mark eli absent in robotics yesterday', 'WRITE', 'MARK_ATTENDANCE'],
+  ['fine clementine 2 rtc for her phone', 'WRITE', 'SUBTRACT_RTC'],
+  ['give 5 rtc from clementine to noah', 'WRITE', 'TRANSFER_RTC'],
+  ['mark clementine present in math', 'WRITE', 'MARK_ATTENDANCE'],
+  ['mark ari absent in robotics yesterday', 'WRITE', 'MARK_ATTENDANCE'],
   ['mark mia tardy in math', 'WRITE', 'MARK_ATTENDANCE'],
   ['add olivia to math', 'WRITE', 'ENROLL_STUDENT'],
   ['enroll lucas in robotics', 'WRITE', 'ENROLL_STUDENT'],
   ['remove noah from robotics', 'WRITE', 'UNENROLL_STUDENT', 'class, not the activity'],
   ['remove noah from robotics', 'WRITE', 'UNENROLL_STUDENT'],
   ['unenroll mason from math', 'WRITE', 'UNENROLL_STUDENT'],
-  ['note for eli: forgot his homework again', 'WRITE', 'ADD_NOTE'],
-  ['add a note for charlotte: great participation today', 'WRITE', 'ADD_NOTE'],
-  ["set charlotte's grade in math to 92", 'WRITE', 'SET_GRADE'],
+  ['note for ari: forgot his homework again', 'WRITE', 'ADD_NOTE'],
+  ['add a note for clementine: great participation today', 'WRITE', 'ADD_NOTE'],
+  ["set clementine's grade in math to 92", 'WRITE', 'SET_GRADE'],
   ['create a class called Advanced Physics', 'WRITE', 'CREATE_CLASS'],
   ['move olivia from math to robotics', 'WRITE', 'MOVE_STUDENT'],
   // blast-radius + destructive writes must still be REACHABLE
@@ -332,8 +332,8 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['take attendance', 'WRITE', 'MARK_ATTENDANCE_GROUP', 'blast radius'],
   ['give the whole math class 2 rtc', 'WRITE', null, 'blast radius'],
   ['rename math to Algebra I', 'WRITE', 'RENAME_CLASS'],
-  ['grant charlotte the vip perk for 7 days', 'WRITE', 'GRANT_PRIVILEGE'],
-  ["revoke eli's homework pass", 'WRITE', 'REVOKE_PRIVILEGE', 'destructive'],
+  ['grant clementine the vip perk for 7 days', 'WRITE', 'GRANT_PRIVILEGE'],
+  ["revoke ari's homework pass", 'WRITE', 'REVOKE_PRIVILEGE', 'destructive'],
   ['add granola bar to the shop for 4 rtc', 'WRITE', 'ADD_SHOP_ITEM'],
   // Catalog edits must name the shop/store/catalog to reach the REGEX tier —
   // every EDIT_SHOP_ITEM pattern anchors on that word. A bare "change the price
@@ -341,7 +341,7 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   // the MiniLM example bank), so it is out of this bench's scope, not a bug.
   ['change the price of granola bar in the shop to 6 rtc', 'WRITE', 'EDIT_SHOP_ITEM'],
   ['remove granola bar from the shop', 'WRITE', 'REMOVE_SHOP_ITEM', 'destructive'],
-  ["change charlotte's phone to 555-1234", 'WRITE', 'UPDATE_CONTACT'],
+  ["change clementine's phone to 555-1234", 'WRITE', 'UPDATE_CONTACT'],
   // assignments — the vocabulary overlaps VIEW_HOMEWORK almost completely, so
   // both directions need holding down (see bucket B/C for the read side).
   ['assign chapter 4 problems to math due friday', 'WRITE', 'CREATE_ASSIGNMENT'],
@@ -349,37 +349,37 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['assign "Volcano poster" to math due in 3 days', 'WRITE', 'CREATE_ASSIGNMENT'],
   ['announce to math: no class on friday', 'WRITE', 'ANNOUNCE', 'blast radius'],
   ['tell the math class that there is no class friday', 'WRITE', 'ANNOUNCE', 'blast radius'],
-  ['add eli to chess club', 'WRITE', 'ACTIVITY_ENROLL'],
-  ['sign charlotte up for the robotics club', 'WRITE', 'ACTIVITY_ENROLL'],
+  ['add ari to chess club', 'WRITE', 'ACTIVITY_ENROLL'],
+  ['sign clementine up for the robotics club', 'WRITE', 'ACTIVITY_ENROLL'],
   ['remove noah from chess club', 'WRITE', 'ACTIVITY_UNENROLL', 'destructive'],
   ['book the gym friday 2pm to 3pm', 'WRITE', 'BOOK_FACILITY'],
   ['reserve the library tomorrow 9am to 10am', 'WRITE', 'BOOK_FACILITY'],
 ];
 
 const BUCKET_B = [ // reads and out-of-scope — must not write
-  ['how much rtc does charlotte have', 'SAFE', null],
+  ['how much rtc does clementine have', 'SAFE', null],
   ["what are noah's grades", 'SAFE', null],
   ['show me the roster for math', 'SAFE', null],
   ["who's been absent in robotics this month", 'SAFE', null],
   ['list all active students', 'SAFE', null],
   ['show me the top 10 students', 'SAFE', null],
-  ["what's charlotte's attendance in math", 'SAFE', null],
+  ["what's clementine's attendance in math", 'SAFE', null],
   ['anything i should know', 'SAFE', null],
-  ['what classes is eli in', 'SAFE', null],
-  ['compare charlotte and noah', 'SAFE', null],
+  ['what classes is ari in', 'SAFE', null],
+  ['compare clementine and noah', 'SAFE', null],
   ['show me the shop', 'SAFE', null],
   ['what privileges does mia have', 'SAFE', null],
-  ['what homework does eli have coming up', 'SAFE', null],
+  ['what homework does ari have coming up', 'SAFE', null],
   ['what hw is due this week', 'SAFE', null],
   ['does jordan have any assignments due', 'SAFE', null],
   ['any overdue homework in math class', 'SAFE', null],
-  ['show me pending hw for charlotte', 'SAFE', null],
+  ['show me pending hw for clementine', 'SAFE', null],
   ['how is the math class doing', 'SAFE', null],
-  ['show me notes about charlotte from last month', 'SAFE', null],
+  ['show me notes about clementine from last month', 'SAFE', null],
   ['hello', 'SAFE', null],
   ['thanks riven', 'SAFE', null],
   ['what can you do', 'SAFE', null],
-  ['how much rtc did charlotte have last week', 'SAFE', null],
+  ['how much rtc did clementine have last week', 'SAFE', null],
   ["what's noah's contact info", 'SAFE', null],
   ['which of my classes has the best grades', 'SAFE', null],
   ['show me the privilege catalog', 'SAFE', null],
@@ -390,33 +390,33 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
 
 const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   // — hypothetical / deliberative —
-  ['should i give charlotte 5 rtc for this', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
+  ['should i give clementine 5 rtc for this', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
   ['would it be fair to give noah 10 rtc', 'SAFE', null, 'hypothetical'],
-  ['wondering whether to dock eli 3 rtc', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
-  ['not sure if i should mark eli absent in math', 'SAFE', null, 'hypothetical'],
+  ['wondering whether to dock ari 3 rtc', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
+  ['not sure if i should mark ari absent in math', 'SAFE', null, 'hypothetical'],
   ['thinking about removing noah from robotics', 'SAFE', null, 'hypothetical'],
   ['debating whether to give mia 5 rtc', 'SAFE', null, 'hypothetical'],
   ['considering marking everyone in math absent today', 'SAFE', null, 'hypothetical + blast'],
 
   // — past tense / already happened / reported —
-  ['i already gave charlotte 5 rtc yesterday', 'SAFE', null, 'past tense'],
-  ['did i mark eli present in math', 'SAFE', null, 'past tense question'],
+  ['i already gave clementine 5 rtc yesterday', 'SAFE', null, 'past tense'],
+  ['did i mark ari present in math', 'SAFE', null, 'past tense question'],
   ['have i given noah his 5 rtc yet', 'SAFE', null, 'past tense question'],
-  ['charlotte says i gave her 5 rtc', 'SAFE', null, 'reported speech'],
+  ['clementine says i gave her 5 rtc', 'SAFE', null, 'reported speech'],
   ['i think someone already enrolled olivia in math', 'SAFE', null, 'reported'],
-  ['was eli marked absent in robotics', 'SAFE', null, 'past tense question'],
+  ['was ari marked absent in robotics', 'SAFE', null, 'past tense question'],
 
   // — negated —
-  ["don't give charlotte any rtc", 'SAFE', null, 'negated'],
-  ['do not mark eli absent', 'SAFE', 'SPECULATIVE_WRITE', 'negated -> explains'],
+  ["don't give clementine any rtc", 'SAFE', null, 'negated'],
+  ['do not mark ari absent', 'SAFE', 'SPECULATIVE_WRITE', 'negated -> explains'],
   ['no need to award noah rtc today', 'SAFE', null, 'negated'],
   ["i'm not going to dock mia 3 rtc", 'SAFE', null, 'negated'],
   ["don't remove noah from robotics", 'SAFE', null, 'negated + destructive'],
   ['never mark the whole class absent', 'SAFE', null, 'negated + blast'],
 
   // — command text quoted INSIDE note content —
-  ['note for eli: i told him i would give him 5 rtc if he finishes', 'WRITE', 'ADD_NOTE', 'command inside note'],
-  ['note for charlotte: asked to be marked present next time', 'WRITE', 'ADD_NOTE', 'command inside note'],
+  ['note for ari: i told him i would give him 5 rtc if he finishes', 'WRITE', 'ADD_NOTE', 'command inside note'],
+  ['note for clementine: asked to be marked present next time', 'WRITE', 'ADD_NOTE', 'command inside note'],
   ['note for noah: wants me to remove him from robotics', 'WRITE', 'ADD_NOTE', 'command inside note'],
 
   // — prose ABOUT the mechanism —
@@ -429,12 +429,12 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['what would happen if i closed all my classes', 'SAFE', null, 'prose + blast'],
 
   // — polite / interrogative command forms (the isQuestion guard) —
-  ['can i give charlotte 5 rtc', 'SAFE', null, 'interrogative'],
-  ['could you dock eli 3 rtc', 'SAFE', null, 'interrogative'],
+  ['can i give clementine 5 rtc', 'SAFE', null, 'interrogative'],
+  ['could you dock ari 3 rtc', 'SAFE', null, 'interrogative'],
 
   // — conditional —
-  ['if eli finishes his work give him 5 rtc', 'SAFE', 'SPECULATIVE_WRITE', 'conditional -> offers a note'],
-  ['give charlotte 5 rtc once she turns it in', 'SAFE', 'SPECULATIVE_WRITE', 'conditional -> offers a note'],
+  ['if ari finishes his work give him 5 rtc', 'SAFE', 'SPECULATIVE_WRITE', 'conditional -> offers a note'],
+  ['give clementine 5 rtc once she turns it in', 'SAFE', 'SPECULATIVE_WRITE', 'conditional -> offers a note'],
 
   // — no resolvable target —
   ['give them 5 rtc', 'SAFE', null, 'no referent'],
@@ -442,38 +442,38 @@ const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
   ['remove the student from the class', 'SAFE', null, 'placeholder target'],
 
   // — info questions that name a mutation verb —
-  ['what did charlotte get on her last test', 'SAFE', null, 'info + verb'],
-  ["give me eli's attendance in math over the last 5 weeks", 'SAFE', null, 'give = show'],
+  ['what did clementine get on her last test', 'SAFE', null, 'info + verb'],
+  ["give me ari's attendance in math over the last 5 weeks", 'SAFE', null, 'give = show'],
   ['show me who i marked absent yesterday', 'SAFE', null, 'info + verb'],
   ['pull up the grades i set for math', 'SAFE', null, 'info + verb'],
   ['who did i give rtc to today', 'SAFE', null, 'info + verb'],
   ['should i assign chapter 4 to math due friday', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical assignment'],
   ["don't assign any homework to math this week", 'SAFE', 'SPECULATIVE_WRITE', 'negated assignment'],
-  ['can i give charlotte 5 rtc please', 'SAFE', 'SPECULATIVE_WRITE', 'interrogative -> explains'],
+  ['can i give clementine 5 rtc please', 'SAFE', 'SPECULATIVE_WRITE', 'interrogative -> explains'],
   ["don't announce anything to math yet", 'SAFE', 'SPECULATIVE_WRITE', 'negated blast-radius write'],
   ['should i announce that to math', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical blast-radius write'],
-  ["don't add eli to chess club", 'SAFE', 'SPECULATIVE_WRITE', 'negated activity write'],
+  ["don't add ari to chess club", 'SAFE', 'SPECULATIVE_WRITE', 'negated activity write'],
   ['should i book the gym friday 2pm to 3pm', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical booking'],
 ];
 
 const BUCKET_D = [ // GUARD OVERREACH: real commands that innocently contain cue words
   // — negation vocabulary describing the STUDENT, not refusing the action —
-  ['give eli 5 rtc he never gives up', 'WRITE', 'ADD_RTC', "'never' describes the student"],
-  ['give charlotte 3 rtc for not giving up today', 'WRITE', 'ADD_RTC', "bare 'not'"],
+  ['give ari 5 rtc he never gives up', 'WRITE', 'ADD_RTC', "'never' describes the student"],
+  ['give clementine 3 rtc for not giving up today', 'WRITE', 'ADD_RTC', "bare 'not'"],
   ['mark mia present she never misses class', 'WRITE', 'MARK_ATTENDANCE', "'never' in a subclause"],
   ['give noah 5 rtc instead of a warning', 'WRITE', 'ADD_RTC', "'instead of' is a comparison"],
-  ['note for eli: does not turn in homework', 'WRITE', 'ADD_NOTE', "'does not' inside note content"],
+  ['note for ari: does not turn in homework', 'WRITE', 'ADD_NOTE', "'does not' inside note content"],
 
   // — idioms where the negation means DO IT —
-  ["don't forget to give eli 5 rtc", 'WRITE', 'ADD_RTC', "'don't forget' means do it"],
+  ["don't forget to give ari 5 rtc", 'WRITE', 'ADD_RTC', "'don't forget' means do it"],
   ["don't hesitate to dock mia 3 rtc", 'WRITE', 'SUBTRACT_RTC', "'don't hesitate' means do it"],
 
   // — deliberative vocabulary about something OTHER than the action —
-  ['give charlotte 5 rtc she was wondering if she earned it', 'WRITE', 'ADD_RTC', "'wondering' is the student"],
-  ['mark eli present he was thinking about staying home', 'WRITE', 'MARK_ATTENDANCE', "'thinking about' is the student"],
+  ['give clementine 5 rtc she was wondering if she earned it', 'WRITE', 'ADD_RTC', "'wondering' is the student"],
+  ['mark ari present he was thinking about staying home', 'WRITE', 'MARK_ATTENDANCE', "'thinking about' is the student"],
 
   // — time adverbials that share conditional vocabulary —
-  ['mark charlotte present after lunch', 'WRITE', 'MARK_ATTENDANCE', "'after lunch' is a time, not a condition"],
+  ['mark clementine present after lunch', 'WRITE', 'MARK_ATTENDANCE', "'after lunch' is a time, not a condition"],
   ['give noah 5 rtc when i see him', 'WRITE', 'ADD_RTC', 'colloquial, still an instruction'],
 
   // — the word "if"/"once" inside a note body —
@@ -482,18 +482,18 @@ const BUCKET_D = [ // GUARD OVERREACH: real commands that innocently contain cue
 
 const BUCKET_E = [ // context-carrying + compound — the multi-turn write surface
   // a compound whose RIGHT half is the write
-  ["show me eli's grades and give him 5 rtc", 'WRITE', 'ADD_RTC', 'compound right half',
+  ["show me ari's grades and give him 5 rtc", 'WRITE', 'ADD_RTC', 'compound right half',
     {}],
   // a compound whose right half is adversarial must not write
-  ["show me eli's grades and tell me if i should give him 5 rtc", 'SAFE', null, 'compound + hypothetical', {}],
+  ["show me ari's grades and tell me if i should give him 5 rtc", 'SAFE', null, 'compound + hypothetical', {}],
   // follow-up pronoun resolves from context → legitimate write
-  ['give him 5 rtc', 'WRITE', 'ADD_RTC', 'pronoun from context', { prior: ['show me eli'] }],
+  ['give him 5 rtc', 'WRITE', 'ADD_RTC', 'pronoun from context', { prior: ['show me ari'] }],
   // ...but a HYPOTHETICAL follow-up on the same context must not
-  ['should i give him 5 rtc', 'SAFE', null, 'hypothetical follow-up', { prior: ['show me eli'] }],
+  ['should i give him 5 rtc', 'SAFE', null, 'hypothetical follow-up', { prior: ['show me ari'] }],
   // a negated follow-up on live context must not write
-  ["don't give him any more rtc", 'SAFE', null, 'negated follow-up', { prior: ['show me eli'] }],
+  ["don't give him any more rtc", 'SAFE', null, 'negated follow-up', { prior: ['show me ari'] }],
   // stale context + a bare read must not become a write
-  ['what about charlotte', 'SAFE', null, 'read follow-up', { prior: ['show me eli'] }],
+  ['what about clementine', 'SAFE', null, 'read follow-up', { prior: ['show me ari'] }],
 ];
 
 // ── Runner ───────────────────────────────────────────────────────────────────

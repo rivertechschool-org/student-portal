@@ -70,11 +70,11 @@ app._pushUndo('a legacy write', async () => { calls.push(['legacy']); });
 check(localStorage.getItem('riven_undo_teacher-1') === null, 'spec-less push persists nothing');
 
 // 2. RTC + note pushes with specs persist
-app._pushUndo('+5 RTC for Eli Morris', async () => {}, {
+app._pushUndo('+5 RTC for Ari Mercer', async () => {}, {
   kind: 'rtc', userId: 'id1', amount: -5, type: 'admin_adjustment',
   description: 'Undo of +5 RTC', refId: 'tx1', noteId: 'note9',
 });
-app._pushUndo('the note for Eli', async () => {}, { kind: 'note', noteId: 'note42' });
+app._pushUndo('the note for Ari', async () => {}, { kind: 'note', noteId: 'note42' });
 const raw = JSON.parse(localStorage.getItem('riven_undo_teacher-1'));
 check(raw.length === 2, `persisted 2 durable entries (got ${raw.length})`);
 check(!raw.some(e => e.desc === 'a legacy write'), 'legacy entry excluded from persistence');

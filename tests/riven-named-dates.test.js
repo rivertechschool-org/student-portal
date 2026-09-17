@@ -20,7 +20,7 @@
 // THE DIRECTION A DATE IS READ
 //
 // _rivenMonthDayDates already reads "Sept 23" — forwards, on purpose, because
-// it serves "Meadow will be absent Sept 23", which is a plan. A question is the
+// it serves "Willow will be absent Sept 23", which is a plan. A question is the
 // opposite: nobody was missing next May. The two readers stay separate, and
 // this one resolves backwards. Both directions are tested here, because the
 // day this collapses into one "smart" reader with a flag is the day one of the
@@ -150,7 +150,7 @@ const p2 = String(pastMonth).padStart(2, '0');
   }
 
   {
-    // THE OTHER DIRECTION, deliberately unchanged. "Meadow will be absent
+    // THE OTHER DIRECTION, deliberately unchanged. "Willow will be absent
     // Sept 23" is a plan and must still resolve forwards.
     const ahead = MN[MONTH % 12];
     const plan = app._rivenMonthDayDates.call(app, `${ahead} 5`);

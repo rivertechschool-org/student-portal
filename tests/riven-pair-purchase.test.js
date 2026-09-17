@@ -1,6 +1,6 @@
 // A privilege bought for two students must not quietly be bought for one.
 //
-// "charlotte and noah are buying a privilege for 2 gold" is a normal sentence.
+// "clementine and noah are buying a privilege for 2 gold" is a normal sentence.
 // The matcher reads both names and hands the executor an `entities.students`
 // pair — but terminalBuyPrivilege is written end to end for a single buyer:
 // one atomic RPC, one fallback deduction, one grant, one undo entry. It read
@@ -98,14 +98,14 @@ const stu = (id, full_name) => ({ student: { id, full_name, rtc_balance: 50 } })
   {
     const app = makeApp();
     await app.terminalBuyPrivilege.call(app, {
-      students: [stu('s1', 'Charlotte Tebow'), stu('s2', 'Noah Williams')],
-      student: stu('s1', 'Charlotte Tebow'),
+      students: [stu('s1', 'Clementine Vasquez'), stu('s2', 'Noah Williams')],
+      student: stu('s1', 'Clementine Vasquez'),
       amount: 2,
-      _rawInput: 'charlotte and noah are buying a privilege for 2 gold',
+      _rawInput: 'clementine and noah are buying a privilege for 2 gold',
     });
 
     check('it declines rather than charging one of them', app.said.length, 1);
-    ok('  and names both students', /Charlotte Tebow and Noah Williams/.test(app.said[0]));
+    ok('  and names both students', /Clementine Vasquez and Noah Williams/.test(app.said[0]));
     ok('  says what to do instead', /one at a time|once for each/i.test(app.said[0]));
     check('  nothing was written', app.dbCalls, []);
     check('  and it is not reported as an error', app.errors, []);
@@ -118,10 +118,10 @@ const stu = (id, full_name) => ({ student: { id, full_name, rtc_balance: 50 } })
     // confirmation, which is where a real purchase pauses.
     const app = makeApp();
     await app.terminalBuyPrivilege.call(app, {
-      student: stu('s1', 'Charlotte Tebow'),
-      students: [stu('s1', 'Charlotte Tebow')],
+      student: stu('s1', 'Clementine Vasquez'),
+      students: [stu('s1', 'Clementine Vasquez')],
       amount: 2,
-      _rawInput: 'charlotte is buying the homework pass for 2 gold',
+      _rawInput: 'clementine is buying the homework pass for 2 gold',
     });
     ok('a single buyer reaches the confirmation', app.said.some(m => m.startsWith('CONFIRM:')));
     check('  and is not declined', app.said.filter(m => /one at a time/i.test(m)).length, 0);

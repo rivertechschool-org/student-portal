@@ -239,7 +239,7 @@ const base = () => ({
   const PARENT_SELF = {
     // Signed themselves up: create_signup_profile sets id = the auth user id.
     id: 'auth-mary', auth_user_id: 'auth-mary', user_type: 'parent',
-    first_name: 'Mary', last_name: 'Argon', email: 'mary@example.com',
+    first_name: 'Mary', last_name: 'Vermeer', email: 'mary@example.com',
     username: 'mary', account_status: 'activated',
   };
   const PARENT_ENROLLED = {
@@ -249,8 +249,8 @@ const base = () => ({
     username: 'pat.newfamily.1a2b', account_status: 'activated',
   };
   const CHILD = {
-    id: 'c1', user_type: 'student', first_name: 'Ruthie', last_name: 'Argon',
-    email: null, username: 'ruthie', account_status: 'inactive', auth_user_id: null,
+    id: 'c1', user_type: 'student', first_name: 'Tillie', last_name: 'Vermeer',
+    email: null, username: 'tillie', account_status: 'inactive', auth_user_id: null,
   };
 
   {
@@ -261,7 +261,7 @@ const base = () => ({
     // The bug this file could not see for a week: the children are students,
     // the adults-only query cannot contain them, and every parent rendered
     // "No children linked" however many links they had.
-    ok('  and their linked child is shown', /Ruthie Argon/.test(html));
+    ok('  and their linked child is shown', /Tillie Vermeer/.test(html));
     // Two parents in this fixture: Mary has a link, Pat does not. Exactly one
     // row may say so. Before the fix both did, because the lookup could never
     // find a student.
@@ -282,7 +282,7 @@ const base = () => ({
     const splitParent = { ...PARENT_ENROLLED, auth_user_id: 'auth-pat' };
     const html = await adminUsers([splitParent, CHILD],
       [{ parent_id: 'auth-pat', child_id: 'c1' }]);
-    ok('children are found when the two ids differ', /Ruthie Argon/.test(html));
+    ok('children are found when the two ids differ', /Tillie Vermeer/.test(html));
     ok('  and unlink uses the id the row is keyed on',
       /unlinkChildFromParent\('auth-pat', 'c1'/.test(html));
   }
@@ -353,23 +353,23 @@ const base = () => ({
 
   {
     const html = await inactiveList([
-      { id: 's1', first_name: 'Ruthie', last_name: 'Argon', username: 'ruthie', grade_level: '7',
+      { id: 's1', first_name: 'Tillie', last_name: 'Vermeer', username: 'tillie', grade_level: '7',
         account_status: 'inactive', auth_user_id: null, student_status: 'active' },
       // Flagged activated, nothing behind it. The old query filtered on the
       // flag, so this student was invisible on the one screen meant to find her.
-      { id: 's2', first_name: 'Kaitlyn', last_name: 'Erickson', username: 'kaitlyn', grade_level: '9',
+      { id: 's2', first_name: 'Adelyn', last_name: 'Ferrow', username: 'adelyn', grade_level: '9',
         account_status: 'activated', auth_user_id: null, student_status: 'active' },
       // Genuinely done.
-      { id: 's3', first_name: 'Eli', last_name: 'Killackey', username: 'eli', grade_level: '9',
-        account_status: 'activated', auth_user_id: 'auth-eli', student_status: 'active' },
+      { id: 's3', first_name: 'Ari', last_name: 'Kessler', username: 'ari', grade_level: '9',
+        account_status: 'activated', auth_user_id: 'auth-ari', student_status: 'active' },
       // Left the school: not waiting to be activated, just gone.
       { id: 's4', first_name: 'Gone', last_name: 'Away', username: 'gone', grade_level: '8',
         account_status: 'inactive', auth_user_id: null, student_status: 'past' },
     ]);
 
-    ok('a student with no login is listed', /Ruthie/.test(html));
-    ok('a student flagged activated with no login is listed too', /Kaitlyn/.test(html));
-    ok('a student who can sign in is not', !/Killackey/.test(html));
+    ok('a student with no login is listed', /Tillie/.test(html));
+    ok('a student flagged activated with no login is listed too', /Adelyn/.test(html));
+    ok('a student who can sign in is not', !/Kessler/.test(html));
     ok('and a past student is not waiting for anything', !/Gone Away/.test(html));
   }
 

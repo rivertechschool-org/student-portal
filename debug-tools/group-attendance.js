@@ -170,7 +170,7 @@ async function award(text, attendance) {
   t('a stale register reads as untaken', /No attendance has been taken/.test(r.summary), r.summary);
 
   // ---- the sentence from a real session, end to end -----------------------
-  // "for all lower ms classes today, mark full attendance except magnolia
+  // "for all lower ms classes today, mark full attendance except marigold
   // wasn't there." Two classes, one shared roster, one named exception.
   console.log('\n== group attendance: the whole sentence ==');
   app._terminalAllClasses = [
@@ -227,7 +227,7 @@ async function award(text, attendance) {
     DB.class_attendance_sessions.length === 2, DB.class_attendance_sessions);
 
   // ---- two classes named outright, two names excluded ---------------------
-  // "Attendance for English and math: all here except malakai and magnolia."
+  // "Attendance for English and math: all here except zephyr and marigold."
   // This one crashed: two student names put entities.student into its
   // UNRESOLVED ambiguous shape, which was handed on as if it were a person,
   // and the executor read .full_name off it. It also has to reach the write
@@ -240,8 +240,8 @@ async function award(text, attendance) {
   ];
   app._terminalAllStudents = [
     { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
-    { id: 'mk', full_name: 'Malakai Kaufman', first_name: 'Malakai', last_name: 'Kaufman', status: 'active', rtc_balance: 0 },
-    { id: 'mg', full_name: 'Magnolia Mays', first_name: 'Magnolia', last_name: 'Mays', status: 'active', rtc_balance: 0 },
+    { id: 'mk', full_name: 'Zephyr Lindqvist', first_name: 'Zephyr', last_name: 'Lindqvist', status: 'active', rtc_balance: 0 },
+    { id: 'mg', full_name: 'Marigold Prentice', first_name: 'Marigold', last_name: 'Prentice', status: 'active', rtc_balance: 0 },
   ];
   DB = {
     class_enrollments: [
@@ -258,7 +258,7 @@ async function award(text, attendance) {
   app._errors = []; app._confirm = null; app._nlpContext = {}; app._pickedFrom = null;
   app._showClassPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
   app._showGroupPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
-  const T2 = 'Attendance for English and math: all here except malakai and magnolia.';
+  const T2 = 'Attendance for English and math: all here except zephyr and marigold.';
   const n2 = app._normalizeInput(T2);
   let crashed = null;
   try {
@@ -273,7 +273,7 @@ async function award(text, attendance) {
   if (app._confirm) {
     t('both named classes appear', /English and Math/.test(app._confirm.summary), app._confirm.summary);
     t('both exclusions are called out',
-      /Malakai Kaufman and Magnolia Mays<\/b> get <b>absent<\/b>/.test(app._confirm.summary), app._confirm.summary);
+      /Zephyr Lindqvist and Marigold Prentice<\/b> get <b>absent<\/b>/.test(app._confirm.summary), app._confirm.summary);
     await app._confirm.execute();
   }
   const w2 = DB.class_attendance.map(r => `${r.class_id}:${r.student_id}:${r.status}`).sort();
@@ -292,13 +292,13 @@ async function award(text, attendance) {
   app._terminalAllClasses = [
     { id: 'mine-e', name: 'Lower MS English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
     { id: 'mine-m', name: 'Lower MS Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
-    { id: 'hers-e', name: 'English', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Caitlin Relvas' },
-    { id: 'his-m', name: 'Math', teacher_id: 't8', secondary_teacher_id: null, is_active: true, teacher_name: 'Jordan Ezell' },
+    { id: 'hers-e', name: 'English', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Marguerite Relvas' },
+    { id: 'his-m', name: 'Math', teacher_id: 't8', secondary_teacher_id: null, is_active: true, teacher_name: 'Robin Castellan' },
   ];
   app._terminalAllStudents = [
     { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
-    { id: 'mk', full_name: 'Malakai Kaufman', first_name: 'Malakai', last_name: 'Kaufman', status: 'active', rtc_balance: 0 },
-    { id: 'mg', full_name: 'Magnolia Mays', first_name: 'Magnolia', last_name: 'Mays', status: 'active', rtc_balance: 0 },
+    { id: 'mk', full_name: 'Zephyr Lindqvist', first_name: 'Zephyr', last_name: 'Lindqvist', status: 'active', rtc_balance: 0 },
+    { id: 'mg', full_name: 'Marigold Prentice', first_name: 'Marigold', last_name: 'Prentice', status: 'active', rtc_balance: 0 },
   ];
   DB = {
     class_enrollments: [
@@ -318,7 +318,7 @@ async function award(text, attendance) {
   app._errors = []; app._confirm = null; app._nlpContext = {}; app._pickedFrom = null;
   app._showClassPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
   app._showGroupPicker = rows => { app._pickedFrom = rows.map(r => r.name); };
-  const T3 = 'Attendance for english and math: all here except for malakai and magnolia';
+  const T3 = 'Attendance for english and math: all here except for zephyr and marigold';
   const n3 = app._normalizeInput(T3);
   await app.terminalMarkAttendanceGroup({
     normalized: n3, original: T3, amount: null, students: [], student: null,
@@ -330,7 +330,7 @@ async function award(text, attendance) {
     t('it targets MY classes, not the identically-named ones',
       /Lower MS English and Lower MS Math/.test(app._confirm.summary), app._confirm.summary);
     t('"except FOR x and y" excludes BOTH',
-      /Malakai Kaufman and Magnolia Mays|Magnolia Mays and Malakai Kaufman/.test(app._confirm.summary), app._confirm.summary);
+      /Zephyr Lindqvist and Marigold Prentice|Marigold Prentice and Zephyr Lindqvist/.test(app._confirm.summary), app._confirm.summary);
     t('it warns about the class with no period that day',
       /Lower MS Math.*no period scheduled/.test(app._confirm.summary), app._confirm.summary);
     await app._confirm.execute();
@@ -349,21 +349,21 @@ async function award(text, attendance) {
   // same-named classes must be told apart in the dialog, not read "English and English"
   t('duplicate names get their teacher appended',
     JSON.stringify(app._rivenClassLabels([
-      { name: 'English', teacher_name: 'Caitlin Relvas' },
-      { name: 'English', teacher_name: 'Emily Allison' },
-      { name: 'Math', teacher_name: 'Jordan Ezell' },
-    ])) === JSON.stringify(['English (Caitlin Relvas)', 'English (Emily Allison)', 'Math']));
+      { name: 'English', teacher_name: 'Marguerite Relvas' },
+      { name: 'English', teacher_name: 'Nora Whitfield' },
+      { name: 'Math', teacher_name: 'Robin Castellan' },
+    ])) === JSON.stringify(['English (Marguerite Relvas)', 'English (Nora Whitfield)', 'Math']));
 
   // ---- an admin's reach is not the default ---------------------------------
   // "Mark attendance for math and english today for lower ms: all were present
-  // except malakai and magnolia." offered 92 records across 16 classes owned by
+  // except zephyr and marigold." offered 92 records across 16 classes owned by
   // eight teachers. The cohort fan-out filtered by _rivenCanManageClass, which
   // for an admin is every class in the school.
   console.log('\n== a cohort command stays on the asker\'s own classes ==');
   const SCHOOL = [
     { id: 'my-m', name: 'Lower MS Math', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
     { id: 'my-e', name: 'Lower MS English', teacher_id: 't1', secondary_teacher_id: null, is_active: true, teacher_name: 'Me' },
-    { id: 'her-lit', name: 'Literature', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Caitlin' },
+    { id: 'her-lit', name: 'Literature', teacher_id: 't9', secondary_teacher_id: null, is_active: true, teacher_name: 'Adeline' },
     { id: 'his-sci', name: 'Science', teacher_id: 't8', secondary_teacher_id: null, is_active: true, teacher_name: 'Jordan' },
     { id: 'her-dance', name: 'Dance', teacher_id: 't7', secondary_teacher_id: null, is_active: true, teacher_name: 'Mary' },
   ];
@@ -373,8 +373,8 @@ async function award(text, attendance) {
   });
   app._terminalAllStudents = [
     { id: 'a', full_name: 'Ada Reyes', first_name: 'Ada', last_name: 'Reyes', status: 'active', rtc_balance: 0 },
-    { id: 'mk', full_name: 'Malakai Kaufman', first_name: 'Malakai', last_name: 'Kaufman', status: 'active', rtc_balance: 0 },
-    { id: 'mg', full_name: 'Magnolia Mays', first_name: 'Magnolia', last_name: 'Mays', status: 'active', rtc_balance: 0 },
+    { id: 'mk', full_name: 'Zephyr Lindqvist', first_name: 'Zephyr', last_name: 'Lindqvist', status: 'active', rtc_balance: 0 },
+    { id: 'mg', full_name: 'Marigold Prentice', first_name: 'Marigold', last_name: 'Prentice', status: 'active', rtc_balance: 0 },
     { id: 'out', full_name: 'Otto Older', first_name: 'Otto', last_name: 'Older', status: 'active', rtc_balance: 0 },
   ];
   app._terminalAllGroups = [{ id: 'g-ym', name: 'Full Young Middle', studentIds: ['a', 'mk', 'mg'] }];
@@ -398,7 +398,7 @@ async function award(text, attendance) {
   }
 
   // the reported sentence: classes named AND a cohort named -> the intersection
-  let touched = await cohort('Mark attendance for math and english today for lower ms: all were present except malakai and magnolia.');
+  let touched = await cohort('Mark attendance for math and english today for lower ms: all were present except zephyr and marigold.');
   t('only my two named classes are written',
     JSON.stringify(touched) === JSON.stringify(['my-e', 'my-m']), touched);
   t('the confirmation says whose cohort it narrowed to',

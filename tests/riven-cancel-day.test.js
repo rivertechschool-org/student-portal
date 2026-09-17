@@ -67,13 +67,13 @@ const ME = 'me';
 // A real-ish Wednesday: four of mine meet, one is somebody else's, one is
 // closed for the year, and one of mine does not meet today at all.
 const CLASSES = [
-  { id: 'c1', name: 'Math',       teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
-  { id: 'c2', name: 'Chemistry',  teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
-  { id: 'c3', name: 'Coding',     teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
-  { id: 'c4', name: 'Physics',    teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },
-  { id: 'c5', name: 'Bible',      teacher_id: 'other', teacher_name: 'Caitlin Pennock', status: 'active' },
-  { id: 'c6', name: 'Old Chess',  teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'closed' },
-  { id: 'c7', name: 'Yearbook',   teacher_id: ME,      teacher_name: 'Jordan Ezell',  status: 'active' },  // meets Friday
+  { id: 'c1', name: 'Math',       teacher_id: ME,      teacher_name: 'Robin Castellan',  status: 'active' },
+  { id: 'c2', name: 'Chemistry',  teacher_id: ME,      teacher_name: 'Robin Castellan',  status: 'active' },
+  { id: 'c3', name: 'Coding',     teacher_id: ME,      teacher_name: 'Robin Castellan',  status: 'active' },
+  { id: 'c4', name: 'Physics',    teacher_id: ME,      teacher_name: 'Robin Castellan',  status: 'active' },
+  { id: 'c5', name: 'Bible',      teacher_id: 'other', teacher_name: 'Adeline Ravenswood', status: 'active' },
+  { id: 'c6', name: 'Old Chess',  teacher_id: ME,      teacher_name: 'Robin Castellan',  status: 'closed' },
+  { id: 'c7', name: 'Yearbook',   teacher_id: ME,      teacher_name: 'Robin Castellan',  status: 'active' },  // meets Friday
 ];
 const PERIODS = { c1: [1], c2: [2], c3: [3], c4: [1, 5], c5: [4], c6: [2] };  // c7 absent = not today
 
@@ -228,7 +228,7 @@ const said = (text) => ({ original: text, _rawInput: text, normalized: text });
     ok('another teacher\'s class is now included', /Bible/.test(app.confirmed));
     ok('  and it is flagged as school-wide', /School-wide/.test(app.confirmed));
     // A cancellation reaching other people's registers should name them first.
-    ok('  naming whose days these are', /Caitlin Pennock/.test(app.confirmed));
+    ok('  naming whose days these are', /Adeline Ravenswood/.test(app.confirmed));
     ok('  the exception still holds', !/• Math/.test(app.confirmed));
   }
 

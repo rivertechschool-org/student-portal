@@ -60,7 +60,7 @@ function extract(name) {
 const HERE = [
   { student_id: 's1', first_name: 'Allie', last_name: 'T', grade_level: '7', status: 'present', family_number: 12, dismissed: false, picked_up_at: null },
   { student_id: 's2', first_name: 'Noah', last_name: 'W', grade_level: '8', status: 'late', family_number: 4, dismissed: false, picked_up_at: null },
-  { student_id: 's3', first_name: 'Kaitlyn', last_name: 'E', grade_level: '9', status: 'present', family_number: null, dismissed: true, picked_up_at: '2026-09-11T22:05:00Z' },
+  { student_id: 's3', first_name: 'Adelyn', last_name: 'E', grade_level: '9', status: 'present', family_number: null, dismissed: true, picked_up_at: '2026-09-11T22:05:00Z' },
 ];
 
 function makeApp({ rpcFails = false } = {}) {
@@ -95,7 +95,7 @@ function makeApp({ rpcFails = false } = {}) {
     check('it asks the register, not the timetable', app.calls[0].fn, 'rt_pickup_here_today');
 
     const out = app.host.innerHTML;
-    ok('everyone on the register is listed', /Allie/.test(out) && /Noah/.test(out) && /Kaitlyn/.test(out));
+    ok('everyone on the register is listed', /Allie/.test(out) && /Noah/.test(out) && /Adelyn/.test(out));
     ok('the counts are stated', /2 still here/.test(out) && /1 picked up/.test(out) && /3 on the register/.test(out));
     ok('a family number is shown where there is one', /#12/.test(out) && /#4/.test(out));
     ok('arriving late is flagged', />\s*late\s*</.test(out));
@@ -106,7 +106,7 @@ function makeApp({ rpcFails = false } = {}) {
     ok('a collected child shows the time', /picked up/i.test(out));
     // Still-here first: the list exists to answer "who is left".
     ok('those still here are listed first',
-      out.indexOf('Allie') < out.indexOf('Kaitlyn') && out.indexOf('Noah') < out.indexOf('Kaitlyn'));
+      out.indexOf('Allie') < out.indexOf('Adelyn') && out.indexOf('Noah') < out.indexOf('Adelyn'));
   }
 
   {

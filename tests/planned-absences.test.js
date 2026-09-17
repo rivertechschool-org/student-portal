@@ -129,13 +129,13 @@ check('  and a real day beside it survives',
 // ---- ranges and single phrases still work -------------------------------
 console.log('\n== ranges and plain phrases ==\n');
 
-check('"monday to wednesday"', spans('charlotte is out monday to wednesday'),
+check('"monday to wednesday"', spans('clementine is out monday to wednesday'),
   [{ start: '2026-09-14', end: '2026-09-16' }]);
 check('"next monday"', spans('noah is out next monday'),
   [{ start: '2026-09-14', end: '2026-09-14' }]);
 check('a weekday names the NEXT one, never today',
   spans('noah is out friday'), [{ start: '2026-09-18', end: '2026-09-18' }]);
-check('"tomorrow"', spans('charlotte wont be in tomorrow'),
+check('"tomorrow"', spans('clementine wont be in tomorrow'),
   [{ start: '2026-09-12', end: '2026-09-12' }]);
 check('an ISO date is taken as written', spans('out 2026-12-01'),
   [{ start: '2026-12-01', end: '2026-12-01' }]);

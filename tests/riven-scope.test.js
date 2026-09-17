@@ -8,8 +8,8 @@
 // which is a reasonable sentence and the wrong rule. An admin does have
 // permission over every class in the school, but permission is not relevance.
 // On a real account it meant the morning briefing opened with "Attendance not
-// yet taken today (37 classes)" — Spanish · Jordan Ezell, Guitar · Luke
-// Hegelund, and so on down — burying the two registers that were actually the
+// yet taken today (37 classes)" — Spanish · Robin Castellan, Guitar · Luke
+// Ashgrove, and so on down — burying the two registers that were actually the
 // asker's to take.
 //
 // The rule now: A READ WITH NO NAMED TARGET IS ABOUT YOUR OWN CLASSES, whoever
@@ -260,20 +260,20 @@ console.log('\n== the students a scan covers ==\n');
   // ---- whose student did that name mean? --------------------------------
   console.log('\n== an ambiguous name leans toward your own students ==\n');
 
-  // Three Charlottes, the way a school actually has them. Two belong to other
+  // Three Clementines, the way a school actually has them. Two belong to other
   // teachers; an admin can see all three, which is what made a bare first name
   // open a picker instead of doing the obvious thing.
-  const CHARLOTTES = [
-    { id: 'st-tebow',  first_name: 'Charlotte', last_name: 'Tebow',  full_name: 'Charlotte Tebow',  email: 'ct@x', rtc_balance: 10 },
-    { id: 'st-innis',  first_name: 'Charlotte', last_name: 'Innis',  full_name: 'Charlotte Innis',  email: 'ci@x', rtc_balance: 20 },
-    { id: 'st-vance',  first_name: 'Charlotte', last_name: 'Vance',  full_name: 'Charlotte Vance',  email: 'cv@x', rtc_balance: 30 },
-    { id: 'st-dylan',  first_name: 'Dylan',     last_name: 'Reyes',  full_name: 'Dylan Reyes',      email: 'dr@x', rtc_balance: 40 },
+  const CLEMENTINES = [
+    { id: 'st-vasquez',  first_name: 'Clementine', last_name: 'Vasquez',  full_name: 'Clementine Vasquez',  email: 'ct@x', rtc_balance: 10 },
+    { id: 'st-innis',  first_name: 'Clementine', last_name: 'Innis',  full_name: 'Clementine Innis',  email: 'ci@x', rtc_balance: 20 },
+    { id: 'st-vance',  first_name: 'Clementine', last_name: 'Vance',  full_name: 'Clementine Vance',  email: 'cv@x', rtc_balance: 30 },
+    { id: 'st-rory',  first_name: 'Rory',     last_name: 'Reyes',  full_name: 'Rory Reyes',      email: 'dr@x', rtc_balance: 40 },
   ];
 
   function matcher(mineIds) {
     const app = {
       _nlpContext: {},
-      _terminalAllStudents: CHARLOTTES,
+      _terminalAllStudents: CLEMENTINES,
       _terminalPinnedStudent: null,
       _rivenMyStudentIdSet: mineIds === null ? null : new Set(mineIds),
     };
@@ -287,43 +287,43 @@ console.log('\n== the students a scan covers ==\n');
   }
 
   {
-    const app = matcher(['st-tebow']);
-    const r = app._fuzzyFindStudent('charlotte', 'charlotte');
+    const app = matcher(['st-vasquez']);
+    const r = app._fuzzyFindStudent('clementine', 'clementine');
     check('one of the three is yours, so that is who it means', r.ambiguous, false);
-    check('  and it is the right one', r.student.full_name, 'Charlotte Tebow');
+    check('  and it is the right one', r.student.full_name, 'Clementine Vasquez');
   }
   {
     // Two of yours is a real question, not a tie to break.
-    const app = matcher(['st-tebow', 'st-innis']);
-    const r = app._fuzzyFindStudent('charlotte', 'charlotte');
+    const app = matcher(['st-vasquez', 'st-innis']);
+    const r = app._fuzzyFindStudent('clementine', 'clementine');
     check('two of yours still asks', r.ambiguous, true);
     check('  and yours are offered first', r.matches.slice(0, 2).map(m => m.full_name).sort(),
-      ['Charlotte Innis', 'Charlotte Tebow']);
+      ['Clementine Innis', 'Clementine Vasquez']);
   }
   {
     // None of them yours: unchanged behaviour, the picker.
-    const app = matcher(['st-dylan']);
-    check('none of yours asks, as it always did', app._fuzzyFindStudent('charlotte', 'charlotte').ambiguous, true);
+    const app = matcher(['st-rory']);
+    check('none of yours asks, as it always did', app._fuzzyFindStudent('clementine', 'clementine').ambiguous, true);
   }
   {
     // THE RULE THAT MATTERS: ownership breaks ties, it does not beat spelling.
     // The sentence named Vance; Vance is not yours; Vance is still who it means.
-    const app = matcher(['st-tebow']);
-    const r = app._fuzzyFindStudent('charlotte vance', 'charlotte vance');
+    const app = matcher(['st-vasquez']);
+    const r = app._fuzzyFindStudent('clementine vance', 'clementine vance');
     check('a name you actually said wins over a name you own', r.ambiguous, false);
-    check('  even when the other one is yours', r.student.full_name, 'Charlotte Vance');
+    check('  even when the other one is yours', r.student.full_name, 'Clementine Vance');
   }
   {
     // A failed roster lookup must leave matching exactly as it was, not turn
     // every student into a stranger.
     const app = matcher(null);
-    check('no roster means no opinion', app._fuzzyFindStudent('charlotte', 'charlotte').ambiguous, true);
-    check('  and nobody counts as yours', app._rivenIsMyStudent('st-tebow'), false);
+    check('no roster means no opinion', app._fuzzyFindStudent('clementine', 'clementine').ambiguous, true);
+    check('  and nobody counts as yours', app._rivenIsMyStudent('st-vasquez'), false);
   }
   {
     const app = matcher(['st-innis']);
     check('_rivenOwnRank sorts yours to the front', [
-      app._rivenOwnRank(CHARLOTTES[0]), app._rivenOwnRank(CHARLOTTES[1]),
+      app._rivenOwnRank(CLEMENTINES[0]), app._rivenOwnRank(CLEMENTINES[1]),
     ], [1, 0]);
     check('  and an unknown student is not a crash', app._rivenOwnRank(undefined), 1);
   }

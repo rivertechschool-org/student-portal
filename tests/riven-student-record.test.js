@@ -73,7 +73,7 @@ function extract(name) {
 const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-const STUDENT = { id: 's1', full_name: 'Jonathan Smith' };
+const STUDENT = { id: 's1', full_name: 'Bartholomew Crane' };
 
 // Records every write the executor attempts, and runs the confirmation body
 // straight away so the test sees what would actually reach the database.
@@ -134,7 +134,7 @@ function makeApp({ role = 'admin', profile = {}, schedule = [], links = [], pare
   };
   // Link and unlink now take the student from after the preposition, so the
   // stub needs that helper and something for it to match against.
-  app._fuzzyFindStudent = (t) => (String(t).toLowerCase().includes('jonathan')
+  app._fuzzyFindStudent = (t) => (String(t).toLowerCase().includes('bartholomew')
     ? { student: STUDENT, ambiguous: false, score: 1 } : null);
   for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenStudentAfterPreposition',
                    '_rivenParseWeekdays', '_rivenDayCodes', '_rivenDayList',
@@ -164,11 +164,11 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
   {
     const app = makeApp({ role: 'teacher' });
     for (const [fn, sentence] of [
-      ['terminalSetEnrollmentType', 'make jonathan homeschool'],
-      ['terminalSetSchedule', 'jonathan attends monday and wednesday'],
-      ['terminalSetGradeLevel', 'move jonathan to 8th grade'],
-      ['terminalRenameStudent', "change jonathan's last name to Smithe"],
-      ['terminalLinkParent', 'link sarah jones to jonathan as his parent'],
+      ['terminalSetEnrollmentType', 'make bartholomew homeschool'],
+      ['terminalSetSchedule', 'bartholomew attends monday and wednesday'],
+      ['terminalSetGradeLevel', 'move bartholomew to 8th grade'],
+      ['terminalRenameStudent', "change bartholomew's last name to Smithe"],
+      ['terminalLinkParent', 'link sarah jones to bartholomew as his parent'],
     ]) {
       await app[fn].call(app, said(sentence));
     }
@@ -183,7 +183,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ role: 'teacher', schedule: [{ day_of_week: 2 }, { day_of_week: 4 }] });
-    await app.terminalShowSchedule.call(app, said('what days does jonathan attend'));
+    await app.terminalShowSchedule.call(app, said('what days does bartholomew attend'));
     ok('a teacher can read the attending days', /Tuesday, Thursday/.test(app.said[0]));
     check('  with no error', app.errors, []);
   }
@@ -194,7 +194,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
       links: [{ parent_id: 'auth-mary' }],
       parents: [{ id: 'p1', first_name: 'Mary', last_name: 'Smith', email: 'mary@x.com', phone: '555' }],
     });
-    await app.terminalShowParents.call(app, said("who are jonathan's parents"));
+    await app.terminalShowParents.call(app, said("who are bartholomew's parents"));
     ok('and read the parents', /Mary Smith/.test(app.said[0]));
     ok('  with the contact details they would ring', /mary@x\.com/.test(app.said[0]));
   }
@@ -203,7 +203,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ profile: { enrollment_type: 'full-time' } });
-    await app.terminalSetEnrollmentType.call(app, said('make jonathan homeschool'));
+    await app.terminalSetEnrollmentType.call(app, said('make bartholomew homeschool'));
     ok('the confirmation shows what it is changing from', /full-time/.test(app.confirmed));
     ok('  and to', /<b>homeschool<\/b>/.test(app.confirmed));
     // The two are constantly confused, and one is a bill.
@@ -214,14 +214,14 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ profile: { enrollment_type: 'homeschool' } });
-    await app.terminalSetEnrollmentType.call(app, said('make jonathan homeschool'));
+    await app.terminalSetEnrollmentType.call(app, said('make bartholomew homeschool'));
     check('setting it to what it already is writes nothing', app.writes, []);
     ok('  and says so', /already homeschool/.test(app.said[0]));
   }
 
   {
     const app = makeApp({ profile: { enrollment_type: 'full-time' } });
-    await app.terminalSetEnrollmentType.call(app, said('change jonathan'));
+    await app.terminalSetEnrollmentType.call(app, said('change bartholomew'));
     check('a sentence with no type in it writes nothing', app.writes, []);
     ok('  and asks which', /Full-time or homeschool/.test(app.errors[0]));
   }
@@ -230,7 +230,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ schedule: [{ day_of_week: 2 }] });
-    await app.terminalSetSchedule.call(app, said('jonathan attends monday wednesday friday'));
+    await app.terminalSetSchedule.call(app, said('bartholomew attends monday wednesday friday'));
 
     ok('the confirmation names the days now', /Tuesday/.test(app.confirmed));
     ok('  and the days after', /Monday, Wednesday, Friday/.test(app.confirmed));
@@ -247,7 +247,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ schedule: [{ day_of_week: 1 }] });
-    await app.terminalSetSchedule.call(app, said('jonathan comes in every weekday'));
+    await app.terminalSetSchedule.call(app, said('bartholomew comes in every weekday'));
     const ins = app.writes.find(w => w.op === 'insert');
     check('"every weekday" is Monday to Friday', ins.rows.map(r => r.day_of_week), [1, 2, 3, 4, 5]);
     ok('  and reads back as a phrase, not five words', /every weekday/.test(app.confirmed));
@@ -258,7 +258,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
     // child on no register at all is silent - it lasts until somebody notices.
     const app = makeApp({ schedule: [{ day_of_week: 2 }, { day_of_week: 4 }], failInsert: true });
     let threw = false;
-    try { await app.terminalSetSchedule.call(app, said('jonathan attends monday')); }
+    try { await app.terminalSetSchedule.call(app, said('bartholomew attends monday')); }
     catch (e) { threw = true; }
     const inserts = app.writes.filter(w => w.op === 'insert');
     ok('a failed write puts the old days back', inserts.length === 2);
@@ -268,7 +268,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ schedule: [{ day_of_week: 1 }, { day_of_week: 3 }] });
-    await app.terminalSetSchedule.call(app, said('jonathan attends monday and wednesday'));
+    await app.terminalSetSchedule.call(app, said('bartholomew attends monday and wednesday'));
     check('setting the days they already have writes nothing', app.writes, []);
     ok('  and says so', /already down for Monday, Wednesday/.test(app.said[0]));
   }
@@ -284,7 +284,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ profile: { grade_level: '7' } });
-    await app.terminalSetGradeLevel.call(app, said('move jonathan to 8th grade'));
+    await app.terminalSetGradeLevel.call(app, said('move bartholomew to 8th grade'));
     check('the year group is written', app.writes[0].patch, { grade_level: '8' });
     // SET_GRADE is a mark; this is a year group. They share a word.
     ok('  and the confirmation says which it is', /not a mark/.test(app.confirmed));
@@ -292,13 +292,13 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ profile: { grade_level: '1' } });
-    await app.terminalSetGradeLevel.call(app, said('move jonathan to kindergarten'));
+    await app.terminalSetGradeLevel.call(app, said('move bartholomew to kindergarten'));
     check('kindergarten is K', app.writes[0].patch, { grade_level: 'K' });
   }
 
   {
     const app = makeApp({ profile: { grade_level: '7' } });
-    await app.terminalSetGradeLevel.call(app, said('move jonathan to 19th grade'));
+    await app.terminalSetGradeLevel.call(app, said('move bartholomew to 19th grade'));
     check('a year group that does not exist is refused', app.writes, []);
     ok('  saying the range', /K through 12/.test(app.errors[0]));
   }
@@ -307,7 +307,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ profile: { first_name: 'Jonathon', last_name: 'Smith' } });
-    await app.terminalRenameStudent.call(app, said("change jonathan's last name to Smithe"));
+    await app.terminalRenameStudent.call(app, said("change bartholomew's last name to Smithe"));
     check('only the half that was named changes', app.writes[0].patch, { last_name: 'Smithe' });
     ok('  shown against what it was', /Smith/.test(app.confirmed));
     // Every later sentence resolves names against the cached roster; without
@@ -317,8 +317,8 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
 
   {
     const app = makeApp({ profile: { first_name: 'Jon', last_name: 'Smith' } });
-    await app.terminalRenameStudent.call(app, said("jonathan's first name to Jonathan"));
-    check('a first name alone works too', app.writes[0].patch, { first_name: 'Jonathan' });
+    await app.terminalRenameStudent.call(app, said("bartholomew's first name to Bartholomew"));
+    check('a first name alone works too', app.writes[0].patch, { first_name: 'Bartholomew' });
   }
 
   {
@@ -334,7 +334,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
     const app = makeApp({
       parents: [{ id: 'p1', first_name: 'Sarah', last_name: 'Jones', email: 'sarah@x.com', auth_user_id: 'auth-sarah' }],
     });
-    await app.terminalLinkParent.call(app, said('link sarah jones to jonathan as his parent'));
+    await app.terminalLinkParent.call(app, said('link sarah jones to bartholomew as his parent'));
     // The FK is on auth.users, and the audit found this exact mistake writing a
     // profile id into it.
     check('the link is keyed by the login, not the profile',
@@ -350,7 +350,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
     const app = makeApp({
       parents: [{ id: 'p1', first_name: 'Sarah', last_name: 'Jones', email: 'sarah@x.com', auth_user_id: null }],
     });
-    await app.terminalLinkParent.call(app, said('link sarah jones to jonathan as his parent'));
+    await app.terminalLinkParent.call(app, said('link sarah jones to bartholomew as his parent'));
     check('a parent with no sign-in is not linked', app.writes, []);
     ok('  and is told to open the account first', /Open their account first/.test(app.said[0]));
   }
@@ -362,7 +362,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
         { id: 'p2', first_name: 'Sarah', last_name: 'Jones', email: 'other@x.com', auth_user_id: 'a2' },
       ],
     });
-    await app.terminalLinkParent.call(app, said('link sarah jones to jonathan as his parent'));
+    await app.terminalLinkParent.call(app, said('link sarah jones to bartholomew as his parent'));
     check('two parents of the same name link neither', app.writes, []);
     ok('  and it asks for the address instead', /email address/.test(app.errors[0]));
   }
@@ -371,7 +371,7 @@ const said = (e) => ({ student: { student: STUDENT }, original: e, _rawInput: e 
     const app = makeApp({
       parents: [{ id: 'p1', first_name: 'Sarah', last_name: 'Jones', email: 'sarah@x.com', auth_user_id: 'a1' }],
     });
-    await app.terminalLinkParent.call(app, said('link sarah to jonathan as his parent'));
+    await app.terminalLinkParent.call(app, said('link sarah to bartholomew as his parent'));
     check('a first name alone is not enough', app.writes, []);
     ok('  and says why that matters', /not enough to open a child's records/.test(app.errors[0]));
   }

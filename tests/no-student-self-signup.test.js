@@ -9,13 +9,13 @@
 // anything a stranger would not also know. So a student who used one ended up
 // with a SECOND profile: same child, same school, none of the history, and the
 // new one is the one they then signed in to. Three such pairs had to be merged
-// by hand before this was written, and one of them (Ruthie's) had 28 skill
+// by hand before this was written, and one of them (Tillie's) had 28 skill
 // records stranded on the self-made row, so an automatic rule would have
 // destroyed data either way it chose.
 //
 // Activate was worse than useless: it called student_username_unclaimed(),
 // which does not exist on this database, so it could only ever fail - and the
-// usernames it asked for ("ruthie.argon", a misspelt "Malea", "Samantha H.")
+// usernames it asked for ("tillie.vermeer", a misspelt "Malea", "Rosalie H.")
 // were not typeable by the students who had them. That is what pushed them to
 // Register, which is what made the duplicates.
 //
@@ -155,7 +155,7 @@ function fakeDom(fields) {
       'reg-password-confirm': fields.confirm ?? 'longenough1',
       'reg-username': fields.username ?? 'mum',
       'reg-firstname': fields.first ?? 'Mary',
-      'reg-lastname': fields.last ?? 'Argon',
+      'reg-lastname': fields.last ?? 'Vermeer',
       'register-submit-btn': { disabled: false, textContent: 'Register' },
     });
 
@@ -237,14 +237,14 @@ function fakeDom(fields) {
   // re-guessed on each screen.
   const CHILDREN = [
     // The real case: linked, on the roster, no login yet.
-    { id: 'c1', first_name: 'Ruthie', last_name: 'Argon', email: null, grade_level: '7',
+    { id: 'c1', first_name: 'Tillie', last_name: 'Vermeer', email: null, grade_level: '7',
       account_status: 'inactive', can_login: false, auth_user_id: null },
     // Already signed in once - nothing to offer.
-    { id: 'c2', first_name: 'Eli', last_name: 'Argon', email: 'eli@example.com', grade_level: '9',
-      account_status: 'activated', can_login: true, auth_user_id: 'auth-eli' },
+    { id: 'c2', first_name: 'Ari', last_name: 'Vermeer', email: 'ari@example.com', grade_level: '9',
+      account_status: 'activated', can_login: true, auth_user_id: 'auth-ari' },
     // Signs in with a PIN: there IS an auth user, but account_status stays
     // 'inactive', so the portal itself is still shut to them.
-    { id: 'c3', first_name: 'Mae', last_name: 'Argon', email: 'pin-abc@pin.rivertech.me',
+    { id: 'c3', first_name: 'Mae', last_name: 'Vermeer', email: 'pin-abc@pin.rivertech.me',
       grade_level: '5', account_status: 'inactive', can_login: false, auth_user_id: 'auth-pin' },
   ];
 
@@ -292,7 +292,7 @@ function fakeDom(fields) {
     const app = rootParent();
     app.showActivateChildModal.call(app, 'c1');
     const out = app.modals[0];
-    ok('the modal is named for the child', /Ruthie/.test(out.title));
+    ok('the modal is named for the child', /Tillie/.test(out.title));
     ok('  and says the record already exists', /existing school record/.test(out.content));
     ok('the address field starts empty when there is none on file',
       /id="activate-child-email" value=""/.test(out.content));
@@ -347,7 +347,7 @@ function fakeDom(fields) {
   {
     const app = rootParent();
     fakeDom({
-      'activate-child-email': 'ruthie@example.com',
+      'activate-child-email': 'tillie@example.com',
       'activate-child-confirm': { checked: false },
       'activate-child-error': { textContent: '', style: {} },
       'activate-child-go': { disabled: false, textContent: 'Send the link' },
@@ -360,7 +360,7 @@ function fakeDom(fields) {
   {
     const app = rootParent();
     fakeDom({
-      'activate-child-email': '  Ruthie@Example.com ',
+      'activate-child-email': '  Tillie@Example.com ',
       'activate-child-confirm': { checked: true },
       'activate-child-error': { textContent: '', style: {} },
       'activate-child-go': { disabled: false, textContent: 'Send the link' },
@@ -371,13 +371,13 @@ function fakeDom(fields) {
     ok('it calls the same function the office calls',
       /\/functions\/v1\/admin-activate-student$/.test(post.url));
     check('it names the child', post.body.studentId, 'c1');
-    check('the address is trimmed', post.body.email, 'Ruthie@Example.com');
+    check('the address is trimmed', post.body.email, 'Tillie@Example.com');
     // Sent twice on purpose: the server refuses if the two disagree, so a stale
     // screen cannot mail a link to an address nobody looked at.
     check('  and confirmed against itself', post.body.confirmedEmail, post.body.email);
     ok('the session is carried', /Bearer tok/.test(post.opts.headers.Authorization));
     check('the modal closes', app.closed, 1);
-    ok('and it reports where the link went', app.notices.some(n => /success:.*Ruthie@Example\.com/.test(n)));
+    ok('and it reports where the link went', app.notices.some(n => /success:.*Tillie@Example\.com/.test(n)));
     check('the dashboard is rebuilt so the button disappears', app.reloads.length, 1);
   }
 
@@ -420,7 +420,7 @@ function fakeDom(fields) {
     // parent waiting for a link that is not coming.
     const app = rootParent({ body: { success: true, emailSent: false, warning: 'hourly limit reached' } });
     fakeDom({
-      'activate-child-email': 'ruthie@example.com',
+      'activate-child-email': 'tillie@example.com',
       'activate-child-confirm': { checked: true },
       'activate-child-error': { textContent: '', style: {} },
       'activate-child-go': { disabled: false, textContent: 'Send the link' },
@@ -434,7 +434,7 @@ function fakeDom(fields) {
   {
     const app = rootParent({ throws: 'network down' });
     fakeDom({
-      'activate-child-email': 'ruthie@example.com',
+      'activate-child-email': 'tillie@example.com',
       'activate-child-confirm': { checked: true },
       'activate-child-error': { textContent: '', style: {} },
       'activate-child-go': { disabled: false, textContent: 'Send the link' },
@@ -487,10 +487,10 @@ function fakeDom(fields) {
     const profileCols = asked.find(a => a.table === 'user_profiles' && /first_name/.test(a.cols)).cols;
     ok('the dashboard asks whether each child can sign in', /can_login/.test(profileCols));
 
-    ok('a child with no login is offered one', /Open Ruthie's account/.test(html));
-    ok('  and told plainly what is missing', /Ruthie has no sign-in yet/.test(html));
+    ok('a child with no login is offered one', /Open Tillie's account/.test(html));
+    ok('  and told plainly what is missing', /Tillie has no sign-in yet/.test(html));
     ok('  with the games PIN named as what still works', /games work with their PIN/.test(html));
-    ok('a child who already signs in is not', !/Open Eli's account/.test(html));
+    ok('a child who already signs in is not', !/Open Ari's account/.test(html));
     check('one button per child who needs one',
       (html.match(/showActivateChildModal/g) || []).length, 2);
   }
@@ -542,13 +542,13 @@ function fakeDom(fields) {
     const app = portalParent();
     app.showActivateChildModal.call(app, 'c1');
     ok('the portal modal is the same offer', /existing school record/.test(app.modals[0].content));
-    ok('  named for the child', /Ruthie/.test(app.modals[0].title));
+    ok('  named for the child', /Tillie/.test(app.modals[0].title));
   }
 
   {
     const app = portalParent();
     fakeDom({
-      'activate-child-email': 'ruthie@example.com',
+      'activate-child-email': 'tillie@example.com',
       'activate-child-confirm': { checked: true },
       'activate-child-error': { textContent: '', style: {} },
       'activate-child-go': { disabled: false, textContent: 'Send the link' },
@@ -558,17 +558,17 @@ function fakeDom(fields) {
     // Both copies have to send the same shape, or one of them is quietly a
     // different feature.
     check('the portal sends the same body', app.posts[0].body,
-      { studentId: 'c1', email: 'ruthie@example.com', confirmedEmail: 'ruthie@example.com' });
+      { studentId: 'c1', email: 'tillie@example.com', confirmedEmail: 'tillie@example.com' });
     check('the modal closes by name', app.closed, ['activate-child']);
     check('the child is marked as able to sign in', app.children.find(c => c.id === 'c1').can_login, true);
-    check('  and carries the address that was used', app.children.find(c => c.id === 'c1').email, 'ruthie@example.com');
+    check('  and carries the address that was used', app.children.find(c => c.id === 'c1').email, 'tillie@example.com');
     check('the home page is redrawn so the button goes', app.redraws, 1);
   }
 
   {
-    const app = portalParent({ status: 409, body: { error: 'Eli Argon already uses that address.' } });
+    const app = portalParent({ status: 409, body: { error: 'Ari Vermeer already uses that address.' } });
     fakeDom({
-      'activate-child-email': 'eli@example.com',
+      'activate-child-email': 'ari@example.com',
       'activate-child-confirm': { checked: true },
       'activate-child-error': { textContent: '', style: {} },
       'activate-child-go': { disabled: false, textContent: 'Send the link' },

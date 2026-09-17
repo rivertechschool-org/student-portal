@@ -288,7 +288,7 @@ stranger would not also know — so a student who used one got a SECOND profile 
 the history, and that is the one they then signed in to. Three such pairs were merged by
 hand this week; one had 28 skill records stranded on the self-made row. Activate could not
 have worked in any case: it called `student_username_unclaimed()`, which does not exist on
-this database, and asked for usernames (`ruthie.argon`, a misspelt `Malea`, `Samantha H.`)
+this database, and asked for usernames (`tillie.vermeer`, a misspelt `Malea`, `Rosalie H.`)
 that the students holding them could not type.
 
 **What replaces it.** Someone who already knows the child sends an address:
@@ -369,7 +369,7 @@ Backend changes are in the private repo and are already applied. Suite green;
 
 ## 2026-09-11 — Jordan's Claude (loose ends)
 
-**Riven answered a question with a refusal.** "What days are Jonathan missing?"
+**Riven answered a question with a refusal.** "What days are Bartholomew missing?"
 was matching PLAN_ABSENCE — "are ... missing" is one of its patterns — so the
 question guard fired and Riven explained it does not change data on a maybe,
 while holding the answer. The write intent now stands down entirely for a
@@ -449,7 +449,7 @@ that a student with an existing mark survives the filter.
 
 ## 2026-09-11 — Jordan's Claude (Riven: enrolment)
 
-**"Is Jonathan a full time or homeschool student?" answered with a class
+**"Is Bartholomew a full time or homeschool student?" answered with a class
 picker.** "Homeschool" is two things here at once: the enrolment type of 36 of
 the 138 students on the roll, and a cohort qualifier inside four class names
 ("Creative Writing - Older Homeschool"). Class matching takes any distinctive
@@ -490,7 +490,7 @@ RIVEN_BUILD → 2026-09-11·e. nlp-stress green, frontdoor-precision 100%.
 **Riven could read most of a student's record and change almost none of it.**
 Contact details were the only writable part. It now reads and writes the rest.
 
-**Reads (teachers):** `VIEW_SCHEDULE` ("what days does Jonathan attend") and
+**Reads (teachers):** `VIEW_SCHEDULE` ("what days does Bartholomew attend") and
 `VIEW_PARENTS` ("who are his parents"). The first was the reported bug — it was
 landing on the student card, or on a "did you mean flag attendance problems?"
 clarify, which is what happens when nothing owns a question.
@@ -1293,7 +1293,7 @@ The question being asked is "who can cover the piano"; the answer belongs at the
 ## 2026-09-15 — Jordan's Claude (Riven learns the year groups, and /admin)
 
 **"Add her to my Math class tagged Old Middle School" gave a picker of four
-rows, every one reading `Math · Jordan Ezell`.** Two faults at once.
+rows, every one reading `Math · Robin Castellan`.** Two faults at once.
 
 **Closed classes were still being offered.** Five classes are named `Math`;
 three are closed for the year. My earlier closed-class fix reached the sibling
@@ -1338,7 +1338,7 @@ one nobody can check.
 **Caught by the precision harness, and worth knowing about:** there is a
 production `WRITE_INTENTS` array inside `_matchIntent` that gates
 speculative/interrogative phrasings. A new write intent that is not in it will
-happily fire on *"should I add Josey to all the Old Middle School classes?"*.
+happily fire on *"should I add Posy to all the Old Middle School classes?"*.
 Add new write intents there.
 
 ### /admin
@@ -1372,7 +1372,7 @@ that runs when some *other* load has failed. On a healthy session it never ran.
 `if (!bands.length) return null` guard, every sentence resolved to no band, and
 `ENROLL_BAND`'s `requiresBand` guard skipped it every time.
 
-So "Add Josey to every Old Middle class" fell through to an ordinary class
+So "Add Posy to every Old Middle class" fell through to an ordinary class
 match on the word *middle* and offered a picker of **Younger** Middle School
 classes. Nothing errored. Nothing warned. The feature was simply off.
 
@@ -1718,7 +1718,7 @@ fixed by the account-type email template, now applied to the live project from
 
 ## 2026-09-16 — Jordan's Claude (the ways people write a date)
 
-**"Meadow will be absent Sept 23" answered with the help text. Twice.** The
+**"Willow will be absent Sept 23" answered with the help text. Twice.** The
 intent matched fine both times — the *date* came back null, and a null date is
 indistinguishable from a sentence Riven did not understand.
 
@@ -2162,7 +2162,7 @@ first, so every dated question benefits and not just the absence scan:
 
 **It reads backwards, on purpose.** `_rivenMonthDayDates` — the reader the
 absence and cancellation flows use — resolves an ambiguous month *forwards*,
-because "Meadow will be absent Sept 23" is a plan. A question is the other way
+because "Willow will be absent Sept 23" is a plan. A question is the other way
 round: nobody was missing next May. The two stay separate rather than one
 growing a flag meaning "except when it doesn't", and the test asserts both
 directions on the same words.
@@ -2206,7 +2206,7 @@ absence scan, the class card and the notes window. All six now use
 
 ---
 
-## 2026-09-16 — "Was Elizabeth Beck present September 9"
+## 2026-09-16 — "Was Josephine Beck present September 9"
 
 Riven got the misspelled surname right, then answered with her **account card**:
 email, RTC balance, status, join date, uuid. Nothing about attendance.
@@ -2235,7 +2235,7 @@ confidently — the failure this page keeps repeating. A named day now says
 ### The answer's shape
 
 A yes/no question gets a yes or a no. "3 records · 67% present" is a report.
-`✅ Yes — Elizabeth Becker was present on September 9`, with the register it came
+`✅ Yes — Josephine Wexler was present on September 9`, with the register it came
 from underneath. Absent, late, left early and *in school but missed a lesson*
 each get their own sentence, because they need different things doing about
 them.
@@ -2260,7 +2260,7 @@ flat reports five absences for one day off.
   recorded". `school`, `class`, `classes`, `lesson`, `lessons` are now discarded
   as subjects here.
 
-Verified against the live rows: Elizabeth Becker on 2026-09-09 is **present** on
+Verified against the live rows: Josephine Wexler on 2026-09-09 is **present** on
 the morning register, with **no lesson rows at all** — so the old path would
 have found nothing and widened to a month even if routing had got it there.
 
@@ -2338,9 +2338,9 @@ Five reports in one afternoon were the same question asked five ways:
 | --- | --- |
 | who was missing September 14th | the last 30 days |
 | who was missing? | the last 30 days |
-| was Elizabeth Beck present September 9 | her account card |
+| was Josephine Beck present September 9 | her account card |
 | who is missing next week | today's register |
-| will Meadow be missing the next couple days | "what did you mean?" |
+| will Willow be missing the next couple days | "what did you mean?" |
 
 Each got fixed with one more regex on one of three intents, and the next
 phrasing broke anyway — because **the phrasings are a cross product and the
@@ -2378,9 +2378,9 @@ bids. **326 of 326.**
 Deciding an intent before anything else bids is a strong move, and the first
 version of it quietly took four things that are not attendance questions:
 
-- `give charlotte 5 rtc for good attendance` — an **RTC award**
+- `give clementine 5 rtc for good attendance` — an **RTC award**
 - `notes about attendance` — the notes list
-- `attendance for english: all here except malakai` — a register being **taken**
+- `attendance for english: all here except zephyr` — a register being **taken**
 - `who's here in lower ms today` — that cohort's own roster (`DAILY_ROSTER`
   answers it better, and `requiresGroup` is what keeps it there)
 
@@ -2473,4 +2473,89 @@ that reproduce the roster's *shapes*. The older harnesses have not been
 scrubbed: it rewrites fixtures across several files and a lot of expected-value
 assertions, so it is a deliberate job rather than something to slip into an
 unrelated commit. **Flagged, not done.**
+
+---
+
+## 2026-09-16 — real names out of the public repo
+
+This repo is public and Pages serves every file verbatim. It named **35 real
+people across 36 files** — students, parents and staff — in test fixtures, in
+harness rosters, in code comments, and, worst of the four, **in text shown to
+every user**.
+
+That last category is the one to look at before assuming this was only a
+test-data problem. Real students' names were in:
+
+- the Riven help panel — *"How much gold does <student> have?"*
+- error messages — *Tell me a student and an amount, like "give <student> 2 RTC"*
+- the `/rt` and `/admin` usage examples
+- the **few-shot examples sent to the language model** on every interpret call
+
+### How it was done
+
+Measured first: every `first_name`/`last_name` pair from `user_profiles`, then
+scanned for a first name and its own surname appearing within 24 characters of
+each other. A bare surname is useless as a signal here — a quarter of this
+roster is spelled like ordinary English (`test`, `long`, `means`, `young`,
+`king`, `wood`), and matching those rewrites curriculum data and directory
+names.
+
+Then two passes, because the risk differs:
+
+- **full-name pairs, repo-wide** — "Eli Morris" is unambiguous
+- **bare first names and surnames, only in `tests/`, `debug-tools/`,
+  `portal/index.html` and the two markdown files** — a repo-wide swap of
+  "Elijah" would rename the **prophet** in `games/bible-study.html` and
+  `data/compiled/master_graph.json`, and "eli" appears inside a minified vendor
+  bundle.
+
+### The invented cast keeps the shapes the tests measure
+
+A name fixture is not decoration. The replacements preserve every relationship
+the matcher tests lean on:
+
+- a short name that is a strict **prefix** of a longer one — `eli`/`elijah`
+  became `ari`/`arian`
+- two people sharing that longer name with **different last initials** (D / K)
+- families sharing a surname — three Beckers became three Wexlers, four
+  Hegelunds became four Ashgroves
+- a first name long enough for the **8-character and 4-character prefixes** the
+  typo tests use
+- a surname sitting one edit from a class name, so the class still wins
+  (`chev`/`ches` → `chet`/`ches`)
+- the **compressed-nickname** case — `daeny` → `serphi`, both a subsequence of
+  the full name sharing its first two letters
+
+Prefixes, typos, possessives and nicknames were re-derived by applying the same
+operation to the new name, so each test still tests what its label claims. The
+harnesses found the ones I missed: `char`, `evlyn`, `daeny`, `dany`, a
+possessive, two fixtures whose `last_name` no longer agreed with their
+`full_name`, and one alphabet fixture (`Becker`/`Chase`/`Diaz`/`Ellis`) whose
+sort order I broke by renaming the first entry past the others.
+
+**Verified**: 0 real people left outside the two exceptions below. Full suite
+green, and every harness — `name-resolution` 83, `attendance-matrix` 326,
+`nlp-stress` 109 + 27 rounds, `frontdoor-precision` 70 writes with 0 over-fired
+and 0 over-blocked, plus five more.
+
+### Two things deliberately NOT changed
+
+- **`portal/report-card.html` carries the principal's real name** as the
+  signature on every published report card. That is product text a school means
+  to publish; renaming it would put a fake principal on a real document. Left
+  alone on purpose.
+- **`MIGRATION_MAP.md` should probably not be in this repo at all.** It is a
+  generated 3081-line map of the private repo's 166 migrations, **394 of its
+  lines mention security, RLS, policies, attacks or bypasses**, and it named two
+  students — one of them *as the subject of a security remediation*. The
+  canonical copy already lives in the private backend repo, which is where
+  CLAUDE.md says it belongs. The names are scrubbed; **the file itself is a
+  decision for a human.**
+
+### What this does not undo
+
+**Git history still has all of it.** Every name removed here remains in the
+commits that introduced it, and GitHub serves history too. Scrubbing that means
+rewriting history and force-pushing, which breaks every existing clone — a
+deliberate, coordinated job, not a side effect of this one.
 

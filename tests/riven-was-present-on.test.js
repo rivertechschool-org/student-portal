@@ -1,4 +1,4 @@
-// "Was Elizabeth Beck present September 9" is three questions in a trench coat,
+// "Was Josephine Beck present September 9" is three questions in a trench coat,
 // and the page got all three wrong.
 //
 // 1. IT NEVER REACHED ATTENDANCE. Every copula pattern on VIEW_ATTENDANCE said
@@ -97,7 +97,7 @@ function makeApp({ daily = [], classy = [], classes = [] } = {}) {
     _naturalError(m) { app.printed.push(m); },
     _suggestStudents() { return []; },
     async _findStudentsByName() {
-      return [{ id: 'eb', first_name: 'Elizabeth', last_name: 'Becker', full_name: 'Elizabeth Becker' }];
+      return [{ id: 'eb', first_name: 'Josephine', last_name: 'Wexler', full_name: 'Josephine Wexler' }];
     },
     auth: { supabase: { from(table) {
       const rec = { table };
@@ -140,16 +140,16 @@ function optsFor(text) {
     // slice landed inside that method's own return statement and the
     // assertions failed while the behaviour was right.
     const decide = extract('_rivenAttendanceQuestion');
-    const someone = { student: { student: { id: 'eb', full_name: 'Elizabeth Becker' }, score: 1 } };
+    const someone = { student: { student: { id: 'eb', full_name: 'Josephine Wexler' }, score: 1 } };
     const route = (t) => decide.call({ _rivenPointsForward: extract('_rivenPointsForward') },
                                      t, someone)?.intent || null;
 
-    check('the sentence from the screenshot', route(`was elizabeth beck present ${PM} 9`), 'VIEW_ATTENDANCE');
-    check('  the present tense too', route('is elizabeth here today'), 'VIEW_ATTENDANCE');
+    check('the sentence from the screenshot', route(`was josephine beck present ${PM} 9`), 'VIEW_ATTENDANCE');
+    check('  the present tense too', route('is josephine here today'), 'VIEW_ATTENDANCE');
     check('  and the plural', route('were they absent yesterday'), 'VIEW_ATTENDANCE');
-    check('  "did she miss school"', route('did elizabeth miss school yesterday'), 'VIEW_ATTENDANCE');
+    check('  "did she miss school"', route('did josephine miss school yesterday'), 'VIEW_ATTENDANCE');
     // Forward-facing goes to the plan instead, whatever the person's name.
-    check('  but "will she be out" is the plan', route('will elizabeth be out tomorrow'), 'VIEW_PLANNED_ABSENCES');
+    check('  but "will she be out" is the plan', route('will josephine be out tomorrow'), 'VIEW_PLANNED_ABSENCES');
   }
 
   console.log('\n== the morning register is read ==\n');
@@ -158,7 +158,7 @@ function optsFor(text) {
     // THE CASE THAT USED TO VANISH: off school all day, and no lesson register
     // taken for her at all.
     const app = makeApp({ daily: [{ status: 'absent', date: THE_9TH, notes: null }], classy: [] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth beck present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine beck present ${PM} 9`));
     const out = answer(app);
 
     ok('the daily register was queried', app.asked.some(a => a.table === 'daily_attendance'));
@@ -177,8 +177,8 @@ function optsFor(text) {
     // A named subject is the exception: that question is about the lesson, and
     // the morning register cannot answer it.
     const app = makeApp({ daily: [{ status: 'absent', date: THE_9TH }], classy: [] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker',
-      { ...optsFor(`was elizabeth present in chemistry ${PM} 9`), subject: 'chemistry' });
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler',
+      { ...optsFor(`was josephine present in chemistry ${PM} 9`), subject: 'chemistry' });
     ok('a named subject does not reach for the daily register',
        !app.asked.some(a => a.table === 'daily_attendance'));
   }
@@ -194,16 +194,16 @@ function optsFor(text) {
     // recorded".
     for (const generic of ['school', 'class', 'classes', 'lesson', 'lessons', 'School']) {
       const app = makeApp({ daily: [{ status: 'absent', date: THE_9TH }] });
-      await app.terminalShowAttendance.call(app, 'Elizabeth Becker',
-        { ...optsFor(`was elizabeth in school ${PM} 9`), subject: generic });
+      await app.terminalShowAttendance.call(app, 'Josephine Wexler',
+        { ...optsFor(`was josephine in school ${PM} 9`), subject: generic });
       ok(`"${generic}" is not treated as a subject`,
          app.asked.some(a => a.table === 'daily_attendance'));
       ok(`  so the question is answered`, /marked absent/.test(answer(app)));
     }
     // A real subject still narrows.
     const app = makeApp({ daily: [{ status: 'absent', date: THE_9TH }] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker',
-      { ...optsFor(`was elizabeth in chemistry ${PM} 9`), subject: 'chemistry' });
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler',
+      { ...optsFor(`was josephine in chemistry ${PM} 9`), subject: 'chemistry' });
     ok('a real subject still narrows to the lesson registers',
        !app.asked.some(a => a.table === 'daily_attendance'));
   }
@@ -212,7 +212,7 @@ function optsFor(text) {
 
   {
     const app = makeApp({ daily: [{ status: 'present', date: THE_9TH }] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine present ${PM} 9`));
     const out = answer(app);
     ok('present reads as Yes', /Yes —/.test(out));
     ok('  and says so plainly', /was present on/.test(out));
@@ -228,7 +228,7 @@ function optsFor(text) {
     // The first version of this fixture had it wrong in exactly the way the
     // code did, which is what a stub is for and against.
     const app = makeApp({ daily: [{ status: 'late', date: THE_9TH, excuse_note: 'bus' }] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine present ${PM} 9`));
     const out = answer(app);
     ok('late is neither a yes nor a no', !/Yes —|No —/.test(out));
     ok('  it is what it is', /was marked late on/.test(out));
@@ -239,7 +239,7 @@ function optsFor(text) {
     // "Absent" and "absent, and the school knew why" are different things to
     // be told — one of them ends in a phone call home.
     const app = makeApp({ daily: [{ status: 'absent', date: THE_9TH, excused: true, excuse_note: 'dentist' }] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine present ${PM} 9`));
     const out = answer(app);
     ok('an excused absence says so', /absent, excused,/.test(out));
     ok('  and gives the reason', /dentist/.test(out));
@@ -247,7 +247,7 @@ function optsFor(text) {
 
   {
     const app = makeApp({ daily: [{ status: 'absent', date: THE_9TH, excused: false }] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine present ${PM} 9`));
     ok('an unexcused one does not claim to be excused', !/excused/.test(answer(app)));
   }
 
@@ -271,7 +271,7 @@ function optsFor(text) {
       classy: [{ status: 'absent', date: THE_9TH, class_id: 'c1' }],
       classes: [{ id: 'c1', name: 'Chemistry', subject: 'Science' }],
     });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine present ${PM} 9`));
     const out = answer(app);
     ok('it says she was in school', /was in school on/.test(out));
     ok('  and that she still missed the lesson', /marked absent in/.test(out) && /Chemistry/.test(out));
@@ -282,7 +282,7 @@ function optsFor(text) {
 
   {
     const app = makeApp({ daily: [], classy: [] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', optsFor(`was elizabeth present ${PM} 9`));
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', optsFor(`was josephine present ${PM} 9`));
     const out = answer(app);
     ok('it says nothing is recorded', /Nothing is recorded/.test(out));
     ok('  names the day', out.includes(`${PM} 9`));
@@ -307,7 +307,7 @@ function optsFor(text) {
                { status: 'present', date: `${pastYear}-${P2}-10`, class_id: 'c1' }],
       classes: [{ id: 'c1', name: 'Chemistry' }, { id: 'c2', name: 'Maths' }, { id: 'c3', name: 'Art' }],
     });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', {});
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', {});
     const out = answer(app);
     check('two days, not five rows', /(\d+) days? recorded/.exec(out)?.[1], '2');
     ok('  one absent', /❌ 1 absent/.test(out));
@@ -330,7 +330,7 @@ function optsFor(text) {
 
   {
     const app = makeApp({ daily: [{ status: 'present', date: THE_9TH }] });
-    await app.terminalShowAttendance.call(app, 'Elizabeth Becker', {});
+    await app.terminalShowAttendance.call(app, 'Josephine Wexler', {});
     ok('the wide view goes through _showRivenMessage', app.said.length > 0);
     // It used to do output.innerHTML += html, which re-parses the whole
     // transcript to append one answer.

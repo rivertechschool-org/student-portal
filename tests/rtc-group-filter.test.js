@@ -53,7 +53,7 @@ function makeApp({ search = '', sort = 'name-asc', group = '', scopeEl = { textC
 
   const app = {
     _rtcStudents: [
-      { id: 'ann', first_name: 'Ann', last_name: 'Becker', rtc_balance: 40 },
+      { id: 'ann', first_name: 'Ann', last_name: 'Barlow', rtc_balance: 40 },
       { id: 'ben', first_name: 'Ben', last_name: 'Chase', rtc_balance: 10 },
       { id: 'cal', first_name: 'Cal', last_name: 'Diaz', rtc_balance: 25 },
       { id: 'dee', first_name: 'Dee', last_name: 'Ellis', rtc_balance: 0 },

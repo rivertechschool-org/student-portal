@@ -72,7 +72,7 @@ const TODAY = '2026-09-16';
 // case that used to vanish.
 const DAILY = [
   { student_id: 'marie', status: 'absent', date: TODAY },
-  { student_id: 'jack',  status: 'absent', date: TODAY },
+  { student_id: 'felix',  status: 'absent', date: TODAY },
 ];
 const CLASSY = [
   { student_id: 'marie', status: 'absent', date: TODAY },
@@ -86,9 +86,9 @@ function makeApp({ school = false } = {}) {
     said: [], errors: [], printed: [],
     userInfo: { user: { id: 'me' }, profile: { user_type: 'admin' } },
     _terminalAllStudents: [
-      { id: 'marie', full_name: 'Marie Lawler' },
+      { id: 'marie', full_name: 'Marie Fenmore' },
       { id: 'noah', full_name: 'Noah Williams' },
-      { id: 'jack', full_name: 'Jack Becker' },
+      { id: 'felix', full_name: 'Felix Wexler' },
     ],
     escapeHtml: (t) => String(t == null ? '' : t),
     _showRivenMessage(h) { app.said.push(h); },
@@ -133,8 +133,8 @@ const answer = (app) => app.said.join('\n');
 
     // THE ONE THAT WAS MISSING. Jack has no class register at all; under the
     // old code he simply was not in the answer.
-    ok('someone only on the daily register still appears', /Jack Becker/.test(out));
-    ok('  and so does someone on both', /Marie Lawler/.test(out));
+    ok('someone only on the daily register still appears', /Felix Wexler/.test(out));
+    ok('  and so does someone on both', /Marie Fenmore/.test(out));
     ok('  and someone only on a class register', /Noah Williams/.test(out));
   }
 
@@ -146,12 +146,12 @@ const answer = (app) => app.said.join('\n');
     const out = answer(app);
 
     // Marie: 1 daily row + 3 class rows, all the same day.
-    const marie = out.split('Marie Lawler')[1] || '';
+    const marie = out.split('Marie Fenmore')[1] || '';
     ok('a whole-day absence counts once', /1 absent/.test(marie));
     ok('  not once per lesson', !/[34] absent/.test(marie));
     // Otherwise she outranks a child who has genuinely missed three days.
     ok('  so she does not outrank a real repeat absence',
-       out.indexOf('Marie Lawler') > -1);
+       out.indexOf('Marie Fenmore') > -1);
   }
 
   console.log('\n== scope still applies to both registers ==\n');
@@ -160,10 +160,10 @@ const answer = (app) => app.said.join('\n');
     const app = makeApp({ school: false });
     await app.terminalAttendanceIssues.call(app, asked('who was missing today'));
     const out = answer(app);
-    ok('my own students are listed', /Marie Lawler/.test(out));
+    ok('my own students are listed', /Marie Fenmore/.test(out));
     // Jack is on the daily register but is not mine. Reading a second table
     // must not become a way round the scope filter.
-    ok('  someone outside my classes is not', !/Jack Becker/.test(out));
+    ok('  someone outside my classes is not', !/Felix Wexler/.test(out));
   }
 
   console.log('\n== a named class asks a different question ==\n');

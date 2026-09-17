@@ -48,7 +48,7 @@ const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_pa
 const app = { _nlpContext: {} };
 for (const n of METHODS) { const f = mk(n); app[n] = function (...a) { return f.apply(app, a); }; }
 
-const roster = [['Jordan', 'Reed'], ['Charlotte', 'Tebow'], ['Eli', 'Morris'], ['Jackson', 'Lee'], ['Mia', 'Wilson']];
+const roster = [['Jordan', 'Reed'], ['Clementine', 'Vasquez'], ['Ari', 'Mercer'], ['Jackson', 'Lee'], ['Mia', 'Wilson']];
 app._terminalAllStudents = roster.map(([f, l], i) => ({
   full_name: `${f} ${l}`, first_name: f, last_name: l, rtc_balance: 100 + i,
   email: `${f.toLowerCase()}@x.com`, status: 'active', id: 'id' + i }));
@@ -89,7 +89,7 @@ console.log('\n== a bare OBSERVATION is offered as a note, never guessed ==');
 const OBSERVED = [
   'jordan just helped a classmate without being asked',
   'jordan is really stepping up this week',
-  'charlotte keeps interrupting during lessons',
+  'clementine keeps interrupting during lessons',
   'jackson showed real leadership today',
 ];
 for (const input of OBSERVED) {
@@ -99,7 +99,7 @@ for (const input of OBSERVED) {
 }
 
 console.log('\n== a real COMMAND is never treated as an observation ==');
-for (const input of ['give jordan 5 rtc', 'mark charlotte present in math', 'note for eli: late again']) {
+for (const input of ['give jordan 5 rtc', 'mark clementine present in math', 'note for ari: late again']) {
   const { norm } = rank(input);
   check(app._hasCommandVerb(norm), `${JSON.stringify(input)} has a command verb`);
 }

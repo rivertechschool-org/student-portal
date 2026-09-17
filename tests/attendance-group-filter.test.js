@@ -125,10 +125,10 @@ class El {
 }
 
 const roster = [
-  { id: 'ann', name: 'Anne Becker', grade: '5', type: 'Full-Time', groups: 'g-jh' },
-  { id: 'ben', name: 'Jack Becker', grade: '1', type: 'Homeschool', groups: 'g-jh g-choir' },
-  { id: 'cal', name: 'Gabriel Chiarizio', grade: '4', type: 'Full-Time', groups: '' },
-  { id: 'dee', name: 'Penny Mays', grade: '5', type: 'Homeschool', groups: 'g-choir' },
+  { id: 'ann', name: 'Nadia Wexler', grade: '5', type: 'Full-Time', groups: 'g-jh' },
+  { id: 'ben', name: 'Felix Wexler', grade: '1', type: 'Homeschool', groups: 'g-jh g-choir' },
+  { id: 'cal', name: 'Emeric Calloway', grade: '4', type: 'Full-Time', groups: '' },
+  { id: 'dee', name: 'Penny Prentice', grade: '5', type: 'Homeschool', groups: 'g-choir' },
 ];
 
 const tbody = new El('tbody');

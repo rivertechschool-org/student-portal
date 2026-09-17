@@ -1,4 +1,4 @@
-// "Is Jonathan a full time or homeschool student?"
+// "Is Bartholomew a full time or homeschool student?"
 //
 // Riven answered that with "I found 3 classes that could match" and a picker.
 //
@@ -103,7 +103,7 @@ function makeApp({ profile, schedule = [], roster = null, profileError = null })
   return app;
 }
 
-const WHO = { student: { student: { id: 's1', full_name: 'Jonathan Smith' } } };
+const WHO = { student: { student: { id: 's1', full_name: 'Bartholomew Crane' } } };
 
 (async () => {
 
@@ -116,7 +116,7 @@ const WHO = { student: { student: { id: 's1', full_name: 'Jonathan Smith' } } };
     });
     await app.terminalEnrollmentType.call(app, WHO);
     const out = app.said[0];
-    ok('it names the student', /Jonathan Smith/.test(out));
+    ok('it names the student', /Bartholomew Crane/.test(out));
     ok('  and answers the actual question', /full-time/.test(out));
     // Five weekdays read as a phrase, not a list nobody wanted.
     ok('a full week is said as a week', /every weekday/.test(out));
@@ -168,14 +168,14 @@ const WHO = { student: { student: { id: 's1', full_name: 'Jonathan Smith' } } };
     const app = makeApp({ profile: null, profileError: new Error('nope') });
     await app.terminalEnrollmentType.call(app, WHO);
     check('a failed read says so rather than inventing a type', app.said, []);
-    ok('  naming the student', /Jonathan Smith/.test(app.errors[0]));
+    ok('  naming the student', /Bartholomew Crane/.test(app.errors[0]));
   }
 
   {
     const app = makeApp({ profile: {} });
     await app.terminalEnrollmentType.call(app, {});
     check('with nobody named it asks', app.said, []);
-    ok('  and shows how to ask', /is jonathan full time or homeschool/.test(app.errors[0]));
+    ok('  and shows how to ask', /is bartholomew full time or homeschool/.test(app.errors[0]));
   }
 
   console.log('\n== the whole school ==\n');

@@ -7,8 +7,8 @@
 // be told apart by initial at all, and one of those pairs differs only in the
 // LETTER CASE of the stored surname.
 //
-// So "Charlotte" must ask. "Charlotte T" must still ask, because there are two.
-// "Charlotte B" must not ask, because there is only one. And none of it may
+// So "Clementine" must ask. "Clementine T" must still ask, because there are two.
+// "Clementine B" must not ask, because there is only one. And none of it may
 // ever quietly pick the first row and act on it — least of all for a write.
 //
 // This is the same lesson as debug-tools/attendance-matrix.js: the failures are

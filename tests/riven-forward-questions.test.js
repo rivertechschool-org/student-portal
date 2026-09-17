@@ -166,16 +166,16 @@ const TODAY = app._isoDaysAgo.call(app, 0);
     // against source-text assertions generally: they go stale pointing at the
     // wrong layer, and say "broken" when the answer is right.
     const decide = extract('_rivenAttendanceQuestion');
-    const someone = { student: { student: { id: 'x', full_name: 'Meadow Lawler' }, score: 1 } };
+    const someone = { student: { student: { id: 'x', full_name: 'Willow Fenmore' }, score: 1 } };
     const route = (t, e) => decide.call(app, t, e || {})?.intent || null;
 
     check('the sentence from the screenshot', route('who is missing next week'), 'VIEW_PLANNED_ABSENCES');
     check('  said as "anyone"', route('anyone missing next week'), 'VIEW_PLANNED_ABSENCES');
     check('  said as "out"', route('whos out next week'), 'VIEW_PLANNED_ABSENCES');
-    check('  and about one person', route('will meadow be missing next week', someone), 'VIEW_PLANNED_ABSENCES');
+    check('  and about one person', route('will willow be missing next week', someone), 'VIEW_PLANNED_ABSENCES');
     // The same shapes pointing backwards still belong to the register.
     check('backwards, everyone', route('who was missing yesterday'), 'ATTENDANCE_ISSUES');
-    check('backwards, one person', route('was meadow here yesterday', someone), 'VIEW_ATTENDANCE');
+    check('backwards, one person', route('was willow here yesterday', someone), 'VIEW_ATTENDANCE');
   }
 
   console.log('\n== and a net behind the matcher ==\n');

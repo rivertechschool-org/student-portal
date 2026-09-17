@@ -148,8 +148,8 @@ const text = page => page.evaluate(() => document.getElementById('app').innerTex
 
 // ---- the world ---------------------------------------------------------
 const PEOPLE = [
-  { id: 'u-luke', full_name: 'Luke Hegelund', user_type: 'admin' },
-  { id: 'u-ann',  full_name: 'Ann Becker',    user_type: 'student', grade_level: 7 },
+  { id: 'u-luke', full_name: 'Dana Ashgrove', user_type: 'admin' },
+  { id: 'u-ann',  full_name: 'Ann Wexler',    user_type: 'student', grade_level: 7 },
   { id: 'u-ben',  full_name: 'Ben Chase',     user_type: 'student', grade_level: 5 },
   { id: 'u-dee',  full_name: 'Dee Ellis',     user_type: 'student', grade_level: 6 },
   { id: 'u-cal',  full_name: 'Cal Diaz',      user_type: 'student', grade_level: 8 },
@@ -179,9 +179,9 @@ const SEED = () => ({
   ],
 });
 
-const LUKE = { id: 'u-luke', first_name: 'Luke', last_name: 'Hegelund', user_type: 'admin' };
+const LUKE = { id: 'u-luke', first_name: 'Luke', last_name: 'Ashgrove', user_type: 'admin' };
 const DEE  = { id: 'u-dee',  first_name: 'Dee',  last_name: 'Ellis',    user_type: 'student' };
-const ANN  = { id: 'u-ann',  first_name: 'Ann',  last_name: 'Becker',   user_type: 'student' };
+const ANN  = { id: 'u-ann',  first_name: 'Ann',  last_name: 'Wexler',   user_type: 'student' };
 
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
 const page = await browser.newPage({ viewport: { width: 1000, height: 1200 } });
@@ -197,7 +197,7 @@ console.log('\n1. A student asks to join, and an admin lets them in\n');
 // ======================================================================
 await boot(page, world, DEE);
 ok('a non-member lands on Team', (await text(page)).includes('Ask to join Worship / Band'));
-ok('  and can see who is already on it', (await text(page)).includes('Ann Becker'));
+ok('  and can see who is already on it', (await text(page)).includes('Ann Wexler'));
 ok('  but gets no admin controls', !(await text(page)).includes('Add someone to the team'));
 
 await page.click('#join-singing');
@@ -273,7 +273,7 @@ await page.selectOption('#ap-user', 'u-ann');
 await page.click('#modal button.btn:not(.sec)');
 await page.waitForTimeout(450);
 const team = await text(page);
-ok('both are on the rota', team.includes('Luke Hegelund') && team.includes('Ann Becker'));
+ok('both are on the rota', team.includes('Dana Ashgrove') && team.includes('Ann Wexler'));
 // Answering belongs to My schedule. The plan shows who has said yes — that is
 // the whole point of looking at it — but you cannot answer from here, even for
 // yourself, even as the admin who put you there.
@@ -282,7 +282,7 @@ ok('  while still showing every answer', await page.evaluate(() =>
   [...document.querySelectorAll('.person')].every(p => /asked|in|out/.test(p.innerText))));
 ok('  and points at where to answer', await page.evaluate(() =>
   document.body.innerText.includes('answer for it on')));
-ok('  the leader is starred', team.includes('★ Luke Hegelund'));
+ok('  the leader is starred', team.includes('★ Dana Ashgrove'));
 ok('  and neither has answered yet', await page.evaluate(() =>
   [...document.querySelectorAll('.person')].every(p => p.innerText.includes('asked'))));
 
@@ -319,7 +319,7 @@ await page.click('#modal button.btn:not(.sec)');
 await page.waitForTimeout(500);
 const edited = await page.evaluate(() => document.querySelector('.item').innerText.replace(/\n/g, ' | '));
 ok('the key can be changed after the fact', edited.includes('Key D'));
-ok('  a leader named', edited.includes('led by Ann Becker'));
+ok('  a leader named', edited.includes('led by Ann Wexler'));
 ok('  and a note kept', edited.includes('straight into the next one'));
 
 await page.fill(`#file-label-${svcId}`, 'Rehearsal track');
