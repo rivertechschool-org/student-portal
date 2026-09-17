@@ -50134,7 +50134,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-17·d';
+      const RIVEN_BUILD = '2026-09-18·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -55999,17 +55999,42 @@
             /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,40}\b(all|every|the rest of|the whole|rest of)\b[\s\S]{0,30}\b(class(?:es)?|day|schedule)\b/,
             /\bcancel\b[\s\S]{0,20}\b(everything|the whole day|the rest of (?:my|the) day)\b/,
             /\b(no|not having)\s+classes\b[\s\S]{0,20}\b(today|tomorrow)\b/,
+            // "cancel my period 3 classes except Spanish". No "all" anywhere,
+            // but "except" says outright that the class named is the one to
+            // KEEP - so this has to win, and CANCEL_CLASS is knocked out by
+            // notIfExcept rather than merely out-scored.
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,60}\b(?:except|except for|apart from|other than|but not|excluding|besides)\b/,
+            // "cancel my period 3 classes" - a period and a PLURAL. One lesson
+            // is "cancel my period 3 class", which still goes to CANCEL_CLASS.
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,40}\bp(?:eriod)?s?\s*\d{1,2}\b[\s\S]{0,30}\bclasses\b/,
+          ]
+        },
+        {
+          intent: 'CANCEL_DAY',
+          // "cancel my period 3 class" - singular, and naming no class, so the
+          // period is the only target there is. Stands down the instant a class
+          // IS named: "cancel my period 3 spanish class" is one lesson, and
+          // calling off the whole period instead is the worse mistake of the
+          // two, so that goes to CANCEL_CLASS.
+          w: 12, notIfClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,40}\bp(?:eriod)?s?\s*\d{1,2}\b[\s\S]{0,20}\bclass\b/,
           ]
         },
         {
           intent: 'CANCEL_CLASS',
-          w: 9, requiresClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          // notIfExcept: "cancel my classes except Spanish" names Spanish, so
+          // requiresClass is satisfied and this bids - to cancel the one class
+          // the sentence asked to keep. There is no phrasing where the class
+          // after "except" is the thing to cancel.
+          w: 9, requiresClass: true, notIfExcept: true,
+          notIfNoteCommand: true, notIfQuestion: true,
           patterns: [
             // requiresClass already insists a real class was named, so the
             // word "class" itself is not needed: "cancel math today" is the
             // way anybody actually says it.
             /^cancel\b/,
-            /\b(cancel|cancelling|canceling|call(ing)? off)\b/,
+            /\b(cancel|cancell?ing|cancell?ed|call(ing)? off)\b/,
             /\b(class|lesson|session)\b[\s\S]{0,16}\b(is\s+)?off\b/,
             /\b(class|lesson|session)\b[\s\S]{0,16}\b(is\s+)?cancell?ed\b/,
             /\bnot\s+(meeting|running|happening)\b/,
@@ -56340,6 +56365,11 @@
         || /^when\s+(is|are|was|were|will)\b/.test(normalized)
         || /\bhow many days\b/.test(normalized);
       const isFromTo = /\bfrom\b\s+\S.*\bto\b/.test(normalized);
+      // A sentence with an exception clause names a class it wants SPARED.
+      // Any intent that would treat that class as the target is reading the
+      // sentence backwards, so it is knocked out rather than out-scored.
+      const hasExcept = /\b(?:except|except for|apart from|other than|but not|excluding|besides)\b/
+        .test(normalized);
       const leadingVerb = /^(was|is|were|did|does|has|have|who|when)\b/.test(normalized);
       // Read queries that happen to end with "too/as well" must not be stolen by RELAY_ACTION
       const isReadQuery = /^(what|how|show|who|can i|can you|could|is there|do you|are there)\b/i.test(normalized)
@@ -56379,6 +56409,8 @@
         // waiting behind it.
         if (pattern.notIfWhichDays && asksWhichDays) continue;
         if (pattern.notIfFromTo && isFromTo) continue;
+        if (pattern.notIfExcept && hasExcept) continue;
+        if (pattern.notIfClass && entities.classMatch) continue;
         // Required entities — missing pieces knock the intent out entirely
         if (pattern.requiresStudent && !entities.student && !(entities.students?.length >= 2)) continue;
         if (pattern.requiresAmount && !entities.amount) continue;
@@ -62790,6 +62822,28 @@
       return { periods, tail };
     }
 
+    // Which periods the command is aimed at: "cancel my period 3 classes".
+    //
+    // Read from the HEAD of the sentence only. Everything after "except"
+    // belongs to the exception, and counting those numbers as targets would
+    // cancel precisely what was being spared - the same inversion one layer
+    // down. _rivenExceptClause reads the other half.
+    _rivenTargetPeriods(raw) {
+      const head = String(raw || '').split(
+        /\b(?:except|except for|apart from|other than|but not|excluding|besides)\b/i)[0];
+      const periods = new Set();
+      // "period 3", "P3", "periods 3 and 4", "3rd period". A run of numbers
+      // joined by and/or/commas is read as a run rather than by sweeping up
+      // every bare number in the sentence, which would swallow dates and counts.
+      const re = /\b(?:p|periods?)\s*(\d{1,2}(?:\s*(?:,|and|&|or|\/)\s*\d{1,2})*)\b|\b(\d{1,2})(?:st|nd|rd|th)\s+period\b/gi;
+      let m;
+      while ((m = re.exec(head))) {
+        if (m[1]) for (const n of m[1].match(/\d{1,2}/g) || []) periods.add(parseInt(n, 10));
+        else if (m[2]) periods.add(parseInt(m[2], 10));
+      }
+      return periods;
+    }
+
     // Cancel a whole teaching day, minus anything excepted.
     //
     // Same mechanics as cancelling one class - a cancelled session has no
@@ -62834,8 +62888,24 @@
       const meetingAll = manageable.filter(c => (periods[c.id] || []).length);
       const meetingMine = meetingAll.filter(c => this._rivenOwnsClass(c));
 
-      const meeting = scope.school ? meetingAll : meetingMine;
+      let meeting = scope.school ? meetingAll : meetingMine;
       const othersToday = meetingAll.length - meetingMine.length;
+
+      // "cancel my period 3 classes" is not the whole day. Narrow to the
+      // periods actually named before saying how much there is to cancel.
+      const want = this._rivenTargetPeriods(raw);
+      const periodLabel = want.size
+        ? `period${want.size === 1 ? '' : 's'} ${[...want].sort((a, b) => a - b).join(', ')}`
+        : '';
+      if (want.size) {
+        const inPeriod = meeting.filter(c => (periods[c.id] || []).some(p => want.has(p)));
+        if (!inPeriod.length) {
+          this._showRivenMessage(
+            `Nothing you teach on ${esc(dateStr)} is in ${esc(periodLabel)}, so there's nothing to cancel.`, true);
+          return;
+        }
+        meeting = inPeriod;
+      }
 
       if (!meeting.length) {
         if (scope.school) {
@@ -62897,7 +62967,7 @@
         `${markCount[c.id] ? ` <span style="color: var(--danger, #ff6a6a); font-size: 11px;">${markCount[c.id]} mark${markCount[c.id] === 1 ? '' : 's'}</span>` : ''}</div>`).join('');
 
       const keptNote = kept.length
-        ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">Left alone: ` +
+        ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px;">Left running: ` +
           kept.map(k => `${esc(k.c.name)}${pLabel(k.c)}` +
             (k.why === 'period' && (periods[k.c.id] || []).length > 1
               ? ' <i>(kept whole \u2014 it also meets outside the excepted period)</i>' : '')).join(', ') +
@@ -62919,7 +62989,8 @@
 
       this._requestConfirmation(
         `${scope.school ? '\u26a0\ufe0f <b>School-wide.</b> ' : ''}` +
-        `Cancel <b>${targets.length}</b> class${targets.length === 1 ? '' : 'es'} on ${esc(dateStr)}?` +
+        `Cancel <b>${targets.length}</b> class${targets.length === 1 ? '' : 'es'}` +
+        `${periodLabel ? ` in ${esc(periodLabel)}` : ''} on ${esc(dateStr)}?` +
         `<div style="font-size: 12px; margin-top: 6px;">${list}</div>` +
         whose + offer +
         (totalMarks
@@ -62949,6 +63020,7 @@
           }
           const lines = [
             `${done} class${done === 1 ? '' : 'es'} cancelled for ${dateStr}` +
+            `${periodLabel ? ` (${periodLabel})` : ''}` +
             `${removed ? ` \u2014 ${removed} mark${removed === 1 ? '' : 's'} removed` : ''}.`
           ];
           if (kept.length) lines.push(`${kept.map(k => k.c.name).join(', ')} left running.`);

@@ -2028,3 +2028,107 @@ app._terminalAllClasses = [
 
 app._terminalAllGroups = _g40; app._terminalAllClasses = _c40;
 console.log(`round 40: ${p40} pass, ${f40} fail`);
+
+// - round 41: the class after "except" is the one to KEEP -----------------
+// "Cancel my period 3 classes except Spanish" offered four Spanish classes to
+// pick from. Spanish was the one thing the sentence asked to spare, and it was
+// the only thing Riven proposed to cancel.
+//
+// CANCEL_CLASS requires a class to be named, and "except Spanish" names one -
+// so it bid, and with requiresClass it out-scored everything else. The guard
+// against exactly this was already written, but it only stood up when the
+// sentence said "all" or "every", and nobody says that when they mean one
+// period. "my period 3 classes" walked straight past it.
+//
+// So the grid, rather than the one sentence that was reported: cancel phrased
+// six ways, crossed with all/my/period-N scope, crossed with an exception
+// clause present or absent. The rule underneath is one line - a sentence with
+// an exception clause is never about cancelling the class it names - and the
+// singular forms are here to prove the fix did not swing the other way and
+// swallow "cancel my period 3 class".
+console.log('\n== round 41: cancelling a set, minus an exception ==');
+let p41 = 0, f41 = 0;
+const t41 = (label, ok) => { ok ? p41++ : f41++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _c41 = app._terminalAllClasses;
+app._terminalAllClasses = [
+  { id: 'sp1', name: 'Spanish', subject: 'Spanish', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+  { id: 'ma1', name: 'Math', subject: 'Mathematics', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+  { id: 'bi1', name: 'Bible', subject: 'Bible', teacher_id: 't1', secondary_teacher_id: null, is_active: true },
+];
+
+// A SET is being cancelled, and a class is named only to be spared.
+[
+  'cancel my period 3 classes except spanish',
+  'cancel my period 3 classes except for spanish',
+  'cancel my p3 classes apart from spanish',
+  'cancel my period 3 classes other than spanish',
+  'cancel my period 3 classes but not spanish',
+  'cancel my period 3 classes excluding spanish',
+  'cancel all my classes except spanish',
+  'cancel everything today except spanish',
+  'call off my period 3 classes except spanish',
+  'cancelling my period 3 classes except spanish',
+  'cancel my classes today except spanish and math',
+  'cancel my period 3 and 4 classes except spanish',
+  'cancel the rest of my classes except spanish',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" -> CANCEL_DAY (got ${got})`, got === 'CANCEL_DAY');
+});
+
+// A SET, with no exception at all. Still not one lesson.
+[
+  'cancel my period 3 classes',
+  'cancel my p3 classes',
+  'cancel all my classes',
+  'cancel all my classes today',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" -> CANCEL_DAY (got ${got})`, got === 'CANCEL_DAY');
+});
+
+// ONE lesson, named outright. The fix must not have swung the other way:
+// these have no exception clause and no plural, and they are still the
+// single-class path.
+[
+  'cancel spanish',
+  'cancel spanish today',
+  'cancel my spanish class',
+  'spanish is cancelled today',
+  'call off math',
+  // Singular AND a class named: one lesson, in a period. The period must not
+  // widen it - calling off everything in period 3 when one class was meant is
+  // the worse of the two mistakes, so a named class always wins.
+  'cancel my period 3 spanish class',
+  'cancel period 6 bible',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" -> CANCEL_CLASS (got ${got})`, got === 'CANCEL_CLASS');
+});
+
+// A period named, no class named: the period IS the target, singular or not.
+// "cancel my period 3 class" used to reach nothing at all - CANCEL_CLASS needs
+// a class and "period 3 class" is not one - so it answered UNKNOWN_ACTION.
+[
+  'cancel my period 3 class',
+  'cancel my p3 class',
+  'call off my period 6 class',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" -> CANCEL_DAY (got ${got})`, got === 'CANCEL_DAY');
+});
+
+// Whatever else the sentence does, the class after "except" is never the
+// target. This is the assertion the reported bug fails.
+[
+  'cancel my period 3 classes except spanish',
+  'cancel all my classes except spanish',
+  'cancel my classes today except spanish',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" is not read as "cancel spanish" (got ${got})`, got !== 'CANCEL_CLASS');
+});
+
+app._terminalAllClasses = _c41;
+console.log(`round 41: ${p41} pass, ${f41} fail`);

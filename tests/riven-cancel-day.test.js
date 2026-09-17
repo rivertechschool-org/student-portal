@@ -119,6 +119,9 @@ function makeApp({ marks = [] } = {}) {
   app._rivenOwnsClass = extract('_rivenOwnsClass');
   app._rivenCanManageClass = extract('_rivenCanManageClass');
   app._rivenExceptClause = extract('_rivenExceptClause');
+  // Its opposite number: which periods the command is AIMED at. Without it the
+  // executor dies mid-run rather than failing an assertion.
+  app._rivenTargetPeriods = extract('_rivenTargetPeriods');
   app._rivenSchoolScope = extract('_rivenSchoolScope');
   app._rivenSaidEveryTeacher = extract('_rivenSaidEveryTeacher');
   const fn = extract('terminalCancelDay');
