@@ -7130,19 +7130,62 @@ const generators = {
             // Fully generative: a pool of position words (with opposites) × object pairs ×
             // verb templates. Every question text is composed from random parts, so the
             // combinatorial space is in the thousands.
+            // `group` marks words that can BOTH be true of one arrangement. A book
+            // beside a shelf is also next to it; a hat above a pillow is not on
+            // top of it only if it is not touching. Two members of a group must
+            // never appear in one option list - the student would be picking
+            // between two right answers, and 11% of draws used to do exactly
+            // that, across all four question types.
+            //
+            // `clue` is what makes a fill-in answerable at all. "The book was
+            // placed ___ the bookcase" is equally true of beside, inside,
+            // behind and above: the sentence carries nothing that decides it.
+            // Only words whose clue rules out every other word get used there,
+            // which is why "outside" has none - nothing distinguishes it from
+            // beside or behind without naming what it is outside of.
             const positions = [
-                { word: "above",       opposite: "below",       verbs: ["hangs", "floats", "hovers", "is placed"] },
-                { word: "below",       opposite: "above",       verbs: ["sits", "lies", "is placed", "rests"] },
-                { word: "beside",      opposite: "far from",    verbs: ["sits", "stands", "is placed", "rests"] },
-                { word: "between",     opposite: "outside",     verbs: ["sits", "is placed", "rests", "is tucked"] },
-                { word: "behind",      opposite: "in front of", verbs: ["hides", "is tucked", "stands", "is placed"] },
-                { word: "in front of", opposite: "behind",      verbs: ["stands", "is placed", "waits", "rests"] },
-                { word: "next to",     opposite: "far from",    verbs: ["sits", "rests", "stands", "is placed"] },
-                { word: "on top of",   opposite: "underneath",  verbs: ["sits", "is stacked", "rests", "is placed"] },
-                { word: "underneath",  opposite: "on top of",   verbs: ["hides", "is tucked", "slides", "is placed"] },
-                { word: "inside",      opposite: "outside",     verbs: ["sits", "is tucked", "rests", "is stored"] },
-                { word: "outside",     opposite: "inside",      verbs: ["plays", "waits", "stands", "rests"] }
+                { word: "above",       opposite: "below",       group: "high",
+                  clue: "it is higher up, and not touching",
+                  verbs: ["hangs", "floats", "hovers", "is placed"] },
+                { word: "below",       opposite: "above",       group: "low",
+                  clue: "it is lower down",
+                  verbs: ["sits", "lies", "is placed", "rests"] },
+                { word: "beside",      opposite: "far from",    group: "side",
+                  clue: "they are side by side",
+                  verbs: ["sits", "stands", "is placed", "rests"] },
+                { word: "between",     opposite: "outside",     group: null,
+                  clue: "it is in the middle of the two",
+                  verbs: ["sits", "is placed", "rests", "is tucked"] },
+                { word: "behind",      opposite: "in front of", group: null,
+                  clue: "it is at the back, out of sight from the front",
+                  verbs: ["hides", "is tucked", "stands", "is placed"] },
+                { word: "in front of", opposite: "behind",      group: null,
+                  clue: "it is at the front, nearest to you",
+                  verbs: ["stands", "is placed", "waits", "rests"] },
+                { word: "next to",     opposite: "far from",    group: "side",
+                  clue: "they are side by side",
+                  verbs: ["sits", "rests", "stands", "is placed"] },
+                { word: "on top of",   opposite: "underneath",  group: "high",
+                  clue: "it is resting on its surface",
+                  verbs: ["sits", "is stacked", "rests", "is placed"] },
+                { word: "underneath",  opposite: "on top of",   group: "low",
+                  clue: "it is directly under it, covered by it",
+                  verbs: ["hides", "is tucked", "slides", "is placed"] },
+                { word: "inside",      opposite: "outside",     group: null,
+                  clue: "it is within it, surrounded by it",
+                  verbs: ["sits", "is tucked", "rests", "is stored"] },
+                { word: "outside",     opposite: "inside",      group: null,
+                  clue: null,
+                  verbs: ["plays", "waits", "stands", "rests"] }
             ];
+            // Two words clash when they are the same word or share a group.
+            const groupOf = (w) => { const p = positions.find(x => x.word === w); return p && p.group; };
+            const clashes = (w, answer) =>
+                w === answer || (!!groupOf(w) && groupOf(w) === groupOf(answer));
+            // Every word that can safely sit beside `answer` in an option list.
+            const safeWords = (answer, alsoExclude) => shuffle(positions
+                .map(p => p.word)
+                .filter(w => !clashes(w, answer) && w !== alsoExclude));
             const subjects = [
                 "cat", "puppy", "ball", "teddy bear", "pencil", "book", "lunchbox", "hat",
                 "backpack", "toy car", "water bottle", "mitten", "cup", "crayon", "apple",
@@ -7161,11 +7204,16 @@ const generators = {
             ];
 
             const type = pick(["fill_in", "identify", "opposite", "which_word"]);
-            const pos = pick(positions);
+            // A fill-in can only use a word whose clue decides it; the others
+            // state the relation outright, so any word is fair there.
+            const pos = type === "fill_in"
+                ? pick(positions.filter(p => p.clue))
+                : pick(positions);
             const subj = pick(subjects);
             const land = pick(landmarks);
             const verb = pick(pos.verbs);
-            const distractors = shuffle(positions.filter(p => p.word !== pos.word && p.word !== pos.opposite).map(p => p.word));
+            // Never a synonym of the answer, and never its opposite.
+            const distractors = safeWords(pos.word, pos.opposite);
 
             // Build a random sentence that uses `pos.word` naturally.
             const sentence = (withWord) => {
@@ -7179,10 +7227,10 @@ const generators = {
 
             if (type === "fill_in") {
                 return { subType: type,
-                    question: `${sentence("____")}. Which word fits?`,
+                    question: `${sentence("____")} \u2014 ${pos.clue}. Which word fits?`,
                     answer: pos.word, type: "conceptual",
                     options: shuffle([pos.word, ...distractors.slice(0, 3)]),
-                    explanation: `"${pos.word}" describes this position.`
+                    explanation: `${pos.clue.charAt(0).toUpperCase()}${pos.clue.slice(1)} means "${pos.word}".`
                 };
             }
 
@@ -7203,7 +7251,10 @@ const generators = {
                     positions.filter(q => q.opposite === p.opposite).length === 1
                 );
                 const chosen = pick(uniquelyPaired);
-                const chosenDistractors = shuffle(positions.filter(p => p.word !== chosen.word && p.word !== chosen.opposite).map(p => p.word)).slice(0, 2);
+                // Against the ANSWER, which is the opposite - not against the
+                // word asked about. "Opposite of above" is "below", so
+                // "underneath" cannot be on the list either.
+                const chosenDistractors = safeWords(chosen.opposite, chosen.word).slice(0, 2);
                 return { subType: type,
                     question: `What is the opposite of "${chosen.word}"?`,
                     answer: chosen.opposite, type: "conceptual",
