@@ -174,7 +174,7 @@ const app = {
   _requestConfirmation(summary, execute) { app._pending = { summary, execute }; },
 };
 DB.classes = [];
-for (const n of ['_rtParseSlots','_rtSlotLabel','_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtQuarters','_rtQuarterFor','_rtDueDate','_rtAssignmentFields','_rtResolveAssignment','_rtAssignments','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
+for (const n of ['_rtParseSlots','_rtSlotLabel','_rtOut','_rtErr','_rtErrFor','_rtResolveStudent','_rtResolveClass','_rtResolveClassSpec','_rtClassList','_rtRoster','_rtStudentSearch','_rtGrades','_rtGradeReview','_rtQuarters','_rtQuarterFor','_rtDueDate','_rtAssignmentFields','_rtResolveAssignment','_rtAssignments','_rtSubmissions','_rtNotes','_rtAttendance','_rtPlan','_rtApply','_rtRunOps','_rtDispatch','_rtBundle','terminalRtCommand']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
@@ -499,7 +499,88 @@ const t = (label, ok, got) => { ok ? pass++ : fail++; if (!ok) console.log('  FA
   await app._undo.fn();
   t('undo puts the previous mark back', DB.assignment_submissions.find(x => x.assignment_id === newA.id && x.student_id === 's1').points_earned === 92, DB.assignment_submissions);
 
+  // ---- submissions: the work itself, not just the mark -----------------------
+  // Self-contained rows: the apply tests above have already changed the shared
+  // assignment table, so this round brings its own.
+  DB.assignments.push({ id: '22222222-2222-2222-2222-222222222222', class_id: 'c1',
+    title: 'Weeks 1 & 2: Reading Log', due_date: '2026-09-15T23:59:00.000Z', max_points: 20,
+    grading_type: 'points', assignment_type: 'regular', is_published: true, graded_offline: false,
+    assigned_to_all: true, rtc_reward: 0 });
+  DB.assignment_submissions.push(
+    { id: 'rl1', assignment_id: '22222222-2222-2222-2222-222222222222', student_id: 's1',
+      content: 'I read three chapters.', status: 'submitted', submitted_at: '2026-09-14T10:00:00.000Z',
+      grade: null, points_earned: null, feedback: null, graded_at: null, file_url: null, file_name: null },
+    { id: 'rl2', assignment_id: '22222222-2222-2222-2222-222222222222', student_id: 's2',
+      content: 'L'.repeat(60), status: 'graded', submitted_at: '2026-09-18T08:00:00.000Z',
+      grade: 'B', points_earned: 16, feedback: 'good', graded_at: '2026-09-19T00:00:00.000Z',
+      file_url: 'https://drive/x', file_name: 'log.pdf' },
+    // Handed in by someone no longer enrolled in c1.
+    { id: 'rl3', assignment_id: '22222222-2222-2222-2222-222222222222', student_id: 's4',
+      content: 'Left the class, still handed it in.', status: 'submitted', submitted_at: '2026-09-15T12:00:00.000Z',
+      grade: null, points_earned: null, feedback: null, graded_at: null, file_url: null, file_name: null });
+
+  const sub1 = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking', assignment: 'Weeks 1 & 2: Reading Log' }));
+  const byName = Object.fromEntries((sub1.submissions || []).map(x => [x.student, x]));
+  t('submissions resolves the class and the assignment',
+    sub1.class?.name === 'Filmmaking' && sub1.assignment?.title === 'Weeks 1 & 2: Reading Log', sub1.assignment);
+  t('assigned_to is the active roster', sub1.assigned_to === 3, sub1.assigned_to);
+  t('the tallies count handed in, missing and late',
+    sub1.submitted === 3 && sub1.missing === 1 && sub1.late === 1, { s: sub1.submitted, m: sub1.missing, l: sub1.late });
+  t('the text comes back in full', byName['Quinn Sable'].text === 'I read three chapters.', byName['Quinn Sable'].text);
+  t('a submission before the due date is not late', byName['Quinn Sable'].late === false, byName['Quinn Sable']);
+  t('a submission after it is late, with the days counted',
+    byName['Arian Delgado'].late === true && byName['Arian Delgado'].days_late === 3, byName['Arian Delgado']);
+  t('an existing mark and file ride along',
+    byName['Arian Delgado'].points_earned === 16 && byName['Arian Delgado'].file?.name === 'log.pdf', byName['Arian Delgado']);
+  t('a student who handed in nothing reads as missing',
+    byName['Ari Mercer'].status === 'missing' && byName['Ari Mercer'].submitted_at === undefined, byName['Ari Mercer']);
+  t('work from an unenrolled student still shows, flagged',
+    byName['Ashgrove Gamer']?.off_roster === true, byName['Ashgrove Gamer']);
+  t('rows come back in name order',
+    sub1.submissions.map(x => x.student).join() === 'Ari Mercer,Arian Delgado,Ashgrove Gamer,Quinn Sable',
+    sub1.submissions.map(x => x.student));
+
+  const subNoText = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking', assignment: 'Weeks 1 & 2: Reading Log', text: false }));
+  t('"text":false returns the register without the writing',
+    subNoText.submissions.every(x => x.text === undefined) && subNoText.submissions.find(x => x.student === 'Quinn Sable').chars === 22,
+    subNoText.submissions.find(x => x.student === 'Quinn Sable'));
+
+  const subCap = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking', assignment: 'Weeks 1 & 2: Reading Log', max_chars: 10 }));
+  const capped = subCap.submissions.find(x => x.student === 'Arian Delgado');
+  t('max_chars truncates and says how much was held back',
+    capped.text.startsWith('LLLLLLLLLL') && /60 chars/.test(capped.text) && capped.chars === 60, capped.text);
+
+  const subNoRef = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking' }));
+  t('submissions without an assignment fails, never guesses', subNoRef.error === 'missing_field', subNoRef);
+
+  const subGone = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking', assignment: 'No Such Thing' }));
+  t('an unknown title fails loudly', subGone.error === 'not_found', subGone);
+
+  // Selective: only s1 and s3 were given it, so s2 is not owing anything.
+  DB.assignments.find(a => a.id === '22222222-2222-2222-2222-222222222222').assigned_to_all = false;
+  DB.assignment_students.push(
+    { assignment_id: '22222222-2222-2222-2222-222222222222', student_id: 's1' },
+    { assignment_id: '22222222-2222-2222-2222-222222222222', student_id: 's3' });
+  const subSel = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking', assignment: 'Weeks 1 & 2: Reading Log' }));
+  const selBy = Object.fromEntries(subSel.submissions.map(x => [x.student, x]));
+  t('a selective assignment counts only the students it was set for', subSel.assigned_to === 2, subSel.assigned_to);
+  t('a student it was never set for is not reported missing',
+    selBy['Arian Delgado'].status !== 'missing' && selBy['Arian Delgado'].off_roster === true, selBy['Arian Delgado']);
+  t('the one who was set it and did nothing is still missing', selBy['Ari Mercer'].status === 'missing', selBy['Ari Mercer']);
+
+  DB.assignments.find(a => a.id === '22222222-2222-2222-2222-222222222222').assigned_to_all = true;
+  DB.assignments.find(a => a.id === '22222222-2222-2222-2222-222222222222').due_date = null;
+  const subNoDue = await rt(JSON.stringify({ op: 'submissions', class: 'Filmmaking', assignment: 'Weeks 1 & 2: Reading Log' }));
+  t('with no due date nothing is called late',
+    subNoDue.late === 0 && subNoDue.submissions.filter(x => x.status !== 'missing').every(x => x.late === null),
+    subNoDue.submissions.map(x => x.late));
+
+  const subBundle = await rt(JSON.stringify({ op: 'bundle', reads: [
+    { op: 'submissions', class: 'Filmmaking', assignment: 'Weeks 1 & 2: Reading Log', text: false, as: 'log' }] }));
+  t('submissions works inside a bundle', subBundle.reads?.log?.submitted === 3, subBundle.reads?.log);
+
   const help = await rt('');
+  t('help documents the submissions read', /"op":"submissions"/.test(help.reads?.submissions || ''), help.reads?.submissions);
   t('help states apply is the only writer', help.writes === 'apply writes. Every other op is read-only.', help.writes);
   t('help documents apply and its extra ops', !!help.apply && help.apply.extra_ops.includes('create_class'), help.apply);
 

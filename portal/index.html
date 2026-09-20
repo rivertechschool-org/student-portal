@@ -50353,6 +50353,7 @@
       this._restoreTerminalChat();
       this._restoreRivenUndo();
       this._setupTerminalPersistence();
+      this._setupRivenCopyHover();
       this._renderRivenUnread();
 
       // ⌘K / Ctrl-K, whenever Riven is open.
@@ -50425,7 +50426,7 @@
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-18·a';
+      const RIVEN_BUILD = '2026-09-20·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -50512,6 +50513,25 @@
           #riven-actions .riven-act-kbd { opacity: 0.6; margin-right: 4px; font-weight: 400; }
           @media (max-width: 700px) { #riven-actions .riven-act-kbd { display: none; } }
 
+          /* Copy controls. Mouse-only on purpose (Luke, Sun Sep 20 2026): on a
+             touch screen a long-press already copies, and a control revealed by
+             hover is either permanently on screen there or unreachable. Gated on
+             a pointer that can actually hover, so a touch laptop stays clean. */
+          .riven-copy-desktop-only { display: none; }
+          #riven-copy-msg {
+            position: absolute; right: 16px; z-index: 20; display: none;
+            align-items: center; gap: 4px; padding: 3px 8px;
+            font-size: 11px; font-weight: 600; font-family: inherit; line-height: 1.4;
+            border-radius: 7px; border: 1px solid #6b5236; background: #33261a;
+            color: #c9b68f; cursor: pointer; opacity: 0.5;
+            transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+          }
+          #riven-copy-msg:hover { opacity: 1; color: #f2e6c9; border-color: #d97a3a; }
+          @media (hover: hover) and (pointer: fine) and (min-width: 820px) {
+            .riven-copy-desktop-only { display: inline-block; }
+            #riven-copy-msg.is-on { display: flex; }
+          }
+
           #riven-chat-card { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; position: relative; }
           #terminal-output {
             flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 16px;
@@ -50568,12 +50588,24 @@
               <button class="riven-act" type="button" onclick="app.terminalQuickAction('help')" title="Everything I understand">❓ Help</button>
               <button id="riven-upgrade-btn" class="riven-act riven-upgrade-btn-idle" type="button" onclick="app.toggleRivenUpgrade()" title="Download a smarter AI model for Riven">✨ Smarter</button>
               <button class="riven-act" type="button" onclick="app.showRivenUpgradeInfo()" title="About the upgrade">?</button>
+              <button id="riven-copy-chat" class="riven-act riven-copy-desktop-only" type="button" onclick="app.copyRivenChat(event)" title="Copy the whole conversation to the clipboard">⧉ Copy chat</button>
               <button class="riven-act" type="button" onclick="app.clearTerminalChat()" title="Clear the conversation and start fresh">🧹 Clear</button>
             </div></div>
           </div>
 
           <div id="riven-chat-card">
             <div id="terminal-output"></div>
+
+            <!-- ONE button that follows the pointer from row to row, rather than
+                 a button inside every bubble: every child of #terminal-output is
+                 saved to localStorage as HTML and replayed on the next load, so a
+                 button placed inside a bubble would be saved with it, restored
+                 stale, and counted against the caps in _persistTerminalChat.
+                 tabindex=-1 keeps it out of the tab order - it is a mouse
+                 affordance, and the keyboard route is Copy chat in the header. -->
+            <button id="riven-copy-msg" type="button" tabindex="-1"
+              title="Copy this message" aria-label="Copy this message"
+              onclick="app.copyHoveredRivenMessage(event)">⧉ Copy</button>
 
             <div id="terminal-autocomplete" style="display: none; position: absolute; bottom: 78px; left: 12px; right: 12px; background: var(--card); border: 1px solid var(--accent); border-radius: 8px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 -4px 12px rgba(0,0,0,0.3);"></div>
 
@@ -50923,6 +50955,120 @@
       // tear the floating panel out from under the click that asked for it.
       const out = document.getElementById('terminal-output');
       if (out) { out.innerHTML = this._rivenIntroHtml(); out.scrollTop = 0; }
+    }
+
+    // ---- Copy: one message, or the whole conversation ----------------------
+
+    // Parks a single floating button over whichever top-level row the mouse is
+    // on. Listens on #terminal-output rather than binding per bubble, so rows
+    // added later - and rows replayed from localStorage on load - are covered
+    // without touching the transcript itself.
+    _setupRivenCopyHover() {
+      const out = document.getElementById('terminal-output');
+      const btn = document.getElementById('riven-copy-msg');
+      const card = document.getElementById('riven-chat-card');
+      if (!out || !btn || !card || this._rivenCopyHoverReady) return;
+      this._rivenCopyHoverReady = true;
+
+      const hide = () => { this._rivenCopyRow = null; btn.classList.remove('is-on'); };
+
+      const place = (row) => {
+        this._rivenCopyRow = row;
+        const r = row.getBoundingClientRect();
+        const c = card.getBoundingClientRect();
+        const o = out.getBoundingClientRect();
+        // Straddles the gap above the bubble instead of sitting on it: the user
+        // bubble is right-aligned, so anything placed inside the row's own box
+        // would cover the first line of what it copies.
+        const top = Math.min(Math.max(r.top - 10, o.top + 2), o.bottom - 26) - c.top;
+        btn.style.top = top + 'px';
+        btn.classList.add('is-on');
+      };
+
+      out.addEventListener('mousemove', (e) => {
+        let el = e.target;
+        while (el && el.parentElement !== out) el = el.parentElement;
+        if (el && el.parentElement === out) place(el); else hide();
+      });
+      // Moving onto the button is not leaving the message - the button is a
+      // sibling of the transcript, so the pointer does leave #terminal-output.
+      out.addEventListener('mouseleave', (e) => { if (e.relatedTarget !== btn) hide(); });
+      btn.addEventListener('mouseleave', hide);
+      // A wheel scroll slides the rows without moving the mouse, so a parked
+      // button would keep pointing at a message that is no longer under it.
+      out.addEventListener('scroll', hide, { passive: true });
+    }
+
+    // Rendered text, not HTML: what Luke wants on the clipboard is what he can
+    // read on screen, ready to paste into a note or back into a chat.
+    _rivenMessageText(row) {
+      if (!row) return '';
+      return (row.innerText || row.textContent || '')
+        .replace(/ /g, ' ')
+        .split('\n').map(l => l.replace(/[ \t]+$/, '')).join('\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    _rivenRowSpeaker(row) {
+      if (row.classList?.contains('riven-msg-you')) return 'You';
+      if (row.classList?.contains('riven-msg-riven')) return 'Riven';
+      // Transcripts saved before the classes existed come back without them.
+      // Right-alignment was the only thing that marked a user bubble then.
+      return row.style?.justifyContent === 'flex-end' ? 'You' : 'Riven';
+    }
+
+    async _rivenCopy(text, btn, okLabel) {
+      let ok = false;
+      if (text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        } catch (e) {
+          // Denied permission, an insecure origin, or an older browser. The
+          // textarea route still works here because this runs inside a click.
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.cssText = 'position: fixed; top: -1000px; opacity: 0;';
+            document.body.appendChild(ta);
+            ta.select();
+            ok = document.execCommand('copy');
+            ta.remove();
+          } catch (_) { ok = false; }
+        }
+      }
+      if (btn) {
+        // Confirm on the button itself. A notification would land in the
+        // transcript or over it, which is the thing being copied.
+        if (btn.dataset.copyLabel === undefined) btn.dataset.copyLabel = btn.innerHTML;
+        btn.innerHTML = !text ? '— Nothing' : (ok ? okLabel : '✕ Failed');
+        clearTimeout(btn._rivenCopyTimer);
+        btn._rivenCopyTimer = setTimeout(() => { btn.innerHTML = btn.dataset.copyLabel; }, 1300);
+      }
+      return ok;
+    }
+
+    copyHoveredRivenMessage(event) {
+      event?.stopPropagation();
+      const row = this._rivenCopyRow;
+      const btn = document.getElementById('riven-copy-msg');
+      // Trimming can drop the row out of the page between hover and click.
+      if (!row || !row.isConnected) return;
+      return this._rivenCopy(this._rivenMessageText(row), btn, '✓ Copied');
+    }
+
+    copyRivenChat(event) {
+      const out = document.getElementById('terminal-output');
+      const btn = event?.currentTarget || document.getElementById('riven-copy-chat');
+      if (!out) return;
+      const lines = [];
+      Array.from(out.children).forEach(row => {
+        const text = this._rivenMessageText(row);
+        if (text) lines.push(this._rivenRowSpeaker(row) + ': ' + text);
+      });
+      return this._rivenCopy(lines.join('\n\n'), btn, '✓ Copied');
     }
 
     async _loadTerminalStudents() {
@@ -52689,6 +52835,122 @@
       };
     }
 
+    // What a student actually HANDED IN. The read that was missing: `grades`
+    // answers what someone scored and `assignments` answers what was set, but
+    // neither returns the work itself, so marking portal submissions meant
+    // opening the gradebook one student at a time.
+    //
+    // Late is DERIVED here, submitted_at against due_date. There is no is_late
+    // column - sendSubmissionNotification computes it the same way when it
+    // tells a teacher something arrived late.
+    async _rtSubmissions(spec) {
+      const sb = this.auth.supabase;
+      const ref = String(spec.assignment || '').trim();
+      if (!ref) {
+        return this._rtErr('missing_field',
+          'submissions needs "assignment" (exact title or id), plus "class" unless the title is unique across every class.');
+      }
+
+      const found = await this._rtResolveAssignment(spec, spec);
+      if (found.error === 'class') return this._rtErrFor('class', spec.class || spec.class_with, found.inner);
+      if (found.error === 'ambiguous') {
+        return this._rtErr('ambiguous',
+          `"${ref}" matches ${found.candidates.length} assignments — add "class", or name it by id.`,
+          { candidates: found.candidates });
+      }
+      if (found.error || !found.row) {
+        return this._rtErr('not_found',
+          `No assignment titled "${ref}"${spec.class ? ' in ' + spec.class : ''}. The title must match exactly — run {"op":"assignments","class":"…"} to see them.`,
+          { assignment: ref });
+      }
+      const a = found.row;
+      const klass = (this._terminalAllClasses || []).find(c => c.id === a.class_id) || null;
+
+      // Who it was set FOR, which is not always the roster: a selective
+      // assignment is listed in assignment_students. Counting the whole class
+      // as owing it would report children as missing work never given to them.
+      const [{ data: enr }, { data: picked }, { data: subs, error }] = await Promise.all([
+        sb.from('class_enrollments').select('student_id').eq('class_id', a.class_id).eq('status', 'active'),
+        a.assigned_to_all === false
+          ? sb.from('assignment_students').select('student_id').eq('assignment_id', a.id)
+          : Promise.resolve({ data: null }),
+        sb.from('assignment_submissions')
+          .select('id, student_id, content, file_url, file_name, status, submitted_at, grade, points_earned, feedback, graded_at')
+          .eq('assignment_id', a.id)
+      ]);
+      if (error) throw error;
+
+      const names = {};
+      (this._terminalAllStudents || []).forEach(st => { names[st.id] = st; });
+      const roster = new Set((enr || []).map(e => e.student_id));
+      const assignedTo = picked
+        ? new Set((picked || []).map(r => r.student_id).filter(id => roster.has(id)))
+        : roster;
+
+      const due = a.due_date ? new Date(a.due_date) : null;
+      const latest = {};
+      (subs || []).forEach(sub => {
+        // Newest attempt per student. A resubmit rewrites submitted_at on the
+        // same row, but a stray duplicate must not win on row order alone.
+        const prev = latest[sub.student_id];
+        if (!prev || new Date(sub.submitted_at || 0) >= new Date(prev.submitted_at || 0)) latest[sub.student_id] = sub;
+      });
+
+      // The text is the point of this read, so it comes back in full. The cap
+      // is there because one essay class can outgrow what a chat bubble and a
+      // copy-paste can carry; "text":false asks for the register only.
+      const includeText = spec.text !== false;
+      const capRaw = Number(spec.max_chars);
+      const cap = Number.isFinite(capRaw) ? Math.max(0, capRaw) : 4000;
+
+      const ids = new Set([...assignedTo, ...Object.keys(latest)]);
+      const rows = Array.from(ids).map(id => {
+        const sub = latest[id];
+        const who = names[id];
+        const row = {
+          student: who ? who.full_name : id,
+          student_id: id,
+          // Work handed in by someone since unenrolled still shows: it exists
+          // and it may still need a mark. Flagged rather than dropped.
+          off_roster: assignedTo.has(id) ? undefined : true,
+          status: sub ? (sub.status || 'submitted') : 'missing'
+        };
+        if (!sub) return row;
+        row.submitted_at = sub.submitted_at || null;
+        row.late = (due && sub.submitted_at) ? new Date(sub.submitted_at) > due : null;
+        if (row.late) row.days_late = Math.max(1, Math.ceil((new Date(sub.submitted_at) - due) / 86400000));
+        const text = sub.content || '';
+        row.chars = text.length;
+        if (includeText && text) {
+          row.text = (cap && text.length > cap) ? text.slice(0, cap) + `… [truncated — ${text.length} chars in total]` : text;
+        }
+        if (sub.file_url) row.file = { name: sub.file_name || null, url: sub.file_url };
+        if (sub.points_earned != null) row.points_earned = sub.points_earned;
+        if (sub.grade != null) row.grade = sub.grade;
+        if (sub.feedback) row.feedback = sub.feedback;
+        if (sub.graded_at) row.graded_at = sub.graded_at;
+        return row;
+      }).sort((x, y) => String(x.student).localeCompare(String(y.student)));
+
+      const handed = rows.filter(r => r.status !== 'missing');
+      return {
+        class: klass ? { id: klass.id, name: klass.name } : { id: a.class_id },
+        assignment: {
+          id: a.id, title: a.title, due_date: a.due_date || null,
+          points: a.max_points, graded_offline: a.graded_offline,
+          assigned_to_all: a.assigned_to_all !== false
+        },
+        assigned_to: assignedTo.size,
+        submitted: handed.length,
+        missing: rows.filter(r => r.status === 'missing').length,
+        late: handed.filter(r => r.late === true).length,
+        note: due
+          ? 'late is derived: submitted_at falls after due_date. A due date with no time means the end of that day.'
+          : 'This assignment has no due date, so late is null on every submission.',
+        submissions: rows
+      };
+    }
+
     async _rtDispatch(spec) {
       switch (spec.op) {
         case 'classes':    return { classes: await this._rtClassList(spec) };
@@ -52697,6 +52959,7 @@
         case 'grades':     return await this._rtGrades(spec);
         case 'grade_review': return await this._rtGradeReview(spec);
         case 'assignments': return await this._rtAssignments(spec);
+        case 'submissions': return await this._rtSubmissions(spec);
         case 'notes':      return await this._rtNotes(spec);
         case 'attendance': return await this._rtAttendance(spec);
         case 'plan':       return await this._rtPlan(spec);
@@ -52746,7 +53009,8 @@
             notes: '{"op":"notes","student":"Quinn Sable","limit":10}',
             attendance: '{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}',
             assignments: '{"op":"assignments","class":"Filmmaking"} — every assignment with the quarter its due_date falls in',
-            grade_review: '{"op":"grade_review","class":"Filmmaking"} — every student on the roster with their current grades AND the notes filed on them in that class, for quarter-end grading. Notes never move a grade by themselves.'
+            grade_review: '{"op":"grade_review","class":"Filmmaking"} — every student on the roster with their current grades AND the notes filed on them in that class, for quarter-end grading. Notes never move a grade by themselves.',
+            submissions: '{"op":"submissions","class":"Lower MS English","assignment":"Weeks 1 & 2: Reading Log"} — what each student handed in for one assignment: their text, when it arrived, and whether that is late. Anyone it was set for who has not handed it in comes back as "missing". Add "text":false for the register alone, or "max_chars":N to shorten long answers (default 4000).'
           },
           dry_run: {
             plan: '{"op":"plan","ops":[{"op":"award","student":"Quinn Sable","amount":5,"reason":"..."}]}',
@@ -68536,6 +68800,9 @@
       if (!output) return;
 
       const bubble = document.createElement('div');
+      // The class is what Copy chat reads to label the speaker. It is on the
+      // row, so it survives being saved and restored as HTML.
+      bubble.className = 'riven-msg riven-msg-you';
       bubble.style.cssText = 'display: flex; justify-content: flex-end; gap: 12px; margin: 16px 0;';
       bubble.innerHTML = `
         <div style="max-width: 70%; background: #3e7c7c; padding: 10px 16px; border-radius: 16px 16px 4px 16px; color: #f2e6c9;">
@@ -68553,6 +68820,7 @@
       this._rivenNoteUnread();
 
       const bubble = document.createElement('div');
+      bubble.className = 'riven-msg riven-msg-riven';
       bubble.style.cssText = 'display: flex; gap: 12px; margin: 16px 0;';
       bubble.innerHTML = `
         <div style="width: 36px; height: 36px; border-radius: 50%; background: #f2e6c9; border: 2px solid #d97a3a; overflow: hidden; flex-shrink: 0;">
