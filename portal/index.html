@@ -13990,7 +13990,7 @@
           const { data: profile } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .select('email_notifications')
-            .eq('id', this.userInfo.user.id)
+            .eq('id', this.notificationPrefsProfileId())
             .single());
 
           const savedPrefs = profile?.email_notifications || {};
@@ -13999,7 +13999,7 @@
             <label style="display: flex; align-items: flex-start; gap: 12px; cursor: pointer; padding: 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
               <input type="checkbox"
                      id="notif-${opt.key}"
-                     ${savedPrefs[opt.key] ? 'checked' : ''}
+                     ${this.notificationPrefIsOn(opt, savedPrefs) ? 'checked' : ''}
                      style="margin-top: 3px; width: 18px; height: 18px; cursor: pointer;">
               <div>
                 <div style="font-weight: 500; margin-bottom: 4px;">${opt.label}</div>
@@ -14018,58 +14018,117 @@
         }
       }
 
+      // What each switch is worth, and what it is worth when nobody has touched it.
+      //
+      // `defaultOn` is not a preference of this screen's — it is a statement about
+      // what the SENDER does when the key is absent, and it has to match, key for
+      // key. It did not. Every option rendered as unticked until somebody saved,
+      // while most senders treat an absent key as ON, so a person who had never
+      // opened this card was receiving mail while looking at empty boxes — and the
+      // first press of Save wrote `false` for all of them and quietly
+      // unsubscribed them from everything.
+      //
+      // Three of these defaults are not `true`, and two depend on who is asking,
+      // so a single blanket rule would have been just as wrong in the other
+      // direction. Each one below names the sender it was read off.
+      // tests/notification-prefs.test.js re-reads those senders out of this file
+      // and fails if a default here stops matching one.
       getNotificationOptionsForUserType(userType) {
-        const commonOptions = [
-          { key: 'new_messages', label: 'New Messages', description: 'Get notified when you receive a new message' }
-        ];
+        const isAdmin = userType === 'admin';
+
+        // Keys with no sender at all are not listed here. A switch that changes
+        // nothing is the same lie as a switch that reports the wrong state, and
+        // this card has had four of them:
+        //
+        //   new_messages            - a message raises an in-app notification and
+        //                             no email, so there is nothing to opt out of
+        //                             (sendMessage / sendMessageInThread).
+        //   assignment_graded       - the student's in-app notification is
+        //                             unconditional and no student email is sent
+        //                             (sendGradeNotifications).
+        //   assignment_due_reminder - nothing anywhere reads it.
+        //   child_late_assignment   - nothing anywhere reads it.
+        //
+        // Each becomes one line here again the day its sender lands. Until then
+        // they stay out, so what is on screen is the whole of what this card does.
 
         const studentOptions = [
-          { key: 'assignment_posted', label: 'New Assignments', description: 'Get notified when a new assignment is posted' },
-          { key: 'assignment_graded', label: 'Assignment Graded', description: 'Get notified when your assignment is graded' },
-          { key: 'assignment_due_reminder', label: 'Due Date Reminders', description: 'Get reminded 24 hours before an assignment is due' }
+          // sendNewAssignmentNotifications: `if (prefs.assignment_posted === false) continue`
+          { key: 'assignment_posted', label: 'New Assignments', defaultOn: true, description: 'Get notified when a new assignment is posted' }
         ];
 
         const parentOptions = [
-          { key: 'child_assignment_posted', label: "Child's New Assignments", description: "Get notified when your child receives a new assignment" },
-          { key: 'child_assignment_graded', label: "Child's Graded Work", description: "Get notified when your child's assignment is graded" },
-          { key: 'child_late_assignment', label: 'Late Assignment Alerts', description: "Get notified if your child has a late or missing assignment" }
+          // sendNewAssignmentNotifications: `if (prefs.child_assignment_posted === false) continue`
+          { key: 'child_assignment_posted', label: "Child's New Assignments", defaultOn: true, description: "Get notified when your child receives a new assignment" },
+          // sendGradeNotifications: `if (prefs.child_assignment_graded === false) continue`
+          { key: 'child_assignment_graded', label: "Child's Graded Work", defaultOn: true, description: "Get notified when your child's assignment is graded" }
         ];
 
-        const teacherOptions = [
-          { key: 'assignment_submitted', label: 'Assignment Submissions', description: 'Get notified when a student submits an assignment' },
-          { key: 'late_submissions', label: 'Late Submissions', description: 'Get notified when a student submits late work' },
-          { key: 'strike_notifications', label: 'Disciplinary Strikes', description: 'Get notified when a student receives a disciplinary strike' },
-          { key: 'attendance_alerts', label: 'Attendance Alerts', description: 'Get emailed when a student arrives late or leaves early' }
+        const staffOptions = [
+          // sendSubmissionNotification: `if (prefs[prefKey] === false) return`
+          { key: 'assignment_submitted', label: 'Assignment Submissions', defaultOn: true, description: 'Get notified when a student submits an assignment' },
+          { key: 'late_submissions', label: 'Late Submissions', defaultOn: true, description: 'Get notified when a student submits late work' },
+          // sendStrikeNotification: staff are tested with `=== true`, so this one
+          // is opt-in for teachers and admins alike. Parents are tested with
+          // `=== false` on the same key, but they are never shown this switch.
+          { key: 'strike_notifications', label: 'Disciplinary Strikes', defaultOn: false, description: 'Get notified when a student receives a disciplinary strike' },
+          // sendAttendanceAlertNotifications: `prefs.attendance_alerts !== undefined ? ... : isAdmin`
+          { key: 'attendance_alerts', label: 'Attendance Alerts', defaultOn: isAdmin, description: 'Get emailed when a student arrives late or leaves early' }
         ];
 
         const adminOptions = [
-          { key: 'new_user_registration', label: 'New Registrations', description: 'Get notified when a new user registers' },
-          { key: 'system_alerts', label: 'System Alerts', description: 'Get notified about important system events' },
-          // These three are written by database triggers, not by portal code, so
-          // they arrive whether or not anyone has the portal open. Default on:
-          // most admins have no notification_prefs row, and the trigger reads
-          // COALESCE(pref, true) so an absent row still notifies.
-          { key: 'staff_link_requests', label: 'Parent Link Requests', description: 'Get notified when a parent asks to be linked to a student' },
-          { key: 'staff_material_requests', label: 'Materials Requests', description: 'Get notified when staff request supplies' },
-          { key: 'staff_bug_reports', label: 'Bug Reports', description: 'Get notified when someone reports a problem' },
-          { key: 'staff_enrollment_applications', label: 'Enrolment Applications', description: 'Get notified when a family applies to the school' },
-          { key: 'staff_facility_bookings', label: 'Room Bookings', description: 'Get notified when a room booking needs approval' },
-          { key: 'staff_system_health', label: 'System Health', description: 'Get notified if a scheduled job, email delivery or Google Drive stops working' }
-          // Note: attendance_alerts is already included via teacherOptions for admins
+          // sendNewUserRegistrationNotification: `if (prefs.new_user_registration === false) continue`
+          { key: 'new_user_registration', label: 'New Registrations', defaultOn: true, description: 'Get notified when a new user registers' },
+          // sendSystemAlert: `if (prefs.system_alerts === false) continue`
+          { key: 'system_alerts', label: 'System Alerts', defaultOn: true, description: 'Get notified about important system events' },
+          // These six are sent by database triggers rather than by portal code, so
+          // they arrive whether or not anyone has the portal open. The trigger
+          // reads COALESCE(pref, true), so an absent key notifies.
+          { key: 'staff_link_requests', label: 'Parent Link Requests', defaultOn: true, description: 'Get notified when a parent asks to be linked to a student' },
+          { key: 'staff_material_requests', label: 'Materials Requests', defaultOn: true, description: 'Get notified when staff request supplies' },
+          { key: 'staff_bug_reports', label: 'Bug Reports', defaultOn: true, description: 'Get notified when someone reports a problem' },
+          { key: 'staff_enrollment_applications', label: 'Enrolment Applications', defaultOn: true, description: 'Get notified when a family applies to the school' },
+          { key: 'staff_facility_bookings', label: 'Room Bookings', defaultOn: true, description: 'Get notified when a room booking needs approval' },
+          { key: 'staff_system_health', label: 'System Health', defaultOn: true, description: 'Get notified if a scheduled job, email delivery or Google Drive stops working' }
+          // attendance_alerts is already in staffOptions, which admins also get.
         ];
 
         switch (userType) {
           case 'student':
-            return [...commonOptions, ...studentOptions];
+            return [...studentOptions];
           case 'parent':
-            return [...commonOptions, ...parentOptions];
+            return [...parentOptions];
           case 'teacher':
-            return [...commonOptions, ...teacherOptions];
+            return [...staffOptions];
           case 'admin':
-            return [...commonOptions, ...teacherOptions, ...adminOptions];
+            return [...staffOptions, ...adminOptions];
           default:
-            return commonOptions;
+            return [];
         }
+      }
+
+      // Is this switch on, given what is stored and what the sender does with
+      // nothing stored? Kept as its own method so the renderer and the test ask
+      // the same question rather than two questions that agree by luck.
+      notificationPrefIsOn(opt, savedPrefs) {
+        const saved = (savedPrefs || {})[opt.key];
+        return (saved === undefined || saved === null) ? !!opt.defaultOn : saved === true;
+      }
+
+      // Whose row to read and write.
+      //
+      // `user_profiles.id` is the profile row's own id, and it is NOT the auth
+      // uid for anyone whose record the school made before they had a login -
+      // every roster-created student, and every parent created by approving an
+      // enrolment. Both halves of this card filtered on the auth uid, so for
+      // those accounts the read matched no row (the card drew every switch as
+      // its default and none of their real settings) and the update matched no
+      // row (Save reported success and stored nothing, every time).
+      //
+      // Same distinction `studentRecordId()` in shared/config.js is about; this
+      // one is not about students, so it does not borrow that name.
+      notificationPrefsProfileId() {
+        return this.userInfo?.profile?.id || this.userInfo?.user?.id || null;
       }
 
       async saveNotificationPreferences() {
@@ -14092,13 +14151,24 @@
             }
           });
 
-          // Save to user_profiles
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
+          // Save to user_profiles.
+          //
+          // .select() is not decoration. An update that matches no row is not an
+          // error in PostgREST - it reports success and changes nothing - which
+          // is exactly how this card spent its time telling people their
+          // settings were saved while it wrote to a row id that was never
+          // theirs. Asking for the affected rows back turns that silence into a
+          // message somebody can act on.
+          const { data: updated, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
             .update({ email_notifications: preferences })
-            .eq('id', this.userInfo.user.id));
+            .eq('id', this.notificationPrefsProfileId())
+            .select('id'));
 
           if (error) throw error;
+          if (!updated || updated.length === 0) {
+            throw new Error('your profile could not be found, so nothing was stored. Tell an administrator.');
+          }
 
           this.showNotification('Notification preferences saved!', 'success');
 

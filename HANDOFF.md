@@ -3166,6 +3166,9 @@ stylesheet, no script and no network call.
 
 ### Two things I found while writing it and did NOT fix
 
+> **Both fixed the same day — see the entry below this one.** Left here as written
+> because the reasoning is what found the third fault underneath the first.
+
 Both are real, both are client-side, and both change what the guide has to say. The
 guide currently documents the behaviour honestly rather than pretending it is right.
 
@@ -3193,3 +3196,84 @@ raises an in-app notification and no email. Both checkboxes appear to do nothing
 — it exists only inside a child's progress panel. With two children that is two extra
 clicks per report card, for no reason I can see. The guide explains the route rather
 than papering over it.
+
+## 2026-09-20 — both of those, fixed
+
+Closes the two faults written up in the entry above, plus a third that was sitting
+underneath the first one.
+
+### 1. The notification card told people the wrong thing
+
+It rendered every switch as unticked until somebody pressed Save:
+
+    ${savedPrefs[opt.key] ? 'checked' : ''}
+
+while most senders treat an absent key as ON. So a parent who had never opened the
+card was receiving that mail while looking at empty boxes, and the first press of
+Save wrote `false` for every key and unsubscribed them from all of it.
+
+**A blanket "default everything on" would have been wrong too.** Reading every
+sender rather than the two I already knew about: three defaults are not `true`, and
+two of those depend on who is asking.
+
+| key | absent means | read off |
+| --- | --- | --- |
+| `assignment_posted`, `child_assignment_posted`, `child_assignment_graded`, `assignment_submitted`, `late_submissions`, `new_user_registration`, `system_alerts` | on | `=== false` |
+| `strike_notifications` | **off for staff**, on for parents | staff `=== true`, parents `=== false` — same key, two readings, and only staff are shown the switch |
+| `attendance_alerts` | **on for admins, off for teachers** | `!== undefined ? … : isAdmin` |
+| the six `staff_*` | on | trigger-side `COALESCE(pref, true)` |
+
+So each option carries a `defaultOn`, computed per role, and the checkbox asks
+`notificationPrefIsOn(opt, savedPrefs)`. Opening the card and pressing Save now
+changes nothing.
+
+**Four switches were removed, because nothing anywhere reads them:** `new_messages`
+(a message raises an in-app notification and sends no email), `assignment_graded`
+(the student's in-app notice is unconditional and no student email is sent),
+`assignment_due_reminder` and `child_late_assignment` (no reader at all). A control
+that controls nothing is the same lie in a second coat. Each is one line to restore
+the day its sender lands, and the test fails if one is added back without one.
+
+### 2. The one underneath: it was reading and writing the wrong row
+
+Both halves filtered `user_profiles` on **`this.userInfo.user.id`** — the auth uid —
+and `user_profiles.id` is not the auth uid for anyone whose record the school made
+before they had a login. For those accounts the read matched nothing (so the card
+drew defaults and never their real settings) and the update matched nothing.
+
+An update that matches no row is **not an error** in PostgREST. It reported
+"Notification preferences saved!" and stored nothing, every time, indefinitely.
+Both now use `notificationPrefsProfileId()`, and the save asks for the affected rows
+back with `.select('id')` and complains if there are none. That sweep found exactly
+two sites, both here.
+
+### 3. The calendar did not follow the child selector
+
+Nine reasons the calendar's contents change; eight of them spelled out
+`loadCalendarEvents(y, m).then(() => renderCalendar(y, m))` for themselves, and the
+ninth — the child selector — never got written. They all go through
+`refreshCalendar()` now, so there is one door and the tenth reason cannot forget.
+
+Two callers stay different on purpose and both say why: `initCalendar` waits on the
+year-long countdown before its first draw, and `toggleCalendarFilter` redraws
+*without* refetching, because a filter pill changes which of the events already in
+hand are shown.
+
+### The tests
+
+`tests/notification-prefs.test.js` (75) and `tests/calendar-child-switch.test.js`
+(32). Both mutation-tested — eleven separate reversions, every one caught, including
+the ordering variant where the calendar refreshes just *before* `selectedChildId` is
+set, which is indistinguishable on screen from working.
+
+The notification test does **not** hold a copy of the expected defaults. It reads
+each sender's own comparison out of `portal/index.html` and checks the option
+against it, so flipping a sender from `=== false` to `=== true` fails here rather
+than silently making the card lie again. It strips comment lines first, and that is
+load-bearing: the options table quotes each sender's comparison in a comment beside
+it, and a scanner that kept comments would read my description of the code instead
+of the code — and pass with the sender deleted. It was doing exactly that until the
+mutation run showed the wrong assertion failing.
+
+`parents/index.html` no longer documents either fault; it describes what the screens
+now do.

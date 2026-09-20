@@ -2710,6 +2710,9 @@
                 // Clear previous child details
                 const container = document.getElementById('child-details-container');
                 if (container) container.innerHTML = '';
+                // The calendar is drawn from THIS child's classes, assignments and
+                // tests, so it is stale the moment the selection changes.
+                this.refreshCalendar();
             }
 
             async viewAssignmentDetails(assignmentId) {
@@ -3196,7 +3199,9 @@
                 this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, school_events: true, attendance: true, bookings: true };
                 this.schoolDaysLeft = null;
                 // The countdown spans the whole year, so it loads once here rather
-                // than with every month the calendar navigates to.
+                // than with every month the calendar navigates to. That is why the
+                // first draw does not go through refreshCalendar() like the others:
+                // it has a second thing to wait for before rendering.
                 Promise.all([
                     this.loadCalendarEvents(this.calendarYear, this.calendarMonth),
                     this.loadSchoolDaysLeft()
@@ -3686,22 +3691,33 @@
                 </div>`;
             }
 
+            // Fetch what belongs on the calendar now, then draw it.
+            //
+            // There are four reasons the contents change - a different month,
+            // jumping to today, the first draw, and a parent switching child -
+            // and the same two steps were written out separately for the first
+            // three. The fourth was simply never written: the child selector set
+            // selectedChildId and nothing redrew, so a parent with two children
+            // kept seeing the first one's classes and due dates until they
+            // reloaded the page. One door now, so the next reason cannot forget.
+            refreshCalendar() {
+                return this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
+                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+                });
+            }
+
             navigateCalendar(dir) {
                 this.calendarMonth += dir;
                 if (this.calendarMonth > 11) { this.calendarMonth = 0; this.calendarYear++; }
                 if (this.calendarMonth < 0) { this.calendarMonth = 11; this.calendarYear--; }
-                this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
-                    this.renderCalendar(this.calendarYear, this.calendarMonth);
-                });
+                this.refreshCalendar();
             }
 
             navigateCalendarToday() {
                 const now = new Date();
                 this.calendarYear = now.getFullYear();
                 this.calendarMonth = now.getMonth();
-                this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
-                    this.renderCalendar(this.calendarYear, this.calendarMonth);
-                });
+                this.refreshCalendar();
             }
 
             toggleCalendarFilter(key, btn) {
@@ -3881,8 +3897,7 @@
                     this.closeModal();
 
                     // Refresh calendar
-                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
-                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+                    await this.refreshCalendar();
 
                 } catch (err) {
                     console.error('Quick add error:', err);
@@ -3954,8 +3969,7 @@
                     window.PortalUI?.showNotification('School event created!', 'success');
                     this.closeModal();
 
-                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
-                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+                    await this.refreshCalendar();
 
                 } catch (err) {
                     console.error('Add school event error:', err);
@@ -4363,8 +4377,7 @@
 
             async refreshAfterEventChange() {
                 await this.showManageSchoolEvents();
-                await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
-                this.renderCalendar(this.calendarYear, this.calendarMonth);
+                await this.refreshCalendar();
             }
 
             // The row, as a form. Ids are suffixed with the event id so two
@@ -4455,8 +4468,7 @@
                     // Same refresh the delete path uses, so the list and the
                     // calendar behind it never disagree about what changed.
                     await this.showManageSchoolEvents();
-                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
-                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+                    await this.refreshCalendar();
                 } catch (err) {
                     console.error('Edit school event error:', err);
                     window.PortalUI?.showNotification('Failed to update the event: ' + err.message, 'error');
@@ -4480,8 +4492,7 @@
                     await this.showManageSchoolEvents();
 
                     // Refresh calendar in background
-                    await this.loadCalendarEvents(this.calendarYear, this.calendarMonth);
-                    this.renderCalendar(this.calendarYear, this.calendarMonth);
+                    await this.refreshCalendar();
 
                 } catch (err) {
                     console.error('Delete school event error:', err);
