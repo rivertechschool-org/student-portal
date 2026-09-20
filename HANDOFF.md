@@ -3366,3 +3366,71 @@ deciding:
 There is also a client-side escaping issue in several admin tables. It is **not**
 described here or anywhere else in this repo, per the rule at the top of `CLAUDE.md` —
 it has been handed over separately.
+
+## 2026-09-20 — the four from the guides, fixed
+
+### 1. Report Card and Transcript, for roster-created students
+
+The student's own home passed `app.userInfo.user.id` — the auth uid — into
+`generateReportCard` and `generateTranscript`, which look the pupil up by profile id.
+Three call sites; both buttons did nothing at all for every pupil the school entered
+before they had a login. They ask `studentRecordId()` now.
+
+`tests/student-record-id.test.js` gains a section for the shape that hid it: the old
+scan looks at `.eq('student_id', …)` and `student_id: …`, and this was neither — it was
+an **argument** to a function that does its own filtering. The new check lists the
+functions whose first parameter is a profile id and refuses an auth uid at any caller.
+
+### 2. Handing work in said nothing
+
+The two-press guard is worth keeping; the silence was not. One press relabelled the
+button and, three seconds later, quietly changed it back — so a pupil pressed once, saw
+the words change, walked away, and there was not even a clue left on screen to ask a
+teacher about. It now asks for the second press in words underneath, counts down from
+ten, and says **"Not handed in"** when the window closes rather than tidying itself away.
+
+### 3. Approving an enrolment had three implementations
+
+The Enrollment screen, Approve All, and Riven each had their own. They had drifted:
+Approve All sent an account status the single path never sends, no approval email, and
+none of the "still to do" report; Riven sent no email either. All three now go through
+`_approveOneEnrollment` / `_denyOneEnrollment` — **one RPC call site in the file** — so
+they cannot drift again. Approve All approves as active, names the children in its
+confirmation, and reports one combined outstanding list plus anything that failed.
+
+**A test caught something better than a bug.** `tests/account-paths-audit.test.js`
+asserted the confirmation says *"nothing is emailed to the family yet"* — and that
+function has always sent an enrolment-approved email. What the sentence meant was that
+no **sign-in link** goes out, which is the thing people kept getting wrong. Both
+confirmations now say what actually happens. Two harnesses also needed
+`_approveOneEnrollment` adding, which is the closure rule in
+`tests/debug-harness-closure.test.js` doing its job.
+
+### 4. Approving a parent link request now asks
+
+It linked a parent to a child and emailed them on **one click**, while Deny — which does
+nothing but close the request — asked. That was backwards. The confirmation names both
+people, says what the parent will be able to see, and repeats the already-linked warning,
+which is the bit worth pausing on: two parents on one child is ordinary, and so is a
+mis-click on the wrong row of a list of siblings.
+
+### 5. Escaping, partially
+
+Emergency contacts are typed by a family on the **public enrolment form** and read back
+on a staff screen; six values on the card and five in the edit form's `value=""`
+attributes went in raw. Fixed, with `tests/escape-family-input.test.js` over the
+outside-the-school paths. The enrolment screens themselves were already escaped
+throughout — checked, not assumed.
+
+That is a triage, not a fix: about 356 similar lines remain, mostly staff-entered values
+on staff screens. They want doing deliberately rather than by regex — some values are
+meant to be markup, attribute context needs a different helper, and the admin screens
+cannot be smoke-tested from here. The survey is in the **backend** repo at
+`docs/CLIENT_HTML_ESCAPING.md`, because this one is a public web page.
+
+### Still open from the entry above
+
+Items 4–12 of the previous list: the orphaned `pin-login.html`, the sign-in message that
+tells staff to ask a parent, the 6-vs-8 password minimums, reopening a class re-enrolling
+withdrawn pupils, admins not being able to moderate discussions, `coach_id` read two ways,
+and the smaller assignment/gradebook ones.

@@ -37,7 +37,9 @@ const check = (label, actual, expected) => {
 const ok = (label, cond) => check(label, !!cond, true);
 
 function extract(name) {
-  const re = new RegExp('\\n    (?:async\\s+)?' + name + '\\s*\\(', 'g');
+  // Four OR six spaces. The class body uses both: Riven's own methods sit at
+  // four, the rest of the portal at six, and this harness now needs one of each.
+  const re = new RegExp('\\n {4,6}(?:async\\s+)?' + name + '\\s*\\(', 'g');
   const m = re.exec(html);
   if (!m) throw new Error('method not found: ' + name);
   let i = m.index + m[0].length - 1, pd = 0;
@@ -81,7 +83,9 @@ function makeApp({ role = 'admin', applications = [APP()], rpc = {} } = {}) {
     updates: [],
     rpcs: [],
     undos: [],
+    emails: [],
     userInfo: { profile: { user_type: role }, user: { id: 'me' } },
+    supabaseQuery(fn) { return fn(); },
     escapeHtml: esc,
     _showRivenMessage(h) { app.said.push(h); },
     terminalPrintError(m) { app.errors.push(m); },
@@ -93,6 +97,9 @@ function makeApp({ role = 'admin', applications = [APP()], rpc = {} } = {}) {
     },
     auth: {
       supabase: {
+        functions: {
+          invoke(name, opts) { app.emails.push({ name, ...opts?.body }); return Promise.resolve({ data: {}, error: null }); },
+        },
         rpc(fn, args) {
           app.rpcs.push({ fn, args });
           return Promise.resolve({ data: rpc[fn] ?? { success: true }, error: null });
@@ -116,6 +123,9 @@ function makeApp({ role = 'admin', applications = [APP()], rpc = {} } = {}) {
   app._rivenRequireAdmin = extract('_rivenRequireAdmin');
   app._rivenPolicyError = extract('_rivenPolicyError');
   app._rivenFindApplication = extract('_rivenFindApplication');
+  // Riven approves through the same core the Enrollment screen uses, so the
+  // harness has to carry it or the extracted method dies mid-run.
+  app._approveOneEnrollment = extract('_approveOneEnrollment');
   const decide = extract('terminalDecideApplication');
   app.terminalDecideApplication = async function (...a) {
     const r = await decide.apply(app, a);
@@ -186,15 +196,25 @@ const said = (text) => ({ original: text, _rawInput: text });
     ok('  and the year group', /grade 6/.test(app.confirmed));
     // It creates a family's whole record; that should not read as a tick-box.
     ok('  and says what it creates', /medical details, waivers/.test(app.confirmed));
-    ok('  while being honest that nothing is emailed', /nothing is emailed yet/.test(app.confirmed));
+    // It used to say "nothing is emailed yet", which was true of Riven and
+    // false of the Enrollment screen beside it - that screen has always sent an
+    // approval notice. Both go through one path now, and both say so.
+    ok('  and that the family is told', /emails the family/.test(app.confirmed));
+    ok('  while being clear no password link goes out', /no password link goes out yet/.test(app.confirmed));
 
     const call = app.rpcs.find(c => c.fn === 'create_enrollment_profile');
     check('it approves the right application', call.args.p_application_id, 'app1');
     // Logins are opened afterwards from the roster, deliberately.
     check('  and creates no login', call.args.p_create_auth_user, false);
 
+    const mail = app.emails.find(e => e.type === 'enrollment_approved');
+    ok('approving from Riven emails the family', !!mail);
+    check('  and it goes to the parent on the application', mail?.to, 'pat@x.com');
+    check('  naming the student', mail?.data?.studentName, 'Probe Smith');
+    check('  and promising no login, because none was made', mail?.data?.hasLogin, false);
+
     ok('the answer says what is left to do', /needs their account opened/.test(app.ok[0]));
-    ok('  including the parent', /needs a login before they can be linked/.test(app.ok[0]));
+    ok('  including the parent', /needs a parent login before they can be linked/.test(app.ok[0]));
   }
 
   {

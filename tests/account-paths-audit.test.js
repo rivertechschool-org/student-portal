@@ -125,6 +125,11 @@ const base = () => ({
     global.window = {
       PortalUI: { showNotification: (m, k) => app.notices.push(`${k}:${m}`) },
     };
+    // approveEnrollment hands the RPC and the family's email to a shared core,
+    // which Approve All and Riven also use. Extract it, or the method dies
+    // mid-run and the failure reads as "no email was sent".
+    app.supabaseQuery = (fn) => fn();
+    app._approveOneEnrollment = extract('_approveOneEnrollment');
     app.approveEnrollment = extract('approveEnrollment');
     return app;
   }
@@ -139,7 +144,11 @@ const base = () => ({
     const asked = app.confirms[0];
     ok('the prompt no longer promises a login', !/login account will be created/i.test(asked));
     ok('  it says what approval does make', /school record, medical details, waivers/.test(asked));
-    ok('  and that nothing is emailed to the family yet', /nothing is emailed to the family yet/.test(asked));
+    // It used to say "nothing is emailed to the family yet" and then send an
+    // enrolment-approved email three lines later. What it meant was that no
+    // SIGN-IN link goes out, which is the thing people kept getting wrong.
+    ok('  and that the family is told the place is confirmed', /emails the family to say the place is confirmed/.test(asked));
+    ok('  while being clear no password link goes out', /no password link goes out yet/.test(asked));
 
     const mail = app.emails.find(e => e.name === 'send-notification-email');
     check('the approval email stops claiming a login exists', mail.body.data.hasLogin, false);

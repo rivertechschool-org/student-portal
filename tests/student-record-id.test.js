@@ -73,6 +73,59 @@ const lineOf = (idx) => html.slice(0, idx).split('\n').length;
     ok(`the helper is used throughout (${used} sites)`, used >= 15);
   }
 
+  console.log('\n== and the same id, handed over as an argument ==\n');
+
+  {
+    // The scan above looks at `.eq('student_id', …)` and `student_id: …`. It
+    // cannot see a function that takes the id as its FIRST ARGUMENT and does the
+    // filtering inside itself — and that is where the next one was hiding:
+    //
+    //     app.generateReportCard(app.userInfo.user.id)
+    //
+    // generateReportCard looks the pupil up by profile id. Passing the auth uid
+    // matched no row, so Report Card and Transcript on the student's own home
+    // screen did nothing whatever for every pupil the school entered before
+    // they had a login. It passed this file for months because the argument is
+    // not a filter and the filter is not in view.
+    //
+    // So: any function whose first parameter is a student's profile id gets
+    // listed here, and no caller may hand it the auth uid.
+    const TAKES_A_PROFILE_ID = [
+      'generateReportCard', 'generateTranscript', 'showChildDetails',
+      'viewStudentDetails', 'getStudentStrikes', 'calculateStudentGPA',
+      'showActivateChildModal', 'showIssueStrikeModal'
+    ];
+
+    // `app.fn(` / `this.fn(` only — that is a call. A bare `fn(` is the
+    // definition, whose parameter name is not an argument to judge.
+    const bad = [];
+    for (const fn of TAKES_A_PROFILE_ID) {
+      for (const m of html.matchAll(new RegExp(`(?:app|this)\\.${fn}\\(\\s*([^,)]+)`, 'g'))) {
+        const arg = m[1].trim();
+        if (/userInfo\.user\.id|currentUser\.id|auth\.user\.id|\buser\.id\b/.test(arg)) {
+          bad.push(`${lineOf(m.index)}: ${fn}(${arg})`);
+        }
+      }
+    }
+    check('no profile-id argument is filled from the auth uid', bad, []);
+
+    // The two that were wrong now ask the helper.
+    ok('the student home asks for a report card by profile id',
+       /generateReportCard\(app\.auth\.studentRecordId\(\)\)/.test(html));
+    ok('  and a transcript the same way',
+       /generateTranscript\(app\.auth\.studentRecordId\(\)\)/.test(html));
+    ok('  and so does the per-quarter strip',
+       /generateReportCard\('\$\{this\.auth\.studentRecordId\(\)\}'/.test(html));
+
+    // Both functions really do look up by profile id — if that ever changes,
+    // this whole section is measuring the wrong thing.
+    for (const fn of ['generateReportCard', 'generateTranscript']) {
+      const i = html.indexOf(`async ${fn}(`);
+      ok(`${fn} still looks the student up by profile id`,
+         i !== -1 && /from\('user_profiles'\)[\s\S]{0,200}?\.eq\('id', studentId\)/.test(html.slice(i, i + 1400)));
+    }
+  }
+
   console.log('\n== the distinction is not accidental ==\n');
 
   {
