@@ -3277,3 +3277,92 @@ mutation run showed the wrong assertion failing.
 
 `parents/index.html` no longer documents either fault; it describes what the screens
 now do.
+
+## 2026-09-20 — guides for the other three roles
+
+`/students/`, `/teachers/` and `/admin/` join `/parents/`, with `/guides/` as a hub and
+`guides/guide.css` as the one stylesheet all four share. Each home screen in the portal
+now has a button to the guide for whoever is looking at it, via `guidePathForMe()` —
+one place, because four hard-coded paths would be wrong for somebody.
+
+### The CSS moved out of the parent guide
+
+It was inlined, copied from `404.html`'s self-contained pattern. That reasoning is right
+for a 404 — a 404 is exactly when a stylesheet path is likely to be wrong too — and it
+does not carry to a page reached by a working link from a working page. Four copies of
+four hundred lines is how three of them drift from the fourth. `/parents/` keeps its URL.
+
+Each guide sets `data-guide` on `<body>` and gets its own accent from that: parents blue,
+students green, teachers amber, admin purple. Both themes are defined for each, because
+an accent picked against `#0f1216` is usually unreadable on `#f6f8fa`. All eight
+combinations were checked against WCAG AA before shipping; the lowest is 4.77:1.
+
+The `.ui-*` mock-up classes deliberately do **not** follow the role accent. They are
+drawings of the real portal, and the real portal's buttons are the same blue-green
+gradient whoever is looking at them.
+
+### tests/guides.test.js
+
+74 assertions across all five pages. The one worth keeping is the caption rule: every
+`.shot` must be followed by a `<p class="caption">`, because the caption is what tells a
+reader the names are invented. A mock-up without one is how that discipline erodes. It
+also checks every in-page anchor has a target, every site link resolves to a real file,
+no guide carries an inline `<style>`, and no colour token is defined only inside the
+light-mode media query.
+
+Two faults it found in its first run, both real: `.note b { display: block }` was
+matching **every** bold in a callout, so an inline `<b>` mid-sentence broke onto its own
+line (live on `/parents/` as shipped — now `.note > b:first-child`); and the token check
+was anchored at column zero, so it silently found nothing while the CSS was still
+indented from being inlined.
+
+### What the research turned up, and what is NOT fixed
+
+Six parallel passes over the teacher, student and admin surfaces. The guides document
+behaviour honestly rather than promising things that do not happen, but these want
+deciding:
+
+1. **Report Card and Transcript are broken for roster-created students.** The student
+   home passes `app.userInfo.user.id` — the auth uid — into `generateReportCard` /
+   `generateTranscript`, which look the pupil up by profile id. Same id split as the
+   notification bug above; `studentRecordId()` already exists for exactly this. Three
+   call sites (two on the student home, one on the quarter strip). The parent and teacher
+   call sites pass a profile id and are fine. **`tests/student-record-id.test.js` does not
+   catch this** — it scans `student_id` filters and writes, and this is an argument.
+2. **Two-click submit is undiscoverable.** Handing work in needs a second press within
+   three seconds; the first press only relabels the button. Pupils will click once, see
+   nothing happen, and leave. The student guide calls it out in a warning box, which is a
+   documentation fix for an interface problem.
+3. **The Testing Centre time limit is decorative** — no countdown, no auto-submit, and no
+   proctoring of any kind. Both guides say so plainly rather than implying a timed test.
+4. **`pin-login.html` is orphaned** — nothing in the repo links to it. The student guide
+   teaches the 🎮 Games PIN tab instead. Delete the page or link it.
+5. **"This account has not been opened yet. Ask a parent or a teacher to activate it for
+   you."** is shown to every role, including staff. For a teacher the right answer is an
+   administrator. `profile.user_type` is in hand two lines earlier.
+6. **Password minimums disagree across four screens** — 6 on the sign-in setup modal and
+   Change Password, 8 on the in-portal setup modal and parent registration. Both staff
+   guides tell people to use 8+ so every route accepts it.
+7. **Bulk enrolment approval behaves differently from single approval** — a different
+   account status, no approval email, and no "still to do" report. The admin guide warns
+   against using it for anything but a tidy-up.
+8. **Approving a parent link request has no confirmation** — one click links and emails.
+   So does clicking a pupil in "➕ Link Child". Both are in the admin guide's
+   handle-with-care table.
+9. **Reopening a class re-enrols pupils withdrawn before it closed.** The confirm text is
+   technically true and practically misleading.
+10. **Admins cannot moderate discussions** — the check is `user_type === 'teacher'` with
+    no `|| 'admin'`, unlike everywhere else.
+11. **`coach_id` is resolved two ways** — written from `user_profiles.id`, read via
+    `auth_user_id` in two views and `profile.id` in a third. For any split-id user a coach
+    reads as `TBD` in one place and the activity vanishes from another.
+12. Smaller: editing an assignment does not refresh the list behind it (`currentClassId`
+    is never set on `app`); Edit Assignment skips the due-date-within-quarter validation
+    that Create enforces; the Gradebook hides unpublished assignments; saving a grade
+    writes a `submitted_at` for work never submitted; ⚙️ Manage Categories discards
+    unsaved grade edits without warning; the class register still saves by delete-then-
+    insert, which the daily register was deliberately moved away from.
+
+There is also a client-side escaping issue in several admin tables. It is **not**
+described here or anywhere else in this repo, per the rule at the top of `CLAUDE.md` —
+it has been handed over separately.
