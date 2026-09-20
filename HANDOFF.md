@@ -3140,3 +3140,56 @@ them, so a new site that reaches for the login id fails the suite.
 Checked before shipping: **none of the twenty sits on a table whose column
 points at the login system**, where the conversion would have broken it instead.
 
+
+## 2026-09-20 — a parent guide at /parents/
+
+A new public page, `parents/index.html`, served at `rivertech.me/parents/`. It walks
+the whole parent journey: applying, opening an account, confirming the email, linking
+a child, opening the child's own sign-in, then every screen a parent actually uses,
+then every preference they can change.
+
+Linked from three places, all small edits: the sign-in form and the register form on
+`index.html`, and a **📖 Parent Guide** button in the parent Quick Actions grid in
+`portal/index.html`.
+
+### The screens are drawn, not screenshotted
+
+Every "here is what you will see" block is a CSS rebuild of the real UI with invented
+names on it. That is not a stylistic preference — a screenshot of the working portal
+carries a real family's name, and this repo is served verbatim to anyone who asks for
+it. If you add a screen to the guide, rebuild it the same way. The pieces are already
+there as `.ui-*` classes at the top of the file.
+
+The page is self-contained for the same reason `404.html` is: it is what somebody
+reads when something else has already gone wrong for them, so it depends on no
+stylesheet, no script and no network call.
+
+### Two things I found while writing it and did NOT fix
+
+Both are real, both are client-side, and both change what the guide has to say. The
+guide currently documents the behaviour honestly rather than pretending it is right.
+
+1. **The notification checkboxes read as unticked on a fresh account, but the senders
+   treat "never set" as ON.** So a parent who has never opened that card is receiving
+   those emails while looking at four empty boxes — and the first time they press
+   **Save Preferences** without ticking anything, they silently unsubscribe from
+   everything. Either render an unset preference as ticked, or write the defaults on
+   first load. `portal/index.html`, `loadNotificationPreferences` vs the two send
+   sites.
+
+2. **The Select Child dropdown on the main dashboard does not refresh the calendar.**
+   `onChildSelectorChange` updates `selectedChildId` and the details panel but never
+   re-runs `loadCalendarEvents`/`renderCalendar`, so with two children the calendar
+   keeps drawing the first one's classes until the page is reloaded. The guide tells
+   parents to reload. It would be better not to have to.
+
+Two smaller ones, noted rather than argued: **Late Assignment Alerts** has no reader
+anywhere in the repo, and **New Messages** is never consulted because a direct message
+raises an in-app notification and no email. Both checkboxes appear to do nothing.
+
+### One asymmetry worth a decision
+
+**View Transcript** is in Quick Actions and asks which child. **Report Card** is not
+— it exists only inside a child's progress panel. With two children that is two extra
+clicks per report card, for no reason I can see. The guide explains the route rather
+than papering over it.
