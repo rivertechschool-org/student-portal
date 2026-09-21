@@ -3646,5 +3646,13 @@ own validation — so the backend repo carries a migration adding `Other`, plus 
 subjects (Study Hall, Props, Other, each with aliases so classes already typed in with
 those spellings resolve without a rename).
 
-**It needs pasting into the Supabase SQL editor.** Until then this client change is inert
-rather than broken: with no rows in a sixth group there is no sixth optgroup.
+**Applied 2026-09-21** via the Supabase CLI, after a rolled-back dry run of the same file.
+Verified afterwards: six groups, the five academic ones with their counts unchanged, Other
+holding exactly the three, and the resolver returning the right group for both a new
+subject and one of its aliases.
+
+One thing that looked alarming and was not: a count of classes whose subject does not
+match a subject row exactly comes back non-zero. Those are legacy spellings — Computer
+Science, Art, Mathematics, History, Music, Physical Education — and every one of them
+resolves through its alias, which is what aliases are for. The exact-match count is simply
+the wrong question.
