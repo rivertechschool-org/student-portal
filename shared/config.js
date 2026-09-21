@@ -565,6 +565,37 @@ class PortalAuth {
 
 // Shared UI utilities
 class PortalUI {
+    // Run an async job over a list, a few at a time.
+    //
+    // The grade screens call a per-enrolment RPC once per pupil. Awaited in a
+    // for loop that is one round trip each, in series - a class of 25 waits for
+    // 25 of them before it can draw anything. Concurrency makes it ceil(n/limit)
+    // waits; the limit exists so a big class does not open a socket per pupil.
+    //
+    // Order is preserved, and a failure comes back as a value instead of being
+    // thrown, because every caller here wants the other pupils' grades even when
+    // one row is bad - which is what the try/catch inside each loop already said.
+    static async mapLimit(items, limit, fn) {
+        const list = Array.from(items || []);
+        const out = new Array(list.length);
+        let next = 0;
+        const worker = async () => {
+            for (;;) {
+                const i = next++;
+                if (i >= list.length) return;
+                try {
+                    out[i] = { ok: true, value: await fn(list[i], i) };
+                } catch (error) {
+                    out[i] = { ok: false, error };
+                }
+            }
+        };
+        await Promise.all(
+            Array.from({ length: Math.max(1, Math.min(limit, list.length)) }, worker)
+        );
+        return out;
+    }
+
     static applyTheme(theme) {
         const root = document.documentElement;
         Object.entries(theme).forEach(([key, value]) => {

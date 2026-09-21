@@ -422,7 +422,9 @@
                     <div class="test-view-info">
                         <span id="takingTestSubject">Subject</span>
                         <span id="questionProgress">Question 1 of 5</span>
+                        <span id="testClock" role="status" aria-live="polite" style="display: none; font-variant-numeric: tabular-nums; font-weight: 600;"></span>
                     </div>
+                    <div id="testClockNote" style="display: none; margin-top: 8px; font-size: 13px;"></div>
                     <div class="progress-bar">
                         <div class="progress-fill" id="progressFill" style="width: 20%"></div>
                     </div>
@@ -2735,6 +2737,80 @@
         }
 
         // ==================== TEST TAKING ====================
+        // The clock for the test being taken.
+        //
+        // `timeLimit` used to be decorative: shown on every card, stored on the
+        // row, and read by nothing. A pupil pacing themselves against a number
+        // that has no consequence is being misled, and a teacher setting one
+        // believes something is enforcing it.
+        //
+        // It runs, it warns, and when it reaches zero it SAYS SO and stops -
+        // it does not submit. Discarding a half-written answer because a timer
+        // expired is a worse outcome than a test running long, and whether to
+        // do it is the school's call, not a bug fix's. The time taken goes on
+        // the submission either way, so running over is visible afterwards.
+        let testClockTimer = null;
+        let testStartedAt = null;
+        let testClockLimitMs = 0;
+
+        function stopTestClock() {
+            if (testClockTimer) clearInterval(testClockTimer);
+            testClockTimer = null;
+        }
+
+        function startTestClock(minutes) {
+            stopTestClock();
+            testStartedAt = Date.now();
+            testClockLimitMs = (Number(minutes) || 0) * 60000;
+
+            const clock = document.getElementById('testClock');
+            const note = document.getElementById('testClockNote');
+            if (!clock || !note) return;
+
+            if (!testClockLimitMs) {
+                clock.style.display = 'none';
+                note.style.display = 'none';
+                return;
+            }
+
+            clock.style.display = '';
+            const tick = () => {
+                const left = testClockLimitMs - (Date.now() - testStartedAt);
+                if (left <= 0) {
+                    clock.textContent = 'Time is up';
+                    clock.style.color = 'var(--danger, #ef4444)';
+                    note.style.display = '';
+                    note.style.color = 'var(--danger, #ef4444)';
+                    note.textContent =
+                        'Your time is up. Nothing has been sent and nothing is lost — finish what you are '
+                        + 'writing and press Submit Test. Your teacher can see how long you took.';
+                    stopTestClock();
+                    return;
+                }
+
+                const mins = Math.floor(left / 60000);
+                const secs = Math.floor((left % 60000) / 1000);
+                clock.textContent = `${mins}:${String(secs).padStart(2, '0')} left`;
+
+                if (left <= 60000) {
+                    clock.style.color = 'var(--danger, #ef4444)';
+                    note.style.display = '';
+                    note.style.color = 'var(--danger, #ef4444)';
+                    note.textContent = 'Less than a minute left.';
+                } else if (left <= 5 * 60000) {
+                    clock.style.color = 'var(--warning, #f59e0b)';
+                    note.style.display = '';
+                    note.style.color = 'var(--warning, #f59e0b)';
+                    note.textContent = 'Five minutes left.';
+                } else {
+                    clock.style.color = '';
+                    note.style.display = 'none';
+                }
+            };
+            tick();
+            testClockTimer = setInterval(tick, 1000);
+        }
+
         function startTest(testId) {
             currentTestId = testId;
             currentQuestionIndex = 0;
@@ -2746,6 +2822,7 @@
             document.getElementById('takingTestTitle').textContent = test.title;
             document.getElementById('takingTestSubject').textContent = test.subject;
 
+            startTestClock(test.timeLimit);
             renderCurrentQuestion();
         }
 
@@ -2808,6 +2885,15 @@
                 return;
             }
 
+            // How long it actually took. The clock does not submit for anybody,
+            // so this is what lets a teacher see who ran over the limit they set.
+            const minutesTaken = testStartedAt
+                ? Math.max(1, Math.round((Date.now() - testStartedAt) / 60000))
+                : null;
+            const overran = !!(testClockLimitMs && testStartedAt
+                && (Date.now() - testStartedAt) > testClockLimitMs);
+            stopTestClock();
+
             let correct = 0, mcTotal = 0;
 
             test.questions.forEach(q => {
@@ -2841,6 +2927,8 @@
                         finalScore: hasWriteIn ? null : autoScore,
                         gradedAnswers: {},
                         submittedAt: new Date().toISOString(),
+                        minutesTaken,
+                        overran,
                         status
                     };
                 } else {
@@ -2853,6 +2941,8 @@
                         finalScore: hasWriteIn ? null : autoScore,
                         gradedAnswers: {},
                         submittedAt: new Date().toISOString(),
+                        minutesTaken,
+                        overran,
                         status
                     };
                 }
@@ -2982,6 +3072,8 @@
         }
 
         function backToDashboard() {
+            // Leaving the test view must not leave a timer running behind it.
+            stopTestClock();
             document.getElementById('resultsView').style.display = 'none';
             document.getElementById('testTakingView').style.display = 'none';
             document.getElementById(currentRole === 'teacher' ? 'teacherDashboard' : 'studentDashboard').style.display = 'block';

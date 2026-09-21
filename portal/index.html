@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=18"></script>
+  <script src="../shared/config.js?v=19"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -26655,19 +26655,27 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           const excuseReason = document.getElementById('excuse-reason').value;
           
-          // Create a submission record with excused status
+          // Upsert, not insert.
+          //
+          // This is only offered on a row with no submission, which is why a
+          // plain insert mostly worked - but the Gradebook writes a row the
+          // moment a grade is typed, so excusing a pupil who was graded first
+          // collided with the unique key and showed the teacher a raw database
+          // message. Same conflict target the Gradebook already uses.
+          //
+          // No submitted_at: nothing was handed in. Stamping "now" is what made
+          // the submissions list claim a submission that never happened.
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignment_submissions')
-            .insert({
+            .upsert({
               assignment_id: assignmentId,
               student_id: studentId,
               content: 'Assignment excused by teacher',
               status: 'excused',
               excused_by: this.userInfo.user.id,
               excused_at: new Date().toISOString(),
-              excuse_reason: excuseReason || null,
-              submitted_at: new Date().toISOString()
-            }));
+              excuse_reason: excuseReason || null
+            }, { onConflict: 'assignment_id,student_id' }));
           
           if (error) throw error;
           
@@ -42987,6 +42995,23 @@ Students you had withdrawn stay withdrawn.`)) {
           deleteQuery = deleteQuery.is('period', null);
         }
 
+        // Hold what is already there before deleting it.
+        //
+        // Upsert would be better and is not available: the unique index uses
+        // COALESCE to handle a NULL period, and onConflict cannot name an
+        // expression index. So the delete-then-insert stays, and the window it
+        // opens is closed by hand - if the insert fails, the rows that were
+        // there go back.
+        let previousQuery = this.auth.supabase
+          .from('class_attendance')
+          .select('*')
+          .eq('class_id', classId)
+          .eq('date', date);
+        previousQuery = period !== null
+          ? previousQuery.eq('period', period)
+          : previousQuery.is('period', null);
+        const { data: previousRows } = await previousQuery;
+
         // Abort before we destroy anything if the delete failed — otherwise a
         // failed insert after a successful delete would wipe the roster's marks.
         const { error: deleteError } = await deleteQuery;
@@ -42997,7 +43022,23 @@ Students you had withdrawn stay withdrawn.`)) {
           .from('class_attendance')
           .insert(attendanceRecords);
 
-        if (error) throw error;
+        if (error) {
+          // Put the lesson back the way it was. Losing a register nobody can
+          // reconstruct is worse than failing to save a change somebody can
+          // simply make again.
+          if (previousRows && previousRows.length) {
+            const { error: restoreError } = await this.auth.supabase
+              .from('class_attendance')
+              .insert(previousRows);
+            if (restoreError) {
+              console.error('Could not restore previous attendance:', restoreError);
+              throw new Error(
+                `${error.message} — and the marks that were already saved could not be put back. ` +
+                `Do not close this page; take the register again and save.`);
+            }
+          }
+          throw new Error(`${error.message} — nothing was changed.`);
+        }
 
         // Create/update attendance session to mark that attendance was taken
         const sessionData = {
@@ -70742,7 +70783,7 @@ Students you had withdrawn stay withdrawn.`)) {
           const needsGradeCalc = this.enrollments.filter(e => !quarterGradeMap[e.id]);
           if (needsGradeCalc.length > 0) {
             console.log(`Calculating quarter grades for ${needsGradeCalc.length} students...`);
-            for (const enrollment of needsGradeCalc) {
+            await PortalUI.mapLimit(needsGradeCalc, 8, async (enrollment) => {
               try {
                 const { data: calcResult } = await window.app.auth.supabase.rpc('calculate_quarter_grades', {
                   p_enrollment_id: enrollment.id,
@@ -70768,7 +70809,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   class_grade: enrollment.class_grade
                 };
               }
-            }
+            });
           }
 
           // Merge quarter-specific grades into enrollments for display
@@ -70786,7 +70827,7 @@ Students you had withdrawn stay withdrawn.`)) {
           });
 
           // Calculate academic grades and combined suggestions for all enrollments
-          for (const enrollment of this.enrollments) {
+          await PortalUI.mapLimit(this.enrollments, 8, async (enrollment) => {
             try {
               const { data: suggestionData } = await window.app.auth.supabase.rpc('calculate_suggested_grade', {
                 p_enrollment_id: enrollment.id,
@@ -70833,7 +70874,7 @@ Students you had withdrawn stay withdrawn.`)) {
             } catch (err) {
               console.warn('Suggested grade calc failed for', enrollment.id, err.message);
             }
-          }
+          });
 
           // Check categories
           const { data: categories } = await window.app.auth.supabase
@@ -71364,7 +71405,7 @@ Students you had withdrawn stay withdrawn.`)) {
           let successCount = 0;
           let errorCount = 0;
 
-          for (const enrollment of this.enrollments) {
+          await PortalUI.mapLimit(this.enrollments, 8, async (enrollment) => {
             try {
               // This will recalculate academic avg and suggested grade
               // but will NOT override teacher-set grades (respects class_grade_override flag)
@@ -71384,7 +71425,7 @@ Students you had withdrawn stay withdrawn.`)) {
               console.error('Recalc exception for', enrollment.id, err);
               errorCount++;
             }
-          }
+          });
 
           if (errorCount > 0) {
             window.app.showNotification(`Updated suggestions for ${successCount} students, ${errorCount} failed. Teacher overrides preserved.`, 'warning');
@@ -71956,12 +71997,18 @@ OK to discard and continue, Cancel to go back and save.`)) {
 
           this.enrollments = visibleEnrollments;
 
-          // Load assignments for this quarter
+          // Load assignments for this quarter.
+          //
+          // Drafts included. This used to filter on is_published while the
+          // assignment list beside it did not, so an unpublished assignment
+          // showed up in the list with a "0/N GRADED" badge and had no column
+          // here - the screen built for marking everything at once was the only
+          // screen that could not reach it. Publishing is about what the PUPIL
+          // sees; it has never been about whether a teacher may mark.
           const { data: assignments } = await window.app.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
-            .eq('is_published', true)
             .gte('due_date', quarter.start_date)
             .lte('due_date', quarter.end_date)
             .order('due_date', { ascending: true });
@@ -71993,7 +72040,7 @@ OK to discard and continue, Cancel to go back and save.`)) {
           });
 
           // Calculate academic grades for each student
-          for (const enrollment of this.enrollments) {
+          await PortalUI.mapLimit(this.enrollments, 8, async (enrollment) => {
             try {
               const { data: suggestionData } = await window.app.auth.supabase.rpc('calculate_suggested_grade', {
                 p_enrollment_id: enrollment.id,
@@ -72040,7 +72087,7 @@ OK to discard and continue, Cancel to go back and save.`)) {
                 recent_assignment_ids: []
               };
             }
-          }
+          });
 
           this.renderGradebook();
 
@@ -72086,10 +72133,10 @@ OK to discard and continue, Cancel to go back and save.`)) {
 
           html += `
             <th style="padding: 8px; text-align: center; min-width: 80px; max-width: 120px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                title="${assignment.title}\nDue: ${dueDate}\nMax: ${assignment.max_points} pts">
+                title="${assignment.title}\nDue: ${dueDate}\nMax: ${assignment.max_points} pts${assignment.is_published === false ? '\nDraft \u2014 students cannot see this yet' : ''}">
               <div style="font-size: 11px; color: var(--muted-color);">${typeIcon}</div>
               <div style="font-size: 12px; max-width: 100px; overflow: hidden; text-overflow: ellipsis;">${assignment.title}</div>
-              <div style="font-size: 10px; color: var(--muted-color);">(${assignment.max_points})</div>
+              <div style="font-size: 10px; color: var(--muted-color);">(${assignment.max_points})${assignment.is_published === false ? ' <span style="color: var(--warning, #ffd36a); font-weight: 600;">DRAFT</span>' : ''}</div>
             </th>
           `;
         });

@@ -3538,3 +3538,72 @@ Also untouched: the class register still saves by delete-then-insert (the daily 
 was deliberately moved away from that pattern and this one should follow), the Gradebook
 still hides unpublished assignments, `excuseStudent` still inserts rather than upserts,
 and the two grade screens still make one RPC call per enrolled student before rendering.
+
+## 2026-09-20 — the ones I had left
+
+### The class register can no longer lose a lesson
+
+It saved by deleting every row for the class/date/period and inserting the new ones. The
+delete was already guarded — abort if it fails — but that covers half the window: a delete
+that SUCCEEDS followed by an insert that fails leaves the lesson with no attendance at
+all, having just told the teacher it saved.
+
+Upsert is not available here; the unique index uses COALESCE for a NULL period and
+`onConflict` cannot name an expression index. So the shape stays and the window is closed
+by hand: the previous rows are held, and put back if the insert fails. If the restore
+fails too, the teacher is told to take the register again rather than left guessing.
+
+### Excusing upserts
+
+It inserted unconditionally. Only offered on a row with no submission, which is why it
+mostly worked — but the Gradebook writes a row the moment a grade is typed, so excusing a
+pupil who was graded first collided with the unique key and showed a raw database message.
+Same conflict target the Gradebook already uses. It also no longer writes `submitted_at`:
+nothing was handed in.
+
+### The Gradebook can see drafts
+
+It filtered on `is_published` while the assignment list beside it did not, so an
+unpublished assignment appeared in the list with a "0/N GRADED" badge and had no column in
+the grid — the screen built for marking everything at once was the only one that could not
+reach it. Drafts are shown and marked **DRAFT**, because publishing is about what the pupil
+sees and never was about whether a teacher may mark.
+
+### Four per-pupil loops, not three
+
+`calculate_suggested_grade` and `calculate_quarter_grades` each take one enrolment, so
+they cannot be batched from here — that is a server change for the other repo. But they
+were awaited one at a time, so a class of 25 paid 25 round-trip latencies in series before
+anything drew. `PortalUI.mapLimit(items, limit, fn)` runs them eight at a time, preserves
+input order, and returns a failure rather than throwing, because every one of those loops
+already had a try/catch saying it wanted the other pupils' grades regardless.
+
+I converted three. **`tests/map-limit.test.js` found the fourth** — the Recalculate Grades
+button — because it scans for the shape instead of listing the ones I happened to notice.
+
+`mapLimit` lives on `PortalUI` in `shared/config.js`, so `config.js?v=` moved to **19** on
+all four pages. A stale cached copy would throw "PortalUI.mapLimit is not a function" the
+first time somebody opened a gradebook.
+
+### The Testing Centre clock is real now
+
+The limit was stored, printed on every card, and enforced by nothing. A number shown to a
+pupil with no consequence attached is worse than no number, because they pace themselves
+against it.
+
+It counts down beside the question number, warns at five minutes and at one, and at zero
+says **"Time is up"** and stops. **It does not submit.** Discarding a half-written answer
+because a clock expired is a worse outcome than a test running long, and that trade is the
+school's to make rather than a bug fix's. The minutes actually taken are recorded with the
+submission, so running over is visible afterwards. Both guides now describe that instead of
+saying the limit does nothing.
+
+Still true, and still said plainly in the teacher guide: **nothing is proctored** — no
+fullscreen lock, no tab-switch detection, no question shuffling.
+
+### A note on method
+
+Three of these were found by tests rather than by reading: the fourth grade loop, the
+confirmation that claimed nothing was emailed, and the page that pinned a `config.js`
+version it no longer loads. Assertions that scan for a SHAPE keep finding things; ones
+that list what I already knew never do.
