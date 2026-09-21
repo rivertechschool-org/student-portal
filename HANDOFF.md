@@ -3607,3 +3607,44 @@ Three of these were found by tests rather than by reading: the fourth grade loop
 confirmation that claimed nothing was emailed, and the page that pinned a `config.js`
 version it no longer loads. Assertions that scan for a SHAPE keep finding things; ones
 that list what I already knew never do.
+
+## 2026-09-21 — a subject for classes that are not a subject
+
+Study hall, props, cover — the timetable blocks that are not a taught subject had nowhere
+to go, because the class form requires a subject and every subject on the list is academic.
+
+**The admin panel could already add subjects** and has been able to for a while:
+**Admin → Settings → Subjects & Grade Bands → Edit lists**. Add, rename, delete, set
+aliases, and the same for grade bands. Renaming carries every class with it, and a row
+still in use cannot be deleted. That is now written up in the admin guide, because it was
+easier to miss than to use.
+
+What it could **not** do was put a subject anywhere but the five Drive groups, and that is
+what actually blocked this. The group decides which top-level Drive folder a class's work
+files under, so filing props under Life would have worked mechanically and been a lie.
+
+### The client was dropping data, silently
+
+The five group names were written out twice here — once to order the optgroups on the class
+form, once to fill the group dropdown in the panel. The class form's version walked its
+hard-coded five and rendered an `<optgroup>` for each, so **a subject in a sixth group was
+not rendered at all**: not mis-sorted, not shown oddly, simply absent. The row would have
+been in the database, the form would have looked complete, and there would have been
+nothing to search for.
+
+Both now derive the groups from the rows. The five keep their established order — the order
+of the school's own START HERE document, not alphabetical chance — and anything else
+follows. The next group needs no change here at all.
+
+`tests/subject-groups.test.js`, 28 assertions, four mutations caught. The one that matters
+asserts a subject in a new group is *rendered at all*.
+
+### The other half is a migration, and it is not applied
+
+The group list is also pinned in the database — a CHECK constraint and the save function's
+own validation — so the backend repo carries a migration adding `Other`, plus the three
+subjects (Study Hall, Props, Other, each with aliases so classes already typed in with
+those spellings resolve without a rename).
+
+**It needs pasting into the Supabase SQL editor.** Until then this client change is inert
+rather than broken: with no rows in a sixth group there is no sixth optgroup.
