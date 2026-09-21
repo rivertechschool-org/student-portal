@@ -140,9 +140,18 @@ function fakeDom(fields) {
     // Activate Account option", which is now advice to press a button that is
     // not there.
     ok('the refusal at sign-in names a person, not a button',
-      /has not been opened yet[\s\S]{0,80}parent or a teacher/.test(root));
+      /has not been opened yet/.test(root) && /parent or a teacher to activate it/.test(root));
     ok('  and no longer names the removed option',
       !/Please use the "Activate Account" option/.test(root));
+    // It names a DIFFERENT person depending on who is asking. A teacher told to
+    // "ask a parent or a teacher" is being sent to the wrong desk, at the
+    // moment they have least patience for it.
+    ok('  staff are sent to an administrator',
+      /Ask an administrator to open it for you/.test(root));
+    ok('  a parent is sent to the office',
+      /Ask the school office to open it for you/.test(root));
+    ok('  and the choice is made from their role',
+      /user_type;[\s\S]{0,200}whoToAsk/.test(root));
   }
 
   console.log('\n== registering makes a parent, whatever is sent ==\n');

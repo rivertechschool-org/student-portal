@@ -3434,3 +3434,107 @@ Items 4–12 of the previous list: the orphaned `pin-login.html`, the sign-in me
 tells staff to ask a parent, the 6-vs-8 password minimums, reopening a class re-enrolling
 withdrawn pupils, admins not being able to moderate discussions, `coach_id` read two ways,
 and the smaller assignment/gradebook ones.
+
+## 2026-09-20 — the rest of the list
+
+### One password minimum
+
+There were two. Registration and the in-portal setup modal wanted 8; the sign-in-page
+setup modal, Change Password and `reset.html` accepted 6. So a person was told "at least
+8 characters" while choosing one, and could set a six-character password an hour later
+through Forgot Password. It is 8 everywhere now — lowering a minimum silently weakens
+every account that later passes through the lowered door.
+
+### The sign-in refusal names the right desk
+
+`This account has not been opened yet. Ask a parent or a teacher to activate it for you.`
+went to every role, including staff. `profile.user_type` is in hand two lines earlier:
+staff are sent to an administrator, a parent to the office, a pupil to a parent or
+teacher.
+
+### Reopening a class no longer un-withdraws anyone
+
+Closing ARCHIVES enrolments; withdrawing a pupil marks theirs REMOVED, which is somebody's
+decision, often months earlier. Reopening restored both. Only archived comes back now, and
+the toast says how many withdrawn pupils were left off so putting one back is a decision
+rather than a discovery. The roster-restore error is surfaced instead of being a console
+line — a class that is open with a roster that is not is exactly the state somebody needs
+told about.
+
+### The gradebook stopped inventing a submission time
+
+Entering a grade for offline work upserted `submitted_at: now` when there wasn't one, so
+the submissions list reported `Submitted: <today>` for a pupil who submitted nothing. It
+leaves the column alone.
+
+### Editing an assignment
+
+Two faults. The refresh read `this.currentClassId`, which is a field on the gradebook and
+grade-management objects and has never existed on `app` — so it was always undefined, the
+list never redrew, and the teacher got "Assignment updated successfully!" over stale
+values. `classId` is the second argument and always has been. And Edit skipped the
+due-date-within-quarter check that Create enforces, so nudging a date across a boundary
+silently moved the work into another quarter, or into "Unassigned to Quarter". It now asks.
+
+### Manage Categories warns before discarding grades
+
+It replaces the grade screen while `pendingChanges` is still held, and coming back resets
+them. Switching quarter already warns for exactly this reason; this did not.
+
+### Admins can moderate discussions
+
+The check was `user_type === 'teacher'` with no `|| 'admin'`, unlike every other
+moderation check in the file — so an admin could not remove a post in any class they did
+not personally teach, which is all of them.
+
+### One strike-decay rule
+
+`getStudentStrikes()` applied decay; the Strikes roster counted raw rows. A pupil whose
+strikes had expired showed 2/3 on the list staff scan until somebody opened their record —
+and opening it was what deleted the rows, so the roster was only right about people
+already looked at. Both call `strikeDecay(rows, now)`, which is pure: the roster needs a
+count without deleting anything. `tests/strike-decay.test.js`, 27 assertions, four
+mutations caught.
+
+### pin-login.html was a second copy of the sign-in form
+
+Nothing linked to it, and its error strings had already drifted from the tab's. It
+forwards to `/#pin` now — a new deep link that opens the Games PIN tab and focuses the
+box — so the URL keeps working and there is one implementation. Staff copy on the student
+record said "For sign-in at pin-login", which is not an address anyone can be given; it
+now says what to actually tell a pupil.
+
+### coach_id is read either way
+
+The activity editor writes it from `user_profiles.id`; three readers looked it up by
+`auth_user_id`, each with its own copy of the query and a comment asserting it was an auth
+uid. Those coincide for every member of staff today, which is why nobody noticed. One
+helper, `coachNamesById()`, matches on either and keys the map by both — right whichever
+is stored, without this repo having to read the roster to find out which.
+
+### Smaller
+
+`mailto:null` for a pupil with no address; `admin-strikes` missing from both valid-section
+lists so a reload landed on an empty screen; `hardDeleteUserAccount` always returning to
+Staff & Parents even when invoked from a pupil's hub; activating a parent from Staff &
+Parents refreshing the roster's list instead of the one on screen, so the row kept saying
+"No sign-in yet".
+
+### Two tests objected, both rightly
+
+`no-student-self-signup` pinned the old single-sentence refusal; it now checks all three
+branches. `enrollment-student-id` hard-coded pin-login.html in its list of pages that must
+pin a `config.js` version — it derives the list now, because a page that loads nothing is
+not that check's business.
+
+### Deliberately not done
+
+The Testing Centre's time limit is still decorative and there is still no proctoring. A
+countdown that auto-submits is a feature with a real chance of throwing away a pupil's
+work, not a bug fix, and it wants deciding rather than assuming. Both guides say plainly
+that the limit is not enforced.
+
+Also untouched: the class register still saves by delete-then-insert (the daily register
+was deliberately moved away from that pattern and this one should follow), the Gradebook
+still hides unpublished assignments, `excuseStudent` still inserts rather than upserts,
+and the two grade screens still make one RPC call per enrolled student before rendering.

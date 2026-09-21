@@ -2058,12 +2058,12 @@
                 <div style="display: grid; gap: 15px; max-width: 400px;">
                   <div class="form-group">
                     <label for="new-password">New Password</label>
-                    <input type="password" id="new-password" class="form-control" placeholder="Enter new password" minlength="6">
+                    <input type="password" id="new-password" class="form-control" placeholder="Enter new password" minlength="8">
                   </div>
 
                   <div class="form-group">
                     <label for="confirm-password">Confirm New Password</label>
-                    <input type="password" id="confirm-password" class="form-control" placeholder="Confirm new password" minlength="6">
+                    <input type="password" id="confirm-password" class="form-control" placeholder="Confirm new password" minlength="8">
                   </div>
 
                   <div id="password-match-error" style="color: var(--danger); font-size: 14px; display: none;">
@@ -2071,7 +2071,7 @@
                   </div>
 
                   <div id="password-length-error" style="color: var(--danger); font-size: 14px; display: none;">
-                    Password must be at least 6 characters.
+                    Password must be at least 8 characters.
                   </div>
 
                   <button class="btn btn-primary" onclick="app.changePassword()" id="change-password-btn">
@@ -2791,7 +2791,7 @@
 
         // Navigate to hash section if present, otherwise show home
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'documents', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
+        const validSections = ['home', 'classes', 'documents', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-strikes', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
         } else {
@@ -5858,7 +5858,7 @@
 
       handleHashNavigation() {
         const hash = window.location.hash.substring(1);
-        const validSections = ['home', 'classes', 'documents', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
+        const validSections = ['home', 'classes', 'documents', 'messaging', 'profile', 'my-students', 'materials-requests', 'testing-center', 'activities', 'admin-dashboard', 'admin-classes', 'admin-users', 'admin-settings', 'admin-reports', 'admin-attendance', 'admin-student-records', 'admin-enrollment', 'admin-strikes', 'admin-rtc-management', 'rtc-bank-helper', 'teacher-terminal', 'irl-purchases', 'notes'];
 
         if (hash && validSections.includes(hash)) {
           this.showSection(hash);
@@ -8894,7 +8894,9 @@
                 </span>
               </td>
               <td style="padding: 12px;">
-                <a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a>
+                ${student.email
+                  ? `<a href="mailto:${this.escapeHtml(student.email)}" style="color: var(--accent);">${this.escapeHtml(student.email)}</a>`
+                  : `<span style="color: var(--muted);">No email</span>`}
               </td>
               <td style="padding: 12px; text-align: center;">
                 <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;"
@@ -10503,7 +10505,9 @@
                   <tr style="border-bottom: 1px solid var(--border); ${isPast ? 'opacity: 0.7;' : ''}">
                     <td style="padding: 12px;">${student.first_name} ${student.last_name}</td>
                     <td style="padding: 12px;">${student.grade_level ? `Grade ${student.grade_level}` : 'N/A'}</td>
-                    <td style="padding: 12px;"><a href="mailto:${student.email}" style="color: var(--accent);">${student.email}</a></td>
+                    <td style="padding: 12px;">${student.email
+                      ? `<a href="mailto:${this.escapeHtml(student.email)}" style="color: var(--accent);">${this.escapeHtml(student.email)}</a>`
+                      : `<span style="color: var(--muted);">No email</span>`}</td>
                     <td style="padding: 12px;">${statusBadge}</td>
                     <td style="padding: 12px; text-align: center;">
                       <div style="display: flex; gap: 6px; align-items: center; justify-content: center;">
@@ -12963,6 +12967,30 @@
        * Strikes decay 3 months from when the most recent strike was given
        * Returns: { strikes: [...], count: number, nextDecayDate: Date|null }
        */
+      // When does each of a student's strikes expire?
+      //
+      // The clock restarts from the MOST RECENT strike: with three on record the
+      // oldest clears three months after the latest one, the next at six, the
+      // newest at nine. Pure and side-effect free on purpose - the roster needs
+      // the count without deleting anything, and only the record view should
+      // tidy up.
+      //
+      // `rows` must be newest-first, which is how both callers fetch them.
+      strikeDecay(rows, now = new Date()) {
+        const active = [];
+        const expired = [];
+        if (!rows || rows.length === 0) return { active, expired };
+
+        const mostRecent = new Date(rows[0].created_at);
+        for (let i = 0; i < rows.length; i++) {
+          const decayDate = new Date(mostRecent);
+          decayDate.setMonth(decayDate.getMonth() + (3 * (rows.length - i)));
+          if (now >= decayDate) expired.push(rows[i]);
+          else active.push({ ...rows[i], decayDate });
+        }
+        return { active, expired };
+      }
+
       async getStudentStrikes(studentId) {
         try {
           const { data: strikes, error } = await this.supabaseQuery(() =>
@@ -12997,31 +13025,10 @@
             return { strikes: [], count: 0, nextDecayDate: null };
           }
 
-          // Calculate decay - strikes decay from the most recent strike date
-          const mostRecentStrikeDate = new Date(strikes[0].created_at);
-          const now = new Date();
-
-          // Decay calculation: Each strike decays 3 months after the most recent strike was given
-          // The oldest strike decays first, then the next, etc.
-          const strikesToDelete = [];
-          const activeStrikes = [];
-
-          for (let i = 0; i < strikes.length; i++) {
-            // Position from most recent (0 = most recent, 1 = second, 2 = oldest)
-            // Decay date = most recent strike + (position + 1) * 3 months
-            const decayDate = new Date(mostRecentStrikeDate);
-            decayDate.setMonth(decayDate.getMonth() + (3 * (strikes.length - i)));
-
-            if (now >= decayDate) {
-              // This strike should be deleted
-              strikesToDelete.push(strikes[i].id);
-            } else {
-              activeStrikes.push({
-                ...strikes[i],
-                decayDate: decayDate
-              });
-            }
-          }
+          // Same rule the roster uses, so the two screens cannot report
+          // different numbers for the same pupil.
+          const { active: activeStrikes, expired } = this.strikeDecay(strikes);
+          const strikesToDelete = expired.map(r => r.id);
 
           // Delete decayed strikes
           if (strikesToDelete.length > 0) {
@@ -13079,10 +13086,21 @@
               .select('student_id, created_at')
           );
 
-          // Count strikes per student (we'll do decay calculation when viewing individual student)
-          const strikeCounts = {};
+          // Count what is still ACTIVE, not every row ever written.
+          //
+          // This used to count raw rows and leave decay "when viewing individual
+          // student" - so a pupil whose strikes had all expired sat at 2/3 on
+          // this list until somebody opened their record, which is also what
+          // deleted the rows. The roster is the screen staff scan, so it was the
+          // wrong one to be stale.
+          const byStudent = {};
           (allStrikes || []).forEach(s => {
-            strikeCounts[s.student_id] = (strikeCounts[s.student_id] || 0) + 1;
+            (byStudent[s.student_id] = byStudent[s.student_id] || []).push(s);
+          });
+          const strikeCounts = {};
+          Object.entries(byStudent).forEach(([studentId, rows]) => {
+            rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            strikeCounts[studentId] = this.strikeDecay(rows).active.length;
           });
 
           // Add strike count to students
@@ -14630,7 +14648,7 @@
         if (lengthError) lengthError.style.display = 'none';
 
         // Validate password length
-        if (!newPassword || newPassword.length < 6) {
+        if (!newPassword || newPassword.length < 8) {
           if (lengthError) lengthError.style.display = 'block';
           return;
         }
@@ -16790,7 +16808,11 @@
       
           // Render the modal
           const classData = this.classes.find(c => c.id === classId);
-          const isTeacher = this.userInfo?.profile?.user_type === 'teacher';
+          // `|| admin` deliberately: every other moderation check in this
+          // file admits admins, and this one did not, so an admin could not
+          // remove a post in any class they did not personally teach.
+          const role = this.userInfo?.profile?.user_type;
+          const isTeacher = role === 'teacher' || role === 'admin';
       
           let content = `
             <div style="margin-bottom: 20px;">
@@ -21282,7 +21304,10 @@
           classData = this.currentClass;
         }
 
-        if (!confirm(`Reopen "${classData?.name}"?\n\nThe class will appear in active views again and all students will be re-enrolled.`)) {
+        if (!confirm(`Reopen "${classData?.name}"?
+
+The class appears in active views again, and everyone who was on the register when it closed is re-enrolled.
+Students you had withdrawn stay withdrawn.`)) {
           return;
         }
 
@@ -21302,31 +21327,47 @@
 
           if (error) throw error;
 
-          // Reactivate archived enrollments so students appear in the class again
-          const { error: enrollErrorArchived } = await this.supabaseQuery(() =>
+          // Bring back the enrolments CLOSING the class archived - and only
+          // those. A withdrawal is somebody's decision, usually taken months
+          // before the class was closed, and restoring it walks a pupil the
+          // teacher took off the register straight back on. The two used to be
+          // restored together.
+          const { data: restored, error: enrollErrorArchived } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('class_enrollments')
               .update({ status: 'active', updated_at: new Date().toISOString() })
               .eq('class_id', classId)
-              .eq('status', 'archived'));
+              .eq('status', 'archived')
+              .select('id'));
 
           if (enrollErrorArchived) {
+            // Not a silent console line: the class is open and its roster is
+            // not, which is exactly the state somebody needs to know about.
             console.error('Error reactivating archived enrollments:', enrollErrorArchived);
+            this.showNotification(
+              'Class reopened, but its roster could not be restored: ' + enrollErrorArchived.message,
+              'warning', 12000);
+            this.closeModal('class-details');
+            await this.loadTeacherData();
+            this.renderClasses();
+            return;
           }
 
-          // Also reactivate removed enrollments
-          const { error: enrollErrorRemoved } = await this.supabaseQuery(() =>
+          // Say how many withdrawn pupils were left alone, so putting one back
+          // is a decision rather than a discovery three weeks later.
+          const { count: stillOut } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('class_enrollments')
-              .update({ status: 'active', updated_at: new Date().toISOString() })
+              .select('id', { count: 'exact', head: true })
               .eq('class_id', classId)
               .eq('status', 'removed'));
 
-          if (enrollErrorRemoved) {
-            console.error('Error reactivating removed enrollments:', enrollErrorRemoved);
+          const n = restored?.length || 0;
+          let msg = `Class reopened. ${n} student${n === 1 ? '' : 's'} back on the register.`;
+          if (stillOut) {
+            msg += ` ${stillOut} withdrawn student${stillOut === 1 ? ' was' : 's were'} left off — add them back from the roster if they are returning.`;
           }
-
-          this.showNotification('Class reopened successfully', 'success');
+          this.showNotification(msg, 'success', stillOut ? 12000 : undefined);
           this.closeModal('class-details');
 
           // Reload classes
@@ -23238,6 +23279,29 @@
             this.showNotification('Title and due date are required', 'error');
             return;
           }
+
+          // An assignment has no quarter column: its DUE DATE decides which
+          // quarter it belongs to. Create checks that and clamps the picker;
+          // Edit accepted anything, so nudging a date across a boundary moved
+          // the work into the next quarter, or into the "Unassigned to Quarter"
+          // bucket nobody opens, with no warning either way.
+          const quarterForEdit = (this.assignmentQuarters || []).find(q => q.is_current)
+            || (this.assignmentQuarters || [])[0];
+          if (quarterForEdit) {
+            const due = new Date(dueDate);
+            const qStart = new Date(quarterForEdit.start_date);
+            const qEnd = new Date(quarterForEdit.end_date);
+            qEnd.setHours(23, 59, 59, 999);
+            if (due < qStart || due > qEnd) {
+              const ok = confirm(
+                `That due date is outside ${quarterForEdit.name} ` +
+                `(${qStart.toLocaleDateString()} \u2013 ${qEnd.toLocaleDateString()}).\n\n` +
+                `An assignment belongs to whichever quarter its due date falls in, so this ` +
+                `moves it out of ${quarterForEdit.name} and it will stop appearing in the ` +
+                `class's assignment list.\n\nMove it anyway?`);
+              if (!ok) return;
+            }
+          }
       
           const description = this.assignmentDescriptionEditor?.root.innerHTML || '';
       
@@ -23302,9 +23366,16 @@
           this.showNotification('Assignment updated successfully!', 'success');
           this.closeModal('edit-assignment');
           
-          // Refresh assignments view
-          if (this.currentClassId) {
-            await this.viewAssignments(this.currentClassId);
+          // Refresh the list behind the modal.
+          //
+          // This used to read `this.currentClassId`, which is a field on the
+          // gradebook and grade-management objects and has never existed on
+          // `app` - so it was always undefined, the refresh never ran, and the
+          // teacher got a success message over stale values. classId is the
+          // second argument to this function and always has been.
+          const refreshId = classId || this.currentClass?.id;
+          if (refreshId) {
+            await this.viewAssignments(refreshId);
           }
       
         } catch (error) {
@@ -37224,7 +37295,7 @@
                 <div style="font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">🎮 Games PIN</div>
                 ${student.games_pin
                   ? `<div style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 28px; font-weight: 700; color: var(--accent); letter-spacing: 6px;">${student.games_pin}</div>
-                     <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">For sign-in at pin-login → unlocks games + skills only.</div>`
+                     <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">Tell them: rivertech.me, the Games PIN tab. Unlocks games + skills only.</div>`
                   : `<div style="font-size: 14px; color: var(--muted);">No PIN set.</div>`
                 }
               </div>
@@ -38371,9 +38442,15 @@
               : `Activated, but no email went out. ${result.warning || ''}`,
             result.emailSent ? 'success' : 'warning');
 
-          // The list is filtered on inactive students, so a refresh is what
-          // makes the activated one disappear from it.
-          if (typeof this.showInactiveStudentsList === 'function') {
+          // Refresh whichever screen this was opened from. The modal is shared
+          // between the roster and Staff & Parents, and it only ever refreshed
+          // the roster - so a parent activated from Staff & Parents went on
+          // showing "No sign-in yet" until a reload, which reads exactly like
+          // the activation having failed.
+          const onStaffScreen = !document.getElementById('admin-users-section')?.classList.contains('hidden');
+          if (onStaffScreen && typeof this.renderAdminUsers === 'function') {
+            this.renderAdminUsers();
+          } else if (typeof this.showInactiveStudentsList === 'function') {
             this.showInactiveStudentsList();
           }
         } catch (e) {
@@ -40060,8 +40137,17 @@
             this.showNotification(`${userName}'s account has been permanently deleted`, 'success');
           }
 
-          // Refresh the admin users view
-          this.renderAdminUsers();
+          // Go back to wherever the Delete button was, not always to Staff &
+          // Parents. This is the one function behind every Delete button, and
+          // it used to render Staff & Parents unconditionally - so deleting
+          // from a pupil's hub left the overlay open over a screen the admin
+          // had never been on.
+          document.getElementById('student-hub-overlay')?.remove();
+          if (userType === 'student') {
+            if (typeof this.renderAdminStudentRecords === 'function') this.renderAdminStudentRecords();
+          } else {
+            this.renderAdminUsers();
+          }
 
         } catch (error) {
           console.error('Error deleting user account:', error);
@@ -43438,6 +43524,35 @@
         .join(', ');
     }
 
+      // coach_id -> { first_name, last_name }, keyed by BOTH of a person's ids.
+    //
+    // The activity editor writes this column from user_profiles.id; three
+    // readers used to look it up by auth_user_id, each with its own copy of
+    // the query. Those two values coincide for everyone on the staff today,
+    // so the mismatch was invisible - but not for anyone whose profile the
+    // school created before they had a login, and that coach quietly became
+    // "TBD" everywhere except their own My Teams screen.
+    //
+    // Matching on either id makes the answer independent of which one a given
+    // row happens to hold, which is the same shape the backend uses for this.
+    async coachNamesById(ids) {
+      const wanted = [...new Set((ids || []).filter(Boolean))];
+      const map = {};
+      if (wanted.length === 0) return map;
+
+      const list = wanted.join(',');
+      const { data } = await this.supabaseQuery(() => this.auth.supabase
+        .from('user_profiles')
+        .select('id, auth_user_id, first_name, last_name')
+        .or(`id.in.(${list}),auth_user_id.in.(${list})`));
+
+      (data || []).forEach(p => {
+        if (p.id) map[p.id] = p;
+        if (p.auth_user_id) map[p.auth_user_id] = p;
+      });
+      return map;
+    }
+
     renderActivitiesSection() {
       const userType = this.userInfo.profile?.user_type;
       if (userType === 'student') {
@@ -43465,17 +43580,9 @@
           .order('name'));
         if (actErr) throw actErr;
 
-        // Fetch coach info separately (coach_id is an auth.users UUID)
-        const coachIds = [...new Set(activities.map(a => a.coach_id).filter(Boolean))];
-        if (coachIds.length > 0) {
-          const { data: coaches } = await this.supabaseQuery(() => this.auth.supabase
-            .from('user_profiles')
-            .select('auth_user_id, first_name, last_name')
-            .in('auth_user_id', coachIds));
-          const coachMap = {};
-          (coaches || []).forEach(c => { coachMap[c.auth_user_id] = c; });
-          activities.forEach(a => { a.coach = coachMap[a.coach_id] || null; });
-        }
+        // Either id - see coachNamesById.
+        const coachMap = await this.coachNamesById(activities.map(a => a.coach_id));
+        activities.forEach(a => { a.coach = coachMap[a.coach_id] || null; });
 
         // Fetch student's enrollments
         const { data: myEnrollments } = await this.supabaseQuery(() => this.auth.supabase
@@ -43675,16 +43782,9 @@
             .eq('student_id', child.id));
 
           // Resolve coach info for enrolled activities
-          const parentCoachIds = [...new Set((enrollments || []).map(e => e.activity?.coach_id).filter(Boolean))];
-          if (parentCoachIds.length > 0) {
-            const { data: pCoaches } = await this.supabaseQuery(() => this.auth.supabase
-              .from('user_profiles')
-              .select('auth_user_id, first_name, last_name')
-              .in('auth_user_id', parentCoachIds));
-            const pCoachMap = {};
-            (pCoaches || []).forEach(c => { pCoachMap[c.auth_user_id] = c; });
+          // Either id - see coachNamesById.
+          const pCoachMap = await this.coachNamesById((enrollments || []).map(e => e.activity?.coach_id).filter(Boolean));
             (enrollments || []).forEach(e => { if (e.activity) e.activity.coach = pCoachMap[e.activity.coach_id] || null; });
-          }
 
           // Get schedules for enrolled activities
           const actIds = (enrollments || []).map(e => e.activity?.id).filter(Boolean);
@@ -43915,16 +44015,9 @@
         if (error) throw error;
 
         // Resolve coach info separately
-        const adminCoachIds = [...new Set((activities || []).map(a => a.coach_id).filter(Boolean))];
-        if (adminCoachIds.length > 0) {
-          const { data: aCoaches } = await this.supabaseQuery(() => this.auth.supabase
-            .from('user_profiles')
-            .select('auth_user_id, first_name, last_name')
-            .in('auth_user_id', adminCoachIds));
-          const aCoachMap = {};
-          (aCoaches || []).forEach(c => { aCoachMap[c.auth_user_id] = c; });
+          // Either id - see coachNamesById.
+          const aCoachMap = await this.coachNamesById((activities || []).map(a => a.coach_id).filter(Boolean));
           (activities || []).forEach(a => { a.coach = aCoachMap[a.coach_id] || null; });
-        }
 
         // Get enrollment counts
         const { data: enrollments } = await this.supabaseQuery(() => this.auth.supabase
@@ -71419,6 +71512,23 @@
       }
         
       async showCategoryManagement() {
+        // Ask before throwing away typed grades.
+        //
+        // This replaces the grade screen's contents, and returning from it
+        // rebuilds that screen, which clears pendingChanges. So opening it with
+        // edits on screen lost them silently. Switching quarter already warns
+        // for exactly this reason; this did not.
+        const pending = Object.keys(this.pendingChanges || {}).length;
+        if (pending && !confirm(
+              `You have ${pending} unsaved grade change${pending === 1 ? '' : 's'}.
+
+` +
+              `Opening the category editor will discard ${pending === 1 ? 'it' : 'them'}. ` +
+              `Save first?
+
+OK to discard and continue, Cancel to go back and save.`)) {
+          return;
+        }
         try {
           // Load categories
           const { data: categories, error } = await window.app.auth.supabase
@@ -72291,11 +72401,15 @@
                   graded_at: new Date().toISOString()
                 };
 
-                // Preserve submitted_at if exists
+                // Keep a real submitted_at; do not invent one.
+                //
+                // Entering a grade in this grid is how offline work, tests and
+                // presentations get marked - nothing was handed in, so there is no
+                // moment to record. Stamping "now" made the submissions list report
+                // `Submitted: <today>` for a pupil who submitted nothing: a fact on
+                // their record that nobody typed and nobody can correct.
                 if (existingSubmission?.submitted_at) {
                   submissionData.submitted_at = existingSubmission.submitted_at;
-                } else {
-                  submissionData.submitted_at = new Date().toISOString();
                 }
 
                 console.log('Upserting submission:', submissionData);

@@ -96,7 +96,14 @@ for (const rel of ['portal/index.html', 'index.html']) {
 // enrollment read. The version must not sit at the pre-fix 17.
 console.log('C. cache-busting');
 
-const pages = ['index.html', 'portal/index.html', 'pin-login.html', 'confirm.html', 'reset.html'];
+// Derived, not listed. pin-login.html used to be a second copy of the Games-PIN
+// form and loaded config.js like the rest; it is a redirect to /#pin now and
+// loads nothing, so a hard-coded list turned a deliberate simplification into a
+// failing test. Any page that USES the shared file must pin it; a page that does
+// not use it is not this check's business.
+const pages = ['index.html', 'portal/index.html', 'pin-login.html', 'confirm.html', 'reset.html']
+  .filter((rel) => /config\.js/.test(fs.readFileSync(path.join(root, rel), 'utf8')));
+check('there are pages pinning the shared file', pages.length >= 4, pages.length + ' of 5');
 const versions = new Set();
 for (const rel of pages) {
   const m = fs.readFileSync(path.join(root, rel), 'utf8').match(/config\.js\?v=(\d+)/);
