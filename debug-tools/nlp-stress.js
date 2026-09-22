@@ -160,6 +160,15 @@ const T = [
   ['subtract 10 from noah', 'SUBTRACT_RTC', 'Noah Williams', true],
   ['minus 4 from mia', 'SUBTRACT_RTC', 'Mia Wilson', true],
   ['deduct 6 from lucas', 'SUBTRACT_RTC', 'Lucas Anderson', true],
+  // "withdraw" is also the verb for making someone a past student; with gold
+  // or a number it is a deduction (a teacher got the admin-only refusal)
+  ['withdraw gold from clementine', 'SUBTRACT_RTC', 'Clementine Vasquez', false],
+  ['withdraw 5 gold from olivia', 'SUBTRACT_RTC', 'Olivia Brown', true],
+  ['withdraw 10 coins from noah', 'SUBTRACT_RTC', 'Noah Williams', true],
+  ['withdraw some points from mia', 'SUBTRACT_RTC', 'Mia Wilson', false],
+  ['withdraw 5 from lucas', 'SUBTRACT_RTC', 'Lucas Anderson', true],
+  ['withdraw clementine from school', 'WITHDRAW_STUDENT', 'Clementine Vasquez', false],
+  ['withdraw noah', 'WITHDRAW_STUDENT', 'Noah Williams', false],
   // lists / stats / top (no student)
   ['list all students', 'LIST_STUDENTS', null, true],
   ['show stats', 'VIEW_STATS', null, true],
