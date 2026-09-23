@@ -2252,3 +2252,200 @@ app._terminalAllClasses = _c42;
 app._terminalAllGroups = _g42;
 app.userInfo = { profile: { user_type: 'teacher' }, user: { id: 't1' } };
 console.log(`round 42: ${p42} pass, ${f42} fail`);
+
+// -- round 43: cohorts named with a weekday, and cohorts with no band word --
+// Round 34 got the band vocabulary right and the SHAPE wrong. The cohorts here
+// are not "Homeschool Older", they are "Homeschool Older Tuesday" - the day is
+// part of the name - and two of them ("Monday Younger Non-Musical") have no
+// band word in them at all. Three things fell out of that, and none of them
+// was in the command being used:
+//
+//  1. The cohort-vs-class gate carried a HARD-CODED list of cohort words, band
+//     vocabulary only. "tuesday" was not on it, so it read as a word naming a
+//     class, and every group command - add, remove, move, the register - stood
+//     down without saying why. The list comes from the groups now.
+//  2. SET_ENROLLMENT_TYPE caught the fall-through: "move X from Homeschool
+//     Younger Tuesday to Homeschool Older Tuesday" offered to change their fee
+//     arrangement instead. A wrong write, confidently confirmed.
+//  3. A cohort with no band word could not be named by any sentence.
+//
+// The classes below are real names too, and they are the ones that share this
+// vocabulary - that overlap is exactly what the gate is arbitrating.
+console.log('\n== round 43: weekday cohorts, and cohorts with no band ==');
+let p43 = 0, f43 = 0;
+const t43 = (label, ok) => { ok ? p43++ : f43++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _c43 = app._terminalAllClasses, _g43 = app._terminalAllGroups, _u43 = app.userInfo;
+app.userInfo = { profile: { user_type: 'admin' }, user: { id: 'a1' } };
+app._terminalAllGroups = [
+  'Full High', 'Full Junior High', 'Full Old Elementary', 'Full Young Elementry',
+  'Full Young Middle', 'Homeschool Older Friday', 'Homeschool Older Thursday',
+  'Homeschool Older Tuesday', 'Homeschool Younger Friday', 'Homeschool Younger Thursday',
+  'Homeschool Younger Tuesday', 'Monday Older Non-Musical', 'Monday Younger Non-Musical',
+  // Invented, and the only invented one here. A one-word cohort with no band
+  // in its name is the case the "whole name, and at least two words of it"
+  // rule exists for: without it this would match any sentence saying "props".
+  'Props',
+].map((name, i) => ({ id: 'g' + i, name, studentIds: [] }));
+app._terminalAllClasses = [
+  'Creative Writing - Older Homeschool', 'Creative Writing - Younger Homeschool',
+  'Critical Thinking & Debate - Younger Homeschool', 'English - Older Elementary',
+  'Make Friends - Tuesday, Younger Hmsch', 'Math (Upper Elementary) Tuesday',
+  'Older Non-musical Monday - Study Hall/Props', 'History - Younger Middle School',
+].map((name, i) => ({ id: 'c' + i, name, subject: 'Other', teacher_id: 't1',
+                      secondary_teacher_id: null, is_active: true }));
+
+// The reported sentence, and the shapes around it.
+[
+  ['move clementine from homeschool younger tuesday to homeschool older tuesday', 'MOVE_GROUP'],
+  ['move clementine to homeschool older tuesday', 'MOVE_GROUP'],
+  ['move clementine to the homeschool older tuesday group', 'MOVE_GROUP'],
+  ['add clementine to homeschool older tuesday', 'ADD_TO_GROUP'],
+  ['take clementine out of homeschool younger tuesday', 'REMOVE_FROM_GROUP'],
+  // ...and the enrolment type, said bare, is still the enrolment type. A band
+  // with no half is a coin toss as a cohort; this school means the fees.
+  ['switch clementine to homeschool', 'SET_ENROLLMENT_TYPE'],
+  ['make clementine part-time', 'SET_ENROLLMENT_TYPE'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t43(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// Both ends of the move resolve, with the weekday carrying the difference.
+const pair43 = (text) => {
+  const p = app._rivenMatchGroupPair(app._normalizeInput(text));
+  const one = (x) => !x ? '-' : (x.ambiguous ? 'AMBIGUOUS' : x.name);
+  return p ? one(p.from) + ' => ' + one(p.to) : 'null';
+};
+[
+  ['move clementine from homeschool younger tuesday to homeschool older tuesday',
+   'Homeschool Younger Tuesday => Homeschool Older Tuesday'],
+  ['move clementine from homeschool older tuesday to homeschool older thursday',
+   'Homeschool Older Tuesday => Homeschool Older Thursday'],
+  ['move clementine to homeschool older tuesday', '- => Homeschool Older Tuesday'],
+  // the day left off is a real ambiguity - three Older homeschool cohorts
+  ['move clementine to homeschool older', '- => AMBIGUOUS'],
+].forEach(([text, want]) => {
+  const got = pair43(text);
+  t43(`pair("${text}") == ${want} (got ${got})`, got === want);
+});
+
+// THE gate. A sentence built only out of cohort words does not name a class,
+// whatever those words happen to be at this school.
+const beyond = (text) => {
+  const cm = app._rivenMatchClass(app._normalizeInput(text));
+  return cm ? app._rivenClassNamedBeyondCohort(cm) : null;
+};
+t43('a weekday is a cohort word here, not a class word',
+    beyond('move clementine from homeschool younger tuesday to homeschool older tuesday') === false);
+t43('  and so is "monday", because a cohort is named with it',
+    beyond('mark monday older non-musical present') === false);
+// ...but a real class word still points at the class, or MOVE_STUDENT and the
+// class register would never win again.
+t43('a subject word still names a class',
+    beyond('move clementine from make friends to math upper elementary tuesday') === true);
+t43('  and so does a room',
+    beyond('take the register for older non-musical monday study hall') === true);
+
+// A cohort with no band word in its name was unreachable: no sentence could
+// say it, so nobody could be moved into it or a register taken for it.
+const grp43 = (text) => {
+  const m = app._rivenMatchGroup(app._normalizeInput(text));
+  return !m ? 'null' : (m.ambiguous ? 'AMBIGUOUS:' + m.candidates.length : m.name);
+};
+[
+  ['monday older non-musical', 'Monday Older Non-Musical'],
+  ['move clementine to monday younger non-musical', 'Monday Younger Non-Musical'],
+  ['mark monday older non-musical present', 'Monday Older Non-Musical'],
+  // The whole name, or nothing. Matching a band-less cohort on one stray word
+  // is how "monday" or "musical" would start naming a cohort out of nowhere.
+  ['what is on monday', 'null'],
+  ['mark monday present', 'null'],
+  ['is it non-musical', 'null'],
+  ['who is older', 'null'],
+].forEach(([text, want]) => {
+  const got = grp43(text);
+  t43(`group("${text}") == ${want} (got ${got})`, got === want);
+});
+
+
+// A cohort named in FULL is a cohort command without the word "group" in it.
+// A band with no half is not: it stays whatever it was before, because the
+// half-named case has a picker and forcing one on every enrolment would be a
+// worse trade than the bug it fixes.
+[
+  ['add clementine to homeschool older tuesday', 'ADD_TO_GROUP'],
+  ['take clementine out of homeschool younger tuesday', 'REMOVE_FROM_GROUP'],
+  ['add clementine to monday older non-musical', 'ADD_TO_GROUP'],
+  // half-named: unchanged from before any of this
+  ['add clementine to middle school', 'ENROLL_STUDENT'],
+  ['remove clementine from middle school', 'UNENROLL_STUDENT'],
+  ['add clementine to elementary', 'ENROLL_STUDENT'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t43(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// Widening those two patterns must not let them take sentences that were
+// never theirs. Every one of these says a cohort AND a verb they now match.
+app._nlpContext = {};
+const RTC43 = ['take 5 rtc from homeschool older tuesday',
+               'take 2 gold from monday older non-musical',
+               'remove 3 rtc from homeschool older tuesday'];
+RTC43.concat([
+  ['take attendance for homeschool older tuesday', 'MARK_ATTENDANCE_GROUP'],
+  ['add clementine to math upper elementary tuesday', 'ENROLL_STUDENT'],
+  ['remove clementine from make friends', 'UNENROLL_STUDENT'],
+]).forEach((row) => {
+  const [text, want] = Array.isArray(row) ? row : [row, 'GROUP_RTC'];
+  app._nlpContext = {};
+  const got = run(text).intent;
+  t43(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// ...and the same sentences AFTER somebody has been discussed, which is how
+// they actually arrive. The follow-up rule injects that student, so a sentence
+// with no name in it suddenly has one and requiresStudent stops protecting
+// anything. An amount beside a cohort is an RTC command whichever way it then
+// lands - what it must never be is a child taken off a register.
+RTC43.forEach((text) => {
+  app._nlpContext = { lastStudent: app._terminalAllStudents[0], timestamp: Date.now() };
+  const got = run(text).intent;
+  t43(`"${text}" after a student, still not a membership write (got ${got})`,
+      got !== 'REMOVE_FROM_GROUP' && got !== 'ADD_TO_GROUP' && got !== 'MOVE_GROUP');
+});
+app._nlpContext = {};
+
+// "Homeschool" is the fee arrangement AND half of six cohort names. Said as a
+// cohort that resolves to exactly one group, changing somebody's fees is the
+// wrong write - and it was being confidently confirmed. Riven refuses instead;
+// "move" is the verb that does this, and it says so.
+t43('"change clementine to homeschool older tuesday" is not a fee change',
+    run('change clementine to homeschool older tuesday').intent !== 'SET_ENROLLMENT_TYPE');
+t43('"set clementine to homeschool older tuesday" is not a fee change',
+    run('set clementine to homeschool older tuesday').intent !== 'SET_ENROLLMENT_TYPE');
+// ...and the line is precise: a fee arrangement said as one still lands.
+[
+  ['change clementine to part-time', 'SET_ENROLLMENT_TYPE'],
+  ['make clementine full-time', 'SET_ENROLLMENT_TYPE'],
+  ['switch clementine to homeschool', 'SET_ENROLLMENT_TYPE'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t43(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// The whole name, and at least two words of it. One word is how a cohort
+// starts being named by any sentence that happens to use that word.
+[
+  ['sort out the props', 'null'],
+  ['who has the props', 'null'],
+  ['props', 'null'],
+].forEach(([text, want]) => {
+  const got = grp43(text);
+  t43(`group("${text}") == ${want} (got ${got})`, got === want);
+});
+
+app._terminalAllClasses = _c43;
+app._terminalAllGroups = _g43;
+app.userInfo = _u43;
+console.log(`round 43: ${p43} pass, ${f43} fail`);

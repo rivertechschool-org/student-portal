@@ -50762,7 +50762,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-22·a';
+      const RIVEN_BUILD = '2026-09-22·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -56489,6 +56489,12 @@ Students you had withdrawn stay withdrawn.`)) {
         {
           intent: 'SET_ENROLLMENT_TYPE',
           w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          // "homeschool" is both the fee arrangement and half of six cohort
+          // names here. Said bare it is the arrangement; said as a cohort that
+          // resolves to exactly one group it is the group, and offering to
+          // change somebody's fees instead is the wrong write confidently
+          // confirmed. notIfGroupMove is that line.
+          notIfGroupMove: true,
           patterns: [
             /\b(make|set|change|switch|move|mark|turn)\b[\s\S]{0,32}\b(to\s+)?(full[\s-]?time|part[\s-]?time|homeschool(er|ers|ed)?)\b/,
             // Must name the destination. "what enrollment type is noah" ends
@@ -56763,6 +56769,11 @@ Students you had withdrawn stay withdrawn.`)) {
           patterns: [
             /\b(add|put|move)\b[\s\S]{0,40}\b(in|into|to)\b[\s\S]{0,24}\b(group|cohort)\b/,
             /\b(joins?|joining)\b[\s\S]{0,24}\b(group|cohort)\b/,
+            // Nobody says "group" when the cohort has a name. Without this,
+            // "add clementine to homeschool older tuesday" was an ENROLMENT -
+            // it went looking for a class by that name.
+            { re: /\b(add|put|joins?|joining)\b[\s\S]{0,40}\b(in|into|to)\b/,
+              needsNamedGroup: 'to', notIfAmount: true },
           ]
         },
         {
@@ -56771,6 +56782,10 @@ Students you had withdrawn stay withdrawn.`)) {
           patterns: [
             /\b(remove|take|drop|pull)\b[\s\S]{0,40}\b(out of|from|off)\b[\s\S]{0,24}\b(group|cohort)\b/,
             /\b(leaves?|leaving)\b[\s\S]{0,24}\b(group|cohort)\b/,
+            // The same, going the other way: "take clementine out of
+            // homeschool younger tuesday" came back as a student card.
+            { re: /\b(remove|take|drop|pull|leaves?|leaving)\b[\s\S]{0,40}\b(out of|from|off)\b/,
+              needsNamedGroup: 'from', notIfAmount: true },
           ]
         },
         // ---- Assignments -------------------------------------------------
@@ -57374,11 +57389,35 @@ Students you had withdrawn stay withdrawn.`)) {
           const gp = entities.groupPair;
           if (!gp || !gp.to || gp.to.ambiguous) continue;
         }
+        // The other side of that line: an intent that would misread a cohort
+        // named to the letter stands down when one is. Same test, so the two
+        // can never both think the sentence is theirs.
+        if (pattern.notIfGroupMove) {
+          const gp = entities.groupPair;
+          if (gp && gp.to && !gp.to.ambiguous) continue;
+        }
 
         // The most specific pattern that matches decides the weight
         let w = 0, hit = false;
         for (const p of pattern.patterns) {
           const re = p.re || p;
+          // A pattern may need more than its own text. "Add clementine to
+          // homeschool older tuesday" has no literal "group" in it, and the
+          // only thing that makes it a cohort command rather than a class
+          // enrolment is that the side it names resolves to exactly ONE
+          // cohort. Checked per pattern rather than per intent, so the
+          // phrasings that do say "group" keep working when the cohort is
+          // half-named and the picker is the right answer.
+          if (p.needsNamedGroup) {
+            const side = (entities.groupPair || {})[p.needsNamedGroup];
+            if (!side || side.ambiguous) continue;
+          }
+          // An amount beside a cohort is an RTC command, never a membership
+          // one. Without this, "take 5 rtc from homeschool older tuesday"
+          // reached REMOVE_FROM_GROUP - it has no student in it, but if one
+          // was just discussed the follow-up rule injects them, and the
+          // cohort being docked 5 RTC became a child taken off a register.
+          if (p.notIfAmount && entities.amount !== null) continue;
           if (re.test(normalized)) {
             hit = true;
             w = Math.max(w, (p.w !== undefined ? p.w : (pattern.w !== undefined ? pattern.w : 3)));
@@ -66454,8 +66493,32 @@ Students you had withdrawn stay withdrawn.`)) {
     // the cohort's vocabulary? "lower ms" matches "Lower MS Math" on the words
     // that name the COHORT; "math" is the class's own.
     _rivenClassNamedBeyondCohort(cm) {
+      // The band vocabulary every school shares...
       const COHORT = new Set(['lower', 'upper', 'young', 'younger', 'old', 'older', 'junior',
         'senior', 'middle', 'elementary', 'elementry', 'high', 'homeschool', 'ms', 'hs', 'es', 'school']);
+      // ...and then the words THIS school's cohorts are actually named with.
+      //
+      // Hard-coded, the list above was band words only. The cohorts here carry
+      // a WEEKDAY - "Homeschool Older Tuesday", "Monday Younger Non-Musical" -
+      // so "tuesday" counted as a word the cohort did not supply, this said
+      // the sentence pointed at a class, and the requiresGroup gate stood every
+      // group command down: add, remove, move, the cohort register. Nothing
+      // said why; the sentence just quietly became a different command.
+      //
+      // Read from the groups instead, so renaming a cohort keeps it true and
+      // a school whose cohorts are named some third way is not a new bug.
+      for (const g of (this._terminalAllGroups || [])) {
+        const raw = String((g && g.name) || '').toLowerCase();
+        // Both spellings. A class match reports the words it consumed as they
+        // appeared in the sentence, so "non-musical" arrives hyphenated and
+        // whole - and splitting the cohort name on punctuation alone yields
+        // "non" and "musical", neither of which it matches.
+        raw.split(/\s+/).forEach(w => {
+          w = w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+          if (w) COHORT.add(w);
+        });
+        raw.split(/[^a-z0-9]+/).forEach(w => { if (w) COHORT.add(w); });
+      }
       return (cm && cm.consumed || []).some(w => w && !COHORT.has(String(w).toLowerCase()));
     }
 
@@ -68408,9 +68471,19 @@ Students you had withdrawn stay withdrawn.`)) {
       const said = this._rivenGroupCanon(text);
       const BANDS = ['high', 'middle', 'elementary', 'homeschool'];
       const saidBands = BANDS.filter(b => said.includes(b));
-      if (!saidBands.length) return null;
       const scored = groups.map(g => ({ g, toks: this._rivenGroupCanon(g.name) })).filter(s => s.toks.length);
       let hits = scored.filter(s => s.toks.every(w => said.includes(w)));
+      if (!saidBands.length) {
+        // No band word. Nearly every cohort is named after one, and matching
+        // on a stray word would invent a cohort out of nothing - which is what
+        // requiring a band was for. But not every cohort HAS a band in its
+        // name ("Monday Younger Non-Musical"), and those were unreachable: no
+        // sentence could name them, so they could not be moved into, taken a
+        // register for, or awarded anything. They match on the strict terms
+        // instead - EVERY word of the name present, and at least two of them.
+        hits = hits.filter(s => s.toks.length >= 2);
+        if (!hits.length) return null;
+      }
       if (hits.length > 1) {
         // the most specific name wins: "lower middle" must not also drag in a
         // group whose whole name is just "middle"

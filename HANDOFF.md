@@ -3782,3 +3782,82 @@ the grid. No roster was read.
 
 No browser walk-through: this box has no Playwright and the change has no visible surface
 beyond one new line in `/help`. It is held by the dry tests and the grid instead.
+
+## The move did nothing, and it was never the move (2026-09-22, build 2026-09-22-b)
+
+Reported straight after shipping. The sentence -- with the student renamed, the way
+everything else in this repo is written -- was "Move Clementine V from Homeschool Younger
+Tuesday to Homeschool Older Tuesday", and it came back offering to change their
+**enrolment type** to homeschool. A different write, confidently confirmed.
+
+Nothing was wrong with the move. Four things were wrong underneath it, and all four had
+been there long before today.
+
+### The cohort vocabulary was a hard-coded list
+
+The gate that decides "is this sentence pointing at a cohort or a class?" carried a fixed
+list of cohort words -- band vocabulary only: lower, upper, young, old, junior, middle,
+elementary, high, homeschool. **Our cohorts carry a weekday.** So "tuesday" read as a word
+the cohort did not supply, the gate concluded the sentence meant a class, and it stood
+down *every* group command: add, remove, move, and the cohort register. Silently -- the
+sentence just became a different command.
+
+It reads the words out of the groups themselves now, so renaming a cohort keeps it true.
+Both spellings, because a class match reports what it consumed as it appeared and
+"non-musical" arrives hyphenated and whole.
+
+### The enrolment type caught the fall-through
+
+"Homeschool" is both a fee arrangement and half of six cohort names. Whenever the cohort
+command stood down, SET_ENROLLMENT_TYPE was next in line. It now stands down itself when
+the sentence names a cohort *to the letter* -- said bare ("switch them to homeschool") it is
+still the fee arrangement, because that is a coin toss between six cohorts and one clear
+arrangement.
+
+"Change X to Homeschool Older Tuesday" and "set X to ..." are now refused rather than
+answered wrongly. **Move** is the verb that does this. Adding change/set to the move verbs
+was tried and put back: the destination slice runs to the end of the sentence, so "change
+the due date to friday for homeschool older tuesday" would have become a cohort move.
+
+### Two cohorts could not be named at all
+
+`Monday Older Non-Musical` and `Monday Younger Non-Musical` have no band word in them, and
+a cohort was only matchable if the sentence contained one. No sentence could reach them --
+not to move into, not to take a register for, not to award anything to. They match on the
+whole name now: every word of it present, and at least two words, so a one-word cohort
+cannot start matching every sentence that happens to use that word.
+
+### Naming a cohort needed the literal word "group"
+
+"Add Clementine to Homeschool Older Tuesday" went looking for a *class* by that name.
+"Take Clementine out of Homeschool Younger Tuesday" came back as a student card. Both work
+now, on the condition that the side named resolves to exactly one cohort -- a half-named
+band ("add them to middle school") keeps its old behaviour, because forcing a picker onto
+every class enrolment would cost more than the bug.
+
+### One regression, caught by the grid and fixed
+
+Widening those two patterns let them steal RTC commands. "Take 5 rtc from Homeschool Older
+Tuesday" has no student in it -- but if one was just discussed, the follow-up rule injects
+them, and the cohort being docked 5 RTC became **a child taken off a register**. An amount
+beside a cohort is an RTC command, never a membership one, and the patterns say so now.
+Checked against the previous build: behaviour is identical either side.
+
+### Worth knowing, not fixed
+
+That follow-up rule injects the last student discussed into a sentence that names a cohort
+and no person. "Take 5 rtc from Homeschool Older Tuesday" therefore lands on SUBTRACT_RTC
+-- docking that one student -- rather than GROUP_RTC. It does the same on the build before
+this one, so it is not new, and it is not the reported bug. It is worth a look.
+
+### How it is held
+
+`nlp-stress` round 43 (45 assertions) is the school's real cohort shape: weekday names, the
+band-less Monday pair, and the class names that share their vocabulary -- that overlap is
+exactly what the gate arbitrates. Round 42's 33 remain. 27 deliberate breaks across four
+mutation passes, 27 caught; three survived first time and each one was a missing assertion
+rather than dead code -- an A/B showed the smallest of the three changes 7 of 10 sentences
+on its own.
+
+Round 34 had the band vocabulary right and the SHAPE wrong: cohorts without their weekday.
+That is what let this through. The fixture is the thing to keep honest.
