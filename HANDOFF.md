@@ -3712,3 +3712,73 @@ Probed against the live database and rolled back: one late child gives one row w
 item; a second late child plus an exempt one gives one row with two; re-ticking adds no
 line; the exempt child is dismissed but not reported. The migration is applied and the
 email function is deployed and re-downloaded to confirm it took.
+
+## Riven can move a student between cohorts (2026-09-22)
+
+Riven could add a student to a group and take one out. It could not move one -- and
+worse, it looked like it could.
+
+### The bug this closes
+
+`ADD_TO_GROUP`'s first pattern already matched the word **move**. Group membership is
+many-to-many, so "move Ari to upper MS" added them to upper MS and **left them in lower MS**:
+two registers, two morning lists, and nothing on screen saying so. You asked for a move and
+got a copy.
+
+There is now a `MOVE_GROUP` intent that outranks the add, and it does two writes -- the
+join, then the leave. The confirmation names both ends. If the leave fails after the join
+succeeds it says exactly that and does **not** report a move; the student is on both
+registers, which is visible, rather than on none, which is not. Undo puts both lists back.
+
+### Saying where they are leaving from is optional
+
+"Move Ari to upper MS" reads the source off the cohorts they are actually in. In one: that is
+the source, and the confirmation names it. In none: it is an add, and it says so instead of
+claiming a removal. In more than one: it asks, because guessing takes a child off a
+register nobody mentioned.
+
+### Two cohorts in one sentence
+
+`_rivenMatchGroup` reads the whole sentence, so handed both ends of a move the only honest
+answer it has is "ambiguous". `_rivenMatchGroupPair` cuts the sentence at the words that
+carry direction (from / out of / to / into) and asks about each side separately. It handles
+the reversed order too -- "Ari is moving up to upper MS from lower MS".
+
+The picker pin is honoured on the destination and ignored on the source. A picker fills one
+slot; on a two-slot sentence honouring it on both would move a student out of the group
+they are moving into.
+
+### Found on the way, and fixed
+
+**Every group command was reading an id off an ambiguous match.** "The middle school group"
+matches two cohorts. Delete, set-meeting-days and add/remove each took `entities.groupMatch`
+straight, showed a confirmation naming whichever candidate sorted first, and then wrote with
+an undefined id. They ask now, with the picker that already existed.
+
+**The cached membership went stale.** Add/remove updated the throwaway match object and left
+the row behind it alone, so a second command in the same session still saw the membership
+from before the first.
+
+### No schema change
+
+`set_student_group_members` already took the whole list and replaced it. Nothing for the
+backend repo.
+
+### How it is held
+
+`tests/riven-groups.test.js` is 80 assertions now (was 37), running the real handler against
+a stub. `debug-tools/nlp-stress.js` round 42 adds 33: the move phrasings, the adds and
+removes that must **not** become moves, and the lines a cohort move must not cross --
+"switch X to homeschool" is the enrolment type, "promote X to 9th grade" is the year, "move
+X from lower MS math to lower MS english" is a class. Every new assertion was mutation-
+tested: 16 deliberate breaks, 16 caught. One assertion survived its mutation and was
+rewritten -- it matched the intent table's own `'MOVE_GROUP'` rather than the write list it
+was about.
+
+Fixtures are invented students and the school's own cohort structure, same as the rest of
+the grid. No roster was read.
+
+### Not done
+
+No browser walk-through: this box has no Playwright and the change has no visible surface
+beyond one new line in `/help`. It is held by the dry tests and the grid instead.

@@ -16,6 +16,22 @@
 // where a child is on no register at all, which at 8am is a child nobody is
 // looking for.
 //
+// A MOVE IS TWO WRITES, NOT ONE
+//
+// Membership is many-to-many - a student can sit in several cohorts at once -
+// so "move ari to upper ms" done as an add leaves them in lower ms as well, on
+// two registers, with nothing on screen saying so. That is what used to
+// happen: ADD_TO_GROUP's first pattern matched the word "move" and only added.
+// The move joins first and leaves second, so a half-failure puts the student
+// on two registers (visible, and where the old behaviour left them) rather
+// than on none.
+//
+// A HALF-NAMED BAND IS A QUESTION, NOT A GUESS
+//
+// "the middle school group" matches two cohorts. Every command here read `.id`
+// straight off the match - undefined on an ambiguous one - after showing a
+// confirmation that named whichever candidate sorted first.
+//
 // WHAT DELETING A GROUP DOES NOT DO
 //
 // It does not touch anyone's classes, grades or records. People assume it
@@ -73,6 +89,7 @@ const group = (over = {}) => ({ id: 'g1', name: 'Thursday Lab', studentIds: ['al
 function makeApp({ role = 'admin', groups = [], rpc = {} } = {}) {
   const app = {
     said: [],
+    asked: [],
     errors: [],
     ok: [],
     confirmed: null,
@@ -86,6 +103,9 @@ function makeApp({ role = 'admin', groups = [], rpc = {} } = {}) {
     _terminalAllGroups: groups,
     escapeHtml: esc,
     _showRivenMessage(h) { app.said.push(h); },
+    // The real one writes into #terminal-output. What matters here is only
+    // that it ASKED, and with which candidates.
+    _showGroupPicker(rows) { app.asked.push(rows.map(r => r.name)); },
     terminalPrintError(m) { app.errors.push(m); },
     _naturalSuccess(m) { app.ok.push(Array.isArray(m) ? m[0] : m); },
     _pushUndo(desc, fn) { app.undos.push({ desc, fn }); },
@@ -120,11 +140,12 @@ function makeApp({ role = 'admin', groups = [], rpc = {} } = {}) {
     },
   };
   for (const m of ['_rivenRequireAdmin', '_rivenPolicyError', '_rivenParseWeekdays', '_rivenDayCodes', '_rivenDayList',
-                   '_rivenDayPhrase', '_rivenDayNames']) {
+                   '_rivenDayPhrase', '_rivenDayNames', '_rivenRequireOneGroup',
+                   '_rivenMatchGroup', '_rivenMatchGroupPair', '_rivenGroupCanon']) {
     app[m] = extract(m);
   }
   for (const m of ['terminalCreateGroup', 'terminalDeleteGroup', 'terminalSetGroupDays',
-                   'terminalChangeGroupMembership']) {
+                   'terminalChangeGroupMembership', 'terminalMoveGroup']) {
     const fn = extract(m);
     app[m] = async function (...a) {
       const r = await fn.apply(app, a);
@@ -283,6 +304,267 @@ const said = (text, extra = {}) => ({ original: text, _rawInput: text, ...extra 
     } catch (e) { threw = true; }
     ok('a refused change is not reported as done', threw || !app.ok.length);
   }
+
+  console.log('\n== a half-named band is asked about, not guessed ==\n');
+
+  // "the middle school group" is two cohorts. Before this, each of these read
+  // `.id` off the ambiguous match - undefined - and wrote with it, after a
+  // confirmation naming whichever candidate happened to sort first.
+  const AMBIG = { ambiguous: true, name: 'Full Junior High',
+                  candidates: [{ id: 'g-jh', name: 'Full Junior High', studentIds: [] },
+                               { id: 'g-ym', name: 'Full Young Middle', studentIds: ['noah'] }] };
+
+  {
+    const app = makeApp({});
+    await app.terminalDeleteGroup.call(app, said('delete the middle school group', { groupMatch: AMBIG }));
+    check('deleting asks which one', app.asked, [['Full Junior High', 'Full Young Middle']]);
+    check('  and deletes nothing meanwhile', app.deletes, []);
+    check('  and does not pretend to confirm', app.confirmed, null);
+  }
+
+  {
+    const app = makeApp({});
+    await app.terminalSetGroupDays.call(app,
+      said('the middle school group meets tuesday', { groupMatch: AMBIG }));
+    check('setting days asks which one', app.asked.length, 1);
+    check('  and updates nothing meanwhile', app.updates, []);
+  }
+
+  {
+    const app = makeApp({});
+    await app.terminalChangeGroupMembership.call(app,
+      said('add noah to the middle school group', { groupMatch: AMBIG, student: { student: NOAH } }), true);
+    check('adding asks which one', app.asked.length, 1);
+    check('  and writes nothing meanwhile', app.rpcs, []);
+  }
+
+  console.log('\n== moving between cohorts ==\n');
+
+  // Invented students, and the school's own cohort structure - the same names
+  // debug-tools/nlp-stress.js uses. ARI is in Young Middle and nowhere else.
+  const ARI = { id: 'ari', full_name: 'Ari Mercer', first_name: 'Ari' };
+  const cohorts = () => ([
+    { id: 'g-ym', name: 'Full Young Middle', studentIds: ['ari', 'bo'] },
+    { id: 'g-jh', name: 'Full Junior High', studentIds: ['cleo'] },
+    { id: 'g-hs', name: 'Full High', studentIds: [] },
+  ]);
+  const one = (rows, id) => rows.find(r => r.id === id);
+  const asG = (rows, id) => { const r = one(rows, id); return { id: r.id, name: r.name, row: r, studentIds: r.studentIds }; };
+  const moving = (text, groups, extra = {}) =>
+    said(text, { normalized: text, student: { student: ARI }, ...extra });
+
+  {
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari from young middle to junior high', groups,
+      { groupPair: { from: asG(groups, 'g-ym'), to: asG(groups, 'g-jh') } }));
+
+    // The whole point: TWO writes. One of them is the removal the old
+    // add-only path never made.
+    check('two writes, one per cohort', app.rpcs.map(r => r.fn),
+          ['set_student_group_members', 'set_student_group_members']);
+    check('  joined first', app.rpcs[0].args, { p_group_id: 'g-jh', p_student_ids: ['cleo', 'ari'] });
+    check('  then left', app.rpcs[1].args, { p_group_id: 'g-ym', p_student_ids: ['bo'] });
+    ok('the confirmation names both ends',
+       /out of <b>Full Young Middle<\/b> and into <b>Full Junior High<\/b>/.test(app.confirmed));
+    ok('  and says what is untouched', /classes, records and RTC are untouched/.test(app.confirmed));
+    check('one undo for the pair', app.undos.length, 1);
+    check('said out of one and into the other', app.ok[0],
+          'Ari Mercer is out of Full Young Middle and into Full Junior High.');
+  }
+
+  {
+    // Nobody says where a student is leaving from - they say where they are
+    // going. The source is read off the cohorts they are actually in.
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari to the junior high group', groups,
+      { groupPair: { from: null, to: asG(groups, 'g-jh') } }));
+    check('an unsaid source is read off where they are', app.rpcs.map(r => r.args.p_group_id), ['g-jh', 'g-ym']);
+    ok('  and the confirmation names it anyway', /out of <b>Full Young Middle<\/b>/.test(app.confirmed));
+  }
+
+  {
+    // In two cohorts and neither was named: guessing here takes a child off a
+    // register nobody mentioned.
+    const groups = cohorts();
+    one(groups, 'g-hs').studentIds = ['ari'];
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari to the junior high group', groups,
+      { groupPair: { from: null, to: asG(groups, 'g-jh') } }));
+    check('two possible sources writes nothing', app.rpcs, []);
+    ok('  and names them both', /Full Young Middle and Full High/.test(app.errors[0]));
+    ok('  and shows how to say it', /out of Full Young Middle into Full Junior High/.test(app.errors[0]));
+  }
+
+  {
+    // In no cohort at all: the move is an add, and says so rather than
+    // reporting a removal that never happened.
+    const groups = cohorts();
+    one(groups, 'g-ym').studentIds = ['bo'];
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari to the junior high group', groups,
+      { groupPair: { from: null, to: asG(groups, 'g-jh') } }));
+    check('nothing to leave means one write', app.rpcs.length, 1);
+    ok('  and the confirmation admits it', /only adds them/.test(app.confirmed));
+    check('  and the success line does not claim a removal', app.ok[0], 'Ari Mercer is in Full Junior High.');
+  }
+
+  {
+    // Named a source they are not in. Half right, and the confirmation says
+    // which half.
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari from the high group to junior high', groups,
+      { groupPair: { from: asG(groups, 'g-hs'), to: asG(groups, 'g-jh') } }));
+    check('a source they are not in is not written to', app.rpcs.map(r => r.args.p_group_id), ['g-jh']);
+    ok('  and it is said out loud', /is not in Full High, so this only adds them/.test(app.confirmed));
+  }
+
+  {
+    // A half-named source settles itself when they are only in one of them.
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari out of middle school into the high group', groups,
+      { groupPair: { from: { ambiguous: true, candidates: [one(groups, 'g-jh'), one(groups, 'g-ym')] },
+                     to: asG(groups, 'g-hs') } }));
+    check('the cohort they are in settles a half-named source',
+          app.rpcs.map(r => r.args.p_group_id), ['g-hs', 'g-ym']);
+  }
+
+  {
+    // ...and asks when it does not settle.
+    const groups = cohorts();
+    one(groups, 'g-jh').studentIds = ['cleo', 'ari'];
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari out of middle school into the high group', groups,
+      { groupPair: { from: { ambiguous: true, candidates: [one(groups, 'g-jh'), one(groups, 'g-ym')] },
+                     to: asG(groups, 'g-hs') } }));
+    check('two live candidates writes nothing', app.rpcs, []);
+    ok('  and asks', /Which group are they leaving/.test(app.errors[0]));
+  }
+
+  {
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari to the young middle group', groups,
+      { groupPair: { from: null, to: asG(groups, 'g-ym') } }));
+    check('moving somebody where they already are writes nothing', app.rpcs, []);
+    ok('  and says so', /already in Full Young Middle/.test(app.said[0]));
+  }
+
+  {
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app,
+      said('move ari to junior high', { normalized: 'move ari to junior high', student: { student: ARI } }));
+    // groupPair absent: the handler re-reads the sentence rather than
+    // assuming the caller filled it in.
+    check('the destination is re-read when it was not passed in',
+          app.rpcs.map(r => r.args.p_group_id), ['g-jh', 'g-ym']);
+  }
+
+  {
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app,
+      said('move ari somewhere', { normalized: 'move ari somewhere', student: { student: ARI } }));
+    check('no destination writes nothing', app.rpcs, []);
+    ok('  and asks for one', /Which group are they moving into/.test(app.errors[0]));
+  }
+
+  {
+    const app = makeApp({ role: 'teacher', groups: cohorts() });
+    await app.terminalMoveGroup.call(app,
+      said('move ari to junior high', { normalized: 'move ari to junior high', student: { student: ARI } }));
+    check('a teacher cannot move anyone', app.rpcs, []);
+    ok('  and is told who can', /Only an admin can move a student between groups/.test(app.errors[0]));
+  }
+
+  {
+    // The half-failure. Joined, then the removal fails: they are on two
+    // registers, and saying "moved" would be the same silent lie the
+    // add-only behaviour told.
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    let n = 0;
+    app.auth.supabase.rpc = (fn, args) => {
+      app.rpcs.push({ fn, args });
+      return Promise.resolve(++n === 1 ? { data: { success: true }, error: null }
+                                       : { data: null, error: { message: 'row level security' } });
+    };
+    await app.terminalMoveGroup.call(app, moving('move ari from young middle to junior high', groups,
+      { groupPair: { from: asG(groups, 'g-ym'), to: asG(groups, 'g-jh') } }));
+    check('a failed removal is not reported as a move', app.ok, []);
+    ok('  it says where they actually are', /now in Full Junior High, but taking them out of Full Young Middle failed/.test(app.errors[0]));
+    ok('  and that both registers have them', /on both registers/.test(app.errors[0]));
+    check('  and nothing is offered to undo', app.undos.length, 0);
+  }
+
+  {
+    // Undo puts both ends back, not just the one that is easy to remember.
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari from young middle to junior high', groups,
+      { groupPair: { from: asG(groups, 'g-ym'), to: asG(groups, 'g-jh') } }));
+    app.rpcs.length = 0;
+    await app.undos[0].fn();
+    check('undo restores both lists', app.rpcs.map(r => r.args),
+          [{ p_group_id: 'g-ym', p_student_ids: ['ari', 'bo'] },
+           { p_group_id: 'g-jh', p_student_ids: ['cleo'] }]);
+    check('  and the cached rows with them',
+          [one(groups, 'g-ym').studentIds, one(groups, 'g-jh').studentIds],
+          [['ari', 'bo'], ['cleo']]);
+  }
+
+  {
+    // The cache the NEXT command reads. Without this the second move in a
+    // session still sees the membership from before the first.
+    const groups = cohorts();
+    const app = makeApp({ groups });
+    await app.terminalMoveGroup.call(app, moving('move ari from young middle to junior high', groups,
+      { groupPair: { from: asG(groups, 'g-ym'), to: asG(groups, 'g-jh') } }));
+    check('the cached rows move with the student',
+          [one(groups, 'g-ym').studentIds, one(groups, 'g-jh').studentIds],
+          [['bo'], ['cleo', 'ari']]);
+  }
+
+  {
+    // Same cache, the add/remove path. It updated the throwaway match object
+    // and left the row behind it stale.
+    const app = makeApp({});
+    const row = { id: 'g1', name: 'Thursday Lab', studentIds: ['alice'], meets_days: [4] };
+    await app.terminalChangeGroupMembership.call(app,
+      said('add noah to the thursday lab group',
+           { groupMatch: { id: row.id, name: row.name, row, studentIds: row.studentIds }, student: { student: NOAH } }), true);
+    check('adding updates the cached row too', row.studentIds, ['alice', 'noah']);
+  }
+
+  console.log('\n== the wires between the two ==\n');
+
+  ok('MOVE_GROUP reaches the handler',
+     /case 'MOVE_GROUP':\s*\n\s*return await this\.terminalMoveGroup\(entities\);/.test(html));
+  {
+    // Anchored to the list itself: the bare name also appears in the intent
+    // table, so a loose match here passes with MOVE_GROUP missing from this
+    // one - which is the whole thing being asserted.
+    const writes = /const WRITE_INTENTS = \[([\s\S]*?)\];/.exec(html);
+    ok('  and is known to be a write, so a question about it is answered not obeyed',
+       writes && /'MOVE_GROUP'/.test(writes[1]));
+  }
+  ok('  and a non-admin is told what they were refused',
+     /MOVE_GROUP: 'move a student between groups'/.test(html));
+  ok('  and it is offered in /help beside the add and the remove',
+     /"Move \[student\] from \[group\] to \[group\]"/.test(html));
+  // It has to OUTRANK the add, whose first pattern still matches "move" - that
+  // is the whole reason a move used to only add.
+  {
+    const move = /intent: 'MOVE_GROUP',\s*\n\s*w: (\d+)/.exec(html);
+    const add = /intent: 'ADD_TO_GROUP',\s*\n\s*w: (\d+)/.exec(html);
+    ok('a move outweighs an add', move && add && Number(move[1]) > Number(add[1]));
+  }
+  ok('the add still matches the word "move", which is why the weight matters',
+     /\(add\|put\|move\)/.test(html));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

@@ -42,7 +42,7 @@ const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_rivenPastDate','_rivenMonthIndex','_fuzzyFindStudent','_rivenIsMyStudent','_rivenOwnRank','_calculateSimilarity',
   '_levenshteinDistance','_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
-  '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenIgnoresAttendance',
+  '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenMatchGroupPair','_rivenIgnoresAttendance',
   '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef',
   '_rivenResolvedStudent','_rivenNamesEachClass','_rivenClassNamedBeyondCohort'];
 const app = { _nlpContext: {} };
@@ -2132,3 +2132,123 @@ app._terminalAllClasses = [
 
 app._terminalAllClasses = _c41;
 console.log(`round 41: ${p41} pass, ${f41} fail`);
+
+// -- round 42: moving a student between cohorts -----------------------------
+// Membership is many-to-many: a student can sit in several groups at once. So
+// "move ari to upper ms" done as an ADD leaves them in lower ms as well, on two
+// registers, and nothing on screen says so. ADD_TO_GROUP's first pattern
+// already matched the word "move", which is exactly how that happened.
+//
+// A move also names TWO cohorts, and _rivenMatchGroup reads the whole
+// sentence - so handed both it can only say "ambiguous". The pair matcher cuts
+// the sentence at the words that carry direction and asks about each side on
+// its own. These are the phrasings; the grid is where they go before a regex.
+console.log('\n== round 42: move between cohorts ==');
+let p42 = 0, f42 = 0;
+const t42 = (label, ok) => { ok ? p42++ : f42++; if (!ok) console.log('  FAIL', label); };
+app._nlpContext = {};
+const _c42 = app._terminalAllClasses, _g42 = app._terminalAllGroups;
+app.userInfo = { profile: { user_type: 'admin' }, user: { id: 'a1' } };
+app._terminalAllClasses = [
+  { id:'lme', name:'Lower MS English', subject:'English', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+  { id:'lmm', name:'Lower MS Math', subject:'Math', teacher_id:'t1', secondary_teacher_id:null, is_active:true },
+];
+app._terminalAllGroups = [
+  { id:'g-hs', name:'Full High',            studentIds:['id-noah'] },
+  { id:'g-jh', name:'Full Junior High',     studentIds:[] },
+  { id:'g-oe', name:'Full Old Elementary',  studentIds:[] },
+  { id:'g-ye', name:'Full Young Elementry', studentIds:[] },
+  { id:'g-ym', name:'Full Young Middle',    studentIds:['id-ari'] },
+  { id:'g-ho', name:'Homeschool Older',     studentIds:[] },
+  { id:'g-hy', name:'Homeschool Younger',   studentIds:[] },
+];
+
+// The sentence says move, and it is read as a move.
+[
+  'move ari to the young middle group',
+  'move ari from young middle to junior high',
+  'move ari out of young middle and into junior high',
+  'move ari from the lower ms group to the upper ms group',
+  'switch ari to the high school group',
+  'transfer ari to the junior high group',
+  'ari is moving up to junior high from young middle',
+  'shift ari from lower ms into upper ms',
+  'promote ari from young middle to junior high',
+  'move ari out of the young middle group into junior high',
+].forEach(text => {
+  const got = run(text).intent;
+  t42(`"${text}" -> MOVE_GROUP (got ${got})`, got === 'MOVE_GROUP');
+});
+
+// ...and an ADD is still an ADD. A move that only adds is the bug; an add that
+// turns into a move would be the same bug facing the other way.
+[
+  ['add ari to the junior high group', 'ADD_TO_GROUP'],
+  ['put ari in the junior high group', 'ADD_TO_GROUP'],
+  ['ari joins the junior high group', 'ADD_TO_GROUP'],
+  ['take ari out of the young middle group', 'REMOVE_FROM_GROUP'],
+  ['remove ari from the full high group', 'REMOVE_FROM_GROUP'],
+  ['ari is leaving the young middle group', 'REMOVE_FROM_GROUP'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t42(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// The lines a cohort move must not cross. Each of these uses a move verb and
+// is about something else entirely.
+[
+  // "homeschool" is BOTH a cohort name here and an enrolment type. Half-named
+  // ("homeschool", not "homeschool older") it is a coin toss as a cohort, and
+  // at this school the sentence means the fee arrangement.
+  ['switch ari to homeschool', 'SET_ENROLLMENT_TYPE'],
+  ['move ari to part-time', 'SET_ENROLLMENT_TYPE'],
+  // a grade level is not a cohort
+  ['move ari to 8th', 'SET_GRADE_LEVEL'],
+  ['promote ari to the 9th grade', 'SET_GRADE_LEVEL'],
+  // a CLASS named beyond the cohort's own words is a class move
+  ['move ari from lower ms math to lower ms english', 'MOVE_STUDENT'],
+].forEach(([text, want]) => {
+  const got = run(text).intent;
+  t42(`"${text}" -> ${want} (got ${got})`, got === want);
+});
+
+// Which cohort is the source and which is the destination. The pair matcher is
+// the only thing that can tell them apart - _rivenMatchGroup, handed the whole
+// sentence, sees both and calls it ambiguous.
+const pair = (text) => {
+  const p = app._rivenMatchGroupPair(app._normalizeInput(text));
+  const one = (x) => !x ? '-' : (x.ambiguous ? 'AMBIGUOUS' : x.name);
+  return p ? one(p.from) + ' => ' + one(p.to) : 'null';
+};
+[
+  ['move ari from young middle to junior high', 'Full Young Middle => Full Junior High'],
+  ['move ari out of young middle and into junior high', 'Full Young Middle => Full Junior High'],
+  ['move ari from the lower ms group to the upper ms group', 'Full Young Middle => Full Junior High'],
+  // said the other way round: destination first, source last
+  ['ari is moving up to junior high from young middle', 'Full Young Middle => Full Junior High'],
+  ['move ari to junior high from young middle', 'Full Young Middle => Full Junior High'],
+  // destination only - the source is read off where they actually are
+  ['move ari to the junior high group', '- => Full Junior High'],
+  ['switch ari to the high school group', '- => Full High'],
+  ['put ari in upper elementary', '- => Full Old Elementary'],
+  // source only: that is a removal, not a move
+  ['take ari out of the young middle group', 'Full Young Middle => -'],
+  // a band with no half is still a coin toss on whichever side says it
+  ['move ari from young middle to middle school', 'Full Young Middle => AMBIGUOUS'],
+  // nothing that resolves
+  ['move ari to the front of the line', 'null'],
+].forEach(([text, want]) => {
+  const got = pair(text);
+  t42(`pair("${text}") == ${want} (got ${got})`, got === want);
+});
+
+// The whole sentence still reads as ambiguous when both cohorts are in it -
+// that is why the pair matcher had to exist, and a regression here would put
+// the old "move = add one group" behaviour back.
+const whole = app._rivenMatchGroup(app._normalizeInput('move ari from young middle to junior high'));
+t42('_rivenMatchGroup alone cannot tell the two apart', !!(whole && whole.ambiguous));
+
+app._terminalAllClasses = _c42;
+app._terminalAllGroups = _g42;
+app.userInfo = { profile: { user_type: 'teacher' }, user: { id: 't1' } };
+console.log(`round 42: ${p42} pass, ${f42} fail`);

@@ -113,7 +113,7 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
   '_rivenClassNamedBeyondCohort',
   '_levenshteinDistance', '_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent', '_matchSmalltalk', '_isAggregateQuery',
   '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen', '_rivenCanManageClass', '_preferOwnedClasses', '_isoDaysAgo',
-  '_rivenMatchGroup', '_rivenGroupCanon',
+  '_rivenMatchGroup','_rivenMatchGroupPair', '_rivenGroupCanon',
   '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo', '_commonWords',
   '_segmentClauses', '_classifyClauseShape'];

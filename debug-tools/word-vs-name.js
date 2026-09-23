@@ -67,7 +67,7 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
   '_rivenCanManageClass', '_preferOwnedClasses', '_isoDaysAgo',
   '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo', '_commonWords',
   '_segmentClauses', '_classifyClauseShape', '_rivenQuantifiesClasses',
-  '_rivenFindExcluded', '_rivenGroupCanon', '_rivenMatchGroup', '_rivenIgnoresAttendance',
+  '_rivenFindExcluded', '_rivenGroupCanon', '_rivenMatchGroup','_rivenMatchGroupPair', '_rivenIgnoresAttendance',
   '_rivenParseClassSpec', '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_rivenResolvedStudent', '_rivenNamesEachClass', '_rivenClassNamedBeyondCohort'];
 

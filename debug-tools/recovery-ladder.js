@@ -39,7 +39,7 @@ const mk = (n) => { const b = bodyOf(n); return new Function(...b.args.split(','
 
 const METHODS = ['_normalizeInput', '_resolvePronouns', '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
   '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen',
-  '_rivenMatchGroup', '_rivenGroupCanon',
+  '_rivenMatchGroup','_rivenMatchGroupPair', '_rivenGroupCanon',
   '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_isFollowUpCommand', '_isAggregateQuery',

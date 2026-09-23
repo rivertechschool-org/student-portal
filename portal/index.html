@@ -50762,7 +50762,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-20·a';
+      const RIVEN_BUILD = '2026-09-22·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -54071,6 +54071,11 @@ Students you had withdrawn stay withdrawn.`)) {
       // wins is decided at resolution time, where the class match's strength
       // and the word "class" itself are known.
       entities.groupMatch = this._rivenMatchGroup(normalized);
+      // A MOVE names two cohorts, and groupMatch can only ever report one - it
+      // reads the whole sentence, so it sees both and calls the result
+      // ambiguous. The pair is read separately, and the gate in _matchIntent
+      // is what decides whether a sentence is really a move.
+      entities.groupPair = this._rivenMatchGroupPair(normalized);
       // "add jordan to that class" / "add jordan to it" / "who is in it" —
       // an unnamed class reference resolves to the class we were just
       // talking about (created, listed, graded…)
@@ -55240,6 +55245,7 @@ Students you had withdrawn stay withdrawn.`)) {
         'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER', 'CANCEL_DAY',
         'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
+        'MOVE_GROUP',
         'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
         'ISSUE_STRIKE', 'REMOVE_STRIKE',
         'PROMOTE_STAFF', 'DEMOTE_STAFF', 'DEACTIVATE_STAFF', 'REACTIVATE_STAFF',
@@ -56735,6 +56741,22 @@ Students you had withdrawn stay withdrawn.`)) {
             /\b(set|change)\b[\s\S]{0,32}\b(meeting|meets)\s+days?\b/,
           ]
         },
+        // MOVE_GROUP - before ADD_TO_GROUP, whose first pattern already
+        // matches the word "move" and would only ADD. Group membership is
+        // many-to-many, so an add leaves the student in the old cohort too:
+        // on two registers, with nothing on screen saying so. Asking for a
+        // move and getting a copy is the bug this intent exists to close.
+        {
+          intent: 'MOVE_GROUP',
+          w: 11, requiresGroup: true, requiresGroupMove: true, requiresStudent: true,
+          notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(move[sd]?|moving|switch(e[sd])?|switching|transfer(s|red|ring)?|shift(s|ed|ing)?|promote[sd]?|promoting|bump(s|ed)?)\b/,
+            // "ari is moving up to junior high" - the verb is in the middle
+            // and the direction carries the meaning
+            /\b(mov(es?|ing)|go(es|ing)?|head(s|ing)?)\b[\s\S]{0,12}\b(up|down|over|across|back)\b/,
+          ]
+        },
         {
           intent: 'ADD_TO_GROUP',
           w: 9, requiresGroup: true, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
@@ -57340,6 +57362,18 @@ Students you had withdrawn stay withdrawn.`)) {
           if (/\bclass(es)?\b/.test(normalized)) continue;
           if (entities.classMatch && this._rivenClassNamedBeyondCohort(entities.classMatch)) continue;
         }
+        // A cohort MOVE has two slots, and the DESTINATION is what decides
+        // whether the sentence is one at all. "switch noah to homeschool"
+        // names a band and not a half: as a cohort that is a coin toss between
+        // two, and at this school the sentence is far likelier to mean the
+        // enrolment type, which SET_ENROLLMENT_TYPE already handles. So the
+        // move only bids when the destination side, read on its own, names
+        // exactly one group - which is also what lets it outrank an ADD that
+        // would otherwise swallow the word "move" and only half-do the job.
+        if (pattern.requiresGroupMove) {
+          const gp = entities.groupPair;
+          if (!gp || !gp.to || gp.to.ambiguous) continue;
+        }
 
         // The most specific pattern that matches decides the weight
         let w = 0, hit = false;
@@ -57378,6 +57412,7 @@ Students you had withdrawn stay withdrawn.`)) {
         if (pattern.requiresStudentOrClass) score += 2;
         if (pattern.requiresGroupContext) score += entities.classMatch ? 3 : 2;
         if (pattern.requiresGroup) score += 3;
+        if (pattern.requiresGroupMove) score += 3;
         if (pattern.classMatchBoost && (entities.classMatch || entities.groupMatch)) score += 8;
         // An explicit note command wins outright. `notIfNoteCommand` already
         // knocks competing WRITES out, but a READ could still edge ADD_NOTE out
@@ -58006,6 +58041,8 @@ Students you had withdrawn stay withdrawn.`)) {
           return await this.terminalDeleteGroup(entities);
         case 'SET_GROUP_DAYS':
           return await this.terminalSetGroupDays(entities);
+        case 'MOVE_GROUP':
+          return await this.terminalMoveGroup(entities);
         case 'ADD_TO_GROUP':
           return await this.terminalChangeGroupMembership(entities, true);
         case 'REMOVE_FROM_GROUP':
@@ -58196,6 +58233,7 @@ Students you had withdrawn stay withdrawn.`)) {
     \u2022 "Link [parent] to [student]" / "Unlink [parent] from [student]"<br>
     \u2022 "Create a group called [name]" / "[group] meets tuesday and thursday"<br>
     \u2022 "Add [student] to the [group] group" / "Take [student] out of [group]"<br>
+    \u2022 "Move [student] from [group] to [group]" \u2014 out of one cohort and into the other<br>
     \u2022 "Give [class] to [teacher]" / "Reopen [class]" / "Set the current quarter to quarter 2"<br>
     \u2022 "Approve the application for [name]" / "Deny [name]'s application because [reason]"<br>
     \u2022 "Make [name] an admin" / "Deactivate [name]'s account"<br>
@@ -59155,6 +59193,7 @@ Students you had withdrawn stay withdrawn.`)) {
         SET_GROUP_DAYS: 'set which days a group meets',
         ADD_TO_GROUP: 'add a student to a group',
         REMOVE_FROM_GROUP: 'take a student out of a group',
+        MOVE_GROUP: 'move a student between groups',
         DELETE_ASSIGNMENT: 'delete an assignment',
         EDIT_ASSIGNMENT: 'change an assignment\'s due date or points',
         SET_CLASS_TEACHER: 'change who teaches a class',
@@ -63069,8 +63108,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
     async terminalDeleteGroup(entities) {
       if (!this._rivenRequireAdmin('delete a student group')) return;
-      const g = entities.groupMatch;
-      if (!g) { this.terminalPrintError('Which group? Try "delete the thursday lab group".'); return; }
+      const g = this._rivenRequireOneGroup(entities, 'Which group? Try "delete the thursday lab group".');
+      if (!g) return;
 
       const esc = (t) => this.escapeHtml(String(t));
       const n = (g.studentIds || []).length;
@@ -63090,8 +63129,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
     async terminalSetGroupDays(entities) {
       if (!this._rivenRequireAdmin('set which days a group meets')) return;
-      const g = entities.groupMatch;
-      if (!g) { this.terminalPrintError('Which group? Try "the thursday lab meets thursday".'); return; }
+      const g = this._rivenRequireOneGroup(entities, 'Which group? Try "the thursday lab meets thursday".');
+      if (!g) return;
 
       // The group's NAME is in the sentence, and at this school names carry
       // weekdays - "Thursday Lab", "Friday Art". Parsing the whole sentence
@@ -63130,14 +63169,143 @@ Students you had withdrawn stay withdrawn.`)) {
         });
     }
 
+    // Moving a student from one cohort to another.
+    //
+    // TWO writes, not one. Group membership is many-to-many - a student can
+    // sit in several at once - so an add on its own leaves them in the old
+    // cohort as well, on two registers, with nothing on screen saying so.
+    // That is what "move ari to upper ms" used to do here: it matched
+    // ADD_TO_GROUP, which only adds. Asking for a move and getting a copy is
+    // the whole reason this exists.
+    async terminalMoveGroup(entities) {
+      if (!this._rivenRequireAdmin('move a student between groups')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student? e.g. "move ari from lower ms to upper ms".'); return; }
+
+      const pair = entities.groupPair || this._rivenMatchGroupPair(entities.normalized || '');
+      const to = (pair && pair.to && !pair.to.ambiguous) ? pair.to : null;
+      if (!to) {
+        this.terminalPrintError('Which group are they moving into? e.g. "move ari from lower ms to upper ms".');
+        return;
+      }
+
+      const esc = (t) => this.escapeHtml(String(t));
+      const all = this._terminalAllGroups || [];
+      const toRow = all.find(x => x.id === to.id) || null;
+      const alreadyThere = ((toRow && toRow.studentIds) || to.studentIds || []).includes(student.id);
+      // The cohorts they are in NOW, destination excluded. A move has to take
+      // them out of one of these or there is nothing to take them out of.
+      const inNow = all.filter(x => x.id !== to.id && (x.studentIds || []).includes(student.id));
+      const asMatch = (row) => ({ id: row.id, name: row.name, row, studentIds: row.studentIds || [] });
+
+      // Where they are leaving. Said outright when the sentence said it;
+      // otherwise read off the cohorts they are actually in, because "move ari
+      // to upper ms" assumes we already know where they are.
+      let from = null;
+      if (pair.from && !pair.from.ambiguous) {
+        from = pair.from;
+      } else if (pair.from) {
+        // A half-named source - "out of middle school" - settles itself if
+        // they are only in one of the candidates. Otherwise ask; a wrong guess
+        // here takes a student off a register nobody mentioned.
+        const live = pair.from.candidates.filter(c => inNow.some(x => x.id === c.id));
+        if (live.length !== 1) {
+          this.terminalPrintError(
+            `Which group are they leaving \u2014 ${pair.from.candidates.map(c => c.name).join(' or ')}?`);
+          return;
+        }
+        from = asMatch(live[0]);
+      } else if (inNow.length === 1) {
+        from = asMatch(inNow[0]);
+      } else if (inNow.length > 1) {
+        const who = student.first_name || student.full_name;
+        this.terminalPrintError(
+          `${student.full_name} is in ${inNow.map(x => x.name).join(' and ')}. Which one are they leaving? ` +
+          `e.g. "move ${who} out of ${inNow[0].name} into ${to.name}".`);
+        return;
+      }
+
+      // What each half of the move would actually change. Naming a source they
+      // are not in is not an error - it is an admin who is half right - but it
+      // must not be reported as a removal that happened.
+      const leaving = (from && (from.studentIds || []).includes(student.id)) ? from : null;
+      const joining = alreadyThere ? null : to;
+      if (!leaving && !joining) {
+        this._showRivenMessage(
+          `<b>${esc(student.full_name)}</b> is already in ${esc(to.name)}` +
+          (from ? `, and not in ${esc(from.name)}` : ' and in no other group') + '. Nothing to move.', true);
+        return;
+      }
+
+      const steps = [];
+      if (leaving) steps.push(`out of <b>${esc(leaving.name)}</b>`);
+      if (joining) steps.push(`into <b>${esc(joining.name)}</b>`);
+      const note = leaving ? ''
+        : (from ? `${esc(student.full_name)} is not in ${esc(from.name)}, so this only adds them. `
+                : 'They are not in another group, so this only adds them. ');
+
+      this._requestConfirmation(
+        `Move <b>${esc(student.full_name)}</b> ${steps.join(' and ')}?` +
+        `<br><span style="font-size: 12px;">${note}Their classes, records and RTC are untouched \u2014 ` +
+        `this changes which register they appear on from the next morning that group meets.</span>`,
+        async () => {
+          const setMembers = async (grp, ids) => {
+            const { data, error } = await this.auth.supabase.rpc('set_student_group_members', {
+              p_group_id: grp.id, p_student_ids: ids,
+            });
+            if (error) throw this._rivenPolicyError(error);
+            const res = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+            if (res.success === false) throw new Error(res.error || 'the change was refused');
+          };
+
+          const fromRow = leaving ? (all.find(x => x.id === leaving.id) || null) : null;
+          const toBefore = [...((toRow && toRow.studentIds) || to.studentIds || [])];
+          const fromBefore = fromRow ? [...(fromRow.studentIds || [])] : null;
+
+          // Join FIRST. If the removal then fails they are in both, which
+          // shows up on the register and is exactly where the old add-only
+          // behaviour left them anyway. A failed join after a removal would
+          // leave them in neither, and nothing would say so.
+          if (joining) {
+            const after = [...toBefore, student.id];
+            await setMembers(to, after);
+            if (toRow) toRow.studentIds = after;
+          }
+          if (leaving) {
+            const after = fromBefore.filter(id => id !== student.id);
+            try {
+              await setMembers(leaving, after);
+              if (fromRow) fromRow.studentIds = after;
+            } catch (e) {
+              // Half done, and said so. Reporting a move here would be the
+              // same silent lie the add-only behaviour told.
+              this.terminalPrintError(
+                `${student.full_name} is now in ${to.name}, but taking them out of ${leaving.name} failed: ` +
+                `${e.message}. They are on both registers until that is done.`);
+              return;
+            }
+          }
+
+          this._pushUndo(`moving ${student.full_name} to ${to.name}`, async () => {
+            if (leaving) { await setMembers(leaving, fromBefore); if (fromRow) fromRow.studentIds = fromBefore; }
+            if (joining) { await setMembers(to, toBefore); if (toRow) toRow.studentIds = toBefore; }
+          });
+
+          this._naturalSuccess([leaving
+            ? `${student.full_name} is out of ${leaving.name} and into ${to.name}.`
+            : `${student.full_name} is in ${to.name}.`]);
+        });
+    }
+
     // One path for both directions, because both are the same write: the RPC
     // takes the WHOLE membership list, so adding and removing differ only in
     // what goes into that list.
     async terminalChangeGroupMembership(entities, adding) {
       if (!this._rivenRequireAdmin(adding ? 'add a student to a group' : 'take a student out of a group')) return;
-      const g = entities.groupMatch;
+      const g = this._rivenRequireOneGroup(entities,
+        'Which group? Name it, e.g. "add noah to the thursday lab group".');
+      if (!g) return;
       const student = this._rivenResolvedStudent(entities);
-      if (!g) { this.terminalPrintError('Which group? Name it, e.g. "add noah to the thursday lab group".'); return; }
       if (!student) { this.terminalPrintError('Which student?'); return; }
 
       const esc = (t) => this.escapeHtml(String(t));
@@ -63176,8 +63344,13 @@ Students you had withdrawn stay withdrawn.`)) {
                 p_group_id: g.id, p_student_ids: before,
               });
               if (r) throw r;
+              if (g.row) g.row.studentIds = before;
             });
+          // The match object is thrown away when the command ends; the cached
+          // row behind it is what the next one reads. Without this line a
+          // second command in the same session still sees the old membership.
           g.studentIds = after;
+          if (g.row) g.row.studentIds = after;
           this._naturalSuccess([adding
             ? `${student.full_name} is in ${g.name}.`
             : `${student.full_name} is out of ${g.name}.`]);
@@ -68137,6 +68310,57 @@ Students you had withdrawn stay withdrawn.`)) {
     // at this school — the schedule legend lists it between Middle School and
     // High School. That also stops "HS" matching "Full Junior High", which
     // would otherwise share the word "high" with "Full High".
+    // Two cohorts in one sentence, and which of them is which.
+    //
+    // _rivenMatchGroup reads the WHOLE sentence, so "move ari from young
+    // middle to junior high" hands it both cohorts at once and the only
+    // honest answer it can give is "ambiguous". That is right for a sentence
+    // with one target and useless for a move, which has two. So cut the
+    // sentence at the words that carry direction, then ask about each side on
+    // its own - where each side names exactly one.
+    //
+    // The pin is honoured on the way IN and ignored on the way OUT. When the
+    // destination was half-named ("the middle school group"), ADD_TO_GROUP's
+    // picker is what resolves it, and the re-run has to read that pick as the
+    // DESTINATION while still taking the source from the sentence. Ignoring
+    // the pin on both sides would ask the same question forever; honouring it
+    // on both would move the student out of the group they are moving into.
+    _rivenMatchGroupPair(text) {
+      const t = ' ' + String(text || '').toLowerCase().replace(/\s+/g, ' ') + ' ';
+      // Longest first, so "into" is never read as "in" and "out of" never as
+      // "of". A leading "and" belongs to the marker ("out of X AND INTO y"),
+      // or it is left behind in the slice before it.
+      const MARK = /\b(?:and\s+)?(out\s+of|off\s+of|into|in\s+to|over\s+to|from|onto|to|in)\b/g;
+      const cuts = [];
+      let m;
+      while ((m = MARK.exec(t))) {
+        cuts.push({ kind: /^(out of|off of|from)$/.test(m[1]) ? 'from' : 'to',
+                    start: m.index, at: m.index + m[0].length });
+      }
+      if (!cuts.length) return null;
+      let from = null, to = null;
+      for (let i = 0; i < cuts.length; i++) {
+        const slice = t.slice(cuts[i].at, i + 1 < cuts.length ? cuts[i + 1].start : t.length);
+        const g = this._rivenMatchGroup(slice, cuts[i].kind === 'from');
+        if (!g) continue;
+        if (cuts[i].kind === 'from') { if (!from) from = g; }
+        else if (!to) to = g;
+      }
+      return (from || to) ? { from, to } : null;
+    }
+
+    // One cohort, named. A half-named band ("the middle school group") matches
+    // two of them, and every group command read `.id` straight off the result
+    // - which on an ambiguous match is undefined - after showing a
+    // confirmation that named whichever candidate happened to sort first. Ask
+    // instead, with the picker that already exists.
+    _rivenRequireOneGroup(entities, hint) {
+      const g = entities.groupMatch;
+      if (!g) { this.terminalPrintError(hint); return null; }
+      if (g.ambiguous) { this._showGroupPicker(g.candidates, entities.original || ''); return null; }
+      return g;
+    }
+
     _rivenGroupCanon(text) {
       let t = ' ' + String(text || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ') + ' ';
       const PHRASES = [
@@ -68171,10 +68395,13 @@ Students you had withdrawn stay withdrawn.`)) {
     // sentence ("5 rtc to all lower middle school") still resolves. Naming
     // only the band ("elementary", "homeschool") is genuinely ambiguous and
     // comes back as candidates for the picker rather than a guess.
-    _rivenMatchGroup(text) {
+    // `ignorePin` is for the pair matcher below, and nothing else. A pin is a
+    // choice the user made in a picker, and a picker fills ONE slot - so on a
+    // two-slot sentence it must not answer for both.
+    _rivenMatchGroup(text, ignorePin) {
       const groups = this._terminalAllGroups || [];
       if (!groups.length) return null;
-      if (this._terminalPinnedGroup) {
+      if (this._terminalPinnedGroup && !ignorePin) {
         const p = groups.find(g => g.id === this._terminalPinnedGroup);
         if (p) return { id: p.id, name: p.name, row: p, pinned: true, studentIds: p.studentIds || [] };
       }

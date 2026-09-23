@@ -96,7 +96,7 @@ const app = {
   _loadFacilitiesForSelect: async () => [{ id: 'f1', name: 'Chapel', type: 'room' }],
 };
 for (const n of ['_rivenParseClassSpec', '_rivenParseNewClassName', '_rivenParseClassRosterRef',
-                 '_rivenGroupCanon', '_rivenMatchGroup', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenMatchTeacher',
+                 '_rivenGroupCanon', '_rivenMatchGroup','_rivenMatchGroupPair', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenMatchTeacher',
                  '_rivenResolveRosterRef', '_rivenResolveSubject', '_rivenResolveGradeBand',
                  '_rivenResolveFacility', '_rivenResolveClassRow', '_rivenCanManageClass', '_rivenClassIsOpen',
                  '_rivenRequireClass', '_preferOwnedClasses', '_rivenFindEnrollment',

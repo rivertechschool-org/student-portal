@@ -47,7 +47,7 @@ const METHODS = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand', '_
   '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity', '_levenshteinDistance',
   '_rivenClassNamedBeyondCohort',
   '_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent', '_matchSmalltalk', '_isAggregateQuery', '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen', '_rivenCanManageClass',
-  '_rivenMatchGroup', '_rivenGroupCanon',
+  '_rivenMatchGroup','_rivenMatchGroupPair', '_rivenGroupCanon',
   '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_preferOwnedClasses', '_isoDaysAgo', '_hasCommandVerb', '_hasCommandSignal', '_isCommonWordTypo',
   '_commonWords', '_segmentClauses', '_classifyClauseShape', '_semanticExampleBank'];

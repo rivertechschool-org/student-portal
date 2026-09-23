@@ -95,7 +95,7 @@ const app = {
   _showGroupPicker(rows) { app._picked = rows.map(r => r.name); },
   async _loadTerminalGroups() { app._loadedGroups = true; },
 };
-for (const n of ['_rivenGroupCanon', '_rivenMatchGroup', '_rivenDailyBuckets', 'terminalDailyRoster']) {
+for (const n of ['_rivenGroupCanon', '_rivenMatchGroup','_rivenMatchGroupPair', '_rivenDailyBuckets', 'terminalDailyRoster']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
 }
