@@ -79,8 +79,21 @@ function makeApp({ rpcFails = false } = {}) {
       return fn === 'rt_pickup_here_today' ? JSON.parse(JSON.stringify(HERE)) : { success: true };
     },
   };
-  global.document = { getElementById: (id) => (id === 'pickup-here' ? app.host : null) };
+  // The screen is a shell drawn once and a list redrawn constantly. `out` is
+  // what a reader would actually see: both, concatenated.
+  app.list = { innerHTML: '' };
+  app.count = { textContent: '' };
+  app.searchBox = { value: '' };
+  global.document = { getElementById: (id) =>
+      id === 'pickup-here'        ? app.host
+    : id === 'pickup-here-list'   ? app.list
+    : id === 'pickup-here-count'  ? app.count
+    : id === 'pickup-here-search' ? app.searchBox
+    : null };
+  app.seen = () => `${app.host.innerHTML} ${app.count.textContent} ${app.list.innerHTML}`;
   app._renderPickupHere = extract('_renderPickupHere');
+  app._refreshPickupHereList = extract('_refreshPickupHereList');
+  app.filterPickupHere = extract('filterPickupHere');
   app.loadPickupHereToday = extract('loadPickupHereToday');
   app.setPickedUp = extract('setPickedUp');
   return app;
@@ -94,7 +107,7 @@ function makeApp({ rpcFails = false } = {}) {
     await app.loadPickupHereToday.call(app);
     check('it asks the register, not the timetable', app.calls[0].fn, 'rt_pickup_here_today');
 
-    const out = app.host.innerHTML;
+    const out = app.seen();
     ok('everyone on the register is listed', /Allie/.test(out) && /Noah/.test(out) && /Adelyn/.test(out));
     ok('the counts are stated', /2 still here/.test(out) && /1 picked up/.test(out) && /3 on the register/.test(out));
     ok('a family number is shown where there is one', /#12/.test(out) && /#4/.test(out));
@@ -115,6 +128,8 @@ function makeApp({ rpcFails = false } = {}) {
     app._renderPickupHere.call(app);
     ok('an empty register says so, and why', /Nobody on the register yet/.test(app.host.innerHTML));
     ok('  and points at taking the register', /Take the register/.test(app.host.innerHTML));
+    ok('  and offers no search box to filter nothing with',
+       !/pickup-here-search/.test(app.host.innerHTML));
   }
 
   console.log('\n== ticking one off ==\n');
@@ -127,7 +142,7 @@ function makeApp({ rpcFails = false } = {}) {
     const rec = app._pickupHere.find(r => r.student_id === 's1');
     check('  and the row is marked collected', rec.dismissed, true);
     ok('  with a time on it', !!rec.picked_up_at);
-    ok('  repainted immediately', /Undo<\/button>/.test(app.host.innerHTML));
+    ok('  repainted immediately', /Undo<\/button>/.test(app.seen()));
     check('  and nothing was reported as an error', app.notices, []);
   }
 
@@ -150,8 +165,82 @@ function makeApp({ rpcFails = false } = {}) {
     const rec = app._pickupHere.find(r => r.student_id === 's1');
     check('the row goes back to waiting', rec.dismissed, false);
     check('  with no departure time left on it', rec.picked_up_at, null);
-    ok('  the screen shows them still here', /Picked up<\/button>/.test(app.host.innerHTML));
+    ok('  the screen shows them still here', /Picked up<\/button>/.test(app.seen()));
     ok('  and it says the save failed', app.notices.some(n => /^error:/.test(n)));
+  }
+
+  console.log('\n== finding one child among the ones who are here ==\n');
+
+  // The register has already decided who is on this list. The filter narrows
+  // it. The thing it must never do is widen it back out to the whole school -
+  // at pickup, a name appearing that the register does not have is somebody
+  // being handed over who was never marked in.
+  const filtered = (app, q) => {
+    app.searchBox.value = q;
+    app.filterPickupHere.call(app);
+    return app.list.innerHTML;
+  };
+
+  {
+    const app = makeApp();
+    app._renderPickupHere.call(app);
+
+    ok('typing a name narrows to that child', (() => {
+      const out = filtered(app, 'alli');
+      return /Allie/.test(out) && !/Noah/.test(out) && !/Adelyn/.test(out);
+    })());
+
+    ok('a family number finds them too', (() => {
+      const out = filtered(app, '12');
+      return /Allie/.test(out) && !/Noah/.test(out);
+    })());
+
+    ok('and so does a grade', (() => {
+      const out = filtered(app, 'grade 8');
+      return /Noah/.test(out) && !/Allie/.test(out);
+    })());
+
+    ok('a child already collected is still findable', (() => {
+      const out = filtered(app, 'adelyn');
+      return /Adelyn/.test(out) && /Undo<\/button>/.test(out);
+    })());
+
+    ok('clearing it brings everyone back', (() => {
+      const out = filtered(app, '');
+      return /Allie/.test(out) && /Noah/.test(out) && /Adelyn/.test(out);
+    })());
+
+    ok('no match says so rather than going blank', (() => {
+      const out = filtered(app, 'zzzz');
+      return /Nobody matches/.test(out);
+    })());
+    ok('  and says why that might be', /not be in today/.test(app.list.innerHTML));
+  }
+
+  {
+    // The counts have to follow what is on SCREEN. A filtered list reporting
+    // the whole register's numbers is how somebody concludes a child is
+    // missing when they are three letters away.
+    const app = makeApp();
+    app._renderPickupHere.call(app);
+    filtered(app, 'alli');
+    ok('the counts follow the filter', /1 still here/.test(app.count.textContent));
+    ok('  and still say how big the register is', /3 on the register today/.test(app.count.textContent));
+    filtered(app, '');
+    ok('  and go back when it is cleared', /2 still here/.test(app.count.textContent)
+       && /1 picked up/.test(app.count.textContent));
+  }
+
+  {
+    // Ticking somebody off must not take the search box away from whoever is
+    // typing in it - at pickup that means starting again with a parent waiting.
+    const app = makeApp();
+    app._renderPickupHere.call(app);
+    filtered(app, 'alli');
+    const shellBefore = app.host.innerHTML;
+    await app.setPickedUp.call(app, 's1', true);
+    check('ticking a child off leaves the search box alone', app.host.innerHTML, shellBefore);
+    ok('  and the row repaints inside the filter', /Undo<\/button>/.test(app.list.innerHTML));
   }
 
   console.log('\n== how it opens ==\n');

@@ -37715,11 +37715,12 @@ Students you had withdrawn stay withdrawn.`)) {
         // is what they fall back on when the placard is missing.
         const searchPane = `
           <div style="display:flex; gap:8px; margin-bottom:14px;">
-            <input type="text" id="pickup-search" value="${esc(this._pickupSearch || '')}"
+            <input type="search" id="pickup-search" value="${esc(this._pickupSearch || '')}"
               placeholder="Family number, or a student's name"
+              oninput="app.pickupSearchTyping()"
               onkeydown="if(event.key==='Enter'){event.preventDefault();app.pickupSearch();}"
+              autocomplete="off"
               style="flex:1; padding:10px 12px; font-size:16px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);">
-            <button class="btn btn-primary" onclick="app.pickupSearch()">Find</button>
           </div>
           <div id="pickup-results">${this._renderPickupResults()}</div>`;
 
@@ -37778,6 +37779,13 @@ Students you had withdrawn stay withdrawn.`)) {
                     Enter a family number or a name.
                   </div>`;
         }
+        // Mid-flight is not the same as nothing found. Saying "No match" at
+        // every keystroke, a beat before the answer arrives, makes a working
+        // search look broken - and at pickup that is somebody deciding the
+        // child is not on the list.
+        if (this._pickupSearching && !results.length) {
+          return `<div style="color:var(--muted); font-size:13px; padding:10px 0;">Searching\u2026</div>`;
+        }
         if (!results.length) {
           return `<div class="empty-state"><h3>No match</h3>
                   <p>No family with that number, and no student by that name on one.</p></div>`;
@@ -37796,7 +37804,21 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>` : ''}
 
             <div style="margin-top:12px; display:flex; flex-direction:column; gap:6px;">
-              ${(f.members || []).map(m => {
+              ${(() => {
+                const all = f.members || [];
+                const here = all.filter(m => m.in_today);
+                const away = all.filter(m => !m.in_today);
+                // Only the children today's register has in, because they are
+                // the ones who can be collected. Never to the point of an
+                // EMPTY family though: the register may not have been taken
+                // yet, it may be wrong, and a child can be in the building
+                // without a row in it. A family card with nobody on it, at the
+                // gate, with a parent waiting, is worse than one extra name.
+                const hiding = here.length > 0 && away.length > 0
+                            && !(this._pickupShowAway || {})[f.id];
+                const shown = hiding ? here : all;
+
+                const renderMember = (m) => {
                 const notes = m.notes || [];
                 const dated = notes.some(n => !n.standing);
                 return `
@@ -37809,6 +37831,7 @@ Students you had withdrawn stay withdrawn.`)) {
                       <span style="flex:1;">
                         ${this.escapeHtml(m.first_name)} ${this.escapeHtml(m.last_name)}
                         ${m.grade_level ? `<span style="color:var(--muted); font-size:12px;"> Grade ${this.escapeHtml(m.grade_level)}</span>` : ''}
+                        ${m.in_today ? '' : `<span style="font-size:11px; color:var(--warning, #e67e22); font-weight:600;"> \u00b7 not in today</span>`}
                       </span>
                       ${m.dismissed
                         ? `<span style="font-size:12px; color:var(--muted);">called ${new Date(m.dismissed_at).toLocaleTimeString()}</span>`
@@ -37857,7 +37880,20 @@ Students you had withdrawn stay withdrawn.`)) {
                          </div>`}
                   </details>
                 </div>`;
-              }).join('')}
+                };
+
+                return `
+                  ${here.length === 0 && all.length > 0 ? `
+                    <div style="font-size:12px; color:var(--muted); padding:2px 0 4px;">
+                      Nobody on this family is on today's register \u2014 showing everyone.
+                    </div>` : ''}
+                  ${shown.map(renderMember).join('')}
+                  ${hiding ? `
+                    <button class="btn btn-secondary small" style="align-self:flex-start;"
+                            onclick="app.showPickupAway('${this.jsAttr(f.id)}')">
+                      ${away.length} not in today \u2014 show
+                    </button>` : ''}`;
+              })()}
               ${!(f.members || []).length
                 ? `<div style="color:var(--muted); font-size:13px;">No students on this number yet.</div>` : ''}
             </div>
@@ -38114,6 +38150,43 @@ Students you had withdrawn stay withdrawn.`)) {
           return;
         }
 
+        // Drawn once. Everything that changes afterwards - a filter keystroke,
+        // a child ticked off - redraws the LIST below and leaves this alone.
+        host.innerHTML = `
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap;">
+            <input type="search" id="pickup-here-search" value="${this.escapeHtml(this._pickupHereFilter || '')}"
+              placeholder="Find a student by name, number or grade"
+              oninput="app.filterPickupHere()" autocomplete="off"
+              style="flex:1; min-width:180px; padding:9px 12px; font-size:15px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);">
+          </div>
+          <div id="pickup-here-count" style="font-size:12px; color:var(--muted); margin-bottom:10px;"></div>
+          <div id="pickup-here-list" style="display:flex; flex-direction:column; gap:6px; max-height:52vh; overflow-y:auto;"></div>`;
+        this._refreshPickupHereList();
+      }
+
+      filterPickupHere() {
+        this._pickupHereFilter = document.getElementById('pickup-here-search')?.value || '';
+        this._refreshPickupHereList();
+      }
+
+      // Everyone here is already only the people who are HERE - the register
+      // decides that, not this box. The filter narrows that list, it never
+      // widens it back out to the whole school.
+      _refreshPickupHereList() {
+        const host = document.getElementById('pickup-here-list');
+        // Nothing on screen to refresh. NOT a call back into
+        // _renderPickupHere() - that calls this, and two functions each
+        // deciding the other should go first is a frozen tab, at pickup.
+        if (!host) return;
+        const all = this._pickupHere || [];
+        const q = (this._pickupHereFilter || '').trim().toLowerCase();
+        const rows = !q ? all : all.filter(r => {
+          const hay = `${r.first_name || ''} ${r.last_name || ''} `
+            + `${r.family_number != null ? '#' + r.family_number + ' ' + r.family_number : ''} `
+            + `${r.grade_level != null ? 'grade ' + r.grade_level : ''}`;
+          return hay.toLowerCase().includes(q);
+        });
+
         const waiting = rows.filter(r => !r.dismissed);
         const gone = rows.filter(r => r.dismissed);
         const esc = (v) => this.escapeHtml(String(v ?? ''));
@@ -38136,15 +38209,27 @@ Students you had withdrawn stay withdrawn.`)) {
               : `<button class="btn btn-primary small" onclick="app.setPickedUp('${this.jsAttr(r.student_id)}', true)">Picked up</button>`}
           </div>`;
 
+        const countEl = document.getElementById('pickup-here-count');
+        if (countEl) {
+          // The counts follow what is on screen. A filtered view reporting the
+          // whole register's numbers is how somebody concludes a child is
+          // missing when they are just three letters away.
+          countEl.textContent = q
+            ? `${waiting.length} still here \u00b7 ${gone.length} picked up \u00b7 matching "${this._pickupHereFilter.trim()}" `
+              + `(${all.length} on the register today)`
+            : `${waiting.length} still here \u00b7 ${gone.length} picked up \u00b7 ${all.length} on the register today`;
+        }
+
+        if (!rows.length) {
+          host.innerHTML = `<div class="empty-state"><h3>Nobody matches</h3>
+            <p>No student on today's register matches that. They may not be in today.</p></div>`;
+          return;
+        }
+
         host.innerHTML = `
-          <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
-            ${waiting.length} still here \u00b7 ${gone.length} picked up \u00b7 ${rows.length} on the register today
-          </div>
-          <div style="display:flex; flex-direction:column; gap:6px; max-height:52vh; overflow-y:auto;">
-            ${waiting.map(row).join('')}
-            ${gone.length ? `<div style="margin-top:10px; font-size:12px; color:var(--muted); font-weight:600;">Picked up</div>` : ''}
-            ${gone.map(row).join('')}
-          </div>`;
+          ${waiting.map(row).join('')}
+          ${gone.length ? `<div style="margin-top:10px; font-size:12px; color:var(--muted); font-weight:600;">Picked up</div>` : ''}
+          ${gone.map(row).join('')}`;
       }
 
       // The same action the Dismissal tab uses, so one child cannot be ticked
@@ -38158,28 +38243,81 @@ Students you had withdrawn stay withdrawn.`)) {
         if (rec) {
           rec.dismissed = !!pickedUp;
           rec.picked_up_at = pickedUp ? new Date().toISOString() : null;
-          this._renderPickupHere();
+          this._refreshPickupHereList();
         }
         try {
           await this._pickupRpc('rt_set_dismissed', { p_student_ids: [studentId], p_dismissed: !!pickedUp });
         } catch (e) {
           console.error('setPickedUp failed:', e);
-          if (rec && before) { rec.dismissed = before.dismissed; rec.picked_up_at = before.picked_up_at; this._renderPickupHere(); }
+          if (rec && before) { rec.dismissed = before.dismissed; rec.picked_up_at = before.picked_up_at; this._refreshPickupHereList(); }
           this.showNotification(`Not saved: ${e.message}`, 'error');
         }
       }
 
-      async pickupSearch() {
+      // A keystroke schedules the lookup. Pressing Enter, and every other
+      // caller, still goes straight to pickupSearch() below.
+      pickupSearchTyping() {
         const q = (document.getElementById('pickup-search')?.value || '').trim();
         this._pickupSearch = q;
-        if (!q) { this._pickupResults = []; this._refreshPickupResults(); return; }
+        clearTimeout(this._pickupSearchTimer);
+
+        // Cleared box: nothing to wait for, and nothing to ask the server.
+        if (!q) {
+          this._pickupSearchSeq = (this._pickupSearchSeq || 0) + 1;  // strand any reply still coming
+          this._pickupResults = [];
+          this._pickupSearching = false;
+          this._refreshPickupResults();
+          return;
+        }
+
+        this._pickupSearching = true;
+        this._refreshPickupResults();
+        // 250ms: long enough that typing a four-digit number is one lookup and
+        // not four, short enough that it still feels like it is keeping up.
+        this._pickupSearchTimer = setTimeout(() => this.pickupSearch(), 250);
+      }
+
+      async pickupSearch() {
+        clearTimeout(this._pickupSearchTimer);
+        const q = (document.getElementById('pickup-search')?.value || '').trim();
+        this._pickupSearch = q;
+        if (!q) {
+          this._pickupSearchSeq = (this._pickupSearchSeq || 0) + 1;
+          this._pickupResults = [];
+          this._pickupSearching = false;
+          this._refreshPickupResults();
+          return;
+        }
+
+        // Only the newest search may write the results. Replies can arrive out
+        // of order - this database stalls for seconds at a time, so a slow
+        // answer for "12" can land after a fast one for "127" and put the
+        // wrong family on screen with the right number typed above it.
+        const seq = (this._pickupSearchSeq = (this._pickupSearchSeq || 0) + 1);
+        this._pickupShowAway = {};
+        this._pickupSearching = true;
         try {
-          this._pickupResults = await this._pickupRpc('rt_pickup_lookup', { p_query: q }) || [];
+          const rows = await this._pickupRpc('rt_pickup_lookup', { p_query: q }) || [];
+          if (seq !== this._pickupSearchSeq) return;
+          this._pickupResults = rows;
+          this._pickupSearching = false;
           this._refreshPickupResults();
         } catch (e) {
+          if (seq !== this._pickupSearchSeq) return;
+          this._pickupSearching = false;
+          this._refreshPickupResults();
           console.error('pickupSearch failed:', e);
           this.showNotification(e.message, 'error');
         }
+      }
+
+      // Per family, and deliberately not remembered beyond this search: the
+      // next family looked up starts from "who is in today" again, because
+      // that is the right default every time somebody walks up.
+      showPickupAway(familyId) {
+        this._pickupShowAway = this._pickupShowAway || {};
+        this._pickupShowAway[familyId] = true;
+        this._refreshPickupResults();
       }
 
       // Only the results are redrawn, so the search box keeps focus and what

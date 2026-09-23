@@ -3861,3 +3861,75 @@ on its own.
 
 Round 34 had the band vocabulary right and the SHAPE wrong: cohorts without their weekday.
 That is what let this through. The fixture is the thing to keep honest.
+
+## Pickup: filtering as you type, over the people who are here (2026-09-23)
+
+Two screens, two mechanisms, and the difference is the whole reason this took
+more than one line.
+
+### The dismissal search asks the server
+
+The attendance roster can filter as typed for free -- the rows are already on
+the page and it just hides them. Pickup cannot: a family number is not
+something the client is holding, so every search is a round trip.
+
+So a keystroke **schedules** a lookup rather than making one. 250ms, which
+makes typing a four-digit number one lookup instead of four -- and on a
+database that stalls for seconds at a time, four would be four chances to
+stall. The Find button is gone; Enter still searches immediately, as does
+every other caller.
+
+Two things fall out of going as-you-type that the attendance filter never has
+to think about:
+
+- **Replies come back out of order.** A slow answer for "12" can land after a
+  fast one for "127" and put the wrong family on screen under the right number
+  -- at a pickup gate, the wrong children. Only the newest search may write the
+  results now, and the same guard covers failures, or a stale error wipes good
+  results off the screen.
+- **Mid-flight is not "no match".** Saying it at every keystroke, a beat before
+  the answer arrives, makes a working search look broken -- and at pickup that
+  is somebody deciding a child is not on the list.
+
+### "Who is still here" has its own box
+
+Client-side, exactly like the attendance roster, because that list is already
+loaded. Name, family number or grade. The counts follow what is on screen: a
+filtered view reporting the whole register's numbers is how somebody concludes
+a child is missing when they are three letters away.
+
+The shell is drawn once and the list redrawn on every keystroke and every tick,
+so ticking a child off does not take the search box away from whoever is typing
+in it.
+
+### Only the children who are in today
+
+The search used to return the whole household regardless of the register.
+`rt_pickup_here_today` always had this right; the search was the half that did
+not. Members now carry whether today's register has them in, and the screen
+shows only those, with a line offering the rest.
+
+**It is never hidden to the point of an empty family card.** The register may
+not have been taken, it may be wrong, and a child can be in the building
+without a row in it. If nobody on a family is marked in, everyone is shown and
+the screen says why. Filtering them out in the database was the obvious move
+and the wrong one: a presentation choice does not belong somewhere it cannot
+be argued with, and an adult at the gate with an empty card and a child in
+front of them has no way forward.
+
+### Found on the way
+
+`_refreshPickupHereList()` fell back to `_renderPickupHere()`, which calls it
+straight back -- an infinite loop, not a fallback, any time the list container
+was missing. There is nothing to refresh when the list is not on screen.
+
+### How it is held
+
+`tests/pickup-search.test.js` is new (32), `tests/pickup-here-today.test.js`
+grew to 47. The existing here-today test caught the shell/list split
+immediately, which is exactly what it is for; it now models both containers
+rather than asserting against the one the rows left. 8 deliberate breaks, 8
+caught -- including the two that matter most: the out-of-order guard and the
+empty-family rule.
+
+The schema change is in the backend repo.
