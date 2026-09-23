@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="styles.css">
 
   <!-- Load shared configuration -->
-  <script src="../shared/config.js?v=19"></script>
+  <script src="../shared/config.js?v=20"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
 
@@ -2721,19 +2721,30 @@
         }
         
         // Wait for PortalAuth to finish initializing (initialized becomes true)
+        // 30 seconds, not 10. The database stalls for several seconds at a
+        // time, and giving up first turns a slow morning into a lockout.
         let attempts = 0;
-        while (!this.auth.initialized && attempts < 100) {
+        while (!this.auth.initialized && attempts < 300) {
           await new Promise(resolve => setTimeout(resolve, 100));
           attempts++;
         }
         
         if (!this.auth.initialized) {
           console.error('❌ Auth initialization timeout');
-          this.showAuthRequired();
+          this.showBackendUnreachable();
           return;
         }
         
         // Now check if we have a user
+        // A SESSION with no PROFILE is not a signed-out user - it is a
+        // profile fetch that failed. Showing "please log in" to somebody who
+        // already is logged in is how an admin gets locked out of their own
+        // school while their session is perfectly fine.
+        if (this.auth.currentUser && !this.auth.userProfile && this.auth.profileLoadFailed) {
+          console.error('❌ Signed in, but the profile could not be loaded');
+          this.showBackendUnreachable();
+          return;
+        }
         if (!this.auth.currentUser || !this.auth.userProfile) {
           console.error('❌ No authenticated user');
           this.showAuthRequired();
@@ -4950,7 +4961,10 @@
         });
       } 
 
-      async supabaseQuery(queryFn, timeoutMs = 8000) {
+      // 20s, not 8. Measured: this instance stalls hard enough that ordinary
+      // reads have taken 5-7 seconds, so an 8s limit was turning a slow answer
+      // into no answer at all - and a blank page with nothing on it.
+      async supabaseQuery(queryFn, timeoutMs = 20000) {
           // If tab is still in the process of returning, wait for it to complete
           if (this._tabReturning) {
               let waited = 0;
@@ -5159,6 +5173,26 @@
             }
           }
         });
+      }
+
+      // The honest version of showAuthRequired: the session is fine, the
+      // server is not answering. Reuses the same card, so there is no second
+      // piece of markup to keep in step with the first.
+      showBackendUnreachable() {
+        document.getElementById('loading-screen')?.classList.add('hidden');
+        document.getElementById('main-app')?.classList.add('hidden');
+        const box = document.getElementById('auth-required');
+        if (!box) return;
+        box.classList.remove('hidden');
+        box.innerHTML = `
+          <div class="auth-card">
+            <h2>\u{1F50C} Can't reach the server</h2>
+            <p style="margin: 16px 0; color: var(--muted);">
+              You are still signed in \u2014 the school database did not answer in time.
+              It is usually over in a minute or two.
+            </p>
+            <button class="btn btn-primary" onclick="window.location.reload()">Try again</button>
+          </div>`;
       }
 
       showAuthRequired() {

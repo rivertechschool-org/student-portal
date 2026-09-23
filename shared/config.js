@@ -391,10 +391,15 @@ class PortalAuth {
         }
     }
 
-    async loadUserProfile() {
+    // `attempt` is internal. A failed profile fetch is NOT the same thing as
+    // being signed out, but the caller could not tell the difference: both
+    // arrived as null, and null puts the Authentication Required screen in
+    // front of somebody whose session is perfectly good. Retry first, and
+    // leave a flag behind saying which of the two actually happened.
+    async loadUserProfile(attempt = 0) {
         try {
             const { data: { user } } = await this.supabase.auth.getUser();
-            if (!user) return null;
+            if (!user) { this.profileLoadFailed = false; return null; }
     
             // Fetch profile by auth_user_id (for activated accounts) or id (for legacy accounts)
             const { data: profiles, error } = await this.supabase
@@ -404,11 +409,19 @@ class PortalAuth {
     
             if (error) {
                 console.error('Profile fetch error:', error);
+                // Reachable but unhappy - usually slow enough to time out.
+                // Worth another go before declaring anything about the user.
+                if (attempt < 3) {
+                    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+                    return this.loadUserProfile(attempt + 1);
+                }
+                this.profileLoadFailed = true;
                 return null;
             }
     
             // If profile exists, use it
             if (profiles && profiles.length > 0) {
+                this.profileLoadFailed = false;
                 this.userProfile = profiles[0];
                 await this._syncProfileEmail(user, profiles[0]);
                 return profiles[0];
@@ -425,6 +438,13 @@ class PortalAuth {
     
         } catch (error) {
             console.error('Profile load error:', error);
+            // Same again for a thrown error - a hang, a dropped connection.
+            // Silence here is what locked an admin out of their own school.
+            if (attempt < 3) {
+                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+                return this.loadUserProfile(attempt + 1);
+            }
+            this.profileLoadFailed = true;
             return null;
         }
     }
