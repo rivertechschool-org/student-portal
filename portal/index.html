@@ -37764,10 +37764,15 @@ Students you had withdrawn stay withdrawn.`)) {
         return `
           <div style="display:flex; flex-direction:column; gap:6px;">
             ${rows.map(r => `
-              <div style="display:flex; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid var(--border); border-radius:8px;">
-                <span>${this.escapeHtml(r.first_name)} ${this.escapeHtml(r.last_name)}
+              <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 10px; border:1px solid var(--border); border-radius:8px;">
+                <span style="flex:1; min-width:0;">${this.escapeHtml(r.first_name)} ${this.escapeHtml(r.last_name)}
                   ${r.family_number ? `<span style="color:var(--muted); font-size:12px;">#${r.family_number}</span>` : ''}</span>
-                <span style="color:var(--muted); font-size:12px;">${new Date(r.dismissed_at).toLocaleTimeString()}</span>
+                <span style="color:var(--muted); font-size:12px; white-space:nowrap;">${new Date(r.dismissed_at).toLocaleTimeString()}</span>
+                ${/* This is the screen somebody opens when they realise they
+                      ticked the wrong child, and until now it was the one
+                      screen that could only tell them so. */''}
+                <button class="btn btn-secondary small" style="white-space:nowrap;"
+                        onclick="app.undoPickup('${this.jsAttr(r.student_id)}')">Undo</button>
               </div>`).join('')}
           </div>`;
       }
@@ -38235,6 +38240,38 @@ Students you had withdrawn stay withdrawn.`)) {
       // The same action the Dismissal tab uses, so one child cannot be ticked
       // in one place and not the other. It stamps the attendance row as well as
       // the board.
+      // Taking a checkout back from the "Called today" list.
+      //
+      // The late email is HELD - an hour by default - so an undo inside that
+      // window really can catch it. Saying so is the point: whoever tapped
+      // this is asking "did I get it in time", and the answer is knowable.
+      async undoPickup(studentId) {
+        try {
+          const r = await this._pickupRpc('rt_set_dismissed',
+            { p_student_ids: [studentId], p_dismissed: false });
+          this._pickupBoard = await this._pickupRpc('rt_pickup_board');
+          if (this._pickupHere) await this.loadPickupHereToday();
+          this.renderPickupModal('today');
+          this.showNotification(this._pickupUndoMessage(r), 'success', 8000);
+        } catch (e) {
+          console.error('undoPickup failed:', e);
+          this.showNotification(`Not undone: ${e.message}`, 'error');
+        }
+      }
+
+      // One sentence for all three places an undo can happen, so the answer to
+      // "is it still going in the email?" never depends on which tab you used.
+      _pickupUndoMessage(r) {
+        const res = (typeof r === 'string') ? JSON.parse(r) : (r || {});
+        if (res.late_cancelled) {
+          return 'Checkout undone. Nobody is left on today\u2019s late list, so no email will be sent.';
+        }
+        if (res.late_removed > 0) {
+          return 'Checkout undone, and taken off the late-pickup email before it goes out.';
+        }
+        return 'Checkout undone.';
+      }
+
       async setPickedUp(studentId, pickedUp) {
         const rec = (this._pickupHere || []).find(r => r.student_id === studentId);
         // Paint it immediately - the queue does not pause while the network
@@ -38246,7 +38283,11 @@ Students you had withdrawn stay withdrawn.`)) {
           this._refreshPickupHereList();
         }
         try {
-          await this._pickupRpc('rt_set_dismissed', { p_student_ids: [studentId], p_dismissed: !!pickedUp });
+          const r = await this._pickupRpc('rt_set_dismissed',
+            { p_student_ids: [studentId], p_dismissed: !!pickedUp });
+          // Only on the way back. Ticking somebody off is silent on purpose -
+          // the queue does not need a toast per child.
+          if (!pickedUp) this.showNotification(this._pickupUndoMessage(r), 'success', 8000);
         } catch (e) {
           console.error('setPickedUp failed:', e);
           if (rec && before) { rec.dismissed = before.dismissed; rec.picked_up_at = before.picked_up_at; this._refreshPickupHereList(); }
@@ -38329,9 +38370,12 @@ Students you had withdrawn stay withdrawn.`)) {
 
       async togglePickupDismissed(studentId, dismissed) {
         try {
-          await this._pickupRpc('rt_set_dismissed', {
+          const r = await this._pickupRpc('rt_set_dismissed', {
             p_student_ids: [studentId], p_dismissed: !!dismissed
           });
+          // Unticking the box is the third way to undo a checkout, and it has
+          // to answer the same question the other two do.
+          if (!dismissed) this.showNotification(this._pickupUndoMessage(r), 'success', 8000);
           // Reflect it locally rather than re-searching: the queue does not
           // pause while the network does.
           (this._pickupResults || []).forEach(f =>

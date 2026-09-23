@@ -92,6 +92,8 @@ function makeApp({ rpcFails = false } = {}) {
     : null };
   app.seen = () => `${app.host.innerHTML} ${app.count.textContent} ${app.list.innerHTML}`;
   app._renderPickupHere = extract('_renderPickupHere');
+  app._renderPickupToday = extract('_renderPickupToday');
+  app._pickupUndoMessage = extract('_pickupUndoMessage');
   app._refreshPickupHereList = extract('_refreshPickupHereList');
   app.filterPickupHere = extract('filterPickupHere');
   app.loadPickupHereToday = extract('loadPickupHereToday');
@@ -241,6 +243,56 @@ function makeApp({ rpcFails = false } = {}) {
     await app.setPickedUp.call(app, 's1', true);
     check('ticking a child off leaves the search box alone', app.host.innerHTML, shellBefore);
     ok('  and the row repaints inside the filter', /Undo<\/button>/.test(app.list.innerHTML));
+  }
+
+  console.log('\n== taking a checkout back ==\n');
+
+  // The late email is HELD -- an hour by default -- so an undo inside that
+  // window genuinely can catch it before it goes. Whoever taps undo is asking
+  // "did I get it in time", and that is answerable, so it gets answered.
+  {
+    const app = makeApp();
+    // extract() in this file always builds an AsyncFunction, so everything
+    // it lifts returns a promise.
+    const msg = (r) => app._pickupUndoMessage.call(app, r);
+
+    ok('an undo that caught the email says so',
+       /taken off the late-pickup email/i.test(await msg({ success: true, late_removed: 1, late_cancelled: false })));
+
+    ok('the last one off says nothing will be sent',
+       /no email will be sent/i.test(await msg({ success: true, late_removed: 1, late_cancelled: true })));
+
+    // Undoing a checkout that was never late must not imply an email existed.
+    ok('an ordinary undo claims nothing about an email',
+       (await msg({ success: true, late_removed: 0, late_cancelled: false })) === 'Checkout undone.');
+
+    ok('  and the same when the server says nothing at all',
+       (await msg({})) === 'Checkout undone.' && (await msg(null)) === 'Checkout undone.');
+
+    // The RPC can hand back a JSON string rather than an object.
+    ok('a stringified reply reads the same',
+       /no email will be sent/i.test(await msg(JSON.stringify({ late_removed: 1, late_cancelled: true }))));
+  }
+
+  {
+    // "Called today" was read-only. It is the screen somebody opens when they
+    // realise they ticked the wrong child, so it was the one screen that could
+    // only tell them so.
+    const app = makeApp();
+    app._pickupBoard = { dismissed_today: [
+      { student_id: 's3', first_name: 'Adelyn', last_name: 'E', family_number: null,
+        dismissed_at: '2026-09-11T22:05:00Z' },
+    ] };
+    const out = await app._renderPickupToday.call(app);
+    ok('the called-today list offers an undo', /Undo<\/button>/.test(out));
+    ok('  wired to the student', /app\.undoPickup\('s3'\)/.test(out));
+    ok('  and still shows when they went', /\d/.test(out));
+  }
+
+  {
+    const app = makeApp();
+    app._pickupBoard = { dismissed_today: [] };
+    ok('nobody called yet still says so', /Nobody called yet/.test(await app._renderPickupToday.call(app)));
   }
 
   console.log('\n== how it opens ==\n');

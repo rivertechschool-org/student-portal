@@ -3933,3 +3933,54 @@ caught -- including the two that matter most: the out-of-order guard and the
 empty-family rule.
 
 The schema change is in the backend repo.
+
+## Undoing a checkout, and catching the late email (2026-09-23)
+
+"Called today" was read-only -- a list of who has gone, with times, and no way
+to take one back. That is precisely the screen somebody opens when they realise
+they ticked the wrong child, so it was the one screen that could only tell them
+so. It has an Undo now.
+
+The more important half is what undo does to the **late-pickup email**. That
+report is held for an hour so the afternoon arrives as one message, and that
+hold is exactly the window in which the mistake gets noticed -- but the undo
+only ever removed the dismissal row. The email still went out naming a child
+who was collected on time, and the correction could not catch it.
+
+Now: undoing a checkout takes that child's line out of the pending email, and
+if that empties it, the email is **deleted rather than sent**. An email listing
+nobody reads as a fault, and the office would have to work out which it was.
+
+Three places can undo a checkout -- the Undo on Called today, the Undo on Here
+today, and unticking the box on Dismissal -- and all three say the same
+sentence, because "is it still going in the email?" must not depend on which
+tab you happened to use:
+
+- caught and trimmed: *"Checkout undone, and taken off the late-pickup email
+  before it goes out."*
+- caught and nobody left: *"...no email will be sent."*
+- nothing to catch: *"Checkout undone."* -- and never implies an email existed.
+
+### Matched on the id, never the name
+
+Two children can share a name, and taking the wrong one out of the email is the
+same mistake facing the other way. Queued lines carry `studentId` now. Lines
+queued before this have no id and are deliberately left alone rather than
+guessed at -- the hold is an hour, so they age out on their own. There were two
+such lines pending when this shipped.
+
+### Verified, not assumed
+
+Probed against the live database and rolled back: two late children give one
+queued row with two lines; undoing one leaves one line; undoing the other
+deletes the row so nothing is sent; undoing a child who was never late reports
+neither. Already-sent rows are untouched -- they are not a queue any more.
+
+### A trap in this test file
+
+`extract()` in `tests/pickup-here-today.test.js` **always** builds an
+AsyncFunction, so every method it lifts returns a promise. Nine new assertions
+failed identically because they were not awaited -- `JSON.stringify` of a
+pending promise is `{}`. Await anything lifted in that file.
+
+The schema change is in the backend repo.
