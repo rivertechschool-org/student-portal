@@ -33805,6 +33805,51 @@ Students you had withdrawn stay withdrawn.`)) {
             </div>
 
             <div class="card" style="margin-bottom: 20px;">
+              <h3 style="margin-bottom: 6px;">🚗 Pickup</h3>
+              <p style="color: var(--muted); font-size: 12px; margin-bottom: 14px;">
+                When the school day ends for pickup, and what happens to anyone collected after
+                it. Dismissal is already timestamped — this is the line that decides which of
+                those times count as late.
+              </p>
+              <div style="display: grid; gap: 15px; max-width: 460px;">
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">End of day</label>
+                  <input type="time" id="pickup-cutoff-time" class="form-control" style="max-width: 160px;">
+                  <small style="color: var(--muted); font-size: 11px;">
+                    A pickup after this counts as late. School time, not the browser's.
+                  </small>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Hold the email for</label>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="number" id="pickup-hold-minutes" class="form-control" min="1" max="480" style="max-width: 110px;">
+                    <span style="color: var(--muted); font-size: 13px;">minutes</span>
+                  </div>
+                  <small style="color: var(--muted); font-size: 11px;">
+                    The first late pickup starts the clock. Everyone else collected late inside that
+                    window joins the same email, so it goes out once rather than once per car.
+                  </small>
+                </div>
+                <div>
+                  <label style="display: block; margin-bottom: 5px; font-weight: bold;">Send it to</label>
+                  <input type="email" id="pickup-late-email" class="form-control" placeholder="learn@rivertech.me">
+                </div>
+                <label style="display: flex; gap: 8px; align-items: flex-start; font-size: 14px; cursor: pointer;">
+                  <input type="checkbox" id="pickup-late-enabled" style="margin-top: 3px;">
+                  <span>Email about late pickups.
+                    <span style="color: var(--muted); font-size: 12px; display: block;">
+                      Untick and nothing is sent. Dismissal times are still recorded either way.
+                    </span>
+                  </span>
+                </label>
+                <div>
+                  <button class="btn btn-primary" id="save-pickup-settings-btn"
+                          onclick="app.savePickupSettings()">Save pickup settings</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">🏫 School Information</h3>
               <p style="color: var(--muted); margin-bottom: 15px;">Basic school settings</p>
               <div style="display: grid; gap: 15px;">
@@ -33848,6 +33893,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         // Load current settings
         this.loadSchoolSettings();
+        this.loadPickupSettings();
       }
 
       async loadSchoolSettings() {
@@ -38555,6 +38601,106 @@ Students you had withdrawn stay withdrawn.`)) {
       // once and never corrected, and nothing on the student's record showed
       // which family they were on.
 
+      // ---- Pickup timing -------------------------------------------------
+      //
+      // Stored in school_settings beside school_name and current_school_year,
+      // which is why this reads and writes the table directly the way they do.
+      // The DATABASE is what enforces them: rt_set_dismissed reads the cutoff at
+      // the moment a child is ticked, so a change here takes effect at the next
+      // pickup without anyone reloading anything.
+      async loadPickupSettings() {
+        try {
+          const { data } = await this.supabaseQuery(() => this.auth.supabase
+            .from('school_settings').select('key, value')
+            .in('key', ['pickup_cutoff_time', 'pickup_late_hold_minutes',
+                        'pickup_late_email', 'pickup_late_enabled']));
+          const v = {};
+          (data || []).forEach(r => { v[r.key] = r.value; });
+
+          const set = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+          set('pickup-cutoff-time', v.pickup_cutoff_time || '14:45');
+          set('pickup-hold-minutes', v.pickup_late_hold_minutes || '60');
+          set('pickup-late-email', v.pickup_late_email || 'learn@rivertech.me');
+          const cb = document.getElementById('pickup-late-enabled');
+          if (cb) cb.checked = (v.pickup_late_enabled || 'true') !== 'false';
+        } catch (e) {
+          console.warn('Could not load pickup settings:', e);
+        }
+      }
+
+      async savePickupSettings() {
+        const btn  = document.getElementById('save-pickup-settings-btn');
+        const time = (document.getElementById('pickup-cutoff-time')?.value || '').trim();
+        const hold = parseInt(document.getElementById('pickup-hold-minutes')?.value, 10);
+        const to   = (document.getElementById('pickup-late-email')?.value || '').trim();
+        const on   = !!document.getElementById('pickup-late-enabled')?.checked;
+
+        // Refused rather than stored. A bad value here is invisible until
+        // somebody is late and nothing arrives, which is the worst moment to
+        // find out.
+        if (!/^\d{1,2}:\d{2}$/.test(time)) {
+          this.showNotification('Set an end-of-day time first.', 'error'); return;
+        }
+        if (!Number.isFinite(hold) || hold < 1 || hold > 480) {
+          this.showNotification('The hold has to be between 1 and 480 minutes.', 'error'); return;
+        }
+        if (on && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+          this.showNotification('That does not look like an email address.', 'error'); return;
+        }
+
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving...'; }
+        try {
+          const userId = this.auth.userProfile?.id;
+          const stamp  = new Date().toISOString();
+          const rows = [
+            ['pickup_cutoff_time', time],
+            ['pickup_late_hold_minutes', String(hold)],
+            ['pickup_late_email', to],
+            ['pickup_late_enabled', on ? 'true' : 'false'],
+          ].map(([key, value]) => ({ key, value, updated_at: stamp, updated_by: userId }));
+
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('school_settings').upsert(rows, { onConflict: 'key' }));
+          if (error) throw error;
+
+          this.showNotification(
+            on ? `Saved. Anyone collected after ${time} is reported, ${hold} minutes after the first one.`
+               : 'Saved. Late pickups are still recorded, but nothing is emailed.',
+            'success', 9000);
+        } catch (e) {
+          console.error('savePickupSettings failed:', e);
+          this.showNotification('Could not save: ' + e.message, 'error');
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Save pickup settings'; }
+        }
+      }
+
+      // Not called at pickup at all - they walk, they drive, an older sibling
+      // collects them off-site. Said out loud rather than left as a missing
+      // number, because the board reads a missing number as something to chase
+      // and a real gap then hides among the people who are fine.
+      async toggleStudentPickupExempt(studentId, exempt) {
+        let reason = null;
+        if (exempt) {
+          reason = prompt('How does this student leave? (optional)\n\ne.g. walks home, drives themselves, collected off-site');
+          if (reason === null) return;   // cancelled, not "no reason"
+        }
+        try {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .rpc('rt_set_pickup_exempt', {
+              p_student_id: studentId, p_exempt: exempt, p_reason: reason || null }));
+          if (error) throw error;
+          const r = (typeof data === 'string') ? JSON.parse(data) : data;
+          if (!r || !r.success) throw new Error((r && r.error) || 'That did not save');
+          this.showNotification(
+            exempt ? 'Marked as not called at pickup.' : 'Back on the pickup list.', 'success');
+          this.loadHubPickupFamily(studentId);
+        } catch (e) {
+          console.error('toggleStudentPickupExempt failed:', e);
+          this.showNotification(e.message, 'error');
+        }
+      }
+
       async loadHubPickupFamily(studentId) {
         const el = document.getElementById('hub-pickup-family');
         if (!el) return;
@@ -38563,13 +38709,25 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           const { data, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('pickup_family_members')
-            .select('family_id, pickup_families(id, family_number, label, note)')
+            .select('family_id, pickup_families(id, family_number, label, note, pickup_exempt, pickup_exempt_reason)')
             .eq('student_id', studentId)
             .maybeSingle());
           if (error) throw error;
 
           const fam = data?.pickup_families || null;
           this._hubPickupFamily = fam;
+
+          // Individually exempt, or in an exempt household - the same two
+          // halves the database's pickup_is_exempt() answers with, asked here
+          // so the reason can name which one it is.
+          let ownExempt = null;
+          try {
+            const { data: ex } = await this.supabaseQuery(() => this.auth.supabase
+              .from('pickup_exemptions').select('reason').eq('student_id', studentId).maybeSingle());
+            ownExempt = ex || null;
+          } catch (_e) { /* the migration may not be run yet */ }
+          const famExempt = !!(fam && fam.pickup_exempt);
+          const exempt = !!ownExempt || famExempt;
 
           el.innerHTML = `
             <div style="flex: 1; min-width: 180px;">
@@ -38578,7 +38736,18 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div style="font-size: 26px; font-weight: 800; color: var(--accent); line-height: 1.1;">#${fam.family_number}</div>
                 ${fam.label ? `<div style="font-size: 13px; margin-top: 2px;">${this.escapeHtml(fam.label)}</div>` : ''}
                 ${fam.note ? `<div style="font-size: 12px; color: var(--muted); margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--warning, #e67e22);">${this.escapeHtml(fam.note)}</div>` : ''}
-              ` : `<div style="font-size: 14px; color: var(--muted);">No number yet \u2014 they cannot be called at pickup.</div>`}
+              ` : `<div style="font-size: 14px; color: var(--muted);">${exempt
+                    ? 'No number, and none needed.'
+                    : 'No number yet \u2014 they cannot be called at pickup.'}</div>`}
+              ${exempt ? `
+                <div style="margin-top: 8px; font-size: 12px; padding: 6px 10px; border-radius: 6px;
+                            background: rgba(139,255,176,.10); border: 1px solid var(--border);">
+                  <strong>Not called at pickup</strong>${famExempt && !ownExempt
+                    ? ' \u2014 the whole family is marked this way' : ''}
+                  ${(ownExempt && ownExempt.reason) || (famExempt && fam.pickup_exempt_reason)
+                    ? `<div style="color: var(--muted); margin-top: 2px;">${this.escapeHtml(
+                        (ownExempt && ownExempt.reason) || fam.pickup_exempt_reason)}</div>` : ''}
+                </div>` : ''}
             </div>
             ${isAdmin ? `
               <div style="display: flex; gap: 6px; flex-wrap: wrap;">
@@ -38586,6 +38755,13 @@ Students you had withdrawn stay withdrawn.`)) {
                   ${fam ? 'Change number' : 'Assign number'}
                 </button>
                 ${fam ? `<button class="btn btn-secondary" onclick="app.removeStudentPickupFamily('${studentId}')">Remove</button>` : ''}
+                ${famExempt ? '' : `
+                  <button class="btn btn-secondary"
+                          title="${ownExempt ? 'Put them back on the pickup list'
+                                             : 'They walk, drive, or are collected off-site'}"
+                          onclick="app.toggleStudentPickupExempt('${studentId}', ${ownExempt ? 'false' : 'true'})">
+                    ${ownExempt ? 'Call them at pickup' : 'Not called at pickup'}
+                  </button>`}
               </div>` : ''}
           `;
         } catch (e) {

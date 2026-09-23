@@ -3656,3 +3656,59 @@ match a subject row exactly comes back non-zero. Those are legacy spellings — 
 Science, Art, Mathematics, History, Music, Physical Education — and every one of them
 resolves through its alias, which is what aliases are for. The exact-match count is simply
 the wrong question.
+
+## 2026-09-22 — pickup: the clock, and the people who do not use it
+
+### What was already there
+
+Dismissal has always been timestamped — to the second, server-side, and the board already
+showed it. Re-ticking a child keeps the FIRST time, deliberately. There is a second
+timestamp on the attendance row as well. So none of this needed a new record of when a
+child left; it needed a line to measure that time against.
+
+### Not everyone is called at pickup
+
+The only way to say a child walks home was to leave their family number blank — and the
+board reads a blank as a job not yet done. The people who needed no chasing were exactly
+the ones the screen kept flagging, and a real gap hid among them.
+
+An exemption is a positive statement now: per child on their record, or per household. An
+exempt child drops out of the "Without a number" count and out of the late report, and is
+still dismissed on the board as normal. Where the household is marked, the per-child
+button disappears rather than offering a toggle that cannot win.
+
+### The end-of-day time
+
+**Admin → Settings → 🚗 Pickup**: end of day (2:45 pm), how long to hold the email (60
+minutes), where it goes (learn@rivertech.me), and an off switch that stops the email
+without stopping the record. Read at the moment a child is ticked, so a change takes
+effect at the next pickup with no reload.
+
+### No new holding mechanism
+
+`rt_queue_email_coalesced` already did it: the first item opens a queued row, later items
+with the same key merge into it, and the window slides but never past `created_at +
+max_wait`. Setting window and max_wait to the same value turns that sliding window into a
+**fixed hold from the first late child** — which is what was asked for. A second mechanism
+beside it would have been a second thing to keep in step.
+
+### The rule everything else bends to
+
+Nothing may stop a child being dismissed. The whole notification runs in its own exception
+block; if the mail queue is unhappy the dismissal still happens and a warning is logged. A
+board that will not tick someone because email is broken is worse than no report.
+
+### Two things found on the way
+
+The queue only recognises a template prefixed `direct:` — the first draft queued rows that
+would never have rendered. And the `__digest` branch in the email function was written
+when there was only one kind of coalesced email: it reads `first.parentName`, groups by
+`className`, and titles itself "N new assignments". **The second kind would have arrived
+looking like the first.** It dispatches on `d.of` now; the assignment code is untouched.
+
+### Verified, not assumed
+
+Probed against the live database and rolled back: one late child gives one row with one
+item; a second late child plus an exempt one gives one row with two; re-ticking adds no
+line; the exempt child is dismissed but not reported. The migration is applied and the
+email function is deployed and re-downloaded to confirm it took.
