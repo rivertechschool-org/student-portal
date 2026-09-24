@@ -4094,3 +4094,52 @@ safe after a failed write, folding unknown into the accounted total, and a
 refresh overwriting an in-flight tick.
 
 Schema and the RPCs are in the backend repo.
+
+## A drill takes over the portal (2026-09-24)
+
+While a drill is running it is the only thing on screen. Staff opening the
+portal land on the roll call ready to tick, and anyone already inside is pulled
+in within 20 seconds of one starting.
+
+### It is a takeover, not a cage
+
+There is one way out: **"I need something else"**. The other things a teacher
+might need mid-evacuation -- a child's emergency contacts, a medical note --
+live in this portal too, and locking somebody out of those would be a worse bug
+than the one the takeover fixes.
+
+Leaving swaps the roll call for a red bar that does not dismiss, and tapping it
+goes back. **Stepping out is pinned to the drill you stepped out of**, so a new
+drill reaches everybody, including whoever left the last one. That started as
+two variables -- a boolean and an id that had to agree -- and the tests caught
+them drifting; it is one variable now, and there is nothing to keep in step.
+
+The button for everyone else says "I need something else" rather than "Close",
+because closing implies the drill is over and for anyone but an admin it is not.
+
+### Turning it off asks which it was
+
+Admin only, and it asks **test** or **complete** -- with the number still
+unaccounted for in front of the person deciding, in the page rather than a
+browser confirm box. There is no default: those mean different things to
+whoever reads it later and nobody remembers in a month.
+
+### The clock
+
+Counts up for as long as the event lasts, on its own one-second timer separate
+from the 5s board refresh -- so it keeps moving even when the database is not
+answering, which is also the plainest sign the screen is still live rather than
+a frozen copy.
+
+### No record kept
+
+Asked for and then withdrawn. The live board is the working surface; who
+accounted for each child and when is on it while it runs, and nothing is
+written to a history.
+
+### How it is held
+
+71 assertions, 15 deliberate breaks, 15 caught -- including a running drill not
+taking the screen, stepping out being forgotten, a new drill failing to reach
+somebody who left the last one, and a failed active-check being read as "no
+drill" (a stalling database must not look like all-clear).

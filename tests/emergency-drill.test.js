@@ -102,14 +102,28 @@ function makeApp({ role = 'teacher', rpc = null } = {}) {
   };
   app.list = { innerHTML: '' };
   app.searchBox = { value: '' };
-  global.document = { getElementById: (id) =>
-      id === 'drill-list'   ? app.list
-    : id === 'drill-search' ? app.searchBox
-    : id === 'modal-drill'  ? {} : null };
+  app.endPanel = { innerHTML: '' };
+  app.bar = null;
+  app.modalOpen = true;
+  global.document = {
+    getElementById: (id) =>
+        id === 'drill-list'       ? app.list
+      : id === 'drill-search'     ? app.searchBox
+      : id === 'drill-end-panel'  ? app.endPanel
+      : id === 'drill-bar'        ? app.bar
+      : id === 'modal-drill'      ? (app.modalOpen ? {} : null) : null,
+    createElement: () => ({ style: {}, remove() { app.bar = null; } }),
+    body: { appendChild: (el) => { app.bar = el; } },
+  };
   for (const m of ['renderDrillModal', '_renderDrillList', 'drillAccount', '_mergeDrill',
-                   'setDrillFilter', 'filterDrill', 'closeDrill', 'endDrill', 'startDrill']) {
+                   'setDrillFilter', 'filterDrill', 'closeDrill', 'endDrill', 'startDrill',
+                   '_drillElapsed', '_checkDrillActive', '_renderDrillBar', 'leaveDrillView',
+                   'confirmEndDrill', '_startDrillClock', '_startDrillWatch']) {
     app[m] = extract(m);
   }
+  app.showDrillBoard = async () => { app.opened = (app.opened || 0) + 1; app.modalOpen = true; };
+  app._startDrillPoll = () => { app.polling = true; };
+  app._stopDrillPoll  = () => { app.polling = false; };
   app._drill = BOARD();
   return app;
 }
@@ -233,7 +247,9 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     const app = makeApp({ role: 'teacher' });
     await app.renderDrillModal.call(app);
     ok('a teacher can tick', /drillAccount/.test(seen(app)));
-    ok('  but cannot end the drill', !/app\.endDrill\(\)/.test(app.body));
+    ok('  but cannot turn the drill off', !/app\.endDrill\(\)/.test(app.body));
+    ok('  and is not offered a Close that implies it is over',
+       !/>Close</.test(app.body) && /I need something else/.test(app.body));
   }
 
   {
@@ -244,11 +260,151 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
 
   {
     const app = makeApp({ role: 'admin' });
-    global.confirm = (msg) => { app.asked = msg; return false; };
+    await app.renderDrillModal.call(app);
     await app.endDrill.call(app);
-    ok('ending warns how many are still open', /2 still unaccounted for/.test(app.asked));
-    ok('  and that it is on the record', /recorded/.test(app.asked));
-    check('  and cancelling ends nothing', app.calls, []);
+    const panel = app.endPanel.innerHTML;
+    ok('turning it off warns how many are still open', /2 still unaccounted for/.test(panel));
+    ok('  and names the unknown too', /1 unknown/.test(panel));
+    check('  and asking is not ending', app.calls, []);
+    ok('  it offers both verdicts', /confirmEndDrill\('test'\)/.test(panel)
+       && /confirmEndDrill\('complete'\)/.test(panel));
+    ok('  and a way to back out', /Keep it running/.test(panel));
+  }
+
+  {
+    const app = makeApp({ role: 'admin' });
+    app._drill.students.forEach(s => { if (s.bucket !== 'out') s.state = 'safe'; });
+    await app.renderDrillModal.call(app);
+    await app.endDrill.call(app);
+    ok('all clear says so rather than a scary zero', /Everyone is accounted for/.test(app.endPanel.innerHTML));
+  }
+
+  console.log('\n== the verdict ==\n');
+
+  {
+    const app = makeApp({ role: 'admin',
+      rpc: async (fn) => fn === 'rt_drill_end'
+        ? { success: true, outcome: 'test', unaccounted_at_end: 0 }
+        : { drill: null, students: [] } });
+    await app.confirmEndDrill.call(app, 'test');
+    check('it sends the verdict', app.calls[0], { fn: 'rt_drill_end', args: { p_outcome: 'test' } });
+    ok('  and says which it was', app.notices.some(n => /as a test/.test(n)));
+  }
+
+  {
+    const app = makeApp({ role: 'admin',
+      rpc: async (fn) => fn === 'rt_drill_end'
+        ? { success: true, outcome: 'complete', unaccounted_at_end: 2 }
+        : { drill: null, students: [] } });
+    await app.confirmEndDrill.call(app, 'complete');
+    check('complete is its own verdict', app.calls[0].args.p_outcome, 'complete');
+    ok('  and ending with people open is reported as an error, not a success',
+       app.notices.some(n => /^error:.*2 were unaccounted/.test(n)));
+  }
+
+  {
+    // The server is the one that insists on a verdict; the screen must not
+    // paper over a refusal.
+    const app = makeApp({ role: 'admin',
+      rpc: async () => ({ success: false, error: 'Say whether it was a test or complete' }) });
+    await app.confirmEndDrill.call(app, 'test');
+    ok('a refused end is reported', app.notices.some(n => /^error:/.test(n)));
+    ok('  and the drill is not treated as over', !app.notices.some(n => /Turned off/.test(n)));
+  }
+
+  console.log('\n== while one is running it is the only thing ==\n');
+
+  {
+    // Somebody already working in the portal when a drill starts.
+    const app = makeApp({ role: 'teacher',
+      rpc: async () => ({ id: 'd1', kind: 'fire', started_at: '2026-09-24T15:00:00Z' }) });
+    app.modalOpen = false;
+    await app._checkDrillActive.call(app);
+    check('a running drill opens the roll call', app.opened, 1);
+    check('  and no red bar while it is open', app.bar, null);
+  }
+
+  {
+    const app = makeApp({ role: 'teacher',
+      rpc: async () => ({ id: 'd1', kind: 'fire', started_at: '2026-09-24T15:00:00Z' }) });
+    app.modalOpen = true;
+    await app._checkDrillActive.call(app);
+    check('it does not reopen over itself', app.opened, undefined);
+  }
+
+  {
+    // Stepping out to look something up. A teacher may genuinely need the
+    // emergency contacts that live elsewhere in this portal.
+    const app = makeApp({ role: 'teacher',
+      rpc: async () => ({ id: 'd1', kind: 'fire', started_at: '2026-09-24T15:00:00Z' }) });
+    app._drillActive = { id: 'd1', kind: 'fire' };
+    await app.leaveDrillView.call(app);
+    ok('leaving leaves a bar that says it is still running', !!app.bar);
+    ok('  and says how to get back', /tap to account/.test(app.bar.textContent));
+    ok('  and tells them the drill has not ended', app.notices.some(n => /still running/.test(n)));
+
+    // ...and the watcher must not drag them straight back in.
+    app.modalOpen = false;
+    app.opened = undefined;
+    await app._checkDrillActive.call(app);
+    check('the watcher respects that they stepped out', app.opened, undefined);
+    ok('  but the bar stays', !!app.bar);
+  }
+
+  {
+    // A NEW drill overrides having stepped out of the previous one.
+    const app = makeApp({ role: 'teacher',
+      rpc: async () => ({ id: 'd2', kind: 'lockdown', started_at: '2026-09-24T16:00:00Z' }) });
+    app._drillActive = { id: 'd1', kind: 'fire' };
+    app._drillLeftId = 'd1';
+    app.modalOpen = false;
+    await app._checkDrillActive.call(app);
+    check('a new drill pulls everyone back in', app.opened, 1);
+  }
+
+  {
+    const app = makeApp({ role: 'teacher', rpc: async () => null });
+    app._drillActive = { id: 'd1', kind: 'fire' };
+    app._drillLeftId = 'd1';
+    await app._renderDrillBar.call(app);
+    ok('the bar exists while one runs', !!app.bar);
+    await app._checkDrillActive.call(app);
+    check('and goes when the drill ends', app.bar, null);
+  }
+
+  {
+    // A refusal from a stalling database must not look like "no drill".
+    const app = makeApp({ role: 'teacher', rpc: async () => { throw new Error('Query timeout'); } });
+    app._drillActive = { id: 'd1', kind: 'fire' };
+    app._drillLeftId = 'd1';
+    await app._renderDrillBar.call(app);
+    await app._checkDrillActive.call(app);
+    ok('a failed check leaves the drill alone', !!app.bar);
+    check('  and says nothing', app.notices, []);
+  }
+
+  console.log('\n== the clock ==\n');
+
+  {
+    const app = makeApp();
+    app._drill.drill.started_at = new Date(Date.now() - 95 * 1000).toISOString();
+    check('minutes and seconds under an hour', (await app._drillElapsed.call(app)), '1:35');
+    app._drill.drill.started_at = new Date(Date.now() - 3 * 3600 * 1000 - 4 * 60 * 1000).toISOString();
+    check('hours and minutes past one', (await app._drillElapsed.call(app)), '3h 04m');
+    app._drill.drill.started_at = null;
+    check('nothing to count from is blank', (await app._drillElapsed.call(app)), '');
+  }
+
+  {
+    const app = makeApp();
+    app._drill.drill.started_at = new Date(Date.now() - 30 * 1000).toISOString();
+    // extract() in this file always builds an AsyncFunction, so the real
+    // _drillElapsed would hand the template a promise. The class's own is
+    // sync; stub it so this asserts the WIRING, which is what is left to check.
+    app._drillElapsed = () => '0:30';
+    await app.renderDrillModal.call(app);
+    ok('the elapsed time is on the screen', /id="drill-elapsed"/.test(app.body));
+    ok('  showing it', /0:30/.test(app.body));
   }
 
   console.log('\n== no drill running ==\n');

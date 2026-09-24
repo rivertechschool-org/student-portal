@@ -2814,6 +2814,77 @@
         this.checkPasswordSetupRequired();
 
         console.log('✅ Classes Portal initialized');
+
+        // A drill outranks whatever this person opened the portal to do.
+        if (['admin', 'teacher'].includes(this.userInfo?.profile?.user_type)) {
+          this._checkDrillActive();
+          this._startDrillWatch();
+        }
+      }
+
+      // ---- a running drill takes the screen -------------------------------
+      //
+      // Asked on load and every 20s after, so somebody already inside when one
+      // starts is pulled in rather than carrying on with their classes. The
+      // question is deliberately a tiny one - rt_drill_active, not the whole
+      // board - because it is asked on a timer by every member of staff.
+      _startDrillWatch() {
+        clearInterval(this._drillWatchTimer);
+        this._drillWatchTimer = setInterval(() => this._checkDrillActive(), 20000);
+      }
+
+      async _checkDrillActive() {
+        let active = null;
+        try {
+          active = await this._pickupRpc('rt_drill_active');
+        } catch (_e) {
+          // Not worth a message. The next tick asks again, and a drill nobody
+          // can reach is still reachable from the button on the dashboard.
+          return;
+        }
+        this._drillActive = active || null;
+
+        if (!active) {
+          // It ended. Clear the bar and let the portal be a portal again.
+          this._drillLeftId = null;
+          this._renderDrillBar();
+          return;
+        }
+
+        // Stepping out applies to the drill you stepped out OF. A new one
+        // pulls everybody back in, including whoever left the last.
+        this._renderDrillBar();
+        if (this._drillLeftId !== active.id && !document.getElementById('modal-drill')) {
+          this.showDrillBoard();
+        }
+      }
+
+      // The way back, and the reason leaving is survivable. It sits above
+      // everything and does not dismiss.
+      _renderDrillBar() {
+        let bar = document.getElementById('drill-bar');
+        const show = this._drillActive && this._drillLeftId === this._drillActive.id;
+        if (!show) { if (bar) bar.remove(); return; }
+        if (!bar) {
+          bar = document.createElement('div');
+          bar.id = 'drill-bar';
+          bar.style.cssText = 'position:fixed; left:0; right:0; top:0; z-index:9999;' +
+            'background:var(--danger, #e74c3c); color:#fff; padding:10px 14px; cursor:pointer;' +
+            'display:flex; gap:10px; align-items:center; justify-content:center;' +
+            'font-weight:700; font-size:15px; box-shadow:0 2px 10px rgba(0,0,0,.3);';
+          bar.onclick = () => { this._drillLeftId = null; this._renderDrillBar(); this.showDrillBoard(); };
+          document.body.appendChild(bar);
+        }
+        bar.textContent = `\u{1F6A8} ${this._drillActive.kind} drill in progress \u2014 tap to account for students`;
+      }
+
+      // Stepping out is deliberate and remembered only for this drill.
+      leaveDrillView() {
+        // Pinned to THIS drill, so the next one still reaches them.
+        this._drillLeftId = this._drillActive?.id || this._drill?.drill?.id || null;
+        this.closeDrill();
+        this._renderDrillBar();
+        this.showNotification('The drill is still running. The red bar takes you back.', 'info', 7000);
       }
 
       checkPasswordSetupRequired() {
@@ -38167,6 +38238,7 @@ Students you had withdrawn stay withdrawn.`)) {
           this._drill = await this._pickupRpc('rt_drill_board');
           this.renderDrillModal();
           this._startDrillPoll();
+          this._startDrillClock();
         } catch (e) {
           console.error('showDrillBoard failed:', e);
           this.showNotification('Could not open the drill board: ' + e.message, 'error');
@@ -38223,26 +38295,52 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
-      async endDrill() {
+      // Turning it off asks WHICH it was, because "test" and "complete" mean
+      // different things to whoever reads it later and nobody remembers in a
+      // month. Asked in the page rather than a confirm() box, so the count of
+      // who is still open is in front of the person deciding.
+      endDrill() {
         const b = this._drill || {};
         const open = (b.students || []).filter(s => s.bucket === 'in' && !s.state).length;
         const unknown = (b.students || []).filter(s => s.bucket === 'unknown' && !s.state).length;
-        // Ending with somebody still open is allowed - an admin may know
-        // something the screen does not - but never quietly.
-        const warn = (open || unknown)
-          ? `\n\n${open} still unaccounted for and ${unknown} unknown. This is recorded.`
-          : '';
-        if (!confirm(`End the drill?${warn}`)) return;
+        const panel = document.getElementById('drill-end-panel');
+        if (!panel) return;
+        panel.innerHTML = `
+          <div style="margin-top:14px; padding:12px 14px; border-radius:8px;
+                      border:2px solid var(--danger, #e74c3c); background:rgba(231,76,60,0.08);">
+            ${(open || unknown) ? `
+              <div style="font-weight:700; margin-bottom:6px; color:var(--danger, #e74c3c);">
+                ${open} still unaccounted for${unknown ? `, ${unknown} unknown` : ''}.
+              </div>` : `
+              <div style="font-weight:700; margin-bottom:6px;">Everyone is accounted for.</div>`}
+            <div style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+              Which was this? It stays on the record either way.
+            </div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap;">
+              <button class="btn btn-secondary" onclick="app.confirmEndDrill('test')">It was a test</button>
+              <button class="btn btn-primary"   onclick="app.confirmEndDrill('complete')">Complete \u2014 all clear</button>
+              <button class="btn btn-secondary" onclick="document.getElementById('drill-end-panel').innerHTML='';">Keep it running</button>
+            </div>
+          </div>`;
+      }
+
+      async confirmEndDrill(outcome) {
         try {
-          const r = await this._pickupRpc('rt_drill_end', {});
-          if (r && r.success === false) throw new Error(r.error || 'could not end it');
+          const r = await this._pickupRpc('rt_drill_end', { p_outcome: outcome });
+          if (!r || r.success === false) throw new Error((r && r.error) || 'could not turn it off');
           this._stopDrillPoll();
+          clearInterval(this._drillClock);
+          this._drillActive = null;
+          this._drillLeftId = null;
+          this._renderDrillBar();
           this._drill = await this._pickupRpc('rt_drill_board');
           this.renderDrillModal();
-          this.showNotification(`Drill ended. ${r.unaccounted_at_end || 0} were unaccounted for.`,
-            (r.unaccounted_at_end ? 'error' : 'success'), 9000);
+          this.showNotification(
+            `Turned off as ${outcome === 'test' ? 'a test' : 'complete'}. `
+            + `${r.unaccounted_at_end || 0} were unaccounted for at the end.`,
+            (r.unaccounted_at_end ? 'error' : 'success'), 10000);
         } catch (e) {
-          this.showNotification('Could not end it: ' + e.message, 'error');
+          this.showNotification('Could not turn it off: ' + e.message, 'error');
         }
       }
 
@@ -38338,9 +38436,16 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div style="font-size:26px; font-weight:700; line-height:1;">${done}</div>
                 <div style="font-size:12px; color:var(--muted);">accounted for</div>
               </div>
-              <div style="margin-left:auto; text-align:right; font-size:12px; color:var(--muted);">
-                started ${started ? esc(started.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
-                ${b.drill.started_by ? `<br>by ${esc(b.drill.started_by)}` : ''}
+              <div style="margin-left:auto; text-align:right;">
+                ${/* Counts up for as long as the event lasts. A number that is
+                      visibly moving is also the plainest sign the screen is
+                      still live and not a frozen copy. */''}
+                <div id="drill-elapsed" style="font-size:22px; font-weight:700;
+                     font-variant-numeric:tabular-nums; line-height:1;">${esc(this._drillElapsed())}</div>
+                <div style="font-size:12px; color:var(--muted);">
+                  since ${started ? esc(started.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
+                  ${b.drill.started_by ? `\u00b7 ${esc(b.drill.started_by)}` : ''}
+                </div>
               </div>
             </div>
 
@@ -38366,16 +38471,41 @@ Students you had withdrawn stay withdrawn.`)) {
             <div id="drill-list" style="display:flex; flex-direction:column; gap:6px;
                                         max-height:50vh; overflow-y:auto; margin-top:10px;"></div>
 
+            <div id="drill-end-panel"></div>
+
             <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;">
-              ${isAdmin ? `<button class="btn btn-secondary" onclick="app.endDrill()">End drill</button>` : ''}
-              <button class="btn btn-secondary" onclick="app.closeDrill()">Close</button>
+              ${isAdmin ? `<button class="btn btn-primary" onclick="app.endDrill()">Turn off</button>` : ''}
+              ${/* Not "Close". Closing implies the drill is over, and for
+                    everyone except an admin it is not. */''}
+              <button class="btn btn-secondary" onclick="app.leaveDrillView()">I need something else</button>
             </div>
           </div>`);
 
         this._renderDrillList();
       }
 
-      closeDrill() { this._stopDrillPoll(); this.closeModal('drill'); }
+      closeDrill() { this._stopDrillPoll(); clearInterval(this._drillClock); this.closeModal('drill'); }
+
+      _drillElapsed() {
+        const t = this._drill?.drill?.started_at;
+        if (!t) return '';
+        const s = Math.max(0, Math.floor((Date.now() - new Date(t).getTime()) / 1000));
+        const m = Math.floor(s / 60);
+        return m >= 60
+          ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+          : `${m}:${String(s % 60).padStart(2, '0')}`;
+      }
+
+      // Its own second-by-second timer, separate from the 5s board refresh:
+      // the clock must keep moving even when the database is not answering.
+      _startDrillClock() {
+        clearInterval(this._drillClock);
+        this._drillClock = setInterval(() => {
+          const el = document.getElementById('drill-elapsed');
+          if (!el) { clearInterval(this._drillClock); return; }
+          el.textContent = this._drillElapsed();
+        }, 1000);
+      }
 
       // Only the list is redrawn while typing, so the search box keeps focus -
       // and the counts above it stay put rather than jumping under a thumb.
