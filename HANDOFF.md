@@ -4020,12 +4020,18 @@ while something is hidden; ticked, hidden classes show dimmed and labeled.
 The old pick-a-day dropdown is now a Today / Week switch for every role. Week
 is the default; whichever a person picks is remembered.
 
-Where it lives: localStorage, keyed per account (`classes_hidden_<id>`,
-`classes_show_hidden_<id>`, `classes_day_view_<id>`). Deliberately NOT the
-database: there is no per-user settings table, and adding one means a
-migration in the backend repo. The cost is that hiding is per device and
-browser. If Luke wants it to follow a teacher across devices, that migration
-is the next step.
+Update, same day: hiding is per WEEKDAY now ("Algebra on Monday"), not the
+whole class, and it follows the teacher to every device through a new
+`user_ui_prefs` table (one settings row per person; the migration is in the
+backend repo). localStorage keeps a copy so the page draws before that read
+returns, and the page falls back to it if the table is missing. Today/Week is
+deliberately NOT synced (Luke): it stays per device, so a phone can sit on
+Today while the computer shows the week. "Show hidden" moved into the filter
+row. The grid now uses each day's own bell times and shows lunch/breaks as
+shaded bands between periods.
+
+NEEDS A HAND STEP: the user_ui_prefs migration has to be pasted into the
+Supabase SQL editor. Until then, hiding still works but only on one device.
 
 The "No day set" option from the old dropdown is gone; the week view already
 lists those classes under "No day set". Clear now resets subject and grade

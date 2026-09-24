@@ -17572,12 +17572,9 @@
         // the "active" / "closed" / "withdrawn" buckets only contain matches.
         this._loadClassPrefs();
         const filterFn = this.classMatchesFilters.bind(this);
-        // Classes a teacher has hidden stay out of their view unless they tick
-        // "Show hidden". Only teachers/admins can hide, so only they filter.
-        const hidden = isTeacherOrAdmin ? this._hiddenClasses : new Set();
-        const hiddenCount = (this.classes || []).filter(c => hidden.has(c.id)).length;
-        const matched = (this.classes || []).filter(filterFn)
-          .filter(c => this.showHiddenClasses || !hidden.has(c.id));
+        // Hiding is per weekday ("Algebra on Wednesday"), so it is applied
+        // cell by cell inside the week view, not to whole classes here.
+        const matched = (this.classes || []).filter(filterFn);
 
         // Separate active and closed classes
         const activeClasses = matched.filter(c => c.status !== 'closed');
@@ -17595,12 +17592,6 @@
                 <button class="btn btn-secondary" onclick="app.toggleClosedClasses()" id="toggle-closed-btn">
                   ${this.showClosedClasses ? 'Hide' : 'Show'} Closed (${closedClasses.length})
                 </button>
-              ` : ''}
-              ${hiddenCount ? `
-                <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer;">
-                  <input type="checkbox" ${this.showHiddenClasses ? 'checked' : ''} onchange="app.setShowHiddenClasses(this.checked)">
-                  Show hidden (${hiddenCount})
-                </label>
               ` : ''}
             </div>
           `;
@@ -17686,18 +17677,20 @@
               <p>No classes match the current filters. <a href="#" onclick="event.preventDefault(); app.clearClassFilters();" style="color: var(--accent);">Clear filters</a>.</p>
             </div>
           `;
-        } else if (isTeacherOrAdmin && !classesToShow.length && hiddenCount) {
-          classesContent.innerHTML = `
-            ${filterBarHtml}
-            <div class="empty-state">
-              <h3>🙈 All Hidden</h3>
-              <p>Every class here is hidden. Tick "Show hidden" above to see them.</p>
-            </div>
-          `;
+
         } else if (isTeacherOrAdmin) {
           // Teacher/admin view - laid out as a week: one section per day the
           // teacher actually teaches, classes in period order under it.
-          classesContent.innerHTML = filterBarHtml + this.renderClassWeek(classesToShow);
+          const week = this.renderClassWeek(classesToShow);
+          classesContent.innerHTML = filterBarHtml + (week || (this._hiddenClassCount() ? `
+            <div class="empty-state">
+              <h3>🙈 All Hidden</h3>
+              <p>Everything here is hidden. Tick "Show hidden" above to see it.</p>
+            </div>` : `
+            <div class="empty-state">
+              <h3>🌤️ No Classes Today</h3>
+              <p>Nothing is scheduled for today. <a href="#" onclick="event.preventDefault(); app.setClassFilterDay('all');" style="color: var(--accent);">Show the whole week</a>.</p>
+            </div>`));
         } else if (userType === 'student') {
           // Student view - filter by enrollment status (active vs withdrawn/archived)
           const activeEnrollments = matched.filter(c => c.enrollment_status === 'active' && c.status !== 'closed');
@@ -17833,9 +17826,11 @@
             (periodsByDay[m.day] = periodsByDay[m.day] || []);
             if (m.period !== null && m.period !== undefined) periodsByDay[m.day].push(Number(m.period));
           });
+          // A hidden instance is left out unless "Show hidden" is ticked.
+          const showing = d => this.showHiddenClasses || !this._isHiddenInstance(cls.id, d);
           const days = Object.keys(periodsByDay).map(Number);
-          if (!days.length) { unscheduled.push(cls); return; }
-          days.forEach(d => {
+          if (!days.length) { if (showing('none')) unscheduled.push(cls); return; }
+          days.filter(showing).forEach(d => {
             const periods = [...new Set(periodsByDay[d])].sort((a, b) => a - b);
             const day = (byDay[d] = byDay[d] || { slots: {}, noPeriod: [] });
             if (!periods.length) day.noPeriod.push(cls);
@@ -17852,10 +17847,16 @@
         // periods are as real as the week's.
         const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
 
-        const timeLabel = p => {
-          const block = bells[p];
-          const range = block ? this._bellRange(block.starts_at, block.ends_at) : '';
-          return `Period ${p}${range ? ` · ${range}` : ''}`;
+        // Each day's real blocks: its own override where it has one, the
+        // default otherwise, minus anything that day omits. Without the full
+        // schedule loaded, fall back to the defaults for every day.
+        const bellRows = this._bellRows || [];
+        const resolved = {};
+        const dayBlocks = d => bellRows.length
+          ? (resolved[d] = resolved[d] || this._bellResolve(bellRows, d)) : null;
+        const blockFor = (d, p) => {
+          const list = dayBlocks(d);
+          return list ? (list.find(b => b.period === p) || null) : (bells[p] || null);
         };
         const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
         // Taken / missed / canceled for one class on one day of this week.
@@ -17871,7 +17872,8 @@
           if (sessions.some(x => x.status === 'canceled')) return 'canceled';
           if (this._weekSessionsFor !== this._weekSessionsKey()) return null;   // not loaded yet
           const end = new Date(date);
-          const hhmm = p !== null && bells[p] ? this._bellTime(bells[p].ends_at) : '';
+          const blk = p !== null ? blockFor(d, p) : null;
+          const hhmm = blk ? this._bellTime(blk.ends_at) : '';
           if (hhmm) { const [h, m] = hhmm.split(':').map(Number); end.setHours(h, m, 0, 0); }
           else end.setHours(23, 59, 59, 999);
           return now > end ? 'missed' : null;
@@ -17886,18 +17888,20 @@
         const classSlot = (cls, d, p) => {
           const st = STATUS[statusFor(cls, d, p)];
           const closed = cls.status === 'closed';
-          const isHidden = this._hiddenClasses.has(cls.id);
+          const isHidden = this._isHiddenInstance(cls.id, d);
+          // The buttons sit in their own row under the text rather than
+          // floating over the corner, where a long class name ran under them.
           return `
             <div class="class-card" onclick="app.openClass('${cls.id}')"
                  style="padding: 10px 12px; ${isHidden ? 'opacity: 0.5;' : closed ? 'opacity: 0.7;' : ''} ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
-              <div class="class-actions" style="top: 6px; right: 6px;">
-                <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}')" title="${isHidden ? 'Unhide' : 'Hide'} this class">${isHidden ? '👁️' : '🙈'}</button>
+              <div style="font-weight: 700; font-size: 14px; line-height: 1.25;">${this.escapeHtml(cls.name || '')}</div>
+              <div style="font-size: 11px; opacity: 0.85; margin-top: 4px;">${this.escapeHtml([cls.subject, this.gradeBandLabel(cls.grade_band)].filter(Boolean).join(' · '))}</div>
+              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${cls.student_count || 0}/${cls.max_students || 30}${closed ? ' · Closed' : ''}${isHidden ? ' · Hidden' : ''}</div>
+              <div class="class-actions" style="position: static; justify-content: flex-end; margin-top: 8px;">
+                <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}', '${d}')" title="${isHidden ? 'Unhide' : 'Hide'} this class on ${DAY_NAMES[d] || 'this day'}">${isHidden ? '👁️' : '🙈'}</button>
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
                 <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
               </div>
-              <div style="font-weight: 700; font-size: 14px; line-height: 1.25; padding-right: 4px;">${this.escapeHtml(cls.name || '')}</div>
-              <div style="font-size: 11px; opacity: 0.85; margin-top: 4px;">${this.escapeHtml([cls.subject, this.gradeBandLabel(cls.grade_band)].filter(Boolean).join(' · '))}</div>
-              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${cls.student_count || 0}/${cls.max_students || 30}${closed ? ' · Closed' : ''}${isHidden ? ' · Hidden' : ''}</div>
             </div>
             ${st ? `<div style="font-size: 11px; font-weight: 600; color: ${st.color}; margin-top: 4px;">${st.text}</div>` : ''}`;
         };
@@ -17912,11 +17916,37 @@
             ? `<div style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">No day set</div>${grid(unscheduled.slice().sort(byName))}`
             : '';
         }
-        const periods = [...new Set([...(filtersActive ? [] : bellPeriods),
-          ...days.flatMap(d => Object.keys(byDay[d].slots).map(Number))])].sort((a, b) => a - b);
+        // The rows, top to bottom: every block any shown day has (periods,
+        // and lunch/breaks between them) in bell order, plus any period a class
+        // is timetabled into that the bell schedule doesn't list. With a
+        // subject/grade filter on, only the periods that have classes.
+        const usedPeriods = new Set(days.flatMap(d => Object.keys(byDay[d].slots).map(Number)));
+        const rowMap = new Map();
+        if (bellRows.length) {
+          days.forEach(d => dayBlocks(d).forEach(b => {
+            const key = b.period !== null && b.period !== undefined ? `p:${b.period}` : `b:${b.block_key}`;
+            if (!rowMap.has(key)) {
+              const def = bellRows.find(r => r.block_key === b.block_key && r.day_of_week === null) || b;
+              rowMap.set(key, { period: b.period ?? null, label: def.label || b.label, sort: def.sort_order ?? b.sort_order ?? 0, head: def });
+            }
+          }));
+        } else {
+          bellPeriods.forEach(p => rowMap.set(`p:${p}`, { period: p, label: `Period ${p}`, sort: p, head: bells[p] }));
+        }
+        usedPeriods.forEach(p => {
+          if (!rowMap.has(`p:${p}`)) rowMap.set(`p:${p}`, { period: p, label: `Period ${p}`, sort: 1000 + p, head: null });
+        });
+        const rowsDown = [...rowMap.values()]
+          .filter(r => r.period === null ? !filtersActive : (!filtersActive || usedPeriods.has(r.period)))
+          .sort((a, b) => (a.sort - b.sort) || ((a.period ?? 99) - (b.period ?? 99)));
+        // A lunch or break row with no teaching period after it isn't worth a
+        // band at the bottom of the grid; drop trailing ones.
+        while (rowsDown.length && rowsDown[rowsDown.length - 1].period === null) rowsDown.pop();
+        while (rowsDown.length && rowsDown[0].period === null) rowsDown.shift();
         const anyNoPeriod = days.some(d => byDay[d].noPeriod.length);
         const tint = 'background: color-mix(in srgb, var(--accent) 7%, transparent);';
         const cellStyle = d => `padding: 8px; border-top: 1px solid var(--border); border-left: 1px solid var(--border); ${d === today ? tint : ''}`;
+        const rangeOf = b => (b ? this._bellRange(b.starts_at, b.ends_at) : '');
 
         let cells = `<div style="position: sticky; left: 0; background: var(--bg, var(--card)); z-index: 1;"></div>`;
         days.forEach(d => {
@@ -17931,19 +17961,40 @@
             <div style="font-size: 12px; font-weight: 700; color: var(--text);">${title}</div>
             ${sub ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${sub}</div>` : ''}
           </div>`;
-        periods.forEach(p => {
-          const block = bells[p];
-          const range = block ? this._bellRange(block.starts_at, block.ends_at) : '';
-          cells += rowHead(`Period ${p}`, this.escapeHtml(range));
+        rowsDown.forEach(row => {
+          const headRange = rangeOf(row.head);
+          if (row.period === null) {
+            // Lunch, break: a thin band across the days, so the gap in the
+            // clock shows as a gap in the grid.
+            cells += `
+              <div style="padding: 6px 10px 6px 0; border-top: 1px solid var(--border); position: sticky; left: 0; background: var(--bg, var(--card)); z-index: 1; font-size: 11px; color: var(--muted);">
+                <b>${this.escapeHtml(row.label)}</b>${headRange ? `<br>${this.escapeHtml(headRange)}` : ''}
+              </div>
+              <div style="grid-column: span ${days.length}; border-top: 1px solid var(--border); border-left: 1px solid var(--border);
+                          background: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--border) 45%, transparent) 8px 9px);"></div>`;
+            return;
+          }
+          const p = row.period;
+          cells += rowHead(`Period ${p}`, this.escapeHtml(headRange));
           days.forEach(d => {
             const list = (byDay[d].slots[p] || []).slice().sort(byName);
-            const body = list.length
-              ? list.map(cls => classSlot(cls, d, p)).join('<div style="height: 8px;"></div>')
-              : `<button type="button" onclick="app.createNewClass({ day: ${d}, period: ${p} })" title="Add a class in ${DAY_NAMES[d]} period ${p}"
+            const blk = blockFor(d, p);
+            // This day's time, when it differs from the row's usual one.
+            const own = rangeOf(blk);
+            const note = own && own !== headRange
+              ? `<div style="font-size: 11px; color: var(--muted); margin-bottom: 6px;">${this.escapeHtml(own)}</div>` : '';
+            let body;
+            if (list.length) {
+              body = list.map(cls => classSlot(cls, d, p)).join('<div style="height: 8px;"></div>');
+            } else if (bellRows.length && !blk) {
+              body = '';                                  // this period doesn't run that day
+            } else {
+              body = `<button type="button" onclick="app.createNewClass({ day: ${d}, period: ${p} })" title="Add a class in ${DAY_NAMES[d]} period ${p}"
                    style="width: 100%; height: 100%; min-height: 56px; border: 1px dashed var(--border); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;">
                    ＋ Add class
                  </button>`;
-            cells += `<div style="${cellStyle(d)}">${body}</div>`;
+            }
+            cells += `<div style="${cellStyle(d)}">${note}${body}</div>`;
           });
         });
         // Scheduled on a day but with no period recorded: one row at the foot.
@@ -18049,6 +18100,9 @@
             // What "Period 3" means in clock time. Everyone signed in may read
             // it, so this is the same one query whoever is looking.
             this.loadBellDefaults(),
+            // Every block for every day, so the teacher's week can use each
+            // day's own times and show lunch and breaks between the periods.
+            this.loadBellRows(),
           ]);
           if (sched.error) throw sched.error;
           const days = {}, meets = {};
@@ -18091,6 +18145,23 @@
           this._bellDefaults = {};
         }
         return this._bellDefaults;
+      }
+
+      // The whole bell schedule: defaults, per-day overrides, and the
+      // non-teaching blocks (lunch, break). One read per session.
+      async loadBellRows() {
+        if (this._bellRows) return this._bellRows;
+        try {
+          const { data, error } = await this.auth.supabase
+            .from('schedule_blocks')
+            .select('block_key, label, period, day_of_week, starts_at, ends_at, omitted, sort_order');
+          if (error) throw error;
+          this._bellRows = data || [];
+        } catch (e) {
+          console.warn('Could not load the full bell schedule; the week uses default times:', e);
+          this._bellRows = [];
+        }
+        return this._bellRows;
       }
 
       // "10:25–11:05 am". Both halves keep their suffix only when they differ,
@@ -18151,7 +18222,9 @@
         const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
         const daysPresent = Array.from(new Set(all.flatMap(c => dayMap[c.id] || []))).sort((a, b) => a - b);
         const anyUnscheduled = all.some(c => !(dayMap[c.id] || []).length);
-        if (subjects.length <= 1 && grades.length <= 1 && !daysPresent.length) return '';   // nothing to filter
+        const isStaff = ['teacher', 'admin'].includes(this.userInfo?.profile?.user_type);
+        const hiddenCount = isStaff ? this._hiddenClassCount() : 0;
+        if (subjects.length <= 1 && grades.length <= 1 && !daysPresent.length && !hiddenCount) return '';   // nothing to filter
 
         const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
         const subjectOptions = ['<option value="all">All subjects</option>',
@@ -18174,6 +18247,11 @@
             <select onchange="app.setClassFilterSubject(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${subjectOptions}</select>
             <select onchange="app.setClassFilterGrade(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${gradeOptions}</select>
             ${(daysPresent.length || anyUnscheduled) ? dayToggle : ''}
+            ${hiddenCount ? `
+              <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); cursor:pointer;">
+                <input type="checkbox" ${this.showHiddenClasses ? 'checked' : ''} onchange="app.setShowHiddenClasses(this.checked)">
+                Show hidden (${hiddenCount})
+              </label>` : ''}
             ${filtersActive ? `<button class="btn btn-secondary" onclick="app.clearClassFilters()" style="padding:6px 12px; font-size:12px;">Clear</button>` : ''}
           </div>
         `;
@@ -18193,7 +18271,7 @@
       // device; the week is what everyone starts on until they change it.
       setClassFilterDay(value) {
         this.classFilterDay = value === 'today' ? 'today' : 'all';
-        this._saveClassPref('classes_day_view', this.classFilterDay);
+        this._saveClassPrefs();
         this.renderClasses();
       }
 
@@ -18204,17 +18282,17 @@
       }
 
       // -- Hidden classes & the remembered day view ---------------------------
-      // Kept in this browser's localStorage, per account. There is no
-      // per-user settings table in the schema, and a class a teacher would
-      // rather not see is a view preference, not data anyone else relies on.
-      // Every read and write is guarded: private mode can refuse storage, and
-      // the classes page must still work when it does.
+      // Saved to user_ui_prefs, one row per person, so they follow a teacher
+      // to every device they sign in on. localStorage keeps a copy so the page
+      // draws the right thing before that read returns, and so it still works
+      // if the read fails. Every storage call is guarded: private mode can
+      // refuse it, and the classes page must work regardless.
+      //
+      // A hidden entry is "classId:weekday" (0-6, or "none" for a class with
+      // no weekday). A bare classId is the older whole-class form, still
+      // honoured, and split into per-day entries the first time it is touched.
       _classPrefKey(name) {
         return `${name}_${this.userInfo?.user?.id || 'anon'}`;
-      }
-
-      _saveClassPref(name, value) {
-        try { localStorage.setItem(this._classPrefKey(name), JSON.stringify(value)); } catch (_) {}
       }
 
       _readClassPref(name, fallback) {
@@ -18224,31 +18302,106 @@
         } catch (_) { return fallback; }
       }
 
-      // Read once per signed-in user, the first time the classes page draws.
+      // What follows a teacher between devices. Today/Week is NOT in here on
+      // purpose (Luke, Sep 24 2026): someone may want today only on the phone
+      // and the whole week on the computer, so it stays on each device.
+      _classPrefsSnapshot() {
+        return {
+          classes_hidden: [...(this._hiddenClasses || [])],
+          classes_show_hidden: !!this.showHiddenClasses,
+        };
+      }
+
+      _applyClassPrefs(p) {
+        this._hiddenClasses = new Set(Array.isArray(p.classes_hidden) ? p.classes_hidden.map(String) : []);
+        this.showHiddenClasses = p.classes_show_hidden === true;
+      }
+
+      // Writes the settings locally (Today/Week included), then the shared
+      // ones to the database. Other keys a later screen keeps in the same row
+      // are carried along untouched.
+      _saveClassPrefs() {
+        const snap = this._classPrefsSnapshot();
+        const local = { ...snap, classes_day_view: this.classFilterDay === 'today' ? 'today' : 'all' };
+        Object.entries(local).forEach(([k, v]) => {
+          try { localStorage.setItem(this._classPrefKey(k), JSON.stringify(v)); } catch (_) {}
+        });
+        const uid = this.userInfo?.user?.id;
+        if (!uid || !this._uiPrefsLoaded) return;   // don't overwrite a row we haven't read
+        this._uiPrefs = { ...(this._uiPrefs || {}), ...snap };
+        const row = { user_id: uid, prefs: this._uiPrefs, updated_at: new Date().toISOString() };
+        this.auth.supabase.from('user_ui_prefs').upsert(row, { onConflict: 'user_id' })
+          .then(({ error }) => { if (error) console.warn('Could not save class view settings:', error.message); });
+      }
+
+      // Local copy first, once per signed-in user; then the database row,
+      // which wins when it exists and re-renders the page when it lands.
       _loadClassPrefs() {
         const who = this.userInfo?.user?.id || 'anon';
         if (this._classPrefsFor === who) return;
         this._classPrefsFor = who;
-        const ids = this._readClassPref('classes_hidden', []);
-        this._hiddenClasses = new Set(Array.isArray(ids) ? ids : []);
-        this.showHiddenClasses = this._readClassPref('classes_show_hidden', false) === true;
+        this._uiPrefsLoaded = false;
+        this._applyClassPrefs({
+          classes_hidden: this._readClassPref('classes_hidden', []),
+          classes_show_hidden: this._readClassPref('classes_show_hidden', false),
+        });
         this.classFilterDay = this._readClassPref('classes_day_view', 'all') === 'today' ? 'today' : 'all';
+        if (who !== 'anon') this._fetchClassPrefs(who);
       }
 
-      toggleHideClass(classId) {
+      async _fetchClassPrefs(who) {
+        try {
+          const { data, error } = await this.auth.supabase.from('user_ui_prefs')
+            .select('prefs').eq('user_id', who).maybeSingle();
+          if (error) throw error;
+          if (this._classPrefsFor !== who) return;    // signed out meanwhile
+          this._uiPrefs = (data && data.prefs) || {};
+          this._uiPrefsLoaded = true;
+          if (data && 'classes_hidden' in this._uiPrefs) {
+            this._applyClassPrefs(this._uiPrefs);
+            this._saveClassPrefs();                   // refresh the local copy
+          } else if (this._hiddenClasses.size || this.showHiddenClasses) {
+            this._saveClassPrefs();                   // first sync: carry this device's settings up
+          }
+          if (this.currentSection === 'classes') this.renderClasses();
+        } catch (e) {
+          // Table not there yet, or offline: this device's copy still works.
+          console.warn('Class view settings not synced; using this device only:', e.message || e);
+        }
+      }
+
+      _isHiddenInstance(classId, day) {
+        const h = this._hiddenClasses;
+        return !!h && (h.has(classId) || h.has(`${classId}:${day}`));
+      }
+
+      // How many hidden instances belong to classes that still exist here.
+      _hiddenClassCount() {
+        const ids = new Set((this.classes || []).map(c => c.id));
+        return [...(this._hiddenClasses || [])].filter(k => ids.has(String(k).split(':')[0])).length;
+      }
+
+      toggleHideClass(classId, day) {
         this._loadClassPrefs();
-        if (this._hiddenClasses.has(classId)) this._hiddenClasses.delete(classId);
-        else this._hiddenClasses.add(classId);
-        this._saveClassPref('classes_hidden', [...this._hiddenClasses]);
-        // Hiding the last hidden-visible class should not leave the box ticked
-        // with nothing to show; untick it when there is nothing hidden left.
-        if (!this._hiddenClasses.size) this.setShowHiddenClasses(false);
-        else this.renderClasses();
+        const h = this._hiddenClasses;
+        if (h.has(classId)) {
+          // Old whole-class entry: turn it into one entry per day it meets so
+          // the other days stay hidden while this one changes.
+          h.delete(classId);
+          const days = (this._classDays || {})[classId] || [];
+          (days.length ? days : ['none']).forEach(d => h.add(`${classId}:${d}`));
+        }
+        const key = `${classId}:${day}`;
+        if (h.has(key)) h.delete(key); else h.add(key);
+        // Nothing left hidden: untick the box so it isn't stuck on, invisibly.
+        if (!this._hiddenClassCount()) this.showHiddenClasses = false;
+        this._saveClassPrefs();
+        this.renderClasses();
       }
 
       setShowHiddenClasses(on) {
         this.showHiddenClasses = !!on;
-        this._saveClassPref('classes_show_hidden', this.showHiddenClasses);
+        this._saveClassPrefs();
         this.renderClasses();
       }
 
@@ -18303,21 +18456,22 @@
         // Determine badge - withdrawn enrollment takes priority for students
         const showWithdrawnBadge = isStudent && isWithdrawn;
         const showClosedBadge = isClosed && !showWithdrawnBadge;
-        const isHidden = isTeacher && this._hiddenClasses && this._hiddenClasses.has(cls.id);
+        // Full cards appear only where a class has no weekday ("No day set").
+        const isHidden = isTeacher && this._hiddenClasses && this._isHiddenInstance(cls.id, 'none');
         const dimCard = isClosed || showWithdrawnBadge || isHidden;
 
         return `
           <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${dimCard ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
             ${isTeacher ? `
               <div class="class-actions">
-                <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}')" title="${isHidden ? 'Unhide' : 'Hide'} this class">${isHidden ? '👁️' : '🙈'}</button>
+                <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}', 'none')" title="${isHidden ? 'Unhide' : 'Hide'} this class">${isHidden ? '👁️' : '🙈'}</button>
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
                 <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
               </div>
             ` : ''}
             ${showWithdrawnBadge ? `<span style="background: #e67e22; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">WITHDRAWN</span>` : ''}
             ${showClosedBadge ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>` : ''}
-            <h3>${cls.name}</h3>
+            <h3 ${isTeacher ? 'style="padding-right: 100px;"' : ''}>${cls.name}</h3>
             ${this.classDescription(cls.description)}
             <div class="class-stats">
               <span>📚 ${cls.subject}</span>
