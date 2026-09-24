@@ -4143,3 +4143,47 @@ written to a history.
 taking the screen, stepping out being forgotten, a new drill failing to reach
 somebody who left the last one, and a failed active-check being read as "no
 drill" (a stalling database must not look like all-clear).
+
+## Staff can see their duties now (2026-09-24)
+
+The duty rota, the "My duties" tab and a backend that lets teachers read it
+were all already built. `showSection('staff-duties')` had exactly **one**
+caller in the whole file, and it sat inside `renderAdminDashboard()` -- so a
+tab written for teachers could only be opened by somebody who is not one.
+Six of eleven teachers are on the rota; none of them could see it.
+
+Two changes, different in kind:
+
+**A way in.** A Staff Duties button on the staff dashboard, beside Pickup and
+the drill.
+
+**Today's duty on the dashboard itself**, which is the one that matters. The
+rota screen answers "what am I on this week"; at 8am the question is "am I on
+anything today", and it should be answered on the page already open rather
+than somewhere you have to go. Duty name, position, time, cohort, and who you
+are on with. Tapping it opens the full rota.
+
+### Three details worth keeping
+
+- **It says nothing on a day with no duty.** An empty "no duties today" card
+  every morning is how people learn to stop reading a card, and then miss the
+  morning it matters.
+- **It never costs the dashboard.** Fetched after the page renders, like the
+  coaching count. A thrown load or an errored rota leaves the slot untouched
+  rather than rendering as "no duties" -- a database that is merely slow must
+  not read as "you are free".
+- **Bell-pinned duties borrow the bell.** A duty can carry a block key instead
+  of a clock time, so if the bell moves the duty moves with it. The card loads
+  the schedule for that reason; without it, it would print the raw key.
+
+`day_of_week` is 1=Monday..5=Friday, which happens to agree with JS `getDay()`
+on exactly those five days. At a weekend it matches nothing and the card is
+empty, which is correct.
+
+### Not done
+
+**Nobody has checked the rota is current.** 11 assignments over 5 days for 6
+staff looks plausible, but if it was set up once and never revisited then
+surfacing it is worse than not. Worth a look before anyone relies on it.
+
+24 assertions, 8 deliberate breaks, 8 caught.

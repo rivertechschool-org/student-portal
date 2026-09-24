@@ -6971,7 +6971,13 @@
             if (el) el.textContent = count || 0;
           });
 
+          // Today's duty, filled in after the page is drawn. Nothing on this
+          // dashboard should wait on it: a duty card arriving a second late is
+          // fine, a dashboard that will not render is not.
+          this._loadTodaysDuties();
+
           const html = `
+            <div id="today-duty-card"></div>
             <div class="grid grid-2">
               <div class="card">
                 <h3>🎯 Quick Actions</h3>
@@ -6986,6 +6992,9 @@
                   </button>
                   <button class="btn btn-secondary" onclick="app.showDrillBoard()">
                     🚨 Emergency drill
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.showSection('staff-duties'); app.renderStaffDuties();">
+                    🧭 Staff Duties
                   </button>
                   <button class="btn btn-primary" onclick="app.createNewClass()">
                     ➕ Create New Class
@@ -46130,6 +46139,66 @@ Students you had withdrawn stay withdrawn.`)) {
         return b ? `${b.label} · ${t(b.starts_at)}–${t(b.ends_at)}` : d.block_key;
       }
       return '';
+    }
+
+    // What am I on today?
+    //
+    // The rota screen answers "what am I on this week", which is the wrong
+    // question at 8am. This answers the one being asked, on the page already
+    // open, and says nothing at all when the answer is nothing - an empty
+    // "no duties today" card every morning trains people to stop reading it.
+    async _loadTodaysDuties() {
+      try {
+        const [rota] = await Promise.all([
+          this.supabaseQuery(() => this.auth.supabase.rpc('staff_duty_rota')),
+          // A duty may be pinned to a bell block rather than a clock time, and
+          // without the schedule the card would print the raw block key.
+          // loadBellRows caches and swallows its own failure.
+          this.loadBellRows(),
+        ]);
+        if (rota.error) return;
+
+        const me = this.userInfo?.profile?.id || this.userInfo?.user?.id;
+        const mine = this._myDuties(this._dutyTree(rota.data || []), me);
+        // day_of_week is 1=Monday..5=Friday, and getDay() agrees on exactly
+        // those five. At a weekend getDay() is 6 or 0, matches nothing, and
+        // the card renders as nothing - which is right.
+        const today = mine.filter(m => m.dow === new Date().getDay());
+        this._renderTodaysDutyCard(today);
+      } catch (_e) {
+        // A dashboard that loses its duty card is a smaller problem than one
+        // that throws on the way in.
+      }
+    }
+
+    _renderTodaysDutyCard(today) {
+      const host = document.getElementById('today-duty-card');
+      if (!host) return;
+      if (!today.length) { host.innerHTML = ''; return; }
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+
+      host.innerHTML = `
+        <div class="card" style="padding: 14px 16px; margin-bottom: 16px;
+                                 border-left: 4px solid #2f6b6d; cursor: pointer;"
+             onclick="app.showSection('staff-duties'); app.renderStaffDuties();">
+          <div style="display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;">
+            <h3 style="margin:0;">\u{1F9ED} You're on duty today</h3>
+            <span style="color: var(--muted); font-size: 12px;">tap for the whole rota</span>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:6px; margin-top:10px;">
+            ${today.map(m => {
+              const when = this._dutyWhen(m.duty);
+              return `
+                <div style="display:flex; gap:10px; align-items:baseline; flex-wrap:wrap;">
+                  ${when ? `<span style="font-weight:700; font-variant-numeric:tabular-nums;">${esc(when)}</span>` : ''}
+                  <span><b>${esc(m.duty.name)}</b> \u2014 ${esc(m.position.name)}</span>
+                  ${m.duty.group_name ? `<span style="color:var(--muted); font-size:12px;">${esc(m.duty.group_name)}</span>` : ''}
+                  ${m.alongside && m.alongside.length
+                    ? `<span style="color:var(--muted); font-size:12px;">with ${esc(m.alongside.join(', '))}</span>` : ''}
+                </div>`;
+            }).join('')}
+          </div>
+        </div>`;
     }
 
     async renderStaffDuties() {
