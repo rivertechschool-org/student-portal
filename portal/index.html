@@ -2346,7 +2346,8 @@
         this.showWithdrawnClasses = false;  // Student: toggle withdrawn enrollments
         this.classFilterSubject = 'all';   // All users: filter classes view by subject
         this.classFilterGrade = 'all';     // All users: filter classes view by grade level
-        this.classFilterDay = 'all';       // All users: filter classes view by day of the week
+        this.classFilterDay = 'all';       // All users: 'all' = whole week (default), 'today' = today only
+        this._classPrefsFor = null;        // which user the remembered day view / hidden classes were read for
         this._classDays = null;            // class_id -> [day_of_week], loaded on demand
         this._classDaysFor = null;         // which set of class ids _classDays was built for
 
@@ -17569,8 +17570,14 @@
         // Apply user-set subject/grade filters before all the existing
         // status/enrollment splits. Filters are applied to the input list so
         // the "active" / "closed" / "withdrawn" buckets only contain matches.
+        this._loadClassPrefs();
         const filterFn = this.classMatchesFilters.bind(this);
-        const matched = (this.classes || []).filter(filterFn);
+        // Classes a teacher has hidden stay out of their view unless they tick
+        // "Show hidden". Only teachers/admins can hide, so only they filter.
+        const hidden = isTeacherOrAdmin ? this._hiddenClasses : new Set();
+        const hiddenCount = (this.classes || []).filter(c => hidden.has(c.id)).length;
+        const matched = (this.classes || []).filter(filterFn)
+          .filter(c => this.showHiddenClasses || !hidden.has(c.id));
 
         // Separate active and closed classes
         const activeClasses = matched.filter(c => c.status !== 'closed');
@@ -17588,6 +17595,12 @@
                 <button class="btn btn-secondary" onclick="app.toggleClosedClasses()" id="toggle-closed-btn">
                   ${this.showClosedClasses ? 'Hide' : 'Show'} Closed (${closedClasses.length})
                 </button>
+              ` : ''}
+              ${hiddenCount ? `
+                <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer;">
+                  <input type="checkbox" ${this.showHiddenClasses ? 'checked' : ''} onchange="app.setShowHiddenClasses(this.checked)">
+                  Show hidden (${hiddenCount})
+                </label>
               ` : ''}
             </div>
           `;
@@ -17639,6 +17652,7 @@
         const totalUnfiltered = (this.classes || []).length;
         const totalMatched = matched.length;
         const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all' || this.classFilterDay !== 'all';
+        const todayOnly = this.classFilterDay === 'today';
 
         if (totalUnfiltered === 0) {
           const emptyMessage = userType === 'teacher'
@@ -17654,13 +17668,30 @@
               <p>${emptyMessage}</p>
             </div>
           `;
+        } else if (totalMatched === 0 && todayOnly && this.classFilterSubject === 'all' && this.classFilterGrade === 'all') {
+          // "Today" on a day with nothing on it. Say that, not "no match".
+          classesContent.innerHTML = `
+            ${filterBarHtml}
+            <div class="empty-state">
+              <h3>🌤️ No Classes Today</h3>
+              <p>Nothing is scheduled for today. <a href="#" onclick="event.preventDefault(); app.setClassFilterDay('all');" style="color: var(--accent);">Show the whole week</a>.</p>
+            </div>
+          `;
         } else if (totalMatched === 0 && filtersActive) {
           // Filters narrowed everything out — keep the bar visible so the user can clear them.
           classesContent.innerHTML = `
             ${filterBarHtml}
             <div class="empty-state">
               <h3>🔍 No Classes Match</h3>
-              <p>No classes match the current subject/grade filters. <a href="#" onclick="event.preventDefault(); app.clearClassFilters();" style="color: var(--accent);">Clear filters</a>.</p>
+              <p>No classes match the current filters. <a href="#" onclick="event.preventDefault(); app.clearClassFilters();" style="color: var(--accent);">Clear filters</a>.</p>
+            </div>
+          `;
+        } else if (isTeacherOrAdmin && !classesToShow.length && hiddenCount) {
+          classesContent.innerHTML = `
+            ${filterBarHtml}
+            <div class="empty-state">
+              <h3>🙈 All Hidden</h3>
+              <p>Every class here is hidden. Tick "Show hidden" above to see them.</p>
             </div>
           `;
         } else if (isTeacherOrAdmin) {
@@ -17817,7 +17848,9 @@
         const bellPeriods = Object.keys(bells).map(Number).filter(n => !isNaN(n));
         // Blank slots only make sense when the whole week is on screen. With a
         // subject or grade filter on, an "empty" period may just be filtered out.
-        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all' || this.classFilterDay !== 'all';
+        // The Today/Week switch is not one of those filters: today's empty
+        // periods are as real as the week's.
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
 
         const timeLabel = p => {
           const block = bells[p];
@@ -17853,23 +17886,27 @@
         const classSlot = (cls, d, p) => {
           const st = STATUS[statusFor(cls, d, p)];
           const closed = cls.status === 'closed';
+          const isHidden = this._hiddenClasses.has(cls.id);
           return `
             <div class="class-card" onclick="app.openClass('${cls.id}')"
-                 style="padding: 10px 12px; ${closed ? 'opacity: 0.7;' : ''} ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
+                 style="padding: 10px 12px; ${isHidden ? 'opacity: 0.5;' : closed ? 'opacity: 0.7;' : ''} ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
               <div class="class-actions" style="top: 6px; right: 6px;">
+                <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}')" title="${isHidden ? 'Unhide' : 'Hide'} this class">${isHidden ? '👁️' : '🙈'}</button>
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
                 <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
               </div>
               <div style="font-weight: 700; font-size: 14px; line-height: 1.25; padding-right: 4px;">${this.escapeHtml(cls.name || '')}</div>
               <div style="font-size: 11px; opacity: 0.85; margin-top: 4px;">${this.escapeHtml([cls.subject, this.gradeBandLabel(cls.grade_band)].filter(Boolean).join(' · '))}</div>
-              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${cls.student_count || 0}/${cls.max_students || 30}${closed ? ' · Closed' : ''}</div>
+              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${cls.student_count || 0}/${cls.max_students || 30}${closed ? ' · Closed' : ''}${isHidden ? ' · Hidden' : ''}</div>
             </div>
             ${st ? `<div style="font-size: 11px; font-weight: 600; color: ${st.color}; margin-top: 4px;">${st.text}</div>` : ''}`;
         };
 
         // Days across, periods down, like a calendar's week view. Only the
         // days this teacher teaches get a column; today's column is tinted.
-        const days = WEEK.filter(d => byDay[d]);
+        // "Today" narrows the grid to today's column; a class meeting today
+        // would otherwise drag its other days along with it.
+        const days = WEEK.filter(d => byDay[d] && (this.classFilterDay !== 'today' || d === today));
         if (!days.length) {
           return unscheduled.length
             ? `<div style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">No day set</div>${grid(unscheduled.slice().sort(byName))}`
@@ -17988,13 +18025,10 @@
         const subjectOk = this.classFilterSubject === 'all' || (cls.subject || '') === this.classFilterSubject;
         const gradeOk = this.classFilterGrade === 'all' || String(cls.grade_band ?? '') === this.classFilterGrade;
         let dayOk = true;
-        if (this.classFilterDay !== 'all') {
-          const days = (this._classDays || {})[cls.id] || [];
-          // "none" finds the classes with no timetable at all — the ones whose
-          // register never appears on the attendance screen, which is worth
-          // being able to list.
-          dayOk = this.classFilterDay === 'none' ? days.length === 0
-                                                 : days.includes(Number(this.classFilterDay));
+        if (this.classFilterDay === 'today') {
+          // Worked out at render time, so a page left open overnight follows
+          // the calendar rather than the day it was loaded on.
+          dayOk = ((this._classDays || {})[cls.id] || []).includes(new Date().getDay());
         }
         return subjectOk && gradeOk && dayOk;
       }
@@ -18122,19 +18156,24 @@
         const escape = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
         const subjectOptions = ['<option value="all">All subjects</option>',
           ...subjects.map(s => `<option value="${escape(s)}"${s === this.classFilterSubject ? ' selected' : ''}>${escape(s)}</option>`)].join('');
-        const dayOptions = ['<option value="all">All days</option>',
-          ...daysPresent.map(d => `<option value="${d}"${String(d) === String(this.classFilterDay) ? ' selected' : ''}>${DAY_NAMES[d]}</option>`),
-          ...(anyUnscheduled ? [`<option value="none"${this.classFilterDay === 'none' ? ' selected' : ''}>No day set</option>`] : [])].join('');
+        // Today / Week switch in place of the old pick-a-day list.
+        const seg = (value, label) => {
+          const on = (this.classFilterDay === 'today') === (value === 'today');
+          return `<button type="button" onclick="app.setClassFilterDay('${value}')" aria-pressed="${on}"
+            style="padding:6px 12px; font-size:13px; border:none; cursor:pointer; ${on ? 'background:var(--accent); color:#fff; font-weight:600;' : 'background:transparent; color:var(--text);'}">${label}</button>`;
+        };
+        const dayToggle = `<div role="group" aria-label="Show today or the whole week" style="display:inline-flex; border:1px solid var(--border); border-radius:6px; overflow:hidden; background:var(--card);">${seg('today', 'Today')}${seg('all', 'Week')}</div>`;
         const gradeOptions = ['<option value="all">All grades</option>',
           ...grades.map(g => `<option value="${escape(g)}"${g === this.classFilterGrade ? ' selected' : ''}>${escape(this.gradeBandLabel(g) || g)}</option>`)].join('');
 
-        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all' || this.classFilterDay !== 'all';
+        // Clear resets subject and grade only; Today/Week is a view, not a filter.
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all';
         return `
           <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:16px;">
             <span style="font-size:12px; color:var(--muted); font-weight:600; letter-spacing:0.04em; text-transform:uppercase;">Filter</span>
             <select onchange="app.setClassFilterSubject(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${subjectOptions}</select>
             <select onchange="app.setClassFilterGrade(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${gradeOptions}</select>
-            ${(daysPresent.length || anyUnscheduled) ? `<select onchange="app.setClassFilterDay(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--card); color:var(--text); border:1px solid var(--border); font-size:13px;">${dayOptions}</select>` : ''}
+            ${(daysPresent.length || anyUnscheduled) ? dayToggle : ''}
             ${filtersActive ? `<button class="btn btn-secondary" onclick="app.clearClassFilters()" style="padding:6px 12px; font-size:12px;">Clear</button>` : ''}
           </div>
         `;
@@ -18150,15 +18189,66 @@
         this.renderClasses();
       }
 
+      // 'today' or 'all' (the whole week). Remembered per account on this
+      // device; the week is what everyone starts on until they change it.
       setClassFilterDay(value) {
-        this.classFilterDay = value || 'all';
+        this.classFilterDay = value === 'today' ? 'today' : 'all';
+        this._saveClassPref('classes_day_view', this.classFilterDay);
         this.renderClasses();
       }
 
       clearClassFilters() {
         this.classFilterSubject = 'all';
         this.classFilterGrade = 'all';
-        this.classFilterDay = 'all';
+        this.renderClasses();
+      }
+
+      // -- Hidden classes & the remembered day view ---------------------------
+      // Kept in this browser's localStorage, per account. There is no
+      // per-user settings table in the schema, and a class a teacher would
+      // rather not see is a view preference, not data anyone else relies on.
+      // Every read and write is guarded: private mode can refuse storage, and
+      // the classes page must still work when it does.
+      _classPrefKey(name) {
+        return `${name}_${this.userInfo?.user?.id || 'anon'}`;
+      }
+
+      _saveClassPref(name, value) {
+        try { localStorage.setItem(this._classPrefKey(name), JSON.stringify(value)); } catch (_) {}
+      }
+
+      _readClassPref(name, fallback) {
+        try {
+          const raw = localStorage.getItem(this._classPrefKey(name));
+          return raw === null ? fallback : JSON.parse(raw);
+        } catch (_) { return fallback; }
+      }
+
+      // Read once per signed-in user, the first time the classes page draws.
+      _loadClassPrefs() {
+        const who = this.userInfo?.user?.id || 'anon';
+        if (this._classPrefsFor === who) return;
+        this._classPrefsFor = who;
+        const ids = this._readClassPref('classes_hidden', []);
+        this._hiddenClasses = new Set(Array.isArray(ids) ? ids : []);
+        this.showHiddenClasses = this._readClassPref('classes_show_hidden', false) === true;
+        this.classFilterDay = this._readClassPref('classes_day_view', 'all') === 'today' ? 'today' : 'all';
+      }
+
+      toggleHideClass(classId) {
+        this._loadClassPrefs();
+        if (this._hiddenClasses.has(classId)) this._hiddenClasses.delete(classId);
+        else this._hiddenClasses.add(classId);
+        this._saveClassPref('classes_hidden', [...this._hiddenClasses]);
+        // Hiding the last hidden-visible class should not leave the box ticked
+        // with nothing to show; untick it when there is nothing hidden left.
+        if (!this._hiddenClasses.size) this.setShowHiddenClasses(false);
+        else this.renderClasses();
+      }
+
+      setShowHiddenClasses(on) {
+        this.showHiddenClasses = !!on;
+        this._saveClassPref('classes_show_hidden', this.showHiddenClasses);
         this.renderClasses();
       }
 
@@ -18213,12 +18303,14 @@
         // Determine badge - withdrawn enrollment takes priority for students
         const showWithdrawnBadge = isStudent && isWithdrawn;
         const showClosedBadge = isClosed && !showWithdrawnBadge;
-        const dimCard = isClosed || showWithdrawnBadge;
+        const isHidden = isTeacher && this._hiddenClasses && this._hiddenClasses.has(cls.id);
+        const dimCard = isClosed || showWithdrawnBadge || isHidden;
 
         return `
           <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${dimCard ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
             ${isTeacher ? `
               <div class="class-actions">
+                <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}')" title="${isHidden ? 'Unhide' : 'Hide'} this class">${isHidden ? '👁️' : '🙈'}</button>
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
                 <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
               </div>

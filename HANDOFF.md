@@ -4011,3 +4011,22 @@ more rows than one session per lesson; fix it by writing a session in that op.
 
 Blank slots are hidden while a subject/grade/day filter is on, because an
 "empty" period there may only be filtered out.
+
+### Hiding classes, and Today / Week (Thu Sep 24 2026)
+
+Teachers and admins can hide a class with the 🙈 button on its card (👁️ puts
+it back). A "Show hidden (N)" checkbox appears next to Create New Class only
+while something is hidden; ticked, hidden classes show dimmed and labeled.
+The old pick-a-day dropdown is now a Today / Week switch for every role. Week
+is the default; whichever a person picks is remembered.
+
+Where it lives: localStorage, keyed per account (`classes_hidden_<id>`,
+`classes_show_hidden_<id>`, `classes_day_view_<id>`). Deliberately NOT the
+database: there is no per-user settings table, and adding one means a
+migration in the backend repo. The cost is that hiding is per device and
+browser. If Luke wants it to follow a teacher across devices, that migration
+is the next step.
+
+The "No day set" option from the old dropdown is gone; the week view already
+lists those classes under "No day set". Clear now resets subject and grade
+only, since Today/Week is a view rather than a filter.
