@@ -4036,3 +4036,61 @@ Supabase SQL editor. Until then, hiding still works but only on one device.
 The "No day set" option from the old dropdown is gone; the week view already
 lists those classes under "No day set". Clear now resets subject and grade
 only, since Today/Week is a view rather than a filter.
+
+## Emergency drill roll call (2026-09-24)
+
+A shared roll call any teacher or admin can open: **Emergency drill** on the
+teacher dashboard and on the Attendance screen. Several staff tick the same
+list from their own phones; the unaccounted number is the only thing shown big.
+
+Anyone can tick any child. In an evacuation a teacher takes whoever is nearest,
+not whoever is on their register, so the screen does not care whose class a
+child is in. Ticking the same child twice is normal and not an error.
+
+### The denominator is the whole problem
+
+"Everyone marked present today" is the obvious rule and it is dangerous on its
+own. A cohort whose register was not taken has no attendance entry at all, so
+those children would simply not appear -- and an empty screen reads as
+all-clear.
+
+This is not hypothetical. Checked against live data at the time of day a drill
+would actually happen, **nobody was marked present and 139 children were due
+in**. The naive version would have shown an empty list and declared the school
+safe.
+
+So every child lands in one of three buckets and all three are on screen:
+
+- **in** -- the register marks them present or late. Must be ticked.
+- **unknown** -- due in today, no register entry. *Nobody knows whether they
+  are in the building.* Counted separately, never folded into the accounted
+  total, and called out in its own banner.
+- **out** -- the register marks them absent. Shown, not demanded.
+
+An unresolved unknown must never look like progress. That is the rule the whole
+screen is built around.
+
+### Three things it must never do
+
+1. **Show a child as safe when the write did not land.** Ticks paint
+   immediately -- the drill does not pause while the network does, and this
+   database stalls for seconds at a time -- but a refused write puts the row
+   back and says so by name, loudly. A number is not enough to act on.
+2. **Let a refresh eat a tick.** The board reloads every 5s so other staff's
+   ticks appear. A reload landing mid-write keeps yours; otherwise the teacher
+   ticks again, or worse assumes it took.
+3. **Let it be ended quietly.** Only an admin can end a drill, and ending with
+   anyone still open warns with the number and records it.
+
+"Off-site" is a separate state from "safe": confirmed *not* in the building
+(went home, collected early). Both are accounted for; only one is standing in
+front of somebody.
+
+### How it is held
+
+`tests/emergency-drill.test.js`, 43 assertions, including the registers-not-
+taken case. 9 deliberate breaks, 9 caught -- among them leaving a child showing
+safe after a failed write, folding unknown into the accounted total, and a
+refresh overwriting an in-flight tick.
+
+Schema and the RPCs are in the backend repo.
