@@ -5948,6 +5948,8 @@
             this.setupHomeContent();
             break;
           case 'classes':
+            // Registers may have been taken since the week view last looked.
+            this._weekSessionsFor = null;
             this.renderClasses();
             break;
           case 'documents':
@@ -17662,13 +17664,9 @@
             </div>
           `;
         } else if (isTeacherOrAdmin) {
-          // Teacher/admin view - show toggle button handled above
-          classesContent.innerHTML = `
-            ${filterBarHtml}
-            <div class="grid grid-3">
-              ${classesToShow.map(cls => this.renderClassCard(cls)).join('')}
-            </div>
-          `;
+          // Teacher/admin view - laid out as a week: one section per day the
+          // teacher actually teaches, classes in period order under it.
+          classesContent.innerHTML = filterBarHtml + this.renderClassWeek(classesToShow);
         } else if (userType === 'student') {
           // Student view - filter by enrollment status (active vs withdrawn/archived)
           const activeEnrollments = matched.filter(c => c.enrollment_status === 'active' && c.status !== 'closed');
@@ -17767,6 +17765,188 @@
         }
       }
 
+      // -- Teacher's week ------------------------------------------------------
+      // The teacher/admin classes page reads like a weekly calendar: Monday
+      // first, one section per day, each class under every day it meets, in
+      // period order. A day with nothing on it is left out entirely, and today
+      // gets a light highlight. Inside a day every bell period is shown, and an
+      // empty one is a blank slot that opens Create Class for that day and
+      // period. Classes with no timetable still need to be reachable, so they
+      // collect in a "No day set" section at the end.
+      //
+      // Each class slot also says whether its register was taken THIS week:
+      // a subtle green outline once it has been, a subtle red one once the
+      // period is over and it has not. Only this week's sessions are read, so
+      // the outlines start clean every Monday without anything to reset.
+      renderClassWeek(classes) {
+        const grid = list => `<div class="grid grid-3">${list.map(cls => this.renderClassCard(cls)).join('')}</div>`;
+        const ids = (this.classes || []).map(c => c.id).filter(Boolean).slice().sort().join(',');
+        // Until class_schedule has arrived, every class would look unscheduled.
+        // Show the plain grid for that moment instead; loadClassDays re-renders.
+        if (this._classMeetsFor !== ids) return grid(classes);
+        this.loadWeekAttendance();                     // re-renders when it lands
+
+        const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const WEEK = [1, 2, 3, 4, 5, 6, 0];            // school week starts Monday
+        const now = new Date();
+        const today = now.getDay();
+        const monday = this._weekMonday(now);
+        const meetsMap = this._classMeets || {};
+        const bells = this._bellDefaults || {};
+        const byDay = {};
+        const unscheduled = [];
+        classes.forEach(cls => {
+          const meets = meetsMap[cls.id] || [];
+          const periodsByDay = {};
+          meets.forEach(m => {
+            if (m.day === null || m.day === undefined || isNaN(m.day)) return;
+            (periodsByDay[m.day] = periodsByDay[m.day] || []);
+            if (m.period !== null && m.period !== undefined) periodsByDay[m.day].push(Number(m.period));
+          });
+          const days = Object.keys(periodsByDay).map(Number);
+          if (!days.length) { unscheduled.push(cls); return; }
+          days.forEach(d => {
+            const periods = [...new Set(periodsByDay[d])].sort((a, b) => a - b);
+            const day = (byDay[d] = byDay[d] || { slots: {}, noPeriod: [] });
+            if (!periods.length) day.noPeriod.push(cls);
+            periods.forEach(p => (day.slots[p] = day.slots[p] || []).push(cls));
+          });
+        });
+
+        // The periods a day can hold: the bell schedule's, plus any a class is
+        // timetabled into that the bell schedule doesn't list.
+        const bellPeriods = Object.keys(bells).map(Number).filter(n => !isNaN(n));
+        // Blank slots only make sense when the whole week is on screen. With a
+        // subject or grade filter on, an "empty" period may just be filtered out.
+        const filtersActive = this.classFilterSubject !== 'all' || this.classFilterGrade !== 'all' || this.classFilterDay !== 'all';
+
+        const timeLabel = p => {
+          const block = bells[p];
+          const range = block ? this._bellRange(block.starts_at, block.ends_at) : '';
+          return `Period ${p}${range ? ` · ${range}` : ''}`;
+        };
+        const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
+        // Taken / missed / canceled for one class on one day of this week.
+        // A period's end time decides "over"; a period with no bell time is
+        // over once its day is.
+        const statusFor = (cls, d, p) => {
+          const date = new Date(monday);
+          date.setDate(monday.getDate() + ((d + 6) % 7));
+          const dateStr = this._localDateStr(date);
+          const sessions = ((this._weekSessions || {})[cls.id] || []).filter(x => x.date === dateStr
+            && (p === null || x.period === null || x.period === undefined || Number(x.period) === p));
+          if (sessions.some(x => x.status === 'completed')) return 'taken';
+          if (sessions.some(x => x.status === 'canceled')) return 'canceled';
+          if (this._weekSessionsFor !== this._weekSessionsKey()) return null;   // not loaded yet
+          const end = new Date(date);
+          const hhmm = p !== null && bells[p] ? this._bellTime(bells[p].ends_at) : '';
+          if (hhmm) { const [h, m] = hhmm.split(':').map(Number); end.setHours(h, m, 0, 0); }
+          else end.setHours(23, 59, 59, 999);
+          return now > end ? 'missed' : null;
+        };
+        const STATUS = {
+          taken:    { border: 'rgba(46, 204, 113, 0.55)', color: '#2ecc71', text: 'Attendance taken' },
+          missed:   { border: 'rgba(231, 76, 60, 0.55)',  color: '#e74c3c', text: 'Attendance not taken' },
+          canceled: { border: null,                       color: 'var(--muted)', text: 'Class canceled' },
+        };
+        const classSlot = (cls, d, p) => {
+          const st = STATUS[statusFor(cls, d, p)];
+          return `
+            <div style="border-radius: 12px; ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
+              ${this.renderClassCard(cls)}
+            </div>
+            ${st ? `<div style="font-size: 11px; font-weight: 600; color: ${st.color}; margin-top: 4px;">${st.text}</div>` : ''}`;
+        };
+
+        const section = (title, isToday, body) => `
+          <div style="margin-bottom: 18px; padding: 14px 16px; border-radius: 10px; border: 1px solid ${isToday ? 'var(--accent)' : 'var(--border)'}; ${isToday ? 'background: color-mix(in srgb, var(--accent) 7%, transparent);' : ''}">
+            <h3 style="margin: 0 0 12px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
+              ${title}
+              ${isToday ? `<span style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: #fff;">Today</span>` : ''}
+            </h3>
+            ${body}
+          </div>`;
+
+        let html = '';
+        WEEK.forEach(d => {
+          const day = byDay[d];
+          if (!day) return;                             // doesn't teach that day
+          const periods = [...new Set([...(filtersActive ? [] : bellPeriods), ...Object.keys(day.slots).map(Number)])]
+            .sort((a, b) => a - b);
+          const cells = periods.map(p => {
+            const list = (day.slots[p] || []).slice().sort(byName);
+            const body = list.length
+              ? list.map(cls => classSlot(cls, d, p)).join('<div style="height: 10px;"></div>')
+              : `<button type="button" onclick="app.createNewClass({ day: ${d}, period: ${p} })" title="Add a class in ${DAY_NAMES[d]} period ${p}"
+                   style="width: 100%; min-height: 64px; border: 1px dashed var(--border); border-radius: 10px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;">
+                   ＋ Add class
+                 </button>`;
+            return `
+              <div>
+                <div style="font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px;">${this.escapeHtml(timeLabel(p))}</div>
+                ${body}
+              </div>`;
+          });
+          // Scheduled on this day but with no period recorded: after the rest.
+          day.noPeriod.slice().sort(byName).forEach(cls => cells.push(`
+              <div>
+                <div style="font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px;">No period set</div>
+                ${classSlot(cls, d, null)}
+              </div>`));
+          html += section(DAY_NAMES[d], d === today, `<div class="grid grid-3">${cells.join('')}</div>`);
+        });
+        if (unscheduled.length) {
+          unscheduled.sort(byName);
+          html += section('<span style="color: var(--muted);">No day set</span>', false, grid(unscheduled));
+        }
+        return html;
+      }
+
+      // Monday 00:00 local of the week containing d. Sunday belongs to the
+      // week that is ending, so the outlines reset on Monday, not Sunday.
+      _weekMonday(d) {
+        const m = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
+        return m;
+      }
+
+      _weekSessionsKey() {
+        const ids = (this.classes || []).map(c => c.id).filter(Boolean).slice().sort().join(',');
+        return `${this._localDateStr(this._weekMonday(new Date()))}|${ids}`;
+      }
+
+      // This week's attendance sessions for the classes on view, keyed by
+      // class. One query per week per set of classes; a new week makes a new
+      // key, which is the whole of the Monday reset.
+      async loadWeekAttendance() {
+        const key = this._weekSessionsKey();
+        if (this._weekSessionsFor === key || this._weekSessionsLoading === key) return;
+        this._weekSessionsLoading = key;
+        const ids = (this.classes || []).map(c => c.id).filter(Boolean);
+        const monday = this._weekMonday(new Date());
+        const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+        const map = {};
+        try {
+          if (ids.length) {
+            const { data, error } = await this.auth.supabase.from('class_attendance_sessions')
+              .select('class_id, date, period, status').in('class_id', ids)
+              .gte('date', this._localDateStr(monday)).lte('date', this._localDateStr(sunday));
+            if (error) throw error;
+            (data || []).forEach(r => (map[r.class_id] = map[r.class_id] || []).push(r));
+          }
+        } catch (e) {
+          // Outlines are a nicety. Without them the week still works; with a
+          // failed read, painting everything red would be a lie.
+          console.warn('Could not load this week\'s attendance sessions:', e);
+          this._weekSessionsLoading = null;
+          return;
+        }
+        this._weekSessions = map;
+        this._weekSessionsFor = key;
+        this._weekSessionsLoading = null;
+        if (this.currentSection === 'classes') this.renderClasses();
+      }
+
       // -- Class filter bar (subject/grade/day) ------------------------------
       // Distinct subject + grade values are derived from the live this.classes
       // collection so the dropdowns always match what the user owns / is
@@ -17823,6 +18003,9 @@
           this._classDays = {};
           this._classMeets = {};
         }
+        // Marks the meets as settled for this set of classes, so the teacher's
+        // week view can tell "still loading" apart from "never scheduled".
+        this._classMeetsFor = key;
         if (this.currentSection === 'classes') this.renderClasses();
       }
 
@@ -18150,7 +18333,9 @@
         return html;
       }
 
-      async createNewClass() {
+      // slot = { day, period } when opened from an empty period on the
+      // teacher's week, so the schedule row arrives already filled in.
+      async createNewClass(slot = null) {
         await this.loadSubjectOptions();
         await this.loadGradeBands();
         if (!window.portalModal) {
@@ -18306,6 +18491,14 @@
             <button class="btn btn-primary" onclick="app.submitCreateClass()">Create Class</button>
           `
         });
+
+        if (slot) {
+          const first = document.querySelector('#class-schedule-slots .schedule-slot');
+          const daySel = first?.querySelector('select[name="schedule-day"]');
+          const perSel = first?.querySelector('select[name="schedule-period"]');
+          if (daySel) daySel.value = String(slot.day);
+          if (perSel) perSel.value = String(slot.period);
+        }
 
         // Populate room dropdown
         const facilities = await this._loadFacilitiesForSelect();

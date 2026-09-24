@@ -3984,3 +3984,29 @@ failed identically because they were not awaited -- `JSON.stringify` of a
 pending promise is `{}`. Await anything lifted in that file.
 
 The schema change is in the backend repo.
+
+## Teacher's Classes page is a week now (Thu Sep 24 2026)
+
+Luke asked for it. Teachers and admins see their classes as a week: one
+section per weekday they teach (days with nothing are left out), today lightly
+highlighted, and every bell period listed in order. An empty period is a dashed
+"+ Add class" slot that opens Create Class with that day and period filled in.
+Classes with no timetable sit in "No day set" at the bottom. Students and
+parents are unchanged. Code: `renderClassWeek()` in `portal/index.html`.
+
+### Attendance outlines
+
+Green outline + "Attendance taken" once a completed session exists in
+`class_attendance_sessions` for that class, date and period; red outline +
+"Attendance not taken" once the period's bell end time has passed without one.
+A canceled session reads "Class canceled" with no outline. Only this week's
+sessions (Monday to Sunday, local dates) are read, so the outlines start clean
+every Monday with nothing to reset.
+
+Known gap, left on purpose: the `/rt` batch `attendance` op writes
+`class_attendance` rows without a session, so a register taken only that way
+still shows red. Reading every mark row for every class all week would be far
+more rows than one session per lesson; fix it by writing a session in that op.
+
+Blank slots are hidden while a subject/grade/day filter is on, because an
+"empty" period there may only be filtered out.
