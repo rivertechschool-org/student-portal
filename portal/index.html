@@ -17766,12 +17766,11 @@
       }
 
       // -- Teacher's week ------------------------------------------------------
-      // The teacher/admin classes page reads like a weekly calendar: Monday
-      // first, one section per day, each class under every day it meets, in
-      // period order. A day with nothing on it is left out entirely, and today
-      // gets a light highlight. Inside a day every bell period is shown, and an
-      // empty one is a blank slot that opens Create Class for that day and
-      // period. Classes with no timetable still need to be reachable, so they
+      // The teacher/admin classes page is a calendar week view: the days this
+      // teacher teaches side by side from Monday, bell periods running down,
+      // each class in every cell it meets. Days with nothing are left out,
+      // and today's column gets a light tint. An empty cell is a blank slot
+      // that opens Create Class for that day and period. Classes with no timetable still need to be reachable, so they
       // collect in a "No day set" section at the end.
       //
       // Each class slot also says whether its register was taken THIS week:
@@ -17849,55 +17848,86 @@
           missed:   { border: 'rgba(231, 76, 60, 0.55)',  color: '#e74c3c', text: 'Attendance not taken' },
           canceled: { border: null,                       color: 'var(--muted)', text: 'Class canceled' },
         };
+        // A calendar cell holds a compact card: the full class card is built
+        // for a three-across grid and would make every period row very tall.
         const classSlot = (cls, d, p) => {
           const st = STATUS[statusFor(cls, d, p)];
+          const closed = cls.status === 'closed';
           return `
-            <div style="border-radius: 12px; ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
-              ${this.renderClassCard(cls)}
+            <div class="class-card" onclick="app.openClass('${cls.id}')"
+                 style="padding: 10px 12px; ${closed ? 'opacity: 0.7;' : ''} ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
+              <div class="class-actions" style="top: 6px; right: 6px;">
+                <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
+                <button onclick="event.stopPropagation(); app.deleteClass('${cls.id}')" style="background: rgba(255, 106, 106, 0.3);">🗑️</button>
+              </div>
+              <div style="font-weight: 700; font-size: 14px; line-height: 1.25; padding-right: 4px;">${this.escapeHtml(cls.name || '')}</div>
+              <div style="font-size: 11px; opacity: 0.85; margin-top: 4px;">${this.escapeHtml([cls.subject, this.gradeBandLabel(cls.grade_band)].filter(Boolean).join(' · '))}</div>
+              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${cls.student_count || 0}/${cls.max_students || 30}${closed ? ' · Closed' : ''}</div>
             </div>
             ${st ? `<div style="font-size: 11px; font-weight: 600; color: ${st.color}; margin-top: 4px;">${st.text}</div>` : ''}`;
         };
 
-        const section = (title, isToday, body) => `
-          <div style="margin-bottom: 18px; padding: 14px 16px; border-radius: 10px; border: 1px solid ${isToday ? 'var(--accent)' : 'var(--border)'}; ${isToday ? 'background: color-mix(in srgb, var(--accent) 7%, transparent);' : ''}">
-            <h3 style="margin: 0 0 12px; font-size: 16px; display: flex; align-items: center; gap: 8px;">
-              ${title}
-              ${isToday ? `<span style="font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: #fff;">Today</span>` : ''}
-            </h3>
-            ${body}
-          </div>`;
+        // Days across, periods down, like a calendar's week view. Only the
+        // days this teacher teaches get a column; today's column is tinted.
+        const days = WEEK.filter(d => byDay[d]);
+        if (!days.length) {
+          return unscheduled.length
+            ? `<div style="color: var(--muted); font-size: 13px; margin-bottom: 10px;">No day set</div>${grid(unscheduled.slice().sort(byName))}`
+            : '';
+        }
+        const periods = [...new Set([...(filtersActive ? [] : bellPeriods),
+          ...days.flatMap(d => Object.keys(byDay[d].slots).map(Number))])].sort((a, b) => a - b);
+        const anyNoPeriod = days.some(d => byDay[d].noPeriod.length);
+        const tint = 'background: color-mix(in srgb, var(--accent) 7%, transparent);';
+        const cellStyle = d => `padding: 8px; border-top: 1px solid var(--border); border-left: 1px solid var(--border); ${d === today ? tint : ''}`;
 
-        let html = '';
-        WEEK.forEach(d => {
-          const day = byDay[d];
-          if (!day) return;                             // doesn't teach that day
-          const periods = [...new Set([...(filtersActive ? [] : bellPeriods), ...Object.keys(day.slots).map(Number)])]
-            .sort((a, b) => a - b);
-          const cells = periods.map(p => {
-            const list = (day.slots[p] || []).slice().sort(byName);
+        let cells = `<div style="position: sticky; left: 0; background: var(--bg, var(--card)); z-index: 1;"></div>`;
+        days.forEach(d => {
+          cells += `
+            <div style="padding: 10px 8px; text-align: center; font-weight: 700; font-size: 14px; border-left: 1px solid var(--border); ${d === today ? tint + ' color: var(--accent);' : ''}">
+              ${DAY_NAMES[d]}
+              ${d === today ? `<span style="display: inline-block; margin-left: 4px; font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: var(--accent); color: #fff; vertical-align: middle;">Today</span>` : ''}
+            </div>`;
+        });
+        const rowHead = (title, sub) => `
+          <div style="padding: 8px 10px 8px 0; border-top: 1px solid var(--border); position: sticky; left: 0; background: var(--bg, var(--card)); z-index: 1;">
+            <div style="font-size: 12px; font-weight: 700; color: var(--text);">${title}</div>
+            ${sub ? `<div style="font-size: 11px; color: var(--muted); margin-top: 2px;">${sub}</div>` : ''}
+          </div>`;
+        periods.forEach(p => {
+          const block = bells[p];
+          const range = block ? this._bellRange(block.starts_at, block.ends_at) : '';
+          cells += rowHead(`Period ${p}`, this.escapeHtml(range));
+          days.forEach(d => {
+            const list = (byDay[d].slots[p] || []).slice().sort(byName);
             const body = list.length
-              ? list.map(cls => classSlot(cls, d, p)).join('<div style="height: 10px;"></div>')
+              ? list.map(cls => classSlot(cls, d, p)).join('<div style="height: 8px;"></div>')
               : `<button type="button" onclick="app.createNewClass({ day: ${d}, period: ${p} })" title="Add a class in ${DAY_NAMES[d]} period ${p}"
-                   style="width: 100%; min-height: 64px; border: 1px dashed var(--border); border-radius: 10px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;">
+                   style="width: 100%; height: 100%; min-height: 56px; border: 1px dashed var(--border); border-radius: 8px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;">
                    ＋ Add class
                  </button>`;
-            return `
-              <div>
-                <div style="font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px;">${this.escapeHtml(timeLabel(p))}</div>
-                ${body}
-              </div>`;
+            cells += `<div style="${cellStyle(d)}">${body}</div>`;
           });
-          // Scheduled on this day but with no period recorded: after the rest.
-          day.noPeriod.slice().sort(byName).forEach(cls => cells.push(`
-              <div>
-                <div style="font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px;">No period set</div>
-                ${classSlot(cls, d, null)}
-              </div>`));
-          html += section(DAY_NAMES[d], d === today, `<div class="grid grid-3">${cells.join('')}</div>`);
         });
+        // Scheduled on a day but with no period recorded: one row at the foot.
+        if (anyNoPeriod) {
+          cells += rowHead('No period', '');
+          days.forEach(d => {
+            const list = byDay[d].noPeriod.slice().sort(byName);
+            cells += `<div style="${cellStyle(d)}">${list.map(cls => classSlot(cls, d, null)).join('<div style="height: 8px;"></div>')}</div>`;
+          });
+        }
+
+        // Scrolls sideways on a phone rather than squeezing five days into it;
+        // the period column stays put while it does.
+        let html = `
+          <div style="overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 18px;">
+            <div style="display: grid; grid-template-columns: 110px repeat(${days.length}, minmax(170px, 1fr)); min-width: ${110 + days.length * 170}px;">
+              ${cells}
+            </div>
+          </div>`;
         if (unscheduled.length) {
-          unscheduled.sort(byName);
-          html += section('<span style="color: var(--muted);">No day set</span>', false, grid(unscheduled));
+          html += `<div style="color: var(--muted); font-size: 13px; font-weight: 600; margin: 8px 0 10px;">No day set</div>${grid(unscheduled.slice().sort(byName))}`;
         }
         return html;
       }

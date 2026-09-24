@@ -3987,9 +3987,10 @@ The schema change is in the backend repo.
 
 ## Teacher's Classes page is a week now (Thu Sep 24 2026)
 
-Luke asked for it. Teachers and admins see their classes as a week: one
-section per weekday they teach (days with nothing are left out), today lightly
-highlighted, and every bell period listed in order. An empty period is a dashed
+Luke asked for it. Teachers and admins see their classes as a calendar week
+view: the weekdays they teach side by side (days with nothing are left out),
+bell periods running down, today's column lightly tinted. Cells use a compact
+card; on a phone the grid scrolls sideways with the period column pinned. An empty period is a dashed
 "+ Add class" slot that opens Create Class with that day and period filled in.
 Classes with no timetable sit in "No day set" at the bottom. Students and
 parents are unchanged. Code: `renderClassWeek()` in `portal/index.html`.
