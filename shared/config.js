@@ -616,6 +616,22 @@ class PortalUI {
         return out;
     }
 
+    // The loading state, written once.
+    //
+    // Twenty-nine screens each carried their own byte-identical copy of this
+    // markup, so changing how loading looks meant finding all twenty-nine. The
+    // styled variants - a muted or margin-topped <p> - are deliberately NOT
+    // folded in here: they stay as they are, because normalising them would be
+    // a visual change to screens nobody asked to change.
+    //
+    // Escapes the message: some callers build it from a class or subject name.
+    static spinner(message = 'Loading...', pad = 40) {
+        const safe = String(message)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<div style="text-align: center; padding: ${Number(pad) || 0}px;">`
+             + `<div class="loading-spinner"></div><p>${safe}</p></div>`;
+    }
+
     static applyTheme(theme) {
         const root = document.documentElement;
         Object.entries(theme).forEach(([key, value]) => {

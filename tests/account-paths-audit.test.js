@@ -29,6 +29,12 @@
 
 const fs = require('fs');
 const path = require('path');
+// The methods extracted below now call PortalUI.spinner() for their loading
+// state, so the real helper has to be in scope. tests/portalui.js is generated
+// by tests/extract-portalui.js and deliberately not committed.
+try { global.PortalUI = require('./portalui.js'); }
+catch (e) { console.log('  run: node tests/extract-portalui.js'); process.exit(1); }
+
 
 const portal = fs.readFileSync(path.join(__dirname, '..', 'portal', 'index.html'), 'utf8');
 

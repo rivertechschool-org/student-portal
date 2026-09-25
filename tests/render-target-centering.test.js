@@ -106,12 +106,27 @@ for (const id of ['my-students-list']) {
   // Every hub tab writes a spinner, so this has to be read out of the records
   // tab's own body - matching anywhere in the file passes on a sibling tab's
   // markup and says nothing about this one.
+  //
+  // The tab used to spell that markup out; it calls PortalUI.spinner() now, so
+  // the wrapper is the helper's guarantee rather than this tab's. Accept
+  // either, and check the helper itself still wraps - spinner-helper.test.js
+  // owns that in full, but a green suite here should not depend on reading it.
   const at = html.indexOf('async renderStudentHubRecordsTab() {');
   const body = at < 0 ? '' : html.slice(at, html.indexOf('\n      }', at));
   check('the records tab was found', at > -1, true);
-  check('the records tab wraps its spinner instead of writing it bare',
-        /innerHTML = '<div style="[^']*text-align: center;[^']*"><div class="loading-spinner">/.test(body),
-        true);
+  const spellsItOut =
+    /innerHTML = '<div style="[^']*text-align: center;[^']*"><div class="loading-spinner">/.test(body);
+  const usesHelper = /innerHTML\s*=\s*PortalUI\.spinner\(/.test(body);
+  check('the records tab does not write a bare spinner',
+        spellsItOut || usesHelper, true);
+  if (usesHelper) {
+    const helper = fs.readFileSync(
+      path.join(__dirname, '..', 'shared', 'config.js'), 'utf8');
+    const fn = (helper.match(/static spinner\([\s\S]*?\n    \}/) || [''])[0];
+    check('  and the helper it calls puts the spinner in a padded wrapper',
+          /text-align: center; padding: \$\{[^}]*\}px;">`\s*\+\s*`<div class="loading-spinner">/.test(fn),
+          true);
+  }
 }
 
 // The phone rules this depends on must stay put: the container can only be
