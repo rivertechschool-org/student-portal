@@ -43,6 +43,12 @@ every entry point opens the Hub. If you are looking for a student's profile,
 parents, emergency contacts, medical info, notes or strikes, they are all tabs
 there.
 
+**Correction, same day.** The first pass of this folded My Students into the
+hub and took four things with it: the modal had eight tabs, not four, and RTC,
+Skill Trees, Weekly Activity and Activity Log had no hub equivalent. They are
+hub tabs now, running on the same loaders they always did. If you pulled main
+in that window, pull again.
+
 The Hub's **Account tab is admin-only in the UI** — it is where invites,
 activation and PIN regeneration live. Teachers see every other tab, which is
 everything the old modals showed them, plus note editing they did not have.
