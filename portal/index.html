@@ -2299,7 +2299,8 @@
 
             <!-- RTC Bank Helper Section (Teachers & Admins) -->
             <section id="rtc-bank-helper-section" class="hidden">
-              <!-- Will be populated by renderRTCBankHelper() -->
+              <!-- Empty on purpose: the rtc-bank-helper route redirects to the Bank
+                   tab of RTC Management, so this shell is never painted. -->
             </section>
 
             <!-- Riven used to render here. It is a floating widget mounted on
@@ -2315,7 +2316,8 @@
 
             <!-- IRL Purchases Section (Teachers & Admins) -->
             <section id="irl-purchases-section" class="hidden">
-              <!-- Will be populated by renderIRLPurchases() -->
+              <!-- Empty on purpose: the irl-purchases route redirects to the IRL Store
+                   tab of RTC Management, so this shell is never painted. -->
             </section>
           </div>
         </div>
@@ -2996,35 +2998,8 @@
         }
       }
 
-      async safeExecute(operation, operationName = 'Operation') {
-        if (this.isProcessing) {
-          console.log(`Already processing, skipping ${operationName}`);
-          return;
-        }
-        
-        this.isProcessing = true;
-        
-        try {
-          await operation();
-        } catch (error) {
-          console.error(`${operationName} error:`, error);
-          this.showNotification(`Error: ${error.message}`, 'error');
-        } finally {
-          this.isProcessing = false;
-        }
-      }
+
       
-      debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-          const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-          };
-          clearTimeout(timeout);
-          timeout = setTimeout(later, wait);
-        };
-      }
 
       _asArray(v) { return Array.isArray(v) ? v : (v == null ? [] : [v]).filter(() => true); }
       _asString(v) { return typeof v === 'string' ? v : (v == null ? '' : String(v)); }
@@ -3101,14 +3076,6 @@
        * @param {Function} asyncFn - Async function to execute
        * @param {string} message - Loading message to display
        */
-      async withLoading(asyncFn, message = 'Loading...') {
-        this.showLoading(message);
-        try {
-          return await asyncFn();
-        } finally {
-          this.hideLoading();
-        }
-      }
 
       showModal(id, title, content, isSecondary = false) {
         // Hide any loading overlay when modal appears
@@ -5273,48 +5240,7 @@
         document.getElementById('auth-required').classList.remove('hidden');
       }
 
-      showMainApp() {
-        document.getElementById('loading-screen').classList.add('hidden');
-        document.getElementById('auth-required').classList.add('hidden');
-        document.getElementById('main-app').classList.remove('hidden');
-      }
 
-      initGoogleAPI() {
-        const script = document.createElement('script');
-        script.src = 'https://apis.google.com/js/api.js';
-        script.onload = () => {
-          gapi.load('client:picker', async () => {
-            try {
-              await gapi.client.init({
-                apiKey: 'AIzaSyBwrfXQorKq7fkmj-jUoU-4TYlR1woHJ4Y',
-                discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'],
-              });
-              this.initGISTokenClient();
-            } catch (error) {
-              console.error('Error initializing Google API:', error);
-            }
-          });
-        };
-        document.head.appendChild(script);
-      }
-
-      initGISTokenClient() {
-        if (typeof google === 'undefined' || !google.accounts) {
-          console.log('Google Identity Services not loaded yet');
-          return;
-        }
-        
-        this.tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: '262464730666-407bjadqc07iiq0i1bte7vh214na8pep.apps.googleusercontent.com',
-          scope: 'https://www.googleapis.com/auth/drive.file',
-          callback: (resp) => {
-            if (resp && resp.access_token) {
-              // Make token visible to gapi client
-              gapi.client.setToken({ access_token: resp.access_token });
-            }
-          },
-        });
-      }
       
       // ---------------- School Google Drive ----------------
       //
@@ -6134,38 +6060,6 @@
       }
       
       // ==================== INITIAL DATA & HOME CONTENTT ====================
-      async loadInitialData() {
-        try {
-          // Show loading state
-          if (window.portalLoading) {
-            window.portalLoading.show('initial', 'Loading your data...');
-          }
-          
-          // Load data based on user type
-          if (this.userInfo.profile.user_type === 'teacher' || this.userInfo.profile.user_type === 'admin') {
-            await this.loadTeacherData();
-          } else if (this.userInfo.profile.user_type === 'student') {
-            await this.loadStudentData();
-          }
-          
-          // Load common data
-          await this.loadMessages();
-          await this.loadMessageRecipients();
-          
-          // Setup home content
-          this.setupHomeContent();
-          
-        } catch (error) {
-          console.error('Error loading initial data:', error);
-          if (window.PortalUI) {
-            window.PortalUI.showNotification('Error loading data: ' + error.message, 'error');
-          }
-        } finally {
-          if (window.portalLoading) {
-            window.portalLoading.hide('initial');
-          }
-        }
-      }
 
       async loadTeacherData() {
         // Bands before classes: the filter bar renders band LABELS, and without
@@ -11309,163 +11203,6 @@
         }
       }
 
-      async showLinkParentModal(studentId, studentName) {
-        try {
-          // Load currently linked parents
-          const { data: linkedParents, error: linksError } = await this.auth.supabase
-            .from('parent_child_links')
-            .select(`
-              parent_id,
-              created_at,
-              parent:user_profiles!parent_child_links_parent_id_fkey(id, first_name, last_name, email)
-            `)
-            .eq('child_id', studentId);
-
-          if (linksError) throw linksError;
-
-          // Load all parent accounts for search
-          const { data: allParents, error: parentsError } = await this.auth.supabase
-            .from('user_profiles')
-            .select('id, first_name, last_name, email')
-            .eq('user_type', 'parent')
-            .order('last_name', { ascending: true });
-
-          if (parentsError) throw parentsError;
-
-          // Build linked parents list
-          let linkedHtml = '';
-          if (linkedParents && linkedParents.length > 0) {
-            linkedHtml = linkedParents.map(link => {
-              const parent = link.parent;
-              const linkedDate = new Date(link.created_at).toLocaleDateString();
-              return `
-                <div class="list-item" style="display: flex; justify-content: space-between; align-items: center; padding: 12px; border-bottom: 1px solid var(--border);">
-                  <div>
-                    <div style="font-weight: 600;">${parent?.first_name || 'Unknown'} ${parent?.last_name || ''}</div>
-                    <div style="font-size: 0.85rem; color: var(--muted);">${parent?.email || ''} • Linked: ${linkedDate}</div>
-                  </div>
-                  <button class="btn btn-danger small" onclick="app.unlinkParent('${studentId}', '${parent?.id}', '${studentName}')">
-                    Unlink
-                  </button>
-                </div>
-              `;
-            }).join('');
-          } else {
-            linkedHtml = '<p style="color: var(--muted); text-align: center; padding: 20px;">No parents linked to this student.</p>';
-          }
-
-          // Filter out already linked parents from the dropdown
-          const linkedParentIds = (linkedParents || []).map(l => l.parent_id);
-          const availableParents = (allParents || []).filter(p => !linkedParentIds.includes(p.id));
-
-          const modalContent = `
-            <div>
-              <h3 style="margin-bottom: 5px;">👪 Parent Links for ${studentName}</h3>
-              <p style="color: var(--muted); margin-bottom: 20px; font-size: 0.9rem;">
-                Manage which parent accounts can view this student's records
-              </p>
-
-              <div style="margin-bottom: 25px;">
-                <h4 style="margin-bottom: 10px; color: var(--text);">Currently Linked Parents</h4>
-                <div style="background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
-                  ${linkedHtml}
-                </div>
-              </div>
-
-              <div style="border-top: 1px solid var(--border); padding-top: 20px;">
-                <h4 style="margin-bottom: 10px; color: var(--text);">Link New Parent</h4>
-                ${availableParents.length > 0 ? `
-                  <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                    <select id="parent-to-link" style="flex: 1; min-width: 200px; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
-                      <option value="">-- Select a parent account --</option>
-                      ${availableParents.map(p =>
-                        `<option value="${p.id}">${p.first_name} ${p.last_name} (${p.email})</option>`
-                      ).join('')}
-                    </select>
-                    <button class="btn btn-primary" onclick="app.linkStudentToParent('${studentId}', '${studentName}')">
-                      Link Parent
-                    </button>
-                  </div>
-                  <p style="color: var(--muted); font-size: 0.85rem; margin-top: 10px;">
-                    Only existing parent accounts are shown. If the parent doesn't have an account yet, they need to register first.
-                  </p>
-                ` : `
-                  <p style="color: var(--muted); text-align: center; padding: 20px;">
-                    No available parent accounts to link. All parents are either already linked or no parent accounts exist.
-                  </p>
-                `}
-              </div>
-            </div>
-
-            <div style="display: flex; gap: 10px; margin-top: 25px; justify-content: flex-end;">
-              <button class="btn btn-secondary" onclick="app.closeModal('link-parent')">Close</button>
-            </div>
-          `;
-
-          this.showModal('link-parent', '👪 Manage Parent Links', modalContent, true);
-
-        } catch (error) {
-          console.error('Error loading parent links:', error);
-          this.showNotification('Error loading parent links: ' + error.message, 'error');
-        }
-      }
-
-      async linkStudentToParent(studentId, studentName) {
-        const parentId = document.getElementById('parent-to-link')?.value;
-
-        if (!parentId) {
-          this.showNotification('Please select a parent to link', 'error');
-          return;
-        }
-
-        try {
-          const { error } = await this.auth.supabase
-            .from('parent_child_links')
-            .insert({
-              parent_id: parentId,
-              child_id: studentId,
-              created_at: new Date().toISOString()
-            });
-
-          if (error) throw error;
-
-          this.showNotification('Parent linked successfully', 'success');
-
-          // Refresh the modal
-          this.closeModal('link-parent');
-          await this.showLinkParentModal(studentId, studentName);
-
-        } catch (error) {
-          console.error('Error linking parent:', error);
-          this.showNotification('Error linking parent: ' + error.message, 'error');
-        }
-      }
-
-      async unlinkParent(studentId, parentId, studentName) {
-        if (!confirm('Are you sure you want to unlink this parent? They will no longer be able to view this student\'s records.')) {
-          return;
-        }
-
-        try {
-          const { error } = await this.auth.supabase
-            .from('parent_child_links')
-            .delete()
-            .eq('parent_id', parentId)
-            .eq('child_id', studentId);
-
-          if (error) throw error;
-
-          this.showNotification('Parent unlinked successfully', 'success');
-
-          // Refresh the modal
-          this.closeModal('link-parent');
-          await this.showLinkParentModal(studentId, studentName);
-
-        } catch (error) {
-          console.error('Error unlinking parent:', error);
-          this.showNotification('Error unlinking parent: ' + error.message, 'error');
-        }
-      }
 
       async showAdminStudentRecordModal(studentId) {
         const overlay = document.createElement('div');
@@ -16851,43 +16588,7 @@
       }
 
       // ==================== DISCUSSION & REPLIIES ====================
-      safeRenderDiscussionCard(discussion, isTeacher) {
-        const norm = {
-          id: discussion.id,
-          class_id: discussion.class_id,
-          created_by: discussion.created_by ?? discussion.author_id ?? null,
-          author_id: discussion.created_by ?? discussion.author_id ?? null,
-          title: this._asString(discussion.title),
-          body: this._asString(discussion.body ?? discussion.content ?? ''), // body may not exist
-          reply_count: this._asInt(discussion.reply_count ?? discussion.comment_count),
-          comment_count: this._asInt(discussion.comment_count ?? discussion.reply_count),
-          is_locked: !!discussion.is_locked,
-          is_pinned: !!discussion.is_pinned,
-          activity_at: discussion.activity_at ?? discussion.created_at ?? null,
-          created_at: discussion.created_at ?? null,
-          user_profiles: discussion.user_profiles ?? {
-            first_name: '',
-            last_name: '',
-            user_type: ''
-          }
-        };
-      
-        try {
-          return this.renderDiscussionCard(norm, isTeacher);
-        } catch (e) {
-          console.warn('renderDiscussionCard failed; falling back.', e, norm);
-          return `
-            <div class="list-item">
-              <div class="list-item-content">
-                <div class="list-item-title">${norm.title || 'Untitled'}</div>
-                <div class="list-item-meta">${norm.comment_count} replies${
-                  norm.activity_at ? ` • Last active ${this.formatMessageDate(new Date(norm.activity_at))}` : ''
-                }</div>
-              </div>
-            </div>
-          `;
-        }
-      }
+
       
       async viewDiscussions(classId) {
         try {
@@ -17464,29 +17165,6 @@
         }, 100);
       }
 
-      toggleAllReplies(action) {
-        const replyContainers = document.querySelectorAll('[id^="reply-children-"]');
-        const buttons = document.querySelectorAll('[id^="collapse-btn-"]');
-        
-        replyContainers.forEach((container, index) => {
-          const button = buttons[index];
-          if (!button) return;
-          
-          const replyCount = parseInt(button.querySelector('.collapse-count').textContent) || 0;
-          
-          if (action === 'collapse') {
-            container.style.display = 'none';
-            button.querySelector('.collapse-icon').textContent = '▶';
-            button.querySelector('.collapse-count').textContent = `${replyCount} hidden`;
-            button.style.opacity = '0.8';
-          } else {
-            container.style.display = 'block';
-            button.querySelector('.collapse-icon').textContent = '▼';
-            button.querySelector('.collapse-count').textContent = `${replyCount} ${replyCount === 1 ? 'reply' : 'replies'}`;
-            button.style.opacity = '1';
-          }
-        });
-      }
 
       async postReply(discussionId, parentReplyId = null, containerId) {
         const content = document.getElementById(`reply-content-${containerId}`)?.value;
@@ -19336,37 +19014,7 @@
         this.showModal('class-details', '📚 Class Details', modalContent);
       }
 
-      async loadClassAsAdmin(classId) {
-        console.log('👑 Admin viewing class:', classId);
-        
-        // Load full class data
-        const { data: classData, error } = await this.supabaseQuery(() => this.auth.supabase
-          .from('classes')
-          .select('*')
-          .eq('id', classId)
-          .single());
-        
-        if (error || !classData) {
-          this.showNotification('Error loading class', 'error');
-          return;
-        }
-        
-        // Get teacher info
-        const { data: teacher } = await this.supabaseQuery(() => this.auth.supabase
-          .from('user_profiles')
-          .select('first_name, last_name')
-          .eq('id', classData.teacher_id)
-          .single());
-        
-        classData.teacher = teacher;
-        this.currentClass = classData;
-        
-        // Show the class view section
-        this.showSection('class-view');
-        
-        // Render class view with admin notice
-        this.renderClassView(true); // Pass true to indicate admin view
-      }
+
       
       async showClassRosterManagement() {
         const modal = document.getElementById('student-management-modal');
@@ -24985,111 +24633,6 @@ Students you had withdrawn stay withdrawn.`)) {
       }
       
       // ==================== SUBMISSIONS: VIEWING & FILTERING ====================
-      async viewSubmission(assignmentId) {
-        try {
-          // Load assignment details
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignments')
-            .select('*')
-            .eq('id', assignmentId)
-            .single());
-      
-          // Load submission
-          const { data: submission, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('assignment_id', assignmentId)
-            .eq('student_id', this.auth.studentRecordId())
-            .single());
-      
-          if (error) throw error;
-      
-          const modalContent = `
-            <div>
-              <h3>${assignment?.title || 'Assignment'}</h3>
-              <p style="color: var(--muted); margin: 10px 0;">${assignment?.description || 'No description'}</p>
-              
-              <div class="card" style="margin: 20px 0;">
-                <h4>Your Submission</h4>
-                <div style="margin: 15px 0;">
-                  <strong>Status:</strong> 
-                  <span style="color: ${submission.status === 'graded' ? 'var(--accent-2)' : 'var(--accent)'};">
-                    ${submission.status.charAt(0).toUpperCase() + submission.status.slice(1)}
-                  </span>
-                </div>
-                
-                <div style="margin: 15px 0;">
-                  <strong>Submitted:</strong> ${new Date(submission.submitted_at).toLocaleString()}
-                </div>
-      
-                <div style="margin: 15px 0;">
-                  <strong>Your Answer:</strong>
-                  <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px; white-space: pre-wrap;">
-                    ${this.escapeHtml(submission.content)}
-                  </div>
-                </div>
-      
-                ${submission.file_url ? `
-                  <div style="margin: 15px 0;">
-                    <strong>Attached File:</strong> 
-                    <a ${this.fileLinkAttrs(submission)} class="btn btn-secondary small" style="margin-left: 10px;">
-                      📎 ${this.escapeHtml(submission.file_name || 'View File')}
-                    </a>
-                  </div>
-                ` : ''}
-      
-                ${submission.status === 'graded' ? `
-                  <div style="border-top: 1px solid var(--border); margin-top: 20px; padding-top: 20px;">
-                    <h4>Grade & Feedback</h4>
-                    
-                    <div style="margin: 15px 0;">
-                      <strong>Grade:</strong> 
-                      <span style="font-size: 24px; color: var(--accent-2); margin-left: 10px;">
-                        ${submission.grade || 'No grade'}
-                      </span>
-                      ${submission.points_earned !== null ? `
-                        <span style="margin-left: 15px;">
-                          (${submission.points_earned} / ${assignment?.max_points || 100} points)
-                        </span>
-                      ` : ''}
-                    </div>
-      
-                    ${submission.feedback ? `
-                      <div style="margin: 15px 0;">
-                        <strong>Teacher Feedback:</strong>
-                        <div style="background: var(--bg); padding: 15px; border-radius: 8px; margin-top: 10px;">
-                          ${submission.feedback}
-                        </div>
-                      </div>
-                    ` : ''}
-                  </div>
-                ` : ''}
-              </div>
-      
-              ${submission.status !== 'graded' ? `
-                <div style="background: var(--card); padding: 10px; border-radius: 8px;">
-                  <small style="color: var(--muted);">Your submission is pending review by the teacher.</small>
-                </div>
-              ` : ''}
-            </div>
-      
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-              ${submission.status !== 'graded' ? `
-                <button class="btn btn-secondary" onclick="app.submitAssignment('${assignmentId}')">
-                  ✏️ Edit Submission
-                </button>
-              ` : ''}
-              <button class="btn btn-secondary" onclick="app.closeModal('view-submission')">Close</button>
-            </div>
-          `;
-      
-          this.showModal('view-submission', '📄 View Submission', modalContent, true);
-      
-        } catch (error) {
-          console.error('Error loading submission:', error);
-          this.showNotification('Error loading submission: ' + error.message, 'error');
-        }
-      }
 
       async viewSubmissions(assignmentId) {
         this.showLoading('Loading submissions...');
@@ -26530,182 +26073,6 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
-      async submitAssignmentSubmission(assignmentId, isEdit) {
-        // Captured before the upload: this upserts as well, so a replaced file
-        // is abandoned in the assignment folder unless it is cleaned up after.
-        const priorDriveFileId = this.assignments
-          ?.find(a => a.id === assignmentId)?.student_submission?.drive_file_id || null;
-        const content = document.getElementById('submission-content').value;
-        const fileInput = document.getElementById('submission-file');
-      
-        if (!content.trim()) {
-          this.showNotification('Please enter your submission content', 'error');
-          return;
-        }
-
-        if (this.isProcessing) {
-          console.log('Already processing submission, preventing double submit');
-          return;
-        }
-        
-        this.isProcessing = true; 
-      
-        try {
-          if (window.portalLoading) {
-            window.portalLoading.show('submit-assignment', 'Submitting assignment...');
-          }
-      
-          const submissionData = {
-            assignment_id: assignmentId,
-            student_id: this.auth.studentRecordId(),
-            content: content,
-            submitted_at: new Date().toISOString(),
-            status: 'submitted'
-          };
-      
-          // Handle file upload if present - DRIVE ONLY
-          if (fileInput?.files?.length > 0) {
-            const file = fileInput.files[0];
-
-            // Get assignment and class info (needed for size limit and upload path)
-            const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
-              .from('assignments')
-              .select('class_id, title, max_submit_size_mb')
-              .eq('id', assignmentId)
-              .single());
-
-            // Validate file size using per-assignment limit
-            const maxSizeMb = assignment?.max_submit_size_mb || 1024;
-            const maxSize = maxSizeMb * 1024 * 1024;
-            if (file.size > maxSize) {
-              throw new Error(`File too large. Maximum size is ${maxSizeMb}MB.`);
-            }
-      
-            const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
-              .from('classes')
-              .select('teacher_id, name')
-              .eq('id', assignment.class_id)
-              .single());
-
-            // Upload directly to Google Drive (resumable, no size limit from edge function)
-            const result = await this.uploadFileToDrive(file, {
-              assignmentId,
-              teacherId: classData.teacher_id,
-              className: classData.name,
-              assignmentTitle: assignment.title,
-              studentName: `${this.userInfo.profile.first_name}_${this.userInfo.profile.last_name}`,
-            });
-
-            if (!result.success) {
-              throw new Error('Drive upload failed. Please contact your teacher.');
-            }
-
-            submissionData.file_url = result.url;
-            submissionData.file_name = file.name;
-            submissionData.storage_type = 'google_drive';
-            submissionData.drive_file_id = result.fileId;
-          }
-
-
-          // Trashed BEFORE the write, and awaited. The server proves ownership
-          // by finding this exact id in the submission row - once the row has
-          // been updated to the new file, the old id matches nothing and the
-          // request is refused, which is the 404 this used to produce. If the
-          // write below then fails, the row points at a trashed file: it stays
-          // restorable for 30 days and the student can submit again, which is a
-          // smaller problem than not being able to verify ownership at all.
-          if (priorDriveFileId && submissionData.drive_file_id
-              && priorDriveFileId !== submissionData.drive_file_id) {
-            await this.trashDriveFile(priorDriveFileId).catch(e =>
-              console.warn('Could not remove the replaced Drive file:', e));
-          }
-
-          // Submit to database (extended timeout for writes)
-          const { data: submitResult, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignment_submissions')
-            .upsert(submissionData, {
-              onConflict: 'assignment_id,student_id'
-            })
-            .select(), 30000);
-
-          if (error) {
-            console.error('Submission DB error:', error);
-            throw new Error(error.message || 'Failed to save submission');
-          }
-
-
-          this.showNotification(`Assignment ${isEdit ? 'updated' : 'submitted'} successfully!`, 'success');
-          this.closeModal('submit-assignment');
-
-         // Get the class ID and due date to refresh the correct view and check if late
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignments')
-            .select('class_id, due_date')
-            .eq('id', assignmentId)
-            .single());
-
-          // Send notification to teacher (don't block on errors)
-          if (!isEdit) {
-            try {
-              const isLate = assignment?.due_date && new Date(assignment.due_date) < new Date();
-              await this.sendSubmissionNotification(assignmentId, this.userInfo.user.id, isLate);
-            } catch (notifError) {
-              console.error('Error sending submission notification:', notifError);
-            }
-          }
-            
-          if (assignment) {
-            // Close the assignments modal first if it's open
-            this.closeModal('assignments');
-            
-            // Reload student data to get fresh submission statuses
-            await this.loadStudentData();
-            
-            // If on home page, refresh the due this week section
-            if (this.currentSection === 'home') {
-              this.setupHomeContent();
-            }
-            
-            // Reopen the assignments view with updated data
-            setTimeout(() => {
-              this.viewAssignments(assignment.class_id);
-            }, 100);
-          }
-          
-        } catch (err) {
-          console.error('Submission error:', err);
-          this.showNotification(err.message, 'error');
-        } finally {
-          this.isProcessing = false;
-          if (window.portalLoading) {
-            window.portalLoading.hide('submit-assignment');
-          }
-        }
-      }
-
-      async viewSubmissionWithFile(assignmentId, submissionId) {
-        try {
-          const { data: submission } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignment_submissions')
-            .select('*')
-            .eq('id', submissionId)
-            .single());
-          
-          if (submission?.file_url) {
-            // Get the correct file URL based on storage type
-            const fileUrl = await this.retrieveFile(submission);
-            
-            // Update the submission object with the correct URL
-            submission.display_file_url = fileUrl;
-          }
-          
-          // Continue with normal submission viewing
-          this.viewSubmission(assignmentId, submissionId);
-        } catch (error) {
-          console.error('Error viewing submission:', error);
-          this.showNotification('Error viewing submission: ' + error.message, 'error');
-        }
-      }
 
       // ==================== GRADING & REPORTS FOR SUBMISSIONS ====================
       async gradeSubmission(submissionId, assignmentId) {
@@ -29056,263 +28423,12 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
-      async attemptDriveUpload(file, assignmentId) {
-        try {
-          // Get assignment and class info
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignments')
-            .select('class_id, title')
-            .eq('id', assignmentId)
-            .single());
 
-          if (!assignment) throw new Error('Assignment not found');
+      
 
-          const { data: classData } = await this.supabaseQuery(() => this.auth.supabase
-            .from('classes')
-            .select('teacher_id, name')
-            .eq('id', assignment.class_id)
-            .single());
+      
 
-          if (!classData) throw new Error('Class not found');
-
-          // Check upload settings from the public table
-          const { data: uploadSettings } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_upload_settings')
-            .select('drive_enabled')
-            .eq('teacher_id', classData.teacher_id)
-            .single());
-
-          if (!uploadSettings?.drive_enabled) {
-            throw new Error('Teacher has not enabled Google Drive uploads');
-          }
-
-          // Upload directly to Google Drive (resumable, no size limit from edge function)
-          const result = await this.uploadFileToDrive(file, {
-            assignmentId,
-            teacherId: classData.teacher_id,
-            className: classData.name,
-            assignmentTitle: assignment.title,
-            studentName: `${this.userInfo.profile.first_name}_${this.userInfo.profile.last_name}`,
-          });
-
-          return {
-            success: true,
-            url: result.url,
-            storage_type: 'google_drive',
-            drive_file_id: result.fileId,
-          };
-
-        } catch (error) {
-          console.log('Drive upload not available:', error.message);
-          throw error;
-        }
-      }
       
-      async uploadToSupabase(file, assignmentId) {
-        try {
-          const bucketName = 'assignment-uploads';
-          
-          // Ensure bucket exists (this will be created by admin initially)
-          const fileName = `${this.userInfo.user.id}/${assignmentId}/${Date.now()}_${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`;
-      
-          // Upload file
-          const { data: uploadData, error: uploadError } = await this.supabaseQuery(() => this.auth.supabase.storage
-            .from(bucketName)
-            .upload(fileName, file, { 
-              cacheControl: '3600', 
-              upsert: false 
-            }));
-      
-          if (uploadError) {
-            console.error('Storage error:', uploadError);
-            
-            // Provide helpful error message
-            if (uploadError.statusCode === 400 || uploadError.message?.includes('Bucket not found')) {
-              throw new Error('File storage not configured. Please contact your administrator.');
-            }
-            throw uploadError;
-          }
-      
-          // Create signed URL for private bucket
-          const { data: signedUrlData, error: signedError } = await this.supabaseQuery(() => this.auth.supabase.storage
-            .from(bucketName)
-            .createSignedUrl(fileName, 604800));
-      
-          if (signedError) throw signedError;
-      
-          return {
-            success: true,
-            url: signedUrlData.signedUrl,
-            storage_type: 'supabase',
-            drive_file_id: null,
-            file_path: fileName // Store path for future reference
-          };
-          
-        } catch (error) {
-          console.error('Supabase upload error:', error);
-          return {
-            success: false,
-            error: error.message
-          };
-        }
-      }
-      
-      async retrieveFile(submission) {
-        // Try Drive first if it was stored there
-        if (submission.storage_type === 'google_drive' && submission.drive_file_id) {
-          try {
-            // First try to get the direct link from database
-            const { data: driveUpload } = await this.supabaseQuery(() => this.auth.supabase
-              .from('drive_uploads')
-              .select('drive_web_link')
-              .eq('drive_file_id', submission.drive_file_id)
-              .single());
-            
-            if (driveUpload?.drive_web_link) {
-              return driveUpload.drive_web_link;
-            }
-            
-            // If not in database, construct the link
-            return `https://drive.google.com/file/d/${submission.drive_file_id}/view`;
-          } catch (error) {
-            console.log('Drive retrieval failed, using stored URL:', error);
-          }
-        }
-        
-        // Fall back to direct URL (works for both Supabase and Drive web links)
-        return submission.file_url;
-      }
-
-      setupDragAndDrop(maxSubmitSizeMb) {
-        const dropZone = document.getElementById('drop-zone');
-        const fileInput = document.getElementById('submission-file');
-
-        if (!dropZone || !fileInput) return;
-
-        const maxFileSizeMb = maxSubmitSizeMb || 10;
-      
-        // Prevent default drag behaviors
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-          dropZone.addEventListener(eventName, preventDefaults, false);
-          document.body.addEventListener(eventName, preventDefaults, false);
-        });
-      
-        function preventDefaults(e) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-      
-        // Highlight drop zone when item is dragged over it
-        ['dragenter', 'dragover'].forEach(eventName => {
-          dropZone.addEventListener(eventName, highlight, false);
-        });
-      
-        ['dragleave', 'drop'].forEach(eventName => {
-          dropZone.addEventListener(eventName, unhighlight, false);
-        });
-      
-        function highlight(e) {
-          dropZone.style.borderColor = 'var(--accent)';
-          dropZone.style.background = 'rgba(106, 169, 255, 0.1)';
-          dropZone.style.transform = 'scale(1.02)';
-        }
-      
-        function unhighlight(e) {
-          dropZone.style.borderColor = 'var(--border)';
-          dropZone.style.background = 'rgba(106, 169, 255, 0.05)';
-          dropZone.style.transform = 'scale(1)';
-        }
-      
-        // Handle dropped files
-        dropZone.addEventListener('drop', (e) => {
-          const dt = e.dataTransfer;
-          const files = dt.files;
-          
-          if (files.length > 0) {
-            handleFile(files[0]);
-          }
-        });
-      
-        // Handle file selection via browse button
-        fileInput.addEventListener('change', (e) => {
-          if (e.target.files.length > 0) {
-            handleFile(e.target.files[0]);
-          }
-        });
-      
-        // Handle file
-        const handleFile = (file) => {
-         // Validate file using per-assignment limit
-          const maxSize = maxFileSizeMb * 1024 * 1024;
-          const allowedTypes = [
-            'application/pdf',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'text/plain',
-            'image/jpeg',
-            'image/png',
-            'application/zip',
-            'application/x-zip-compressed',
-            'application/x-7z-compressed'
-          ];
-      
-          if (file.size > maxSize) {
-            app.showNotification(`File too large. Maximum size is ${maxFileSizeMb}MB.`, 'error');
-            return;
-          }
-      
-          if (!allowedTypes.includes(file.type) && !file.name.match(/\.(pdf|doc|docx|txt|jpg|jpeg|png|zip|7z)$/i)) {
-            app.showNotification('Invalid file type. Please upload PDF, DOC, DOCX, TXT, JPG, PNG, ZIP, or 7Z files.', 'error');
-            return;
-          }
-      
-          if (!allowedTypes.includes(file.type) && !file.name.match(/\.(pdf|doc|docx|txt|jpg|jpeg|png)$/i)) {
-            app.showNotification('Invalid file type. Please upload PDF, DOC, DOCX, TXT, JPG, or PNG files.', 'error');
-            return;
-          }
-      
-          // Update the file input
-          const dataTransfer = new DataTransfer();
-          dataTransfer.items.add(file);
-          fileInput.files = dataTransfer.files;
-      
-          // Show file preview
-          const dropZoneContent = document.getElementById('drop-zone-content');
-          const filePreview = document.getElementById('file-preview');
-          const fileName = document.getElementById('file-name');
-          const fileSize = document.getElementById('file-size');
-      
-          if (dropZoneContent) dropZoneContent.style.display = 'none';
-          if (filePreview) {
-            filePreview.style.display = 'block';
-            if (fileName) fileName.textContent = file.name;
-            if (fileSize) fileSize.textContent = formatFileSize(file.size);
-          }
-      
-          app.showNotification(`File "${file.name}" ready to upload`, 'success');
-        };
-      
-        // Format file size
-        function formatFileSize(bytes) {
-          if (bytes === 0) return '0 Bytes';
-          const k = 1024;
-          const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-          const i = Math.floor(Math.log(bytes) / Math.log(k));
-          return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
-        }
-      }
-      
-      removeFile() {
-        const fileInput = document.getElementById('submission-file');
-        const dropZoneContent = document.getElementById('drop-zone-content');
-        const filePreview = document.getElementById('file-preview');
-        
-        if (fileInput) fileInput.value = '';
-        if (dropZoneContent) dropZoneContent.style.display = 'block';
-        if (filePreview) filePreview.style.display = 'none';
-        
-        this.showNotification('File removed', 'info');
-      }
 
       // ==================== CLASS ANALYTICS & GRADING VIEW ====================
       async classAnalytics(classId) {
@@ -29729,43 +28845,6 @@ Students you had withdrawn stay withdrawn.`)) {
       }
 
       // ==================== ACADEMIC YEAR & QUARTERS ====================
-      showAcademicYearManagement() {
-        const modalContent = `
-          <div>
-            <h3>🎓 Academic Year Management</h3>
-            <p style="color: var(--muted); margin: 15px 0;">
-              Manage academic years, semesters, and archival of past classes.
-            </p>
-            
-            <div class="card">
-              <h4>Current Academic Year</h4>
-              <p>2024-2025 Academic Year</p>
-              <p style="color: var(--muted); font-size: 14px;">Fall Semester (Active)</p>
-            </div>
-
-            <div class="card" style="margin-top: 20px;">
-              <h4>Quick Actions</h4>
-              <div style="display: grid; gap: 10px; margin-top: 15px;">
-                <button class="btn btn-secondary">
-                  📅 Create New Academic Year
-                </button>
-                <button class="btn btn-secondary">
-                  📚 Archive Current Classes
-                </button>
-                <button class="btn btn-secondary">
-                  📊 View Historical Data
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="app.closeModal('academic-year')">Close</button>
-          </div>
-        `;
-
-        this.showModal('academic-year', '🎓 Academic Year Management', modalContent);
-      }
 
       async showQuarterManagement() {
         try {
@@ -40636,30 +39715,6 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
       
-      calculateGradeAverage(submissions) {
-        if (!submissions || submissions.length === 0) return 'N/A';
-        
-        const percentGrades = submissions
-          .map(sub => {
-            // If grade is already a percentage (like "85" or "85%")
-            const gradeStr = String(sub.grade).replace('%', '').trim();
-            const num = parseFloat(gradeStr);
-            if (!isNaN(num)) return num;
-            
-            // If we have points, calculate percentage
-            if (sub.points_earned && sub.assignment?.max_points && sub.assignment.max_points > 0) {
-              return (sub.points_earned / sub.assignment.max_points) * 100;
-            }
-            
-            return null;
-          })
-          .filter(g => g !== null);
-        
-        if (percentGrades.length === 0) return 'N/A';
-        
-        const avg = percentGrades.reduce((a, b) => a + b, 0) / percentGrades.length;
-        return avg.toFixed(1);
-      }
 
       async removeStudentFromClass(studentId, classId, studentName, className) {
         // Use custom modal instead of native confirm() to avoid browser blocking issues
@@ -41345,11 +40400,6 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
       
-      async viewStudentClassDetails(studentId, classId) {
-        // This could show detailed grades and assignments for this specific student in this class
-        // For now, just open the class
-        this.openClass(classId);
-      }
 
       async showDeleteAccountConfirmation() {
         const modalContent = `
@@ -42115,94 +41165,6 @@ Students you had withdrawn stay withdrawn.`)) {
           });
       }
 
-      async handleCreateInactiveStudent(e) {
-          e.preventDefault();
-          
-          // Check if elements exist
-          const firstNameEl = document.getElementById('inactive-firstname');
-          const lastNameEl = document.getElementById('inactive-lastname');
-          const usernameEl = document.getElementById('inactive-username');
-          const gradeLevelEl = document.getElementById('inactive-grade');
-          const activationGradeEl = document.getElementById('inactive-activation-grade');
-          const emailEl = document.getElementById('inactive-email');
-          
-          // If elements don't exist, try getting from the form directly
-          if (!firstNameEl) {
-              const formData = new FormData(e.target);
-          }
-          
-          // Get form values
-          const firstName = firstNameEl?.value?.trim();
-          const lastName = lastNameEl?.value?.trim();
-          const username = usernameEl?.value?.trim();
-          const gradeLevel = gradeLevelEl?.value;
-          const activationGrade = activationGradeEl?.value;
-          const email = emailEl?.value?.trim() || null;
-          
-          // Validation
-          if (!firstName) {
-              window.PortalUI.showNotification('❌ First name is required', 'error');
-              return;
-          }
-          if (!lastName) {
-              window.PortalUI.showNotification('❌ Last name is required', 'error');
-              return;
-          }
-          if (!username) {
-              window.PortalUI.showNotification('❌ Username is required', 'error');
-              return;
-          }
-          if (!gradeLevel) {
-              window.PortalUI.showNotification('❌ Current grade level is required', 'error');
-              return;
-          }
-          if (!activationGrade) {
-              window.PortalUI.showNotification('❌ Activation grade level is required', 'error');
-              return;
-          }
-          
-          const studentData = {
-              firstName,
-              lastName,
-              username,
-              gradeLevel,
-              activationGrade,
-              email
-          };
-          
-          try {
-              const result = await this.createInactiveStudent(studentData);
-              
-              if (result.error) {
-                  console.error('Create student error:', result.error);
-                  
-                  // Check for specific errors
-                  if (result.error.code === '23505') {
-                      const errorMsg = result.error.message;
-                      if (errorMsg.includes('username')) {
-                          window.PortalUI.showNotification('❌ Username already exists. Please choose a different username.', 'error');
-                      } else if (errorMsg.includes('email')) {
-                          window.PortalUI.showNotification('❌ Email already exists. Please use a different email.', 'error');
-                      } else {
-                          window.PortalUI.showNotification('❌ This student already exists in the system.', 'error');
-                      }
-                  } else if (result.error.code === '23502') {
-                      window.PortalUI.showNotification('❌ Missing required field: ' + result.error.message, 'error');
-                  } else {
-                      window.PortalUI.showNotification('❌ Error creating student: ' + result.error.message, 'error');
-                  }
-                  return;
-              }
-              
-              window.PortalUI.showNotification('✅ Inactive student created successfully!', 'success');
-              const overlay = document.getElementById('student-mgmt-modal-overlay');
-              if (overlay) overlay.remove();
-              
-          } catch (error) {
-              console.error('Error creating inactive student:', error);
-              window.PortalUI.showNotification('❌ Failed to create student: ' + error.message, 'error');
-          }
-      }
 
       async showInactiveStudentsList() {
         const modal = document.getElementById('student-management-modal');
@@ -42288,139 +41250,6 @@ Students you had withdrawn stay withdrawn.`)) {
 
     // ==================== ATTENDANCE SCHEDULE MANAGEMENT ====================
 
-    async showStudentScheduleModal(studentId, studentName) {
-      this.showLoading('Loading schedule...');
-
-      try {
-        // Load current schedule
-        const { data: schedule, error } = await this.auth.supabase
-          .from('student_schedule')
-          .select('*')
-          .eq('student_id', studentId);
-
-        if (error) throw error;
-
-        const scheduledDays = schedule?.map(s => s.day_of_week) || [];
-
-        const days = [
-          { num: 0, name: 'Sunday', short: 'Sun' },
-          { num: 1, name: 'Monday', short: 'Mon' },
-          { num: 2, name: 'Tuesday', short: 'Tue' },
-          { num: 3, name: 'Wednesday', short: 'Wed' },
-          { num: 4, name: 'Thursday', short: 'Thu' },
-          { num: 5, name: 'Friday', short: 'Fri' },
-          { num: 6, name: 'Saturday', short: 'Sat' }
-        ];
-
-        const modalContent = `
-          <div style="margin-bottom: 20px;">
-            <p style="color: var(--muted); margin-bottom: 15px;">
-              Select the days ${studentName} is expected to attend school.
-              Attendance can only be marked on scheduled days.
-            </p>
-
-            <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; margin-bottom: 20px;">
-              ${days.map(day => `
-                <label style="
-                  display: flex;
-                  flex-direction: column;
-                  align-items: center;
-                  padding: 15px 10px;
-                  border: 2px solid ${scheduledDays.includes(day.num) ? 'var(--accent)' : 'var(--border)'};
-                  border-radius: 8px;
-                  cursor: pointer;
-                  transition: all 0.2s;
-                  background: ${scheduledDays.includes(day.num) ? 'rgba(106, 169, 255, 0.1)' : 'transparent'};
-                ">
-                  <input type="checkbox"
-                         name="schedule-day"
-                         value="${day.num}"
-                         ${scheduledDays.includes(day.num) ? 'checked' : ''}
-                         style="margin-bottom: 8px;"
-                         onchange="this.parentElement.style.borderColor = this.checked ? 'var(--accent)' : 'var(--border)'; this.parentElement.style.background = this.checked ? 'rgba(106, 169, 255, 0.1)' : 'transparent';">
-                  <span style="font-weight: 600;">${day.short}</span>
-                </label>
-              `).join('')}
-            </div>
-
-            <div style="display: flex; gap: 10px;">
-              <button class="btn btn-secondary" onclick="app.selectAllDays()" style="flex: 1;">
-                Select Weekdays (M-F)
-              </button>
-              <button class="btn btn-secondary" onclick="app.clearAllDays()" style="flex: 1;">
-                Clear All
-              </button>
-            </div>
-          </div>
-
-          <div style="display: flex; gap: 10px; justify-content: flex-end;">
-            <button class="btn btn-secondary" onclick="app.closeModal('student-schedule')">Cancel</button>
-            <button class="btn btn-primary" onclick="app.saveStudentSchedule('${studentId}')">Save Schedule</button>
-          </div>
-        `;
-
-        this.showModal('student-schedule', `📅 Attendance Schedule - ${studentName}`, modalContent);
-
-      } catch (error) {
-        console.error('Error loading student schedule:', error);
-        this.showNotification('Error loading schedule: ' + error.message, 'error');
-      }
-    }
-
-    selectAllDays() {
-      // Select Monday through Friday (1-5)
-      const checkboxes = document.querySelectorAll('input[name="schedule-day"]');
-      checkboxes.forEach(cb => {
-        const day = parseInt(cb.value);
-        const shouldCheck = day >= 1 && day <= 5;
-        cb.checked = shouldCheck;
-        cb.parentElement.style.borderColor = shouldCheck ? 'var(--accent)' : 'var(--border)';
-        cb.parentElement.style.background = shouldCheck ? 'rgba(106, 169, 255, 0.1)' : 'transparent';
-      });
-    }
-
-    clearAllDays() {
-      const checkboxes = document.querySelectorAll('input[name="schedule-day"]');
-      checkboxes.forEach(cb => {
-        cb.checked = false;
-        cb.parentElement.style.borderColor = 'var(--border)';
-        cb.parentElement.style.background = 'transparent';
-      });
-    }
-
-    async saveStudentSchedule(studentId) {
-      const checkboxes = document.querySelectorAll('input[name="schedule-day"]:checked');
-      const selectedDays = Array.from(checkboxes).map(cb => parseInt(cb.value));
-
-      try {
-        // Delete existing schedule
-        await this.auth.supabase
-          .from('student_schedule')
-          .delete()
-          .eq('student_id', studentId);
-
-        // Insert new schedule
-        if (selectedDays.length > 0) {
-          const scheduleData = selectedDays.map(day => ({
-            student_id: studentId,
-            day_of_week: day
-          }));
-
-          const { error } = await this.auth.supabase
-            .from('student_schedule')
-            .insert(scheduleData);
-
-          if (error) throw error;
-        }
-
-        this.showNotification('Schedule saved successfully!', 'success');
-        this.closeModal('student-schedule');
-
-      } catch (error) {
-        console.error('Error saving schedule:', error);
-        this.showNotification('Error saving schedule: ' + error.message, 'error');
-      }
-    }
 
     // Student groups, for any screen that filters a roster by cohort.
     //
@@ -43485,154 +42314,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
     // ==================== STUDENT ATTENDANCE HISTORY ====================
 
-    async showStudentAttendanceHistory(studentId, studentName) {
-      this.showLoading('Loading attendance history...');
-
-      try {
-        // Get attendance records for this student
-        const { data: attendance, error } = await this.auth.supabase
-          .from('daily_attendance')
-          .select('*')
-          .eq('student_id', studentId)
-          .order('date', { ascending: false });
-
-        if (error) throw error;
-
-        // Get student's schedule
-        const { data: schedule } = await this.auth.supabase
-          .from('student_schedule')
-          .select('day_of_week')
-          .eq('student_id', studentId);
-
-        const scheduledDays = schedule?.map(s => s.day_of_week) || [];
-        const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-        const scheduledDayNames = scheduledDays.map(d => dayNames[d]).join(', ') || 'Not set';
-
-        // Calculate stats
-        const stats = {
-          present: attendance?.filter(a => a.status === 'present').length || 0,
-          absent: attendance?.filter(a => a.status === 'absent').length || 0,
-          excused: attendance?.filter(a => a.status === 'absent' && a.excused).length || 0,
-          late: attendance?.filter(a => ['late', 'late_left_early'].includes(a.status)).length || 0,
-          leftEarly: attendance?.filter(a => ['left_early', 'late_left_early'].includes(a.status)).length || 0
-        };
-
-        const total = attendance?.length || 0;
-        const attendanceRate = total > 0 ? ((stats.present / total) * 100).toFixed(1) : 'N/A';
-
-        const statusIcons = {
-          present: '✅',
-          absent: '❌',
-          late: '⏰',
-          left_early: '🚪',
-          late_left_early: '⚠️'
-        };
-
-        const modalContent = `
-          <div>
-            <!-- Stats Overview -->
-            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 20px;">
-              <div style="text-align: center; padding: 15px; background: rgba(139, 255, 176, 0.1); border-radius: 8px; border: 1px solid rgba(139, 255, 176, 0.3);">
-                <div style="font-size: 24px; font-weight: bold; color: var(--accent-2);">${stats.present}</div>
-                <div style="font-size: 11px; color: var(--muted);">Present</div>
-              </div>
-              <div style="text-align: center; padding: 15px; background: rgba(255, 106, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 106, 106, 0.3);">
-                <div style="font-size: 24px; font-weight: bold; color: var(--danger);">${stats.absent}</div>
-                <div style="font-size: 11px; color: var(--muted);">Absent</div>
-              </div>
-              <div style="text-align: center; padding: 15px; background: rgba(255, 211, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 211, 106, 0.3);">
-                <div style="font-size: 24px; font-weight: bold; color: var(--warning);">${stats.late}</div>
-                <div style="font-size: 11px; color: var(--muted);">Late</div>
-              </div>
-              <div style="text-align: center; padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.3);">
-                <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${stats.leftEarly}</div>
-                <div style="font-size: 11px; color: var(--muted);">Left Early</div>
-              </div>
-              <div style="text-align: center; padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.3);">
-                <div style="font-size: 24px; font-weight: bold; color: var(--accent);">${attendanceRate}%</div>
-                <div style="font-size: 11px; color: var(--muted);">Attendance Rate</div>
-              </div>
-            </div>
-
-            <div style="margin-bottom: 15px; padding: 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--border);">
-              <span style="color: var(--muted);">Scheduled Days:</span>
-              <strong>${scheduledDayNames}</strong>
-            </div>
-
-            <!-- Attendance Records -->
-            <div style="max-height: 50vh; overflow-y: auto;">
-              ${attendance && attendance.length > 0 ? `
-                <table style="width: 100%; border-collapse: collapse;">
-                  <thead style="position: sticky; top: 0; background: var(--card);">
-                    <tr>
-                      <th style="text-align: left; padding: 10px; border-bottom: 2px solid var(--border);">Date</th>
-                      <th style="text-align: center; padding: 10px; border-bottom: 2px solid var(--border);">Status</th>
-                      <th style="text-align: left; padding: 10px; border-bottom: 2px solid var(--border);">Details</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${attendance.map(record => {
-                      const date = new Date(record.date + 'T12:00:00');
-                      const dayName = dayNames[date.getDay()];
-                      const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-
-                      let details = '';
-                      if (record.arrived_at_period) details += `Arrived P${record.arrived_at_period} `;
-                      if (record.left_at_period) details += `Left P${record.left_at_period} `;
-                      if (record.excused) details += '(Excused) ';
-                      if (record.excuse_note) details += record.excuse_note;
-
-                      return `
-                        <tr style="border-bottom: 1px solid var(--border);">
-                          <td style="padding: 10px;">
-                            <div>${formattedDate}</div>
-                            <div style="font-size: 11px; color: var(--muted);">${dayName}</div>
-                          </td>
-                          <td style="padding: 10px; text-align: center;">
-                            <span style="font-size: 18px;">${statusIcons[record.status] || '❓'}</span>
-                            <div style="font-size: 11px; color: var(--muted);">${record.status.replace(/_/g, ' ')}</div>
-                          </td>
-                          <td style="padding: 10px; font-size: 13px; color: var(--muted);">${details || '-'}</td>
-                        </tr>
-                      `;
-                    }).join('')}
-                  </tbody>
-                </table>
-              ` : `
-                <div style="text-align: center; padding: 40px; color: var(--muted);">
-                  <div style="font-size: 48px; margin-bottom: 15px;">📅</div>
-                  <p>No attendance records found.</p>
-                </div>
-              `}
-            </div>
-          </div>
-
-          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
-            <button class="btn btn-secondary" onclick="app.showStudentScheduleModal('${studentId}', '${studentName}')">
-              📅 Edit Schedule
-            </button>
-            <button class="btn btn-secondary" onclick="app.closeModal('attendance-history')">Close</button>
-          </div>
-        `;
-
-        this.showModal('attendance-history', `📊 Attendance History - ${studentName}`, modalContent, true);
-
-      } catch (error) {
-        console.error('Error loading attendance history:', error);
-        this.showNotification('Error loading history: ' + error.message, 'error');
-      }
-    }
 
     // Toggle excuse note visibility when checkbox changes
-    setupExcuseCheckboxListeners() {
-      document.querySelectorAll('.excused-checkbox').forEach(checkbox => {
-        checkbox.addEventListener('change', function() {
-          const studentId = this.dataset.studentId;
-          const excuseRow = document.querySelector(`.excuse-note-row[data-student-id="${studentId}"]`);
-          excuseRow.style.display = this.checked ? 'table-row' : 'none';
-        });
-      });
-    }
 
     // ==================== CLASS ATTENDANCE (Teacher) ====================
 
@@ -48249,26 +46932,6 @@ Students you had withdrawn stay withdrawn.`)) {
     // RPCs which audit-log the caller via created_by.
     // ============================================================
 
-    async renderRTCBankHelper() {
-      const section = document.getElementById('rtc-bank-helper-section');
-      if (!section) { console.error('Bank helper section not found'); return; }
-
-      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading bank helper...</p></div>';
-
-      try {
-        const { data, error } = await this.auth.supabase.rpc('admin_bank_list_students');
-        if (error) throw error;
-        if (data && data.success === false) throw new Error(data.error || 'Failed to load students');
-
-        this._bankHelperStudents = (data && data.students) || [];
-        this._bankHelperFilter = this._bankHelperFilter || { search: '', status: 'all' };
-        this._renderRTCBankHelperShell(section);
-        this._renderRTCBankHelperTable();
-      } catch (err) {
-        console.error('Error loading bank helper:', err);
-        section.innerHTML = `<div class="card" style="margin: 20px;"><p style="color: var(--danger);">Error loading bank helper: ${err.message}</p></div>`;
-      }
-    }
 
     // embedded = rendering inside the RTC Management tab strip rather than as a
     // standalone page, so skip the page chrome (back button, own heading).
@@ -48876,18 +47539,6 @@ Students you had withdrawn stay withdrawn.`)) {
       }
     }
 
-    async loadRTCCategories() {
-      try {
-        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
-          .from('rtc_spend_categories')
-          .select('*')
-          .order('name'));
-        if (error) throw error;
-        this._rtcCategories = data || [];
-      } catch (error) {
-        console.error('Error loading RTC categories:', error);
-      }
-    }
 
     // ==================== PRIVILEGES TAB ====================
 
@@ -70563,11 +69214,6 @@ Students you had withdrawn stay withdrawn.`)) {
       this.terminalPrint(`✓ ${msg}`, '#8bffb0');
     }
 
-    _naturalInfo(messages) {
-      const variations = Array.isArray(messages) ? messages : [messages];
-      const msg = variations[Math.floor(Math.random() * variations.length)];
-      this.terminalPrint(`💬 ${msg}`, '#6aa9ff');
-    }
 
     _naturalError(message, suggestions = []) {
       this.terminalPrint(`✗ ${message}`, '#ff6a6a');
@@ -70709,49 +69355,6 @@ Students you had withdrawn stay withdrawn.`)) {
 
     // ==================== IRL PURCHASES ====================
 
-    async renderIRLPurchases() {
-      const section = document.getElementById('irl-purchases-section');
-      if (!section) { console.error('IRL purchases section not found'); return; }
-
-      section.innerHTML = '<div style="text-align: center; padding: 40px;"><div class="loading-spinner"></div><p>Loading IRL Store...</p></div>';
-
-      try {
-        const [studentsRes, itemsRes, purchasesRes] = await Promise.all([
-          this.supabaseQuery(() => this.auth.supabase
-            .from('user_profiles')
-            .select('id, first_name, last_name, grade_level, rtc_balance')
-            .eq('user_type', 'student')
-            .or('student_status.is.null,student_status.neq.past')
-            .order('last_name', { ascending: true })),
-          this.supabaseQuery(() => this.auth.supabase
-            .from('irl_store_items')
-            .select('*')
-            .order('sort_order', { ascending: true })
-            .order('name', { ascending: true })),
-          this.supabaseQuery(() => this.auth.supabase
-            .from('irl_purchases')
-            .select('*, student:user_profiles!irl_purchases_student_id_fkey(first_name, last_name), processor:user_profiles!irl_purchases_processed_by_fkey(first_name, last_name)')
-            .order('created_at', { ascending: false })
-            .limit(100))
-        ]);
-
-        if (studentsRes.error) throw studentsRes.error;
-
-        this._irlStudents = studentsRes.data || [];
-        this._irlStoreItems = (itemsRes.data || []).filter(i => i.is_active);
-        this._irlAllItems = itemsRes.data || [];
-        this._irlPurchases = purchasesRes.data || [];
-        this._irlCurrentTab = this._irlCurrentTab || 'new-purchase';
-        this._irlSelectedStudent = null;
-
-        this._renderIRLShell(section);
-        this._switchIRLTab(this._irlCurrentTab);
-
-      } catch (error) {
-        console.error('Error loading IRL purchases:', error);
-        section.innerHTML = `<div class="card" style="margin: 20px;"><p style="color: var(--danger);">Error loading IRL Store: ${error.message}</p></div>`;
-      }
-    }
 
     // embedded = inside the RTC Management tab strip; skip the page chrome.
     _renderIRLShell(section, embedded = false) {
