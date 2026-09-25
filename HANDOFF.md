@@ -4268,3 +4268,26 @@ checks the output now. **A source-grep assertion in a 70k-line file is
 matching somebody else's code more often than you think.**
 
 32 assertions, 9 deliberate breaks, 9 caught.
+
+## Award RTC: "Apply to Present" (2026-09-25)
+
+The class Award RTC screen had "Apply to All". It now also has **Apply to
+Present**: the amount goes to everyone in the room today and 0 to everyone
+else (so pressing All first and Present second does not pay the absent).
+
+Who is present, in order:
+
+- **The class register, once taken** (any row for today). A class that meets
+  twice reads the later lesson.
+- **The daily register** for a student the class register skipped, and for
+  the whole class until the teacher has taken it. A line under the buttons
+  says which one is in use.
+- **Nobody marked = not present.** Same rule as Match Master. With nothing
+  taken at all the button is off; Apply to All still works.
+
+Late and left early count as present; absent and excused do not. Rows show
+"(absent)" or "(not marked)" beside the name.
+
+`tests/rtc-apply-present.test.js` (17 assertions, 6 mutations, 5 caught; the
+sixth was equivalent code and was simplified away) and
+`debug-tools/rtc-award-journey.mjs` (the three cases, end to end in Chromium).

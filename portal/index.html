@@ -20047,9 +20047,21 @@
             `${a.last_name} ${a.first_name}`.localeCompare(`${b.last_name} ${b.first_name}`)
           );
 
+          // Who is here today, for "Apply to Present". Loaded with the modal so
+          // the button is instant; a failure only costs this button, never the
+          // award screen, which worked long before attendance fed it.
+          let presence = null;
+          try {
+            presence = await this._rtcLoadPresence(classId, sortedStudents.map(s => s.id));
+          } catch (e) {
+            console.warn('attendance unavailable for Apply to Present:', e);
+          }
+          this._rtcPresence = presence;
+
           const studentRows = sortedStudents.map(s => `
             <tr data-student-id="${s.id}">
-              <td style="padding: 8px; white-space: nowrap;">${s.first_name} ${s.last_name}</td>
+              <td style="padding: 8px; white-space: nowrap;">${s.first_name} ${s.last_name}${presence && !presence.present.has(s.id)
+                ? ` <span style="color: var(--muted); font-size: 0.8rem;">(${presence.marked.has(s.id) ? 'absent' : 'not marked'})</span>` : ''}</td>
               <td style="padding: 8px; text-align: center; color: var(--muted);">${s.rtc_balance || 0}</td>
               <td style="padding: 8px; text-align: center;">
                 <input type="number" class="rtc-bulk-amount" value="0" style="width: 80px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center;">
@@ -20063,7 +20075,9 @@
                 <label style="font-weight: 600; white-space: nowrap;">Set All:</label>
                 <input type="number" id="rtc-bulk-set-all" value="10" style="width: 80px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); text-align: center;">
                 <button class="btn btn-secondary small" onclick="app.setAllRTCAmounts()">Apply to All</button>
+                <button class="btn btn-secondary small" onclick="app.setPresentRTCAmounts()"${presence && presence.present.size ? '' : ' disabled'}>Apply to Present</button>
               </div>
+              <div id="rtc-bulk-presence" style="color: var(--muted); font-size: 0.85rem; margin: -8px 0 15px;">${this._rtcPresenceLabel(presence, sortedStudents.length)}</div>
               <div style="margin-bottom: 15px;">
                 <label style="font-weight: 600; display: block; margin-bottom: 5px;">Reason / Description *</label>
                 <input type="text" id="rtc-class-bulk-reason" placeholder="e.g. Class participation bonus" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
@@ -20103,6 +20117,101 @@
           console.error('Error loading class RTC award:', error);
           this.showNotification('Error loading students: ' + error.message, 'error');
         }
+      }
+
+      // Today's attendance for the award screen. Class attendance is asked
+      // first because it is the register for THIS lesson; the daily register
+      // stands in for it until the teacher has taken it.
+      async _rtcLoadPresence(classId, studentIds) {
+        const today = this._localDateStr(new Date());
+        const { data: classRows, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('class_attendance')
+          .select('student_id, period, status')
+          .eq('class_id', classId)
+          .eq('date', today));
+        if (error) throw error;
+        let dailyRows = [];
+        if (studentIds.length) {
+          try {
+            dailyRows = await this._pickupRpc('rt_daily_attendance_for', {
+              p_student_ids: studentIds,
+              p_date: today,
+            }) || [];
+          } catch (e) {
+            // The class register can still answer on its own.
+            console.warn('daily attendance unavailable:', e);
+          }
+        }
+        return this._rtcPresentFrom(classRows || [], dailyRows);
+      }
+
+      // Pure: which students count as present, and from which register.
+      //
+      // The class register wins as soon as it has been taken, i.e. has any row
+      // for today. A class that meets twice reads the latest lesson marked,
+      // since that is the one the teacher is awarding for. A student the class
+      // register is silent about falls back to the day, rather than being
+      // counted absent because the teacher skipped a row.
+      //
+      // Late and left early count as present: they were in the room, and gold
+      // is for what happened while they were. A student neither register has
+      // marked is NOT present - "not taken" is not "here", the same rule Match
+      // Master follows - so they are left at 0 for the teacher to decide.
+      _rtcPresentFrom(classRows, dailyRows) {
+        const HERE = new Set(['present', 'late', 'left_early', 'late_left_early']);
+        const latest = {};
+        for (const r of classRows || []) {
+          if (!r || !r.status) continue;
+          const p = r.period == null ? -1 : Number(r.period);
+          const prev = latest[r.student_id];
+          if (!prev || p >= prev.p) latest[r.student_id] = { p, status: r.status };
+        }
+        const day = {};
+        for (const d of dailyRows || []) if (d && d.status) day[d.student_id] = d.status;
+
+        const classTaken = Object.keys(latest).length > 0;
+        const present = new Set();
+        const marked = new Set();
+        let fromDay = 0;
+        const ids = new Set([...Object.keys(latest), ...Object.keys(day)]);
+        for (const id of ids) {
+          let status = null;
+          if (latest[id]) status = latest[id].status;
+          else if (day[id]) { status = day[id]; if (classTaken) fromDay++; }
+          if (!status) continue;
+          marked.add(id);
+          if (HERE.has(status)) present.add(id);
+        }
+        const source = classTaken ? 'class' : (Object.keys(day).length ? 'daily' : null);
+        return { source, present, marked, fromDay };
+      }
+
+      // One line under the buttons saying which register "present" means, so
+      // a teacher is never guessing why a child was left out.
+      _rtcPresenceLabel(presence, total) {
+        if (!presence) return "Couldn't load today's attendance, so Apply to Present is off.";
+        if (!presence.source) return 'No attendance taken today yet, so Apply to Present is off.';
+        const n = presence.present.size;
+        const base = presence.source === 'class'
+          ? `Present = today's class attendance: ${n} of ${total}.`
+          : `Class attendance not taken yet, so present = today's daily attendance: ${n} of ${total}.`;
+        return presence.fromDay
+          ? `${base} ${presence.fromDay} not on the class register, read from the daily one.`
+          : base;
+      }
+
+      // Same amount for everyone here today, and 0 for everyone else. The 0 is
+      // deliberate: after "Apply to All", leaving the absent rows filled would
+      // quietly pay children who were not in the room.
+      setPresentRTCAmounts() {
+        const presence = this._rtcPresence;
+        if (!presence || !presence.present.size) return;
+        const value = document.getElementById('rtc-bulk-set-all')?.value || '0';
+        document.querySelectorAll('#rtc-bulk-students tr[data-student-id]').forEach(row => {
+          const input = row.querySelector('.rtc-bulk-amount');
+          if (input) input.value = presence.present.has(row.dataset.studentId) ? value : '0';
+        });
+        this.updateRTCSummary();
       }
 
       setAllRTCAmounts() {
