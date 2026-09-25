@@ -4187,3 +4187,46 @@ staff looks plausible, but if it was set up once and never revisited then
 surfacing it is worse than not. Worth a look before anyone relies on it.
 
 24 assertions, 8 deliberate breaks, 8 caught.
+
+## IRL shop: pick one student, then the shop (2026-09-24)
+
+It opened with a table of every student in the school -- name, grade, balance,
+Select -- and a search that filtered it. A shop serves one child at a time, so
+the other hundred-odd rows were never what anybody was looking at, and on a
+phone they pushed the actual work off the bottom of the screen.
+
+Now: a combobox. Type a name, pick, and the shop actions appear. Once somebody
+is chosen the picker shrinks to a single line -- name, grade, balance, Change
+-- because the actions are the point from then on.
+
+### Type, Enter, done
+
+Three letters and Enter without ever looking at the list. Arrow keys move,
+Escape closes, clicking works. Matching is on first and last together, so
+"marisol o" separates two children who share a first name.
+
+**The highlight resets on every keystroke.** Without that, arrowing down and
+then typing more leaves the selection pointing at whatever now sits at that
+index -- which in a shop means charging the wrong child. It is tested, and
+mutation-tested.
+
+### The list stays short
+
+Capped at 8, and it *says* there are more ("Type to narrow -- N students")
+rather than silently truncating. A truncated list that looks complete is how
+somebody concludes a child is not enrolled.
+
+### Changing student clears the form
+
+The shop actions are wiped when the picker reopens, so a price or a custom item
+left on screen cannot end up attached to the next child.
+
+### A test lesson worth keeping
+
+The escaping assertion was originally a regex over the file -- and passed with
+the escaping stripped out, because that same `${esc(a)} ${esc(b)}` shape
+appears on several other screens. It renders a name containing markup and
+checks the output now. **A source-grep assertion in a 70k-line file is
+matching somebody else's code more often than you think.**
+
+32 assertions, 9 deliberate breaks, 9 caught.

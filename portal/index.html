@@ -70766,55 +70766,164 @@ Students you had withdrawn stay withdrawn.`)) {
     // ===== New Purchase Tab =====
     _renderIRLNewPurchase(container) {
       this._irlSelectedStudent = null;
+      this._irlQuery = '';
+      this._irlHighlight = 0;
       container.innerHTML = `
-        <div class="card" style="padding: 20px; margin-bottom: 20px;">
-          <h3 style="margin: 0 0 15px 0;">Select Student</h3>
-          <input type="text" id="irl-student-search" placeholder="Search by name..."
-            oninput="app._filterIRLStudents()"
-            style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); margin-bottom: 15px; box-sizing: border-box;">
-          <div id="irl-student-list" style="max-height: 300px; overflow-y: auto;">
-            ${this._renderIRLStudentList(this._irlStudents)}
-          </div>
-        </div>
+        <div id="irl-student-picker"></div>
         <div id="irl-purchase-form-area"></div>
       `;
+      this._renderIRLPicker();
     }
 
-    _renderIRLStudentList(students) {
-      if (!students.length) return '<p style="color: var(--muted); text-align: center;">No students found</p>';
-      return `<table style="width: 100%; border-collapse: collapse;">
-        <thead><tr style="border-bottom: 2px solid var(--border);">
-          <th style="text-align: left; padding: 8px;">Name</th>
-          <th style="text-align: left; padding: 8px;">Grade</th>
-          <th style="text-align: right; padding: 8px;">RTC Balance</th>
-          <th style="text-align: center; padding: 8px;">Action</th>
-        </tr></thead>
-        <tbody>${students.map(s => `
-          <tr style="border-bottom: 1px solid var(--border);">
-            <td style="padding: 8px;">${s.first_name} ${s.last_name}</td>
-            <td style="padding: 8px;">${s.grade_level || '—'}</td>
-            <td style="padding: 8px; text-align: right; font-weight: 600; color: #f39c12;">${s.rtc_balance || 0} RTC</td>
-            <td style="padding: 8px; text-align: center;">
-              <button class="btn btn-primary" style="padding: 4px 12px; font-size: 12px;" onclick="app._selectIRLStudent('${s.id}')">Select</button>
-            </td>
-          </tr>
-        `).join('')}</tbody>
-      </table>`;
+    // One student at a time, so one student's worth of screen. Typing narrows;
+    // nothing below appears until somebody is chosen.
+    _renderIRLPicker() {
+      const host = document.getElementById('irl-student-picker');
+      if (!host) return;
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      const sel = this._irlSelectedStudent;
+
+      if (sel) {
+        // Chosen: shrink to a line. The shop actions are the point now, and
+        // the picker has stopped being worth the space.
+        host.innerHTML = `
+          <div class="card" style="padding: 12px 16px; margin-bottom: 16px; display: flex;
+                                   align-items: center; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 160px;">
+              <b>${esc(sel.first_name)} ${esc(sel.last_name)}</b>
+              <span style="color: var(--muted); font-size: 12px;">
+                ${sel.grade_level ? `\u00b7 Grade ${esc(sel.grade_level)}` : ''}
+              </span>
+            </div>
+            <div style="font-weight: 700; color: #f39c12; white-space: nowrap;">${sel.rtc_balance || 0} RTC</div>
+            <button class="btn btn-secondary" style="padding: 4px 12px; font-size: 12px;"
+                    onclick="app._changeIRLStudent()">Change</button>
+          </div>`;
+        return;
+      }
+
+      host.innerHTML = `
+        <div class="card" style="padding: 20px; margin-bottom: 20px;">
+          <label for="irl-student-search" style="font-weight: 600; display: block; margin-bottom: 6px;">Student</label>
+          <div style="position: relative;">
+            <input type="text" id="irl-student-search" autocomplete="off" role="combobox" aria-expanded="false"
+              placeholder="Start typing a name\u2026" value="${esc(this._irlQuery || '')}"
+              oninput="app._filterIRLStudents()" onfocus="app._filterIRLStudents()"
+              onkeydown="app._irlPickerKey(event)"
+              onblur="setTimeout(() => app._closeIRLOptions(), 150)"
+              style="width: 100%; padding: 12px; font-size: 16px; border: 1px solid var(--border);
+                     border-radius: 6px; background: var(--bg); color: var(--text); box-sizing: border-box;">
+            <div id="irl-student-options" style="display: none; position: absolute; left: 0; right: 0; top: 100%;
+                 z-index: 30; max-height: 280px; overflow-y: auto; background: var(--card);
+                 border: 1px solid var(--border); border-radius: 6px; margin-top: 4px;
+                 box-shadow: 0 6px 20px rgba(0,0,0,.25);"></div>
+          </div>
+        </div>`;
+    }
+
+    _irlMatches() {
+      const q = (this._irlQuery || '').trim().toLowerCase();
+      const all = this._irlStudents || [];
+      const hit = !q ? all : all.filter(s =>
+        `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase().includes(q));
+      // Capped on purpose. An unbounded list is the thing being removed, and a
+      // hundred rows in a dropdown is the same problem in a smaller box.
+      return hit.slice(0, 8);
     }
 
     _filterIRLStudents() {
-      const q = (document.getElementById('irl-student-search')?.value || '').toLowerCase();
-      const filtered = this._irlStudents.filter(s =>
-        `${s.first_name} ${s.last_name}`.toLowerCase().includes(q)
-      );
-      const list = document.getElementById('irl-student-list');
-      if (list) list.innerHTML = this._renderIRLStudentList(filtered);
+      this._irlQuery = document.getElementById('irl-student-search')?.value || '';
+      this._irlHighlight = 0;
+      this._renderIRLOptions();
+    }
+
+    _renderIRLOptions() {
+      const box = document.getElementById('irl-student-options');
+      const input = document.getElementById('irl-student-search');
+      if (!box) return;
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      const rows = this._irlMatches();
+      const total = (this._irlStudents || []).length;
+
+      box.style.display = 'block';
+      if (input) input.setAttribute('aria-expanded', 'true');
+
+      if (!rows.length) {
+        box.innerHTML = `<div style="padding: 12px; color: var(--muted);">No student by that name</div>`;
+        return;
+      }
+
+      box.innerHTML = rows.map((s, i) => `
+        <div role="option" onmousedown="app._selectIRLStudent('${this.jsAttr(s.id)}')"
+             onmouseover="app._irlHighlight = ${i}; app._paintIRLHighlight();"
+             data-irl-opt="${i}"
+             style="padding: 10px 12px; cursor: pointer; display: flex; gap: 10px; align-items: baseline;
+                    ${i === this._irlHighlight ? 'background: rgba(106,169,255,0.18);' : ''}">
+          <span style="flex: 1;">${esc(s.first_name)} ${esc(s.last_name)}</span>
+          ${s.grade_level ? `<span style="color: var(--muted); font-size: 12px;">Gr ${esc(s.grade_level)}</span>` : ''}
+          <span style="color: #f39c12; font-weight: 600; white-space: nowrap;">${s.rtc_balance || 0} RTC</span>
+        </div>`).join('')
+        + (rows.length < total && !(this._irlQuery || '').trim()
+            ? `<div style="padding: 8px 12px; color: var(--muted); font-size: 12px;
+                           border-top: 1px solid var(--border);">Type to narrow \u2014 ${total} students</div>`
+            : '');
+    }
+
+    // Repaints only the highlight, so arrowing down a list does not rebuild it
+    // under the cursor.
+    _paintIRLHighlight() {
+      const box = document.getElementById('irl-student-options');
+      if (!box) return;
+      box.querySelectorAll('[data-irl-opt]').forEach((el) => {
+        el.style.background = Number(el.getAttribute('data-irl-opt')) === this._irlHighlight
+          ? 'rgba(106,169,255,0.18)' : '';
+      });
+    }
+
+    _closeIRLOptions() {
+      const box = document.getElementById('irl-student-options');
+      const input = document.getElementById('irl-student-search');
+      if (box) box.style.display = 'none';
+      if (input) input.setAttribute('aria-expanded', 'false');
+    }
+
+    // Enter takes the highlighted one. Somebody who knows the name types three
+    // letters and presses Enter without ever looking at the list.
+    _irlPickerKey(e) {
+      const rows = this._irlMatches();
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!rows.length) return;
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        this._irlHighlight = (this._irlHighlight + step + rows.length) % rows.length;
+        this._paintIRLHighlight();
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const pick = rows[this._irlHighlight];
+        if (pick) this._selectIRLStudent(pick.id);
+        return;
+      }
+      if (e.key === 'Escape') { this._closeIRLOptions(); }
+    }
+
+    _changeIRLStudent() {
+      this._irlSelectedStudent = null;
+      this._irlQuery = '';
+      this._irlHighlight = 0;
+      const form = document.getElementById('irl-purchase-form-area');
+      if (form) form.innerHTML = '';
+      this._renderIRLPicker();
+      setTimeout(() => document.getElementById('irl-student-search')?.focus(), 30);
     }
 
     async _selectIRLStudent(studentId) {
       const student = this._irlStudents.find(s => s.id === studentId);
       if (!student) return;
       this._irlSelectedStudent = student;
+      this._closeIRLOptions();
+      this._renderIRLPicker();
 
       const formArea = document.getElementById('irl-purchase-form-area');
       if (!formArea) return;
