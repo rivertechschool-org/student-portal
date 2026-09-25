@@ -36,6 +36,30 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 ---
 
 ## 2026-09-25 — Jordan's Claude
+**Two shared helpers now, where there were copies.** `PortalUI.spinner()` is the
+loading state; `PortalUI.fullNameKey()` is the lowercase full name a search is
+matched against. Both live in `shared/config.js`. If you are adding a screen
+that loads something or filters people, call these rather than writing the
+markup or the string out again.
+
+The name one fixed a real bug. Nine of the twelve places that built that string
+by hand were not null-safe, so a pupil missing a first or last name ended up
+with the word "null" in the text their name is searched against - they stopped
+matching a search for themselves.
+
+**If you write a test or a debug grid that lifts a method out of the page**, it
+may now need the shared helpers in scope. The generated `tests/portalui.js` is
+what provides them, so run `node tests/extract-portalui.js` first - which
+`CLAUDE.md` already tells you to do. Nine harnesses do this now; the grids print
+the command if the file is missing.
+
+**Deliberately not done:** folding the inline badge spans into a helper. They
+are genuinely different from one another, and a helper covering them takes so
+many arguments that the call is as long as the markup.
+
+**Needs:** nothing.
+
+## 2026-09-25 — Jordan's Claude
 **There is one "view one student" screen now, not three.** My Students had its
 own details modal and the Student Records screen had another; both showed the
 same things the Student Hub has tabs for, with less editing. Both are gone and
