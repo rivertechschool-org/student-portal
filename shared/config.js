@@ -899,7 +899,11 @@ class PortalUI {
             { icon: '💬', label: 'Messages', app: 'portal', section: 'messaging', roles: ['student', 'teacher', 'admin', 'parent'] },
             { icon: '🏆', label: 'Activities', app: 'portal', section: 'activities', roles: ['student', 'teacher', 'admin', 'parent'] , secondary: true },
 
-            { icon: '💰', label: 'RTC', app: 'portal', section: 'admin-rtc-management', roles: ['teacher', 'admin'] , secondary: true },
+            // Gold is in the bar, not the launcher: adding or taking a child's
+            // gold is something staff do many times a day, often mid-lesson,
+            // and three taps deep was too far for it. The page opens on a
+            // simple Gold card with everything else folded beneath.
+            { icon: '🪙', label: 'Gold', app: 'portal', section: 'admin-rtc-management', roles: ['teacher', 'admin'] },
             // Assessment tools, not sections: each is its own page with its own
             // class picker, so they belong to the teacher rather than to any one
             // class. They used to sit in every class's action grid, which put PE

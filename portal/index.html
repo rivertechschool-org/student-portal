@@ -45687,6 +45687,18 @@ Students you had withdrawn stay withdrawn.`)) {
         console.warn('Student groups unavailable, continuing without that filter:', groupErr);
         return [{ data: [] }, { data: [] }];
       });
+      // Shop items feed the one-tap buttons on the Gold card. Same pattern as
+      // groups: if the read fails the card still works, it just has no
+      // shortcuts, rather than the whole section failing to open.
+      const shopItemsPromise = this.supabaseQuery(() => this.auth.supabase
+        .from('irl_store_items')
+        .select('id, name, price, icon, is_active, sort_order')
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }))
+        .catch(itemsErr => {
+          console.warn('Shop items unavailable, Gold card continues without them:', itemsErr);
+          return { data: [] };
+        });
 
       try {
         const [studentsRes, categoriesRes, rateRes, privilegesRes, cosmeticsRes] = await Promise.all([
@@ -45743,10 +45755,26 @@ Students you had withdrawn stay withdrawn.`)) {
         this._rtcLogOffset = 0;
         this._rtcLogData = [];
 
-        this._renderRTCManagementShell(section);
+        const itemsRes = await shopItemsPromise;
+        this._qgShopItems = ((itemsRes && itemsRes.data) || []).filter(i => i.is_active);
+        // Every visit starts at "pick a student": a child left selected from
+        // an hour ago is exactly who you do not want to charge next.
+        this._qg = {};
+
         // A pending tab is set when an old rtc-bank-helper / irl-purchases route
-        // redirected here, so those links open on the right tab.
-        this.switchRTCTab(this._rtcPendingTab || this._rtcCurrentTab);
+        // (or Riven's "open the store") redirected here. That person asked for
+        // a specific tab, so unfold "More options" for them - without saving
+        // it as their preference.
+        this._rtcLoadMorePref();
+        if (this._rtcPendingTab) {
+          this._rtcCurrentTab = this._rtcPendingTab;
+          this._rtcMoreOpen = true;
+        }
+        this._renderRTCManagementShell(section);
+        // The tab content only loads once "More options" is open. Folded, it
+        // would fetch the bank and the shop history for nobody to look at.
+        if (this._rtcMoreOpen) this.switchRTCTab(this._rtcCurrentTab);
+        this._rtcPendingTab = null;
 
       } catch (error) {
         console.error('Error loading RTC management:', error);
@@ -45765,13 +45793,26 @@ Students you had withdrawn stay withdrawn.`)) {
         `<option value="${c.id}">${c.name}</option>`
       ).join('');
 
+      // Two floors. On top, the only thing most staff do on most days: pick a
+      // child, add gold or take gold. Below, folded, everything else - totals,
+      // interest, the bank, the shop catalogue, the ledger. Nothing was
+      // removed; it moved down a floor so it stops being the first thing read.
+      this._rtcTabRendered = false;
       section.innerHTML = `
         <div style="max-width: 1200px; margin: 0 auto; padding: 20px;">
           <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
             <button class="btn btn-secondary" onclick="app.showAdminSection('dashboard')" style="padding: 6px 12px;">← Back</button>
-            <h2 style="margin: 0;">💰 RTC Management</h2>
+            <h2 style="margin: 0;">🪙 Gold &amp; Shop</h2>
 
           </div>
+
+          <div id="rtc-quick-gold"></div>
+
+          <details id="rtc-more" ${this._rtcMoreOpen ? 'open' : ''} ontoggle="app._rtcMoreToggled(this)" style="margin-top: 28px;">
+            <summary style="cursor: pointer; padding: 12px 4px; color: var(--muted); font-weight: 600;">
+              More options: bank, shop items, purchase history${isAdmin ? ', balances and settings' : ''}
+            </summary>
+          <div style="margin-top: 12px;">
 
           <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
             <div class="card" style="padding: 15px; flex: 1; min-width: 150px; text-align: center;">
@@ -45814,8 +45855,355 @@ Students you had withdrawn stay withdrawn.`)) {
           </div>
 
           <div id="rtc-tab-content"></div>
+          </div>
+          </details>
         </div>
       `;
+      this._renderQuickGold();
+    }
+
+    // ---- "More options": folded by default, remembered per browser ----
+
+    _rtcLoadMorePref() {
+      if (this._rtcMoreOpen !== undefined) return;
+      try { this._rtcMoreOpen = localStorage.getItem('rtc-more-open') === '1'; }
+      catch (e) { this._rtcMoreOpen = false; }
+    }
+
+    _rtcMoreToggled(el) {
+      const open = !!(el && el.open);
+      // The browser also fires toggle for a details that was rendered open.
+      // That is not the person choosing anything, so it is not saved.
+      if (open === this._rtcMoreOpen) return;
+      this._rtcMoreOpen = open;
+      try { localStorage.setItem('rtc-more-open', open ? '1' : '0'); } catch (e) { /* private window */ }
+      if (open && !this._rtcTabRendered) this.switchRTCTab(this._rtcCurrentTab);
+    }
+
+    // ---- The Gold card: student, then Withdraw or Add ----
+    //
+    // Deliberately few words and no numbers but the one that matters (how much
+    // gold this child has). It goes through the same database functions as the
+    // screens below it, so it can do nothing they could not:
+    //   Add      -> process_rtc_transaction, earn_manual (teacher or admin)
+    //   Withdraw -> process_irl_purchase, so the spend is logged in Purchase
+    //               History exactly as a till purchase would be, and the
+    //               database refuses to take a child below zero.
+    // State lives in this._qg so a re-render (say, an admin award below
+    // re-drawing the shell) puts the card back where it was.
+
+    _qgStudent() {
+      const id = this._qg && this._qg.student;
+      return id ? (this._rtcStudents || []).find(s => s.id === id) || null : null;
+    }
+
+    _renderQuickGold() {
+      const host = document.getElementById('rtc-quick-gold');
+      if (!host) return;
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      const qg = this._qg || (this._qg = {});
+      const s = this._qgStudent();
+      const inputStyle = 'width: 100%; padding: 14px; font-size: 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); box-sizing: border-box;';
+
+      if (!s) {
+        host.innerHTML = `
+          <div class="card" style="padding: 20px;">
+            <label for="qg-search" style="font-weight: 700; font-size: 18px; display: block; margin-bottom: 8px;">Student</label>
+            <div style="position: relative;">
+              <input type="text" id="qg-search" autocomplete="off" role="combobox" aria-expanded="false"
+                placeholder="Type a name\u2026" value="${esc(qg.query || '')}"
+                oninput="app._qgFilter()" onfocus="app._qgFilter()" onkeydown="app._qgKey(event)"
+                onblur="setTimeout(() => app._qgClose(), 150)" style="${inputStyle}">
+              <div id="qg-options" style="display: none; position: absolute; left: 0; right: 0; top: 100%;
+                   z-index: 30; max-height: 320px; overflow-y: auto; background: var(--card);
+                   border: 1px solid var(--border); border-radius: 8px; margin-top: 4px;
+                   box-shadow: 0 6px 20px rgba(0,0,0,.25);"></div>
+            </div>
+          </div>`;
+        return;
+      }
+
+      const bigBtn = (mode, color, bg, icon, label) => `
+        <button type="button" id="qg-${mode}" onclick="app._qgMode('${mode}')" aria-pressed="${qg.mode === mode}"
+          style="padding: 20px 10px; font-size: 20px; font-weight: 700; border-radius: 12px; cursor: pointer;
+                 background: ${bg}; color: ${color}; border: 3px solid ${qg.mode === mode ? color : 'transparent'};">
+          <div style="font-size: 30px; line-height: 1.2;">${icon}</div>${label}
+        </button>`;
+
+      host.innerHTML = `
+        <div class="card" style="padding: 20px;">
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
+            <div style="flex: 1; min-width: 160px; font-size: 20px; font-weight: 700;">${esc(s.first_name)} ${esc(s.last_name)}</div>
+            <div id="qg-balance" style="font-size: 20px; font-weight: 700; color: #f39c12; white-space: nowrap;">🪙 ${s.rtc_balance || 0} gold</div>
+            <button class="btn btn-secondary" onclick="app._qgChange()">Change student</button>
+          </div>
+          ${qg.done ? `<div style="margin-bottom: 14px; padding: 10px 14px; border-radius: 8px; background: rgba(39, 174, 96, 0.15); color: #27ae60; font-weight: 600;">${esc(qg.done)}</div>` : ''}
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            ${bigBtn('take', '#e74c3c', 'rgba(231, 76, 60, 0.13)', '🪙⬇', 'Withdraw Gold')}
+            ${bigBtn('add', '#27ae60', 'rgba(39, 174, 96, 0.13)', '🪙⬆', 'Add Gold')}
+          </div>
+          ${qg.mode ? this._qgFormHtml(s) : ''}
+        </div>`;
+      if (qg.mode) this._qgRefreshGo();
+    }
+
+    _qgFormHtml(s) {
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      const qg = this._qg;
+      const take = qg.mode === 'take';
+      const items = take ? (this._qgShopItems || []) : [];
+      const field = 'padding: 12px; font-size: 18px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); box-sizing: border-box;';
+      return `
+        <div style="margin-top: 18px;">
+          ${items.length ? `
+          <div style="font-weight: 700; margin-bottom: 8px;">Buying from the shop? Tap it</div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px;">
+            ${items.map(i => `<button type="button" class="btn btn-secondary" onclick="app._qgPickItem('${this.jsAttr(i.id)}')"
+                style="padding: 10px 14px; ${qg.item === i.id ? 'outline: 3px solid var(--accent);' : ''}">${esc(i.icon || '🛒')} ${esc(i.name)} \u00b7 ${i.price}</button>`).join('')}
+          </div>` : ''}
+          <label for="qg-amount" style="font-weight: 700; display: block; margin-bottom: 8px;">How much gold?</label>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <input type="number" id="qg-amount" min="1" step="1" inputmode="numeric" value="${esc(qg.amount || '')}"
+              oninput="app._qgInput()" style="${field} width: 110px; text-align: center; font-weight: 700;">
+            ${[1, 2, 5, 10, 20].map(n => `<button type="button" class="btn btn-secondary" onclick="app._qgSetAmount(${n})" style="min-width: 52px; padding: 12px;">${n}</button>`).join('')}
+          </div>
+          <label for="qg-reason" style="font-weight: 700; display: block; margin: 16px 0 8px;">What for? <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+          <input type="text" id="qg-reason" value="${esc(qg.reason || '')}" oninput="app._qgInput()"
+            placeholder="${take ? 'e.g. snack, pencil' : 'e.g. helped tidy up'}" style="${field} width: 100%;">
+          <div id="qg-warn" style="margin-top: 12px; color: #e74c3c; font-weight: 600;"></div>
+          <button type="button" id="qg-go" onclick="app._qgSubmit()"
+            style="margin-top: 12px; width: 100%; padding: 16px; font-size: 18px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; color: #fff; background: ${take ? '#e74c3c' : '#27ae60'};"></button>
+        </div>`;
+    }
+
+    // The button says exactly what will happen - "Withdraw 5 gold from Ana" -
+    // so it doubles as the confirmation. Disabled until that sentence is true.
+    _qgRefreshGo() {
+      const qg = this._qg || {};
+      const s = this._qgStudent();
+      const btn = document.getElementById('qg-go');
+      const warn = document.getElementById('qg-warn');
+      if (!btn || !s || !qg.mode) return;
+      const take = qg.mode === 'take';
+      const amt = Number(qg.amount);
+      const valid = Number.isInteger(amt) && amt > 0;
+      const bal = s.rtc_balance || 0;
+      const short = take && valid && amt > bal;
+      if (warn) warn.textContent = short ? `${s.first_name} only has ${bal} gold.` : '';
+      btn.textContent = !valid
+        ? (take ? 'Withdraw gold' : 'Add gold')
+        : (take ? `Withdraw ${amt} gold from ${s.first_name}` : `Add ${amt} gold to ${s.first_name}`);
+      btn.disabled = !valid || short || !!this._qgBusy;
+      btn.style.opacity = btn.disabled ? '0.5' : '1';
+    }
+
+    _qgMatches() {
+      const q = ((this._qg && this._qg.query) || '').trim().toLowerCase();
+      const all = this._rtcStudents || [];
+      const hit = !q ? all : all.filter(s =>
+        `${s.first_name || ''} ${s.last_name || ''}`.toLowerCase().includes(q));
+      return hit.slice(0, 8);
+    }
+
+    _qgFilter() {
+      const qg = this._qg || (this._qg = {});
+      qg.query = document.getElementById('qg-search')?.value || '';
+      // Back to the top on every keystroke: a highlight left on row 3 would
+      // otherwise point at whichever child the new letters moved into row 3.
+      qg.hl = 0;
+      this._qgRenderOptions();
+    }
+
+    _qgRenderOptions() {
+      const box = document.getElementById('qg-options');
+      const input = document.getElementById('qg-search');
+      if (!box) return;
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      const qg = this._qg || {};
+      const rows = this._qgMatches();
+      const total = (this._rtcStudents || []).length;
+      box.style.display = 'block';
+      if (input) input.setAttribute('aria-expanded', 'true');
+      if (!rows.length) {
+        box.innerHTML = `<div style="padding: 14px; color: var(--muted);">No student by that name</div>`;
+        return;
+      }
+      box.innerHTML = rows.map((s, i) => `
+        <div role="option" data-qg-opt="${i}" onmousedown="app._qgSelect('${this.jsAttr(s.id)}')"
+             onmouseover="app._qg.hl = ${i}; app._qgPaint();"
+             style="padding: 12px 14px; cursor: pointer; display: flex; gap: 10px; align-items: baseline; font-size: 17px;
+                    ${i === (qg.hl || 0) ? 'background: rgba(106,169,255,0.18);' : ''}">
+          <span style="flex: 1;">${esc(s.first_name)} ${esc(s.last_name)}</span>
+          <span style="color: #f39c12; font-weight: 600; white-space: nowrap;">🪙 ${s.rtc_balance || 0}</span>
+        </div>`).join('')
+        + (rows.length < total && !(qg.query || '').trim()
+            ? `<div style="padding: 8px 14px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--border);">Type to narrow \u2014 ${total} students</div>`
+            : '');
+    }
+
+    _qgPaint() {
+      const box = document.getElementById('qg-options');
+      if (!box) return;
+      box.querySelectorAll('[data-qg-opt]').forEach((el) => {
+        el.style.background = Number(el.getAttribute('data-qg-opt')) === (this._qg.hl || 0)
+          ? 'rgba(106,169,255,0.18)' : '';
+      });
+    }
+
+    _qgClose() {
+      const box = document.getElementById('qg-options');
+      const input = document.getElementById('qg-search');
+      if (box) box.style.display = 'none';
+      if (input) input.setAttribute('aria-expanded', 'false');
+    }
+
+    _qgKey(e) {
+      const rows = this._qgMatches();
+      const qg = this._qg;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (!rows.length) return;
+        const step = e.key === 'ArrowDown' ? 1 : -1;
+        qg.hl = ((qg.hl || 0) + step + rows.length) % rows.length;
+        this._qgPaint();
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const pick = rows[qg.hl || 0];
+        if (pick) this._qgSelect(pick.id);
+        return;
+      }
+      if (e.key === 'Escape') this._qgClose();
+    }
+
+    _qgSelect(studentId) {
+      if (!(this._rtcStudents || []).some(s => s.id === studentId)) return;
+      this._qg = { student: studentId };
+      this._renderQuickGold();
+    }
+
+    // A new child gets a clean card: an amount or item left over from the last
+    // one is how the next child gets charged for somebody else's snack.
+    _qgChange() {
+      this._qg = {};
+      this._renderQuickGold();
+      setTimeout(() => document.getElementById('qg-search')?.focus(), 30);
+    }
+
+    _qgMode(mode) {
+      const qg = this._qg;
+      if (!qg || !qg.student) return;
+      this._qg = { student: qg.student, mode: qg.mode === mode ? null : mode };
+      this._renderQuickGold();
+      if (this._qg.mode) setTimeout(() => document.getElementById('qg-amount')?.focus(), 30);
+    }
+
+    _qgInput() {
+      const qg = this._qg;
+      if (!qg) return;
+      qg.amount = document.getElementById('qg-amount')?.value || '';
+      qg.reason = document.getElementById('qg-reason')?.value || '';
+      // A shop item stays attached only while its price and name are what
+      // was tapped. Edit either and it is a custom withdrawal instead.
+      const item = qg.item && (this._qgShopItems || []).find(i => i.id === qg.item);
+      if (item && (Number(qg.amount) !== item.price || qg.reason !== item.name)) qg.item = null;
+      this._qgRefreshGo();
+    }
+
+    _qgSetAmount(n) {
+      const el = document.getElementById('qg-amount');
+      if (el) el.value = String(n);
+      this._qgInput();
+    }
+
+    _qgPickItem(itemId) {
+      const qg = this._qg;
+      const item = (this._qgShopItems || []).find(i => i.id === itemId);
+      if (!qg || !item) return;
+      qg.item = item.id;
+      qg.amount = String(item.price);
+      qg.reason = item.name;
+      this._renderQuickGold();
+    }
+
+    async _qgSubmit() {
+      const qg = this._qg || {};
+      const s = this._qgStudent();
+      if (!s || !qg.mode || this._qgBusy) return;
+      const take = qg.mode === 'take';
+      const amt = Number(qg.amount);
+      if (!Number.isInteger(amt) || amt <= 0) return;
+      if (take && amt > (s.rtc_balance || 0)) return;
+      const reason = (qg.reason || '').trim();
+      const name = `${s.first_name} ${s.last_name}`;
+      // One typo guard: 50 meant as 5 is the mistake a quick screen invites.
+      if (!take && amt > 100 && !confirm(`Add ${amt} gold to ${name}? That is a lot of gold.`)) return;
+
+      this._qgBusy = true;
+      const btn = document.getElementById('qg-go');
+      if (btn) { btn.disabled = true; btn.textContent = 'Working\u2026'; }
+      try {
+        let newBalance;
+        if (take) {
+          const item = qg.item && (this._qgShopItems || []).find(i => i.id === qg.item);
+          const useItem = !!(item && item.price === amt);
+          const { data, error } = await this.auth.supabase.rpc('process_irl_purchase', {
+            p_student_id: s.id,
+            p_item_id: useItem ? item.id : null,
+            p_custom_name: useItem ? null : (reason || 'Gold withdrawn'),
+            p_custom_price: useItem ? null : amt,
+            p_quantity: 1,
+            p_description: null
+          });
+          if (error) throw error;
+          if (data && !data.success) throw new Error(data.error);
+          newBalance = data.new_balance;
+          // Purchase History below reads this cache.
+          this._refreshIRLPurchases();
+        } else {
+          const { data, error } = await this.auth.supabase.rpc('process_rtc_transaction', {
+            p_user_id: s.id,
+            p_amount: amt,
+            p_transaction_type: 'earn_manual',
+            p_description: reason || 'Gold added',
+            p_created_by: this.userInfo.user.id
+          });
+          if (error) throw error;
+          if (data && !data.success) throw new Error(data.error);
+          newBalance = data.new_balance;
+        }
+        this._qgApplyBalance(s.id, newBalance);
+        this._qg = {
+          student: s.id,
+          done: take
+            ? `Done. Took ${amt} gold from ${s.first_name}. ${s.first_name} now has ${newBalance} gold.`
+            : `Done. Gave ${amt} gold to ${s.first_name}. ${s.first_name} now has ${newBalance} gold.`
+        };
+        this.showNotification(this._qg.done, 'success');
+      } catch (err) {
+        console.error('Gold card action failed:', err);
+        this.showNotification(`Could not ${take ? 'withdraw' : 'add'} gold: ${err.message}`, 'error');
+      } finally {
+        this._qgBusy = false;
+        this._renderQuickGold();
+      }
+    }
+
+    // One child's balance lives in several caches (the card, Balances, the
+    // bank list, the shop). Bring them all along so the screens below never
+    // show the number from before.
+    _qgApplyBalance(studentId, balance) {
+      [this._rtcStudents, this._irlStudents].forEach(list => {
+        const row = (list || []).find(x => x.id === studentId);
+        if (row) row.rtc_balance = balance;
+      });
+      const bankRow = (this._bankHelperStudents || []).find(x => x.id === studentId);
+      if (bankRow) bankRow.wallet_balance = balance;
+      const balEl = document.getElementById('rtc-bal-' + studentId);
+      if (balEl) balEl.textContent = balance;
+      const walletEl = document.getElementById('bh-wallet-' + studentId);
+      if (walletEl) walletEl.textContent = balance;
     }
 
     switchRTCTab(tab) {
@@ -45837,6 +46225,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
       const content = document.getElementById('rtc-tab-content');
       if (!content) return;
+      this._rtcTabRendered = true;
 
       switch (tab) {
         case 'balances':
@@ -46387,9 +46776,10 @@ Students you had withdrawn stay withdrawn.`)) {
     _updateRTCSummaryStats() {
       const section = document.getElementById('admin-rtc-management-section');
       if (!section) return;
-      // Re-render the shell to update stats, preserving current tab
+      // Re-render the shell to update stats, preserving current tab (and the
+      // Gold card, which re-draws from this._qg)
       this._renderRTCManagementShell(section);
-      this.switchRTCTab(this._rtcCurrentTab);
+      if (this._rtcMoreOpen) this.switchRTCTab(this._rtcCurrentTab);
     }
 
     // ============================================================

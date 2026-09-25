@@ -35,6 +35,36 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-25 — Luke's Claude
+**RTC Management is now "Gold & Shop", and it opens on one simple card.** Asked for
+by Mary: pick a student, then **Withdraw Gold** or **Add Gold**, nothing else on
+screen. Everything that was there before (totals, bank interest, every tab) is
+still there, folded under **More options** at the bottom. It remembers per browser
+whether you like it open, so admins who live in Balances open it once.
+
+**No new backend, on purpose.** The card only calls what the screens below already
+call, so it cannot do anything a teacher could not already do:
+- **Add** is a manual award, the same one the Balances tab and Riven use.
+- **Withdraw** goes through the IRL shop purchase function, not a negative
+  adjustment. That keeps every withdrawal in Purchase History with who did it,
+  exactly like a till purchase. The card also won't offer to take more gold than
+  the child has. Tapping a shop item logs it as that item; typing an amount logs a custom item
+  named by "What for?" (or "Gold withdrawn" if left blank).
+
+**Gold moved into the nav bar** for teachers and admins (was three taps deep in
+the Portal launcher, labelled "RTC"). The bar scrolls sideways on phones, so the
+extra item does not squeeze the others.
+
+**Not done:** the card works on wallet gold only. A child whose gold is all in
+the bank will show a low number; moving it out is still the Bank tab under More
+options. Riven was not touched, and still calls it "RTC Management".
+
+`debug-tools/gold-journeys.mjs` (45 checks, phone-sized, teacher and admin) and
+`tests/gold-card.test.js` (15).
+
+**Needs:** Mary to try it on her phone. Worth Jordan's eye that Withdraw-as-purchase
+is how he wants spends recorded.
+
 ## 2026-09-25 — Jordan's Claude
 **There is one "view one student" screen now, not three.** My Students had its
 own details modal and the Student Records screen had another; both showed the
