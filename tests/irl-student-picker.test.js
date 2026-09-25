@@ -133,6 +133,8 @@ const type = (app, q) => { app.input.value = q; app._filterIRLStudents(); };
     const out = app.options.innerHTML;
     ok('three letters narrows to one', /Teodor/.test(out) && !/Marisol/.test(out));
     check('  and the dropdown is open', app.options.style.display, 'block');
+    ok('  a row is the name and the balance, nothing else',
+       /0 RTC/.test(out) && !/Gr 6/.test(out) && !/Grade/.test(out));
   }
 
   {
@@ -227,7 +229,8 @@ const type = (app, q) => { app.input.value = q; app._filterIRLStudents(); };
     const out = app.picker.innerHTML;
     ok('the picker shrinks to a line', /Ines/.test(out) && !/irl-student-search/.test(out));
     ok('  showing the balance, which is what a shop needs', /250 RTC/.test(out));
-    ok('  and the grade', /Grade 5/.test(out));
+    ok('  and no grade — a shop needs who and how much, not what year',
+       !/Grade 5/.test(out) && !/Gr 5/.test(out));
     ok('  with a way to change it', /_changeIRLStudent/.test(out));
     check('  and the dropdown is shut', app.options.style.display, 'none');
   }
