@@ -12518,21 +12518,37 @@
         }
       }
 
-      async permanentlyDeleteEnrollment(enrollmentId, className) {
-        // Double confirmation for permanent delete
-        if (!confirm(`⚠️ PERMANENTLY DELETE enrollment from "${className}"?\n\nThis will delete:\n• The enrollment record\n• All grade snapshots for all quarters\n• All assignment submissions\n\nThis action CANNOT be undone!`)) {
-          return;
-        }
-
-        if (!confirm(`Are you absolutely sure? Type "DELETE" in the next prompt to confirm.`)) {
-          return;
-        }
-
-        const confirmation = prompt('Type DELETE to permanently remove this enrollment:');
-        if (confirmation !== 'DELETE') {
+      // One gate for every delete that cannot be undone.
+      //
+      // There were five of these, written five times, and they disagreed. Three
+      // asked twice and then for the word DELETE; one asked once and then for
+      // the word; and deleting an entire CLASS - every assignment, submission,
+      // grade, enrolment and attendance record in it - asked twice and never
+      // for the word at all. The largest deletion in the system was the
+      // easiest one to do by accident.
+      //
+      // Two steps, always. Say exactly what goes, then make them type it. The
+      // old middle box ("are you absolutely sure? type DELETE next") is gone:
+      // the prompt says that itself, and a confirm nobody reads is not a gate,
+      // it is a keystroke.
+      confirmDestructive(summary, losses = []) {
+        const detail = losses.length
+          ? `\n\nThis will delete:\n${losses.map(l => '\u2022 ' + l).join('\n')}`
+          : '';
+        if (!confirm(`\u26a0\ufe0f ${summary}${detail}\n\nThis CANNOT be undone.`)) return false;
+        if (prompt(`Type DELETE to confirm:\n\n${summary}`) !== 'DELETE') {
           this.showNotification('Deletion cancelled', 'info');
-          return;
+          return false;
         }
+        return true;
+      }
+
+      async permanentlyDeleteEnrollment(enrollmentId, className) {
+        if (!this.confirmDestructive(`Permanently delete the enrolment in "${className}"?`, [
+          'The enrolment record',
+          'All grade snapshots, for every quarter',
+          'All assignment submissions',
+        ])) return;
 
         try {
           this.showNotification('Deleting enrollment data...', 'info');
@@ -20285,16 +20301,11 @@
         document.getElementById('removal-options-overlay')?.remove();
 
         if (action === 'delete') {
-          // Permanent delete - requires extra confirmation
-          if (!confirm('⚠️ PERMANENTLY DELETE this enrollment?\n\nThis will delete:\n• The enrollment record\n• All grade snapshots\n• All assignment submissions\n\nThis CANNOT be undone!')) {
-            return;
-          }
-
-          const confirmation = prompt('Type DELETE to confirm permanent removal:');
-          if (confirmation !== 'DELETE') {
-            this.showNotification('Deletion cancelled', 'info');
-            return;
-          }
+          if (!this.confirmDestructive('Permanently delete this enrolment?', [
+            'The enrolment record',
+            'All grade snapshots',
+            'All assignment submissions',
+          ])) return;
 
           try {
             // Use RPC function to bypass RLS and delete all related data
@@ -24143,17 +24154,17 @@ Students you had withdrawn stay withdrawn.`)) {
           }
           confirmMessage += `This action cannot be undone.`;
       
-          if (!confirm(confirmMessage)) {
-            return;
-          }
-      
-          // If there are submissions and user confirmed, ask for double confirmation
+          // Work handed in is the thing that cannot be got back, so that is
+          // what decides how hard this is to do. An assignment nobody has
+          // submitted to loses almost nothing and takes one click; one with
+          // submissions goes through the same gate as every other permanent
+          // delete in the app.
           if (hasSubmissions) {
-            const doubleConfirm = prompt(`This assignment has student submissions. Type "DELETE" to confirm deletion:`);
-            if (doubleConfirm !== 'DELETE') {
-              this.showNotification('Deletion cancelled', 'info');
-              return;
-            }
+            if (!this.confirmDestructive(`Delete the assignment "${assignment.title}"?`, [
+              `${submissions.length} student submission${submissions.length === 1 ? '' : 's'}, and their grades`,
+            ])) return;
+          } else if (!confirm(confirmMessage)) {
+            return;
           }
       
           // The Drive folder goes FIRST. Once the row is gone there is nothing
@@ -36147,14 +36158,12 @@ Students you had withdrawn stay withdrawn.`)) {
 
         const className = classData?.name || 'Unknown Class';
 
-        if (!confirm(`⚠️ PERMANENT DELETION ⚠️\n\nAre you sure you want to permanently delete "${className}"?\n\nThis will remove:\n• All assignments\n• All student submissions and grades\n• All enrollments\n• All attendance records\n\nThis action CANNOT be undone!`)) {
-          return;
-        }
-
-        // Double confirmation for safety
-        if (!confirm(`FINAL CONFIRMATION\n\nType of deletion: PERMANENT\nClass: ${className}\n\nClick OK to permanently delete this class and ALL associated data.`)) {
-          return;
-        }
+        if (!this.confirmDestructive(`Permanently delete the class "${className}"?`, [
+          'All assignments',
+          'All student submissions and grades',
+          'All enrolments',
+          'All attendance records',
+        ])) return;
 
         try {
           // Use database function to delete (bypasses RLS)
@@ -41412,22 +41421,15 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
       async hardDeleteUserAccount(userId, userName, userType) {
-        // Step 1: First warning
-        if (!confirm(`⚠️ PERMANENTLY DELETE ${userType} account "${userName}"?\n\nThis will delete:\n• The user profile and auth record\n• All enrollments, grades, and submissions\n• All attendance records\n• All notes, medical info, and contacts\n• All notifications and parent-child links\n\nClasses taught by this user will have their teacher unset.\n\nThis action CANNOT be undone!`)) {
-          return;
-        }
-
-        // Step 2: Second warning
-        if (!confirm(`Are you absolutely sure you want to permanently delete ${userName}'s entire account? Type "DELETE" in the next prompt to confirm.`)) {
-          return;
-        }
-
-        // Step 3: Type DELETE to confirm
-        const confirmation = prompt('Type DELETE to permanently remove this user account:');
-        if (confirmation !== 'DELETE') {
-          this.showNotification('Deletion cancelled', 'info');
-          return;
-        }
+        if (!this.confirmDestructive(`Permanently delete ${userType} account "${userName}"?`, [
+          'The user profile and its login',
+          'All enrolments, grades and submissions',
+          'All attendance records',
+          'All notes, medical information and contacts',
+          'All notifications and parent links',
+        ])) return;
+        // Classes taught by this person keep their students; the teacher
+        // is simply unset on them.
 
         try {
           this.showNotification('Deleting user account...', 'info');
