@@ -632,6 +632,26 @@ class PortalUI {
              + `<div class="loading-spinner"></div><p>${safe}</p></div>`;
     }
 
+    // The lowercase full name a search is matched against.
+    //
+    // Ten screens built this string themselves, in three spellings. Three used
+    // `${s.first_name || ''} ${s.last_name || ''}` and were fine. Seven used
+    // `${s.first_name} ${s.last_name}` or first_name + ' ' + last_name, which
+    // are not the same thing when a name is missing: a template literal turns
+    // a null last name into the four characters "null", and concatenation does
+    // the same, so that pupil's haystack reads "ada null" - they stop matching
+    // a search for their own name, and start matching a search for "null".
+    //
+    // Collapsing the whitespace matters for the same reason: with one name
+    // absent the naive version leaves a leading or trailing space, and a
+    // startsWith or exact comparison against a typed name then misses.
+    static fullNameKey(person) {
+        if (!person) return '';
+        const part = (v) => (v === null || v === undefined) ? '' : String(v);
+        return (part(person.first_name) + ' ' + part(person.last_name))
+            .toLowerCase().replace(/\s+/g, ' ').trim();
+    }
+
     static applyTheme(theme) {
         const root = document.documentElement;
         Object.entries(theme).forEach(([key, value]) => {
