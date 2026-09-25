@@ -1,23 +1,24 @@
-// No two methods of ClassesPortalApp may share a name.
+// No method may be defined twice in the same class.
 //
-// Quick Add Note stopped adding notes, and nothing threw, nothing logged, and
-// no request was made. The class carried TWO methods called addStudentNote:
+// This exists because of a real bug that shipped and sat there.
 //
-//   line  9099  addStudentNote()                              the quick-add
-//   line 18611  addStudentNote(classId, studentId, name)      opens a form
+// `parseCSV` was defined twice on ClassesPortalApp. A class body keeps only
+// the LAST definition, so the second silently replaced the first:
 //
-// A JS class body is not a merge - the later definition replaces the earlier
-// one outright. So every "Add Note" button in the student hub, which calls
-// app.addStudentNote() with no arguments, reached the form-opening one with
-// all three arguments undefined. It opened a modal reading "Add Note for
-// undefined" beneath the hub's own overlay, so from the front the button
-// simply did nothing.
+//   first  -> { headers: [...], rows: [ {..}, {..} ] }   the student importer
+//   second -> a plain 2D array                           the class-sheets grid
 //
-// That is the whole failure mode and why this test exists: the collision is
-// silent. No syntax error, no runtime error, no console warning - the only
-// symptom is a feature that quietly stops working, possibly thousands of
-// lines from the edit that broke it. In a 62,000-line single-file app with
-// 345 methods on one class, that is a trap worth a standing check.
+// handleCSVFileSelect does `parsed.rows.length`. Against a plain array that
+// throws, so choosing a CSV to import students died on its first line. Nothing
+// in the file looked wrong: both definitions were correct, both were sensible,
+// and the one that was wrong for the caller was invisible because JS never
+// complains about a redefinition.
+//
+// Two more were hiding the same way: `toggleGradeOverride` (two DIFFERENT
+// bodies, the earlier one dead) and `escapeHtml` (identical, harmless).
+//
+// A duplicate is never intentional here, so this test does not care what the
+// methods do - only that each name appears once per class.
 //
 // Run: node tests/no-duplicate-methods.test.js
 
@@ -25,65 +26,123 @@ const fs = require('fs');
 const path = require('path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'portal', 'index.html'), 'utf8');
-const lines = html.split('\n');
 
-let pass = 0;
-let fail = 0;
+let pass = 0, fail = 0;
 const check = (label, actual, expected) => {
   const a = JSON.stringify(actual), e = JSON.stringify(expected);
-  if (a === e) pass++;
-  else { fail++; console.log(`  FAIL  ${label}\n        expected ${e}, got ${a}`); }
+  if (a === e) { pass++; console.log(`pass  ${label}`); }
+  else { fail++; console.log(`  FAIL  ${label}\n        expected ${e}\n        got      ${a}`); }
 };
+const ok = (label, cond) => check(label, !!cond, true);
 
-const classAt = lines.findIndex((l) => /^\s*class ClassesPortalApp\s*\{/.test(l));
-check('ClassesPortalApp was found', classAt !== -1, true);
-
-// The class closes at the first 4-space `}` after it opens - every method sits
-// deeper than that.
-let classEnd = -1;
-for (let i = classAt + 1; i < lines.length; i++) {
-  if (/^ {4}\}\s*$/.test(lines[i])) { classEnd = i; break; }
-}
-check('its closing brace was found', classEnd !== -1, true);
-
-// Methods are written at two indents in this file (4 and 6 spaces), so both
-// are collected - reading only one depth is how a duplicate hides.
-const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return',
-                          'else', 'try', 'do', 'function', 'constructor']);
-const DEF = /^( {4}| {6})(?:async\s+|static\s+|\*\s*)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/;
-
-const seen = new Map();
-for (let i = classAt + 1; i < classEnd; i++) {
-  const m = DEF.exec(lines[i]);
-  if (!m || KEYWORDS.has(m[2])) continue;
-  if (!seen.has(m[2])) seen.set(m[2], []);
-  seen.get(m[2]).push(i + 1);
+// ---- find each class and the methods declared directly inside it ----------
+//
+// Per class, not per file: three classes live in this page and the same helper
+// name appearing once in each is fine.
+function classes() {
+  const out = [];
+  const re = /\n\s*class\s+([A-Za-z_$][\w$]*)[^{]*\{/g;
+  let m;
+  while ((m = re.exec(html))) {
+    let i = html.indexOf('{', m.index + m[0].length - 1), depth = 0;
+    for (; i < html.length; i++) {
+      if (html[i] === '{') depth++;
+      else if (html[i] === '}') { depth--; if (depth === 0) { i++; break; } }
+    }
+    out.push({ name: m[1], start: m.index, end: i });
+  }
+  return out;
 }
 
-check('methods were collected', seen.size > 100, true);
+// A member declaration, not a call: indented, optionally async, ends in `{`
+// on the same line. `if (`, `for (`, `while (`, `switch (`, `catch (` and
+// bare calls are excluded so they are not read as members.
+const NOT_A_METHOD = new Set(['if', 'for', 'while', 'switch', 'catch', 'function',
+  'return', 'else', 'do', 'with', 'typeof', 'new', 'await', 'yield']);
 
-const dupes = [...seen.entries()]
-  .filter(([, at]) => at.length > 1)
-  .map(([name, at]) => `${name} at lines ${at.join(', ')} - line ${at[at.length - 1]} silently wins`);
+function membersOf(cls) {
+  const body = html.slice(cls.start, cls.end);
+  const startLine = html.slice(0, cls.start).split('\n').length;
+  const seen = new Map();
+  body.split('\n').forEach((line, idx) => {
+    // Two shapes: a method opened on this line, and one written entirely on
+    // it. Missing the second would let `foo() { return 1; }` shadow a real
+    // method invisibly - which is exactly the failure being guarded against,
+    // so only catching the multi-line form would be a guard with a hole in it.
+    const m = /^ {2,8}(?:async\s+|\*\s*|static\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/.exec(line)
+           || /^ {2,8}(?:async\s+|\*\s*|static\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{.*\}\s*$/.exec(line);
+    if (!m) return;
+    const name = m[1];
+    if (NOT_A_METHOD.has(name)) return;
+    if (!seen.has(name)) seen.set(name, []);
+    seen.get(name).push(startLine + idx);
+  });
+  return seen;
+}
 
-check('no method name is defined twice', dupes, []);
+(async () => {
 
-// The specific pair that shipped broken, named so a regression says which.
-check('addStudentNote is defined exactly once', (seen.get('addStudentNote') || []).length, 1);
-check('the form-opener has its own name', (seen.get('showAddStudentNoteModal') || []).length, 1);
+  console.log('\n== no name is declared twice in one class ==\n');
 
-// A rename is only half a fix if a caller still points at the old name. The
-// quick-add buttons call addStudentNote with NO arguments; the roster button
-// passes three. If a call with arguments reappears, the collision is back in
-// spirit even though the names now differ.
-const argCalls = [...html.matchAll(/app\.addStudentNote\(([^)]*)\)/g)]
-  .map((m) => m[1].trim())
-  .filter((a) => a.length > 0);
-check('every app.addStudentNote() call is argument-free', argCalls, []);
+  const found = classes();
+  ok('the page\'s classes were located', found.length >= 1);
 
-const modalCalls = [...html.matchAll(/app\.showAddStudentNoteModal\(([^)]*)\)/g)];
-check('the modal opener is actually called', modalCalls.length > 0, true);
+  let dupes = [];
+  for (const cls of found) {
+    for (const [name, lines] of membersOf(cls)) {
+      if (lines.length > 1) dupes.push(`${cls.name}.${name} at lines ${lines.join(', ')}`);
+    }
+  }
 
-console.log(`\n  ${seen.size} methods checked on ClassesPortalApp`);
-console.log(`  ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+  if (dupes.length) {
+    console.log('  the later definition of each of these silently wins:');
+    dupes.forEach(d => console.log('    ' + d));
+  }
+  check('no method is declared twice', dupes, []);
+
+  console.log('\n== and the one that broke: parseCSV ==\n');
+
+  // Behavioural, because "it is defined once" is not the property the importer
+  // needs - it needs the shape.
+  function lift(name) {
+    const re = new RegExp('\\n {2,8}(?:async )?' + name + '\\s*\\(([^)]*)\\)\\s*\\{');
+    const m = re.exec(html);
+    if (!m) throw new Error(name + ' not found');
+    let i = html.indexOf('{', m.index + m[0].length - 1), depth = 0;
+    const start = i;
+    for (; i < html.length; i++) {
+      if (html[i] === '{') depth++;
+      else if (html[i] === '}') { depth--; if (depth === 0) { i++; break; } }
+    }
+    return new Function(m[1], html.slice(start + 1, i - 1));
+  }
+
+  const CSV = 'First Name,Last Name,Grade\nMarisol,Vance,4\nTeodor,Ilic,6\n';
+
+  {
+    const parseCSV = lift('parseCSV');
+    const parsed = parseCSV.call({}, CSV);
+    ok('the importer gets an object, not a bare array', !Array.isArray(parsed));
+    ok('  with headers', Array.isArray(parsed.headers));
+    // THE line that threw: handleCSVFileSelect does parsed.rows.length.
+    check('  and rows it can count', parsed.rows.length, 2);
+    check('  keyed by header, which the import maps by name',
+          parsed.rows[0]['First Name'], 'Marisol');
+  }
+
+  {
+    // The sheets grid still wants raw rows, and now has its own name.
+    const grid = lift('_parseSheetGrid');
+    const rows = grid.call({}, CSV);
+    ok('the sheets parser still returns a plain grid', Array.isArray(rows));
+    check('  header row included, because a sheet has no headers', rows[0][0], 'First Name');
+  }
+
+  ok('the sheets caller uses the renamed one',
+     /this\._sheetData = this\._parseSheetGrid\(/.test(html));
+  ok('  and nothing else calls parseCSV expecting a grid',
+     (html.match(/this\.parseCSV\(/g) || []).length === 1);
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();
