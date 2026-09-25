@@ -18058,7 +18058,8 @@
             return;
           }
           const p = row.period;
-          cells += rowHead(`Period ${p}`, this.escapeHtml(headRange));
+          // The bell schedule's own name, so "Period 5 (Lunch)" reads as set.
+          cells += rowHead(this.escapeHtml(row.label || `Period ${p}`), this.escapeHtml(headRange));
           days.forEach(d => {
             const list = (byDay[d].slots[p] || []).slice().sort(byName);
             const blk = blockFor(d, p);
@@ -46570,6 +46571,9 @@ Students you had withdrawn stay withdrawn.`)) {
             <td style="padding: 8px 14px; text-align: right; white-space: nowrap;">
               ${day === null
                 ? `<button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
+                           title="Rename, e.g. Period 5 (Lunch)"
+                           onclick="app.renameBellBlock('${this.escapeHtml(b.block_key)}')">Rename</button>
+                   <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
                            title="Move up" ${at === 0 ? 'disabled' : ''}
                            onclick="app.moveBellBlock('${this.escapeHtml(b.block_key)}', -1)">↑</button>
                    <button class="btn btn-secondary" style="font-size: 11px; padding: 4px 8px;"
@@ -46688,6 +46692,27 @@ Students you had withdrawn stay withdrawn.`)) {
         : await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
             .insert(payload));
       if (res.error) { this.showNotification('Could not save: ' + res.error.message, 'error'); return; }
+      await this.renderAdminBellSchedule();
+    }
+
+    // A block's name, e.g. "Period 5" -> "Period 5 (Lunch)". Renames the
+    // default and every day's override together: it is one block, and a name
+    // that changed only on Tuesdays would read as a different block.
+    async renameBellBlock(key) {
+      const rows = this._bellRows || [];
+      const base = rows.find(r => r.block_key === key && r.day_of_week === null)
+        || rows.find(r => r.block_key === key);
+      if (!base) return;
+      const next = prompt('New name for this block (up to 40 characters):', base.label);
+      if (next === null) return;                        // cancelled
+      const label = next.trim();
+      if (!label) { this.showNotification('Give the block a name.', 'warning'); return; }
+      if (label.length > 40) { this.showNotification('Keep the name to 40 characters.', 'warning'); return; }
+      if (label === base.label) return;
+      const res = await this.supabaseQuery(() => this.auth.supabase.from('schedule_blocks')
+        .update({ label }).eq('block_key', key));
+      if (res.error) { this.showNotification('Could not rename: ' + res.error.message, 'error'); return; }
+      this._bellDefaults = null;                        // the classes page re-reads names
       await this.renderAdminBellSchedule();
     }
 
