@@ -35,6 +35,38 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-25 — Jordan's Claude
+**There is one "view one student" screen now, not three.** My Students had its
+own details modal and the Student Records screen had another; both showed the
+same things the Student Hub has tabs for, with less editing. Both are gone and
+every entry point opens the Hub. If you are looking for a student's profile,
+parents, emergency contacts, medical info, notes or strikes, they are all tabs
+there.
+
+The Hub's **Account tab is admin-only in the UI** — it is where invites,
+activation and PIN regeneration live. Teachers see every other tab, which is
+everything the old modals showed them, plus note editing they did not have.
+The UI check is an affordance; the enforcement is in the backend repo.
+
+**A save-time crash went with it.** The record form's own buttons refresh the
+form after a save, and the refresh was looking for a container that belonged to
+a screen nothing opened any more. Adding an emergency contact or saving medical
+info from the Student Hub's Records tab failed silently. It resolves its target
+at call time now.
+
+**~2,000 lines of unreachable code removed** in the same pass. Two things were
+deliberately kept even though nothing calls them: the sender behind the "new
+user registration" notification switch (deleting it would leave a real toggle
+doing nothing — that wiring is unfinished, not dead), and the student record
+form renderer, which the Hub's Records tab draws with.
+
+If you are hunting for something that used to be here: `git log` has the full
+list, and `tests/one-student-view.test.js` and
+`tests/student-hub-is-the-one-screen.test.js` describe the new shape.
+
+**Needs:** nothing. Worth a click through My Students → View Details on a
+teacher account to confirm the Hub feels right for that role.
+
 ## 2026-09-11 — Jordan's Claude
 
 **Math Dojo: the Retention Gauntlet was empty for half the students who had
