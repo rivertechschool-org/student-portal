@@ -69,20 +69,48 @@ const centres = (style) => /display:\s*flex/.test(style)
 const offenders = containers.filter((c) => centres(c.style)).map((c) => c.id);
 check('no render target centres what lands in it', offenders, []);
 
-// The two that actually shipped broken, named so a regression says which.
-for (const id of ['my-students-list', 'admin-student-record-content']) {
+// The ones that actually shipped broken, named so a regression says which.
+//
+// #admin-student-record-content used to be the second name here. It belonged
+// to a record modal no route opened any more, and it was retired when that
+// modal was; the student record form it hosted is painted into the Student
+// Hub's tab body now. The form did not stop being wide, so the guard follows
+// it rather than retiring with the container - see below.
+for (const id of ['my-students-list']) {
   const c = containers.find((x) => x.id === id);
   check(`${id} is a spinner container`, !!c, true);
   if (c) check(`  ...and does not centre its content`, centres(c.style), false);
 }
 
 // The spinner still has to look centred - the layout moved inward, it did not
-// disappear. Each of those two should hold a wrapper carrying it.
-for (const id of ['my-students-list', 'admin-student-record-content']) {
+// disappear. Each of those should hold a wrapper carrying it.
+for (const id of ['my-students-list']) {
   const at = html.indexOf(`<div id="${id}"`);
   const near = html.slice(at, at + 500);
   check(`${id} centres the spinner on an inner wrapper`,
         /<div style="[^"]*display:\s*flex[^"]*justify-content:\s*center[^"]*">\s*<div class="loading-spinner">/.test(near),
+        true);
+}
+
+// The student record form's new home. It carries no spinner in markup - the
+// hub writes its loading state in - so the static scan above cannot see it,
+// but it is a render target for a wide form and the same rule applies: a
+// plain block, never a centred flex box.
+{
+  const decl = html.match(/<div\s+id="student-hub-tab-content"([^>]*)>/);
+  check('the record form still has a host', !!decl, true);
+  const style = decl ? (decl[1].match(/style="([^"]*)"/) || [, ''])[1] : '';
+  check('student-hub-tab-content does not centre what lands in it',
+        centres(style), false);
+  // ...and the loading state written in keeps the spinner on its own wrapper.
+  // Every hub tab writes a spinner, so this has to be read out of the records
+  // tab's own body - matching anywhere in the file passes on a sibling tab's
+  // markup and says nothing about this one.
+  const at = html.indexOf('async renderStudentHubRecordsTab() {');
+  const body = at < 0 ? '' : html.slice(at, html.indexOf('\n      }', at));
+  check('the records tab was found', at > -1, true);
+  check('the records tab wraps its spinner instead of writing it bare',
+        /innerHTML = '<div style="[^']*text-align: center;[^']*"><div class="loading-spinner">/.test(body),
         true);
 }
 
