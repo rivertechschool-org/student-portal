@@ -247,6 +247,36 @@ const type = (app, q) => { app.input.value = q; app._filterIRLStudents(); };
           app.form.innerHTML, '');
   }
 
+  console.log('\n== which tab a teacher lands on ==\n');
+
+  {
+    // RTC Management is one nav entry serving two roles: an admin gets every
+    // tab, a teacher gets Bank and IRL Store only. Of those two the shop is
+    // the daily job and the bank is occasional, so the shop is what opens.
+    //
+    // Anchored to the whole expression, not a loose /'store'/ - in a file this
+    // size a bare string matches a dozen unrelated things, which is how the
+    // escaping assertion above managed to pass while being wrong.
+    const m = /const isAdminUser = this\.userInfo\?\.profile\?\.user_type === 'admin';\s*\n\s*this\._rtcCurrentTab = this\._rtcCurrentTab \|\| \(isAdminUser \? '([a-z]+)' : '([a-z]+)'\);/
+      .exec(html);
+    ok('the default tab is decided by role, in one place', !!m);
+    check('  an admin still lands on Balances', m && m[1], 'balances');
+    check('  a teacher lands on the IRL Store', m && m[2], 'store');
+  }
+
+  {
+    // The default must point at a tab whose button actually renders for that
+    // role - the trap the original comment was written about.
+    const teacherTabs = /<button id="rtc-tab-(bank|store)"/g;
+    const seen = [];
+    let t; while ((t = teacherTabs.exec(html))) seen.push(t[1]);
+    ok('Bank and IRL Store are both rendered for everyone',
+       seen.includes('bank') && seen.includes('store'));
+    ok('  and neither sits behind the isAdmin gate',
+       !/\$\{isAdmin \? `<button id="rtc-tab-store"/.test(html)
+       && !/\$\{isAdmin \? `<button id="rtc-tab-bank"/.test(html));
+  }
+
   console.log('\n== the wiring ==\n');
 
   ok('choosing a student collapses the picker before the form loads',
