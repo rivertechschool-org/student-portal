@@ -1,599 +1,570 @@
 // games/riutiz/RiutizAI.js
-// AI opponent logic for RIUTIZ with personality system
+// The RIUTIZ computer opponent.
+//
+// Rewritten with the engine in 2026-09. The old AI never played an
+// Interruption, never used an ability, and turned its locations into
+// resources; with 262 different cards, a rule per card was never going to
+// keep up. This one decides by LOOKING AHEAD: for each thing it could do -
+// every playable card, in every mode, at the most plausible targets, and every
+// usable ability - it plays the move out on a copy of the game and scores the
+// board that results. It makes the best move while one improves on doing
+// nothing, then fights and ends its turn. A new card needs no AI code: the
+// engine already knows what it does.
+//
+// Combat uses rules of thumb (attack when a pupil survives or trades well,
+// block to save points or win a trade), plus the same look-ahead for the
+// defender's combat-time cards (Flash Point, Time Out, Calculated Risk...).
+//
+// Public surface used by the page and the tests: new RiutizAI(game, player),
+// takeTurn(), declareBlockers(), answerChoice(), thinkingDelay, actionDelay.
 
 class RiutizAI {
-    constructor(game, playerNum = 2) {
+    constructor(game, playerNum = 2, options = {}) {
         this.game = game;
         this.playerNum = playerNum;
-        this.thinkingDelay = 800;
-        this.actionDelay = 1000;
+        this.thinkingDelay = options.thinkingDelay ?? 700;
+        this.actionDelay = options.actionDelay ?? 600;
+        this.aggression = options.aggression ?? 0.5;   // 0 cautious .. 1 reckless
         this.isRunning = false;
-
-        // Personality system
-        this.personality = null;
-        this.setRandomPersonality();
+        this._blocking = false;
+        // Another player's card can ask US something ("discard a card"):
+        // answer it whenever it comes up, not only on our own turn.
+        this._onChoice = () => setTimeout(() => this.answerChoice(), Math.min(this.actionDelay, 400));
+        game.addEventListener('choiceNeeded', this._onChoice);
     }
 
-    // ==========================================
-    // PERSONALITY DEFINITIONS
-    // ==========================================
+    detach() { this.game.removeEventListener('choiceNeeded', this._onChoice); }
 
-    static get PERSONALITIES() {
-        return {
-            aggressive: {
-                name: 'Aggressive',
-                description: 'Attacks relentlessly, plays fast and loose',
-                attackThreshold: 0.2,      // Low threshold = attacks more often
-                blockThreshold: 0.6,       // Higher = less likely to block
-                riskTolerance: 0.8,        // High = takes more risks
-                preferCreatures: true,     // Prioritizes playing creatures
-                holdResources: false,      // Doesn't save resources
-                quotes: [
-                    "No mercy!",
-                    "Attack!",
-                    "Full assault!",
-                    "Charge!",
-                    "You can't hide forever!"
-                ]
-            },
-            defensive: {
-                name: 'Defensive',
-                description: 'Plays cautiously, builds up before attacking',
-                attackThreshold: 0.7,      // High threshold = attacks less
-                blockThreshold: 0.2,       // Low = blocks more often
-                riskTolerance: 0.3,        // Low = avoids risks
-                preferCreatures: true,     // Builds board presence
-                holdResources: true,       // Saves resources for responses
-                quotes: [
-                    "Patience is key...",
-                    "I'll wait for the right moment.",
-                    "Defense wins games.",
-                    "Your move.",
-                    "I'm not falling for that."
-                ]
-            },
-            strategic: {
-                name: 'Strategic',
-                description: 'Calculates trades carefully, plays optimally',
-                attackThreshold: 0.5,      // Balanced
-                blockThreshold: 0.4,       // Balanced
-                riskTolerance: 0.5,        // Moderate risks
-                preferCreatures: false,    // Values all card types
-                holdResources: false,      // Uses resources efficiently
-                quotes: [
-                    "Interesting move...",
-                    "Let me think...",
-                    "Calculated.",
-                    "As expected.",
-                    "All according to plan."
-                ]
-            },
-            chaotic: {
-                name: 'Chaotic',
-                description: 'Unpredictable, makes surprising plays',
-                attackThreshold: 0.4,      // Somewhat random
-                blockThreshold: 0.5,       // Random blocking
-                riskTolerance: 0.6,        // Takes random risks
-                preferCreatures: null,     // Random preference
-                holdResources: null,       // Random
-                quotes: [
-                    "Surprise!",
-                    "Bet you didn't see that coming!",
-                    "Why not?",
-                    "Let's make this interesting!",
-                    "Chaos reigns!"
-                ]
-            },
-            controlFreak: {
-                name: 'Control',
-                description: 'Focuses on disruption and card advantage',
-                attackThreshold: 0.6,      // Only attacks when ahead
-                blockThreshold: 0.3,       // Protects life total
-                riskTolerance: 0.4,        // Conservative
-                preferCreatures: false,    // Prefers spells
-                holdResources: true,       // Holds mana for responses
-                quotes: [
-                    "Not so fast.",
-                    "I'll allow it... for now.",
-                    "Everything under control.",
-                    "You're playing into my hands.",
-                    "Denied."
-                ]
-            }
+    get g() { return this.game; }
+    get me() { return this.playerNum; }
+    get them() { return this.playerNum === 1 ? 2 : 1; }
+
+    delay(ms) { return ms > 0 ? new Promise(r => setTimeout(r, ms)) : Promise.resolve(); }
+
+    // ======================================================================
+    // Board evaluation
+    // ======================================================================
+
+    // Expected die result for a pupil, with or without this turn's boosts.
+    expectedRoll(g, card, includeTemporary = true) {
+        const d = g.effectiveDice(card);
+        let e = 0;
+        if (d.sides) {
+            const n = Math.max(1, d.count) + (g.hasAdvantage(card) ? 1 : 0);
+            // expected maximum of n dice
+            let sum = 0;
+            for (let k = 1; k <= d.sides; k++) sum += 1 - Math.pow((k - 1) / d.sides, n);
+            e = sum;
+        }
+        const def = g.def(card);
+        if (def?.combatRoll && card.id == 105) e = 2;          // four coins
+        let mod = g.dieModifier(card);
+        if (!includeTemporary) for (const m of card.mods || []) if (m.die && m.until !== 'permanent') mod -= m.die;
+        return Math.max(0, e + mod);
+    }
+
+    pupilValue(g, card, forSide) {
+        const kws = g.keywords(card);
+        const eNow = this.expectedRoll(g, card, true);
+        const ePerm = this.expectedRoll(g, card, false);
+        let end = card.currentEndurance;
+        for (const m of card.mods || []) if (m.end && m.until !== 'permanent') end -= m.end;
+        end = Math.max(0.5, end);
+        let v = ePerm * 1.5 + end * 0.55;
+        if (kws.has('lethal')) v += 3;
+        if (kws.has('overwhelm')) v += 1;
+        if (kws.has('firstStrike')) v += 1;
+        if (kws.has('unblockable') || (card.mods || []).some(m => m.unblockable)) v += 1.5;
+        if (kws.has('stubborn')) v += 2;
+        if (kws.has('relentless')) v += 0.8;
+        if (kws.has('nonSequitur')) v -= 0.5;
+        if (g.cannotAttack(card)) v -= ePerm * 0.8;
+        if (card.counters?.shield) v += card.counters.shield * 1.2;
+        if (card.skipReady) v -= 1.5;
+        // This turn's attack: a boosted pupil that can still attack is worth more now
+        const g2 = g;
+        const myTurn = g2.state.currentPlayer === forSide;
+        const beforeCombat = g2.state.phase === 'main' && !g2.state.combatStep && !g2.state.players[forSide].flags.combatDone;
+        if (myTurn && beforeCombat && !g.attackError(forSide, card)) v += Math.max(0, eNow - ePerm) * 1.2 + eNow * 0.3;
+        return v;
+    }
+
+    sideValue(g, p) {
+        const pl = g.state.players[p];
+        let v = 0;
+        for (const c of pl.field) {
+            if (g.isPupil(c)) v += this.pupilValue(g, c, p);
+            else if (g.isTool(c)) v += 2 + (c.isSpent ? 0 : 0.3);
+            else if (g.isLocation(c)) v += 0.5;
+        }
+        v += pl.resources.filter(r => !r.temporary).length * 0.9;
+        v += Math.min(pl.hand.length, 8) * 1.1;
+        if (pl.deck.length === 0) v -= 6;
+        v += (pl.flags.rerolls || 0) * 0.6;
+        if (pl.flags.refuteNextInterruption) v += 1;
+        if (pl.flags.preventNextPupil) v += 1;
+        if (pl.flags.counterNextAbility) v += 0.6;
+        if (pl.skipTurns) v -= 10;
+        for (const e of g.state.effects || []) if (e.player === p) v += (e.die || 0) * 1.2 * g.pupilsOf(p).length + (e.attackDie || 0) * 0.8 * g.pupilsOf(p).length;
+        return v;
+    }
+
+    evaluate(g, me = this.me) {
+        const s = g.state;
+        if (s.gameOver) return s.winner === me ? 1e6 : -1e6;
+        const them = me === 1 ? 2 : 1;
+        const P = s.players;
+        // Points matter more as the game nears its end
+        const pv = (n) => n * (2.5 + n / 12);
+        return pv(P[me].points) - pv(P[them].points) + this.sideValue(g, me) - this.sideValue(g, them);
+    }
+
+    // A copy of the game to try things on.
+    clone(g = this.game) {
+        const Game = g.constructor;
+        const sim = new Game({ cardData: g.cardData, cards: g.cards });
+        sim.state = typeof structuredClone === 'function' ? structuredClone(g.state) : JSON.parse(JSON.stringify(g.state));
+        sim.winCondition = g.winCondition;
+        sim._sim = true;
+        return sim;
+    }
+
+    // Finish any choices the sim raised, answering both sides sensibly.
+    settle(sim) {
+        for (let i = 0; i < 12 && sim.pendingChoice; i++) {
+            const q = sim.pendingChoice;
+            const r = sim.resolveChoice(q.player, this.pickChoice(sim, q, q.player));
+            if (!r.success) sim.resolveChoice(q.player, q.kind === 'order' ? q.options.map(o => o.value) : q.options.slice(0, q.min).map(o => o.value));
+        }
+        return sim;
+    }
+
+    // ======================================================================
+    // Candidates
+    // ======================================================================
+
+    // The few targets worth considering for a spec, best first.
+    rankTargets(g, p, spec, source, chosen) {
+        const legal = g.getTargets(p, spec, source, chosen);
+        if (spec.kind === 'resource' || spec.kind === 'player' || spec.kind === 'opponent') return legal.slice(0, 3);
+        const score = id => {
+            const c = g.findInPlay(id);
+            if (!c) return 0;
+            const mine = g.controllerOf(c) === p;
+            const val = g.isPupil(c) ? this.pupilValue(g, c, g.controllerOf(c)) : 2;
+            if (spec.harm) return (mine ? -100 : 0) + val;
+            if (spec.buff) return (mine ? 0 : -100) + val + (c.damage || 0) * 0.5;
+            return val;
         };
+        const sorted = [...legal].sort((a, b) => score(b) - score(a));
+        // for harm, also try the cheapest enemy (a kill may beat a scratch)
+        const picks = sorted.slice(0, 3);
+        if (spec.harm) {
+            const weak = [...legal].filter(id => g.controllerOf(g.findInPlay(id)) !== p)
+                .sort((a, b) => (g.findInPlay(a)?.currentEndurance ?? 99) - (g.findInPlay(b)?.currentEndurance ?? 99))[0];
+            if (weak && !picks.includes(weak)) picks.push(weak);
+        }
+        return picks;
     }
 
-    /**
-     * Set a random personality
-     */
-    setRandomPersonality() {
-        const personalities = Object.keys(RiutizAI.PERSONALITIES);
-        const randomKey = personalities[Math.floor(Math.random() * personalities.length)];
-        this.setPersonality(randomKey);
-    }
-
-    /**
-     * Set specific personality
-     */
-    setPersonality(personalityKey) {
-        this.personality = RiutizAI.PERSONALITIES[personalityKey] || RiutizAI.PERSONALITIES.strategic;
-        console.log(`AI personality: ${this.personality.name}`);
-    }
-
-    /**
-     * Execute AI turn
-     */
-    async takeTurn() {
-        if (this.isRunning) return;
-        if (this.game.state.currentPlayer !== this.playerNum) return;
-        if (this.game.state.gameOver) return;
-
-        this.isRunning = true;
-
-        try {
-            await this.delay(this.thinkingDelay);
-
-            // Play a resource
-            await this.playResource();
-            await this.delay(this.actionDelay);
-
-            // Play creatures/spells based on personality
-            await this.playCards();
-            await this.delay(this.actionDelay);
-
-            // Combat decisions based on personality
-            await this.doCombat();
-
-            // Wait for combat to resolve if attackers were declared
-            if (this.game.state.combatStep) {
-                // Combat is in progress - wait for player to declare blockers
-                // and for combat to resolve before ending turn
-                await this.waitForCombatResolution();
+    targetCombos(g, p, specs, source, limit = 12) {
+        let combos = [[]];
+        for (const s of specs || []) {
+            const next = [];
+            for (const combo of combos) {
+                const opts = this.rankTargets(g, p, s, source, combo);
+                if (!opts.length) { if (s.optional || s.fizzleIfNone) next.push([...combo, undefined]); continue; }
+                for (const t of opts) next.push([...combo, t]);
             }
+            combos = next.slice(0, limit);
+        }
+        return combos;
+    }
 
-            // End turn (only if combat is resolved or was skipped)
-            await this.delay(500);
-            if (!this.game.state.combatStep) {
-                this.game.endTurn(this.playerNum);
-            }
-
-        } catch (error) {
-            console.error('AI error:', error);
-            // An engine exception used to strand the game on the AI's turn: the human's
-            // buttons are gated on it being their turn, so nothing could ever move again.
-            if (!this.game.state.gameOver && this.game.state.currentPlayer === this.playerNum) {
-                this.game.state.combatStep = null;
-                this.game.state.attackers = [];
-                this.game.state.blockers = {};
-                this.game.endTurn(this.playerNum);
+    // Every move worth trying now: [{ kind, id, index, choices, label }]
+    candidates(g, p) {
+        const out = [];
+        const pl = g.state.players[p];
+        for (const card of pl.hand) {
+            const opts = g.getPlayOptions(p, card.instanceId);
+            if (!opts.canPlay) continue;
+            const modes = opts.modes || [{ index: undefined, targets: opts.targets }];
+            for (const m of modes) {
+                for (const t of this.targetCombos(g, p, m.targets, card)) {
+                    out.push({ kind: 'play', id: card.instanceId, choices: { mode: m.index, targets: t }, label: card.name });
+                }
             }
         }
-
-        this.isRunning = false;
-    }
-
-    /**
-     * Declare blockers when being attacked
-     */
-    async declareBlockers() {
-        if (this.game.state.combatStep !== 'declare-blockers') return;
-        if (this.game.state.currentPlayer === this.playerNum) return;
-
-        await this.delay(this.thinkingDelay);
-
-        const player = this.game.state.players[this.playerNum];
-        const availableBlockers = player.field.filter(c =>
-            c.type?.includes('Pupil') && !c.isSpent
-        );
-
-        const attackers = [...this.game.state.attackers];
-
-        // Personality affects blocking decision
-        const blockThreshold = this.personality?.blockThreshold ?? 0.4;
-
-        // Chaotic might not block at all sometimes
-        if (this.personality?.name === 'Chaotic' && Math.random() > 0.7) {
-            console.log('AI (Chaotic): Letting attacks through for fun!');
-            await this.delay(this.actionDelay);
-            this.game.confirmBlockers();
-            return;
-        }
-
-        // Sort attackers by threat level
-        const sortedAttackers = attackers.sort((a, b) => {
-            return this.evaluateCardValue(b) - this.evaluateCardValue(a);
-        });
-
-        for (const attacker of sortedAttackers) {
-            if (availableBlockers.length === 0) break;
-
-            // Check if we should even try to block based on personality
-            const shouldTryBlock = Math.random() > blockThreshold;
-            if (!shouldTryBlock && this.personality?.name !== 'Defensive') continue;
-
-            const blocker = this.findBestBlocker(attacker, availableBlockers);
-            if (blocker) {
-                this.game.toggleBlocker(this.playerNum, blocker.instanceId, attacker.instanceId);
-                availableBlockers.splice(availableBlockers.indexOf(blocker), 1);
-            }
-        }
-
-        await this.delay(this.actionDelay);
-
-        // The defender resolves combat. The human attacker used to be handed a
-        // "Done Blocking" button (and could even assign the AI's blockers) instead.
-        if (this.game.state.combatStep === 'declare-blockers') {
-            this.game.confirmBlockers();
-        }
-    }
-
-    /**
-     * Find best blocker for an attacker
-     */
-    findBestBlocker(attacker, availableBlockers) {
-        const riskTolerance = this.personality?.riskTolerance ?? 0.5;
-
-        // Try to find a blocker that can survive
-        const survivors = availableBlockers.filter(b => {
-            const avgAttackRoll = this.estimateRoll(attacker.dice);
-            return b.currentEndurance > avgAttackRoll;
-        });
-
-        if (survivors.length > 0) {
-            // Defensive personality picks best survivor, others pick weakest
-            if (this.personality?.name === 'Defensive') {
-                return survivors.sort((a, b) => this.evaluateCardValue(b) - this.evaluateCardValue(a))[0];
-            }
-            return survivors.sort((a, b) => this.evaluateCardValue(a) - this.evaluateCardValue(b))[0];
-        }
-
-        // No survivors - decide based on personality
-        const attackerValue = this.evaluateCardValue(attacker);
-        const tradeThreshold = 2 + (riskTolerance * 3); // 2-5 based on risk tolerance
-
-        if (attackerValue >= tradeThreshold) {
-            // Trade away weakest blocker
-            return availableBlockers.sort((a, b) =>
-                this.evaluateCardValue(a) - this.evaluateCardValue(b)
-            )[0];
-        }
-
-        // Aggressive personality might chump block anyway
-        if (this.personality?.name === 'Aggressive' && Math.random() > 0.7) {
-            return null; // Let it through, we'll attack back harder
-        }
-
-        return null;
-    }
-
-    /**
-     * Play a card as resource
-     */
-    async playResource() {
-        const player = this.game.state.players[this.playerNum];
-        if (player.hand.length === 0) return;
-
-        // Control personality might skip resource to hold cards
-        if (this.personality?.name === 'Control' && player.resources.length >= 4 && Math.random() > 0.6) {
-            console.log('AI (Control): Holding cards for later');
-            return;
-        }
-
-        let resCard;
-
-        // Personality affects resource choice
-        if (this.personality?.preferCreatures) {
-            // Use non-creatures as resources first
-            resCard = player.hand.find(c => !c.type?.includes('Pupil'));
-            if (!resCard) {
-                // Use weakest creature
-                const sorted = [...player.hand].sort((a, b) =>
-                    this.evaluateCardValue(a) - this.evaluateCardValue(b)
-                );
-                resCard = sorted[0];
-            }
-        } else {
-            // Strategic: use lowest value card
-            const sorted = [...player.hand].sort((a, b) =>
-                this.evaluateCardValue(a) - this.evaluateCardValue(b)
-            );
-            resCard = sorted[0];
-        }
-
-        // Chaotic might pick randomly
-        if (this.personality?.name === 'Chaotic' && Math.random() > 0.6) {
-            resCard = player.hand[Math.floor(Math.random() * player.hand.length)];
-        }
-
-        if (resCard) {
-            this.game.playCard(this.playerNum, resCard.instanceId, true);
-        }
-    }
-
-    /**
-     * Play cards from hand
-     */
-    async playCards() {
-        const player = this.game.state.players[this.playerNum];
-
-        // Defensive/Control might hold resources
-        if (this.personality?.holdResources) {
-            const availableResources = player.resources.filter(r => !r.spent).length;
-            const holdCount = this.personality?.name === 'Defensive' ? 2 : 1;
-
-            if (availableResources <= holdCount && player.hand.length > 2) {
-                console.log(`AI (${this.personality.name}): Holding resources`);
-                // Only play one card
-                const playable = this.getPlayableCards();
-                if (playable.length > 0) {
-                    const card = playable[0];
-                    if (this.game.canAfford(card, player)) {
-                        this.game.playCard(this.playerNum, card.instanceId, false);
+        const hosts = [...pl.field, ...g.state.players[p === 1 ? 2 : 1].field.filter(c => g.def(c)?.sharedAbilities)];
+        for (const card of hosts) {
+            for (const ab of g.getAbilities(p, card.instanceId)) {
+                if (!ab.canUse) continue;
+                const modes = ab.modes || [{ index: undefined, targets: ab.targets }];
+                for (const m of modes) {
+                    for (const t of this.targetCombos(g, p, m.targets, card)) {
+                        out.push({ kind: 'ability', id: card.instanceId, index: ab.index, choices: { mode: m.index, targets: t }, label: `${card.name}: ${ab.label}` });
                     }
                 }
-                return;
             }
         }
+        return out;
+    }
 
-        // Get playable cards sorted by priority
-        const playable = this.getPlayableCards();
+    apply(g, p, c) {
+        if (c.kind === 'play') return g.playCard(p, c.id, false, c.choices);
+        if (c.kind === 'resource') return g.playCard(p, c.id, true, c.choices);
+        return g.activateAbility(p, c.id, c.index, c.choices);
+    }
 
-        for (const card of playable) {
-            if (this.game.canAfford(card, player)) {
-                const result = this.game.playCard(this.playerNum, card.instanceId, false);
-                if (result.success) {
-                    await this.delay(this.actionDelay);
+    // The best move and how much it gains; null if nothing beats standing still.
+    bestMove(g = this.game, p = this.me, samples = 1) {
+        const base = this.evaluate(g, p);
+        let best = null, bestGain = 0.35;
+        for (const c of this.candidates(g, p)) {
+            let total = 0, okRuns = 0;
+            for (let s = 0; s < samples; s++) {
+                const sim = this.clone(g);
+                const r = this.apply(sim, p, c);
+                if (!r.success) break;
+                this.settle(sim);
+                total += this.evaluate(sim, p); okRuns++;
+            }
+            if (!okRuns) continue;
+            const gain = total / okRuns - base;
+            if (gain > bestGain) { bestGain = gain; best = c; }
+        }
+        return best ? { move: best, gain: bestGain } : null;
+    }
+
+    // ======================================================================
+    // Choices raised by the engine
+    // ======================================================================
+
+    cardWorth(g, card) {
+        if (!card) return 0;
+        const mv = g.manaValue(card);
+        if (g.isPupil(card)) {
+            const d = g.parseDice(card.dice);
+            return (d.sides ? (d.sides + 1) / 2 : 0) * 1.4 + (parseInt(card.endurance, 10) || 0) * 0.4 + (g.def(card) ? 1 : 0);
+        }
+        return 2 + mv * 0.4;
+    }
+
+    pickChoice(g, q, p) {
+        const opts = q.options || [];
+        if (q.kind === 'order') {
+            return [...opts].sort((a, b) => this.cardWorth(g, b.card) - this.cardWorth(g, a.card)).map(o => o.value);
+        }
+        if (q.reveal || q.max === 0) return [];
+        if (q.kind === 'option') {
+            const yes = opts.find(o => o.value === 'yes');
+            const deck = g.state.players[p].deck.length;
+            return [yes && deck > 3 ? 'yes' : opts[opts.length - 1].value];
+        }
+        const cont = q.cont || {};
+        let ranked;
+        if (cont.engine === 'discard' || /discard/i.test(q.prompt || '')) {
+            // discard your own worst card (or, when choosing for the opponent, their best)
+            const mineHand = opts.every(o => g.state.players[p].hand.some(c => c.instanceId === o.value));
+            ranked = [...opts].sort((a, b) => mineHand ? this.cardWorth(g, a.card) - this.cardWorth(g, b.card)
+                                                       : this.cardWorth(g, b.card) - this.cardWorth(g, a.card));
+        } else if (q.harm) {
+            ranked = [...opts].sort((a, b) => {
+                const ca = g.findInPlay(a.value), cb = g.findInPlay(b.value);
+                const va = ca ? (g.controllerOf(ca) === p ? -100 : this.pupilValue(g, ca, g.controllerOf(ca))) : 0;
+                const vb = cb ? (g.controllerOf(cb) === p ? -100 : this.pupilValue(g, cb, g.controllerOf(cb))) : 0;
+                return vb - va;
+            });
+            if (q.min === 0 && ranked.length && g.controllerOf(g.findInPlay(ranked[0].value)) === p) return [];
+        } else if (q.buff) {
+            ranked = [...opts].sort((a, b) => {
+                const ca = g.findInPlay(a.value), cb = g.findInPlay(b.value);
+                const va = ca ? (g.controllerOf(ca) === p ? 100 : 0) + (ca.damage || 0) + this.pupilValue(g, ca, p) * 0.1 : 0;
+                const vb = cb ? (g.controllerOf(cb) === p ? 100 : 0) + (cb.damage || 0) + this.pupilValue(g, cb, p) * 0.1 : 0;
+                return vb - va;
+            });
+            if (q.min === 0 && ranked.length && g.controllerOf(g.findInPlay(ranked[0].value)) !== p) return [];
+        } else {
+            // picking cards from a deck: the best ones
+            ranked = [...opts].sort((a, b) => this.cardWorth(g, b.card) - this.cardWorth(g, a.card));
+        }
+        const n = Math.max(q.min, Math.min(q.max, q.min === 0 && !q.buff && !q.harm ? 1 : q.max));
+        return ranked.slice(0, n).map(o => o.value);
+    }
+
+    // Answer the engine's question if it is ours. Safe to call any time.
+    answerChoice() {
+        const q = this.g.pendingChoice;
+        if (!q || q.player !== this.me) return false;
+        let r = this.g.resolveChoice(this.me, this.pickChoice(this.g, q, this.me));
+        // Never leave the game waiting on us: if our pick is refused, give the
+        // plainest valid answer instead.
+        if (!r.success) {
+            const vals = q.kind === 'order' ? q.options.map(o => o.value)
+                       : q.options.slice(0, Math.max(q.min, 0)).map(o => o.value);
+            r = this.g.resolveChoice(this.me, vals);
+            if (!r.success) console.error('AI could not answer', q.prompt, r.error);
+        }
+        return r.success;
+    }
+
+    async answerAll() {
+        for (let i = 0; i < 12 && this.g.pendingChoice && this.g.pendingChoice.player === this.me; i++) {
+            this.answerChoice();
+            await this.delay(Math.min(this.actionDelay, 300));
+        }
+    }
+
+    // Wait while the other player has a decision to make.
+    async waitForOther(maxMs = 120000) {
+        const start = Date.now();
+        while (this.g.pendingChoice && this.g.pendingChoice.player !== this.me && !this.g.state.gameOver) {
+            if (Date.now() - start > maxMs) return false;
+            await this.delay(250);
+        }
+        return true;
+    }
+
+    // ======================================================================
+    // The turn
+    // ======================================================================
+
+    async takeTurn() {
+        if (this.isRunning) return;
+        const g = this.g;
+        if (!g.state || g.state.gameOver || g.state.currentPlayer !== this.me) return;
+        this.isRunning = true;
+        try {
+            await this.delay(this.thinkingDelay);
+            await this.answerAll();
+            await this.waitForOther();
+
+            this.playResource();
+            await this.answerAll();
+            await this.delay(this.actionDelay);
+
+            for (let step = 0; step < 12 && !g.state.gameOver; step++) {
+                await this.waitForOther();
+                const best = this.bestMove(g, this.me);
+                if (!best) break;
+                const r = this.apply(g, this.me, best.move);
+                if (!r.success) break;
+                await this.answerAll();
+                await this.delay(this.actionDelay);
+            }
+
+            if (!g.state.gameOver && g.state.currentPlayer === this.me) await this.doCombat();
+
+            // wait for the defender to block, and for combat to finish
+            const start = Date.now();
+            while (g.state.combatStep && !g.state.gameOver && Date.now() - start < 300000) {
+                await this.answerAll();
+                await this.delay(250);
+            }
+            await this.answerAll();
+            await this.waitForOther();
+            await this.delay(Math.min(400, this.actionDelay));
+            if (!g.state.gameOver && g.state.currentPlayer === this.me && !g.state.combatStep) g.endTurn(this.me);
+        } catch (error) {
+            console.error('AI error:', error);
+            // Never strand the game on the AI's turn
+            if (!g.state.gameOver && g.state.currentPlayer === this.me) {
+                g.state.pending = [];
+                if (g.state.combatStep) g.endCombat(true);
+                g.endTurn(this.me);
+            }
+        } finally {
+            this.isRunning = false;
+        }
+    }
+
+    // One resource a turn: the card that is least useful in hand, preferring
+    // one whose resource ability helps, and a colour we are short of.
+    playResource() {
+        const g = this.g;
+        if (g.canPlayResource(this.me)) return;
+        const pl = g.state.players[this.me];
+        if (!pl.hand.length) return;
+        const base = this.evaluate(g);
+        let best = null, bestScore = -Infinity;
+        const need = {};
+        for (const c of pl.hand) for (const [col, n] of Object.entries(g.parseCost(c.cost).colors)) need[col] = (need[col] || 0) + n;
+        const have = {};
+        for (const r of pl.resources) for (const col of (r.anyColor ? ['O', 'G', 'P', 'B', 'Bk'] : r.colors || [])) have[col] = (have[col] || 0) + 1;
+        for (const c of pl.hand) {
+            const opts = g.getPlayOptions(this.me, c.instanceId);
+            const modes = opts.resourceModes || [{ index: undefined, targets: opts.resourceTargets }];
+            for (const m of modes) {
+                for (const t of this.targetCombos(g, this.me, m.targets, c, 4)) {
+                    const sim = this.clone(g);
+                    const r = sim.playCard(this.me, c.instanceId, true, { mode: m.index, targets: t });
+                    if (!r.success) continue;
+                    this.settle(sim);
+                    let score = this.evaluate(sim) - base;
+                    // keep what we can cast soon; spend what we cannot
+                    const mv = g.manaValue(c);
+                    const castableSoon = mv <= pl.resources.length + 2;
+                    score -= castableSoon ? this.cardWorth(g, c) * 0.6 : this.cardWorth(g, c) * 0.15;
+                    // colours we need and lack
+                    for (const col of g.getAllColors(c.cost)) if ((need[col] || 0) > (have[col] || 0)) score += 1.5;
+                    if (score > bestScore) { bestScore = score; best = { c, m, t }; }
                 }
             }
         }
+        if (best) g.playCard(this.me, best.c.instanceId, true, { mode: best.m.index, targets: best.t });
     }
 
-    /**
-     * Get list of playable cards sorted by priority
-     */
-    getPlayableCards() {
-        const player = this.game.state.players[this.playerNum];
-        const available = player.resources.filter(r => !r.spent);
-
-        const playable = player.hand.filter(card => {
-            // Skip interruptions in main phase
-            if (card.type === 'Interruption') return false;
-
-            const cost = this.game.parseCost(card.cost);
-            if (available.length < cost.total) return false;
-
-            for (const [color, count] of Object.entries(cost.colors)) {
-                if (available.filter(r => r.color === color).length < count) return false;
-            }
-
-            return true;
-        });
-
-        // Sort based on personality
-        return playable.sort((a, b) => {
-            let aValue = this.evaluateCardValue(a);
-            let bValue = this.evaluateCardValue(b);
-
-            // Personality adjustments
-            if (this.personality?.preferCreatures) {
-                if (a.type?.includes('Pupil')) aValue += 2;
-                if (b.type?.includes('Pupil')) bValue += 2;
-            }
-
-            if (this.personality?.name === 'Control') {
-                // Prefer spells and tools
-                if (!a.type?.includes('Pupil')) aValue += 1.5;
-                if (!b.type?.includes('Pupil')) bValue += 1.5;
-            }
-
-            if (this.personality?.name === 'Aggressive') {
-                // Prefer creatures with high dice
-                if (a.dice) aValue += this.estimateRoll(a.dice);
-                if (b.dice) bValue += this.estimateRoll(b.dice);
-            }
-
-            // Chaotic shuffles a bit
-            if (this.personality?.name === 'Chaotic') {
-                aValue += (Math.random() - 0.5) * 3;
-                bValue += (Math.random() - 0.5) * 3;
-            }
-
-            return bValue - aValue;
-        });
+    // Blockers the opponent could use against a given attacker.
+    blockersFor(g, attacker, defender) {
+        return g.pupilsOf(defender).filter(b => !g.blockError(defender, b, attacker));
     }
 
-    /**
-     * Execute combat phase
-     */
     async doCombat() {
-        const player = this.game.state.players[this.playerNum];
-
-        // Get available attackers
-        const attackers = player.field.filter(c =>
-            c.type?.includes('Pupil') &&
-            !c.hasGettingBearings &&
-            !c.isSpent
-        );
-
-        if (attackers.length === 0) return;
-
-        // Defensive might skip combat entirely if opponent has blockers
-        const opponent = this.game.getOpponent(this.playerNum);
-        const opponentBlockers = opponent.field.filter(c => c.type?.includes('Pupil') && !c.isSpent);
-
-        if (this.personality?.name === 'Defensive' && opponentBlockers.length >= attackers.length) {
-            console.log('AI (Defensive): Skipping combat, unfavorable board');
-            return;
-        }
-
-        // Start combat
-        this.game.startCombat(this.playerNum);
-        await this.delay(this.actionDelay);
-
-        // Decide which creatures to attack with
-        const shouldAttack = this.evaluateAttackDecision(attackers, opponent);
-
-        if (shouldAttack.length === 0) {
-            this.game.confirmAttackers(this.playerNum);
-            return;
-        }
-
-        // Declare attackers
-        for (const card of shouldAttack) {
-            this.game.toggleAttacker(this.playerNum, card.instanceId);
-        }
-
-        await this.delay(this.actionDelay);
-        this.game.confirmAttackers(this.playerNum);
-    }
-
-    /**
-     * Decide which creatures should attack
-     */
-    evaluateAttackDecision(attackers, opponent) {
-        const shouldAttack = [];
-        const attackThreshold = this.personality?.attackThreshold ?? 0.5;
-        const riskTolerance = this.personality?.riskTolerance ?? 0.5;
-
-        const blockers = opponent.field.filter(c => c.type?.includes('Pupil') && !c.isSpent);
-
-        // Aggressive attacks with everything if opponent has fewer blockers
-        if (this.personality?.name === 'Aggressive') {
-            if (blockers.length < attackers.length || Math.random() > 0.3) {
-                return attackers;
+        const g = this.g;
+        const ready = g.pupilsOf(this.me).filter(c => g.canAttack(this.me, c));
+        if (!ready.length) return;
+        const defenders = g.pupilsOf(this.them).filter(b => !b.isSpent && !g.cannotBlock(b));
+        const attackers = [];
+        const blockerRolls = defenders.map(b => this.expectedRoll(g, b));
+        const bestBlockRoll = blockerRolls.length ? Math.max(...blockerRolls) : 0;
+        const myPts = g.state.players[this.me].points;
+        // Close to winning: send everything
+        const allIn = myPts + ready.reduce((s, c) => s + this.expectedRoll(g, c), 0) >= g.winCondition && defenders.length < ready.length;
+        for (const a of ready) {
+            const e = this.expectedRoll(g, a);
+            if (e <= 0.5 && !g.keywords(a).has('overwhelm')) continue;
+            const blockable = this.blockersFor(g, a, this.them);
+            const survives = a.currentEndurance > bestBlockRoll || g.hasKeyword(a, 'stubborn') || g.hasKeyword(a, 'firstStrike');
+            const threatens = blockable.some(b => e >= b.currentEndurance) || g.hasKeyword(a, 'lethal');
+            const unblockable = blockable.length === 0;
+            const cheap = this.pupilValue(g, a, this.me) < 4;
+            if (allIn || unblockable || survives || threatens || (cheap && this.aggression > 0.4) || Math.random() < this.aggression * 0.3) {
+                attackers.push(a);
             }
         }
-
-        // Chaotic might just send everyone
-        if (this.personality?.name === 'Chaotic' && Math.random() > 0.5) {
-            console.log('AI (Chaotic): All-out attack!');
-            return attackers;
+        // Keep a blocker home when the opponent is close to winning
+        const theirPts = g.state.players[this.them].points;
+        const theirThreat = g.pupilsOf(this.them).reduce((s, c) => s + (g.cannotAttack(c) ? 0 : this.expectedRoll(g, c)), 0);
+        if (!allIn && theirPts + theirThreat >= g.winCondition && attackers.length > 1) {
+            const keep = attackers.sort((x, y) => y.currentEndurance - x.currentEndurance).shift();
+            attackers.splice(attackers.indexOf(keep), 1);
         }
+        if (!attackers.length) return;
+        if (!g.startCombat(this.me).success) return;
+        await this.delay(this.actionDelay);
+        for (const a of attackers) g.toggleAttacker(this.me, a.instanceId);
+        await this.delay(this.actionDelay);
+        g.confirmAttackers(this.me);
+        await this.answerAll();
+    }
 
-        // If opponent has no blockers, attack with everything (all personalities)
-        if (blockers.length === 0) {
-            return attackers;
+    // ======================================================================
+    // Defending
+    // ======================================================================
+
+    async declareBlockers() {
+        const g = this.g;
+        if (this._blocking) return;
+        if (g.state.combatStep !== 'declare-blockers' || g.state.currentPlayer === this.me) return;
+        this._blocking = true;
+        try {
+            await this.delay(this.thinkingDelay);
+            await this.answerAll();
+            await this.waitForOther();
+            if (g.state.combatStep !== 'declare-blockers') return;
+
+            this.assignBlockers(g);
+
+            // A combat trick, if one clearly helps
+            const trick = this.bestCombatTrick(g);
+            if (trick) {
+                this.apply(g, this.me, trick);
+                await this.answerAll();
+                await this.delay(this.actionDelay);
+                if (g.state.combatStep === 'declare-blockers') { g.state.blockers = {}; this.assignBlockers(g); }
+            }
+            await this.delay(this.actionDelay);
+            if (g.state.combatStep === 'declare-blockers') {
+                const r = g.confirmBlockers(this.me);
+                if (!r.success) {
+                    // must-be-blocked: satisfy it with the cheapest pupil
+                    for (const att of g.unmetBlockRequirements(this.me)) {
+                        const free = this.blockersFor(g, att, this.me).filter(b => !Object.values(g.state.blockers).includes(b.instanceId))
+                            .sort((a, b) => this.pupilValue(g, a, this.me) - this.pupilValue(g, b, this.me));
+                        if (free[0]) g.toggleBlocker(this.me, free[0].instanceId, att.instanceId);
+                    }
+                    g.confirmBlockers(this.me);
+                }
+            }
+        } catch (error) {
+            console.error('AI block error:', error);
+            if (g.state.combatStep === 'declare-blockers') { g.state.blockers = {}; g.confirmBlockers(this.me); }
+        } finally {
+            this._blocking = false;
         }
+    }
 
-        // Evaluate each attacker
+    assignBlockers(g) {
+        const attackers = g.state.attackers.map(a => g.findInPlay(a.instanceId)).filter(Boolean)
+            .sort((a, b) => this.expectedRoll(g, b) - this.expectedRoll(g, a));
+        const used = new Set();
+        const theirPts = g.state.players[this.them].points;
+        const incoming = attackers.reduce((s, a) => s + this.expectedRoll(g, a), 0);
+        const desperate = theirPts + incoming >= g.winCondition;
         for (const att of attackers) {
-            const isRelentless = att.ability?.toLowerCase().includes('relentless');
-            const hasOverwhelm = att.ability?.toLowerCase().includes('overwhelm');
-
-            // Relentless creatures always attack
-            if (isRelentless) {
-                shouldAttack.push(att);
-                continue;
+            if (g.modActive(att, m => m.refuted)) continue;
+            const eAtt = this.expectedRoll(g, att);
+            const options = this.blockersFor(g, att, this.me).filter(b => !used.has(b.instanceId));
+            let best = null, bestScore = 0;
+            for (const b of options) {
+                const eB = this.expectedRoll(g, b);
+                const bDies = g.hasKeyword(att, 'lethal') ? 1 : (eAtt >= b.currentEndurance && !g.hasKeyword(b, 'stubborn') ? 0.8 : 0.15);
+                const aDies = g.hasKeyword(b, 'lethal') ? 1 : (eB >= att.currentEndurance && !g.hasKeyword(att, 'stubborn') ? 0.7 : 0.1);
+                const saved = g.hasKeyword(att, 'overwhelm') ? Math.min(eAtt, b.currentEndurance) : eAtt;
+                let score = saved * (desperate ? 3 : 1.3)
+                          + aDies * this.pupilValue(g, att, this.them)
+                          - bDies * this.pupilValue(g, b, this.me);
+                if (score > bestScore) { bestScore = score; best = b; }
             }
-
-            // Overwhelm creatures are valuable attackers
-            if (hasOverwhelm) {
-                shouldAttack.push(att);
-                continue;
-            }
-
-            // Calculate attack decision based on personality
-            const attackerValue = this.evaluateCardValue(att);
-            const avgBlockerValue = blockers.reduce((sum, b) => sum + this.evaluateCardValue(b), 0) / blockers.length;
-
-            // Attack if value comparison meets threshold
-            const valueRatio = attackerValue / Math.max(avgBlockerValue, 1);
-            const shouldSend = valueRatio < (1 + attackThreshold) || Math.random() > attackThreshold;
-
-            if (shouldSend) {
-                // Risk tolerance affects final decision
-                if (Math.random() < riskTolerance || attackerValue <= avgBlockerValue) {
-                    shouldAttack.push(att);
-                }
-            }
+            if (best) { g.toggleBlocker(this.me, best.instanceId, att.instanceId); used.add(best.instanceId); }
         }
+    }
 
-        // Control only attacks when significantly ahead
-        if (this.personality?.name === 'Control') {
-            const myPoints = this.game.state.players[this.playerNum].points;
-            // getOpponent() returns the player state itself; indexing players[] with it
-            // was undefined, and this branch threw every time the AI was behind on points
-            const oppPoints = this.game.getOpponent(this.playerNum).points;
-
-            if (myPoints < oppPoints && shouldAttack.length < attackers.length) {
-                // Only send safe attackers
-                return shouldAttack.filter(att => {
-                    const avgRoll = this.estimateRoll(att.dice);
-                    return avgRoll > 3; // Only high-impact attackers
-                });
+    // Try each playable combat card and ability on copies of the combat, a few
+    // times each (the dice decide combat), and keep one that clearly helps.
+    bestCombatTrick(g) {
+        const cands = this.candidates(g, this.me);
+        if (!cands.length) return null;
+        const outcome = (sim) => {
+            if (sim.state.combatStep === 'declare-blockers') {
+                if (!sim.confirmBlockers(this.me).success) { sim.state.blockers = {}; sim.confirmBlockers(this.me); }
             }
+            this.settle(sim);
+            return this.evaluate(sim, this.me);
+        };
+        const samples = 4;
+        let base = 0;
+        for (let i = 0; i < samples; i++) base += outcome(this.clone(g));
+        base /= samples;
+        let best = null, bestGain = 1.0;
+        for (const c of cands) {
+            let total = 0, n = 0;
+            for (let i = 0; i < samples; i++) {
+                const sim = this.clone(g);
+                if (!this.apply(sim, this.me, c).success) break;
+                this.settle(sim);
+                total += outcome(sim); n++;
+            }
+            if (!n) continue;
+            const gain = total / n - base;
+            if (gain > bestGain) { bestGain = gain; best = c; }
         }
-
-        return shouldAttack;
-    }
-
-    /**
-     * Evaluate a card's value for decision making
-     */
-    evaluateCardValue(card) {
-        let value = 0;
-
-        // Base value from cost
-        const cost = this.game.parseCost(card.cost);
-        value += cost.total;
-
-        // Creature stats
-        if (card.type?.includes('Pupil')) {
-            value += (card.currentEndurance || card.endurance) / 2;
-            value += (parseFloat(card.ad) || 0) / 2;   // ad is a string ("8x2", "?") for ~50 cards
-        }
-
-        // Keywords
-        const ability = card.ability?.toLowerCase() || '';
-        if (ability.includes('relentless')) value += 1;
-        if (ability.includes('overwhelm')) value += 1.5;
-        if (ability.includes('impulsive')) value += 0.5;
-        if (ability.includes('draw')) value += 1.5;
-        if (ability.includes('when') || ability.includes('enters')) value += 1; // ETB effects
-
-        return value;
-    }
-
-    /**
-     * Estimate average dice roll
-     */
-    estimateRoll(diceStr) {
-        if (!diceStr) return 0;
-        const match = diceStr.match(/(\d*)d(\d+)/);
-        if (!match) return 0;
-        const count = parseInt(match[1]) || 1;
-        const sides = parseInt(match[2]);
-        return count * (sides + 1) / 2;
-    }
-
-    /**
-     * Wait for combat to be resolved (player must declare blockers first)
-     */
-    waitForCombatResolution() {
-        return new Promise(resolve => {
-            const checkCombat = () => {
-                if (!this.game.state.combatStep) {
-                    resolve();
-                } else {
-                    setTimeout(checkCombat, 200);
-                }
-            };
-            // Initial check after a delay
-            setTimeout(checkCombat, 200);
-        });
-    }
-
-    /**
-     * Utility delay function
-     */
-    delay(ms) {
-        return new Promise(resolve => { setTimeout(resolve, ms); });
+        return best;
     }
 }
 
 // Export
-window.RiutizAI = RiutizAI;
-
+if (typeof window !== 'undefined') window.RiutizAI = RiutizAI;
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { RiutizAI };
 }

@@ -15,8 +15,9 @@ class RiutizUI {
         this.selectedFieldCard = null;
 
         // Ability targeting state
-        this.pendingAbility = null;  // { card, targetType, effect, ... }
-        this.targetingMode = false;
+        this.action = null;          // a card or ability gathering its targets
+        this.pickingMode = null;
+        this.selectedBlocker = null;
 
         // Drag and drop state
         this.draggedCard = null;
@@ -88,15 +89,18 @@ class RiutizUI {
     static get KEYWORD_TOOLTIPS() {
         return {
             'impulsive': 'Can attack the turn it enters the field',
-            'relentless': 'Can attack even while spent/tapped',
+            'relentless': 'Can attack even while spent',
             'grounded': 'Cannot attack, but can still block',
             'lethal': 'Any damage defeats the target regardless of Endurance',
-            'stubborn': 'Cannot be defeated by combat damage alone',
-            'non-sequitur': 'Triggers a random coin-flip effect',
+            'stubborn': 'Cannot be exhausted by damage - it stays at 1',
+            'non-sequitur': 'Each roll flips a coin: heads doubles it, tails makes it 0',
             'overwhelm': 'Excess damage beyond blocker\'s Endurance scores as points',
             'interject': 'Triggers an effect when entering the battlefield',
             'lockdown': 'Target cannot attack or block',
-            'closed-minded': 'Cannot gain new abilities or receive buffs'
+            'closed-minded': "Ignores its own side's buffs and cannot gain abilities",
+            'overwhelm ': '',
+            'rebuttal': 'When it takes damage while blocking, it hits the attacker back',
+            'lethal:': ''
         };
     }
 
@@ -180,80 +184,7 @@ class RiutizUI {
         return RiutizGame.COLORS[colorCode] || RiutizGame.COLORS.C;
     }
 
-    /**
-     * Render full game state
-     */
-    render() {
-        const state = this.game.state;
-        if (!state) return;
 
-        const isYourTurn = state.currentPlayer === this.localPlayer;
-        const you = state.players[this.localPlayer];
-        const opp = state.players[this.localPlayer === 1 ? 2 : 1];
-
-        // Update points
-        this.elements.oppPoints.textContent = opp.points + ' pts';
-        this.elements.yourPoints.textContent = you.points + ' pts';
-
-        // Update deck/hand counts
-        this.elements.oppHandCount.textContent = opp.hand.length;
-        this.elements.oppDeckCount.textContent = opp.deck.length;
-        this.elements.yourHandCount.textContent = you.hand.length;
-        this.elements.yourDeckCount.textContent = you.deck.length;
-
-        // Turn number
-        this.elements.turnNumber.textContent = state.turn;
-
-        // Phase indicator
-        document.querySelectorAll('.phase').forEach(el => {
-            el.classList.toggle('active', el.dataset.phase === state.phase);
-        });
-
-        // Turn indicator
-        this.elements.turnIndicator.textContent = isYourTurn ? 'Your Turn' : "Opponent's Turn";
-        this.elements.turnIndicator.className = 'turn-indicator ' + (isYourTurn ? 'your-turn' : 'opp-turn');
-
-        // Field hint (optional element)
-        if (this.elements.fieldHint) {
-            this.elements.fieldHint.textContent =
-                state.combatStep === 'declare-attackers' && isYourTurn ? '(Tap to attack!)' : '';
-        }
-
-        // Render resources
-        this.renderResources(this.elements.oppResources, opp.resources);
-        this.renderResources(this.elements.yourResources, you.resources, true);
-
-        // Separate field cards into creatures, locations, and artifacts
-        const allFieldCards = [...opp.field, ...you.field];
-        const oppCreatures = opp.field.filter(c => c.type !== 'Tool' && c.type !== 'Location');
-        const oppArtifacts = opp.field.filter(c => c.type === 'Tool');
-        const yourCreatures = you.field.filter(c => c.type !== 'Tool' && c.type !== 'Location');
-        const yourArtifacts = you.field.filter(c => c.type === 'Tool');
-
-        // Get the active location (most recently played)
-        const allLocations = allFieldCards.filter(c => c.type === 'Location');
-        const activeLocation = allLocations.length > 0 ? allLocations[allLocations.length - 1] : null;
-
-        // Render fields (creatures only, no locations or tools)
-        this.renderField(this.elements.oppField, oppCreatures, false);
-        this.renderField(this.elements.yourField, yourCreatures, true);
-
-        // Render center location
-        this.renderCenterLocation(activeLocation);
-
-        // Render artifacts
-        this.renderArtifacts(this.elements.oppArtifacts, oppArtifacts, false);
-        this.renderArtifacts(this.elements.yourArtifacts, yourArtifacts, true);
-
-        // Update battlefield background based on active location
-        this.updateBattlefieldBackground(allFieldCards);
-
-        // Render hand
-        this.renderHand(this.elements.yourHand, you.hand);
-
-        // Render action buttons
-        this.renderActionButtons();
-    }
 
     /**
      * Update battlefield background based on active location
@@ -310,334 +241,23 @@ class RiutizUI {
         }
     }
 
-    /**
-     * Render resources
-     */
-    renderResources(container, resources, isYours = false) {
-        container.innerHTML = '';
 
-        if (resources.length === 0) {
-            // No message for empty resources in the new compact layout
-            return;
-        }
 
-        resources.forEach(res => {
-            const c = this.getColor(res.color);
-            const div = document.createElement('div');
-            div.className = 'resource-token' + (res.spent ? ' spent' : '');
-            div.style.cssText = `background: radial-gradient(circle at 30% 30%, ${c.hex}, ${c.bg}); border: 2px solid ${c.hex}; ${res.spent ? '' : `box-shadow: 0 0 10px ${c.hex}60;`}`;
-            div.textContent = res.color;
-            div.title = res.cardName || res.color; // Tooltip fallback
 
-            // Add preview functionality if card data exists
-            if (res.card) {
-                // PC: Hover preview
-                if (!this.isTouchDevice) {
-                    div.addEventListener('mouseenter', (e) => {
-                        this.showHoverPreview(res.card, e);
-                    });
-                    div.addEventListener('mouseleave', () => {
-                        this.hideHoverPreview();
-                    });
-                    div.addEventListener('mousemove', (e) => {
-                        this.updateHoverPreviewPosition(e);
-                    });
-                }
 
-                // Mobile: Long press preview
-                if (this.isTouchDevice) {
-                    let touchTimer = null;
-                    let touchMoved = false;
 
-                    div.addEventListener('touchstart', () => {
-                        touchMoved = false;
-                        touchTimer = setTimeout(() => {
-                            if (!touchMoved) {
-                                this.showPreview(res.card);
-                            }
-                        }, 400);
-                    }, { passive: true });
 
-                    div.addEventListener('touchmove', () => {
-                        touchMoved = true;
-                        if (touchTimer) {
-                            clearTimeout(touchTimer);
-                            touchTimer = null;
-                        }
-                    }, { passive: true });
 
-                    div.addEventListener('touchend', () => {
-                        if (touchTimer) {
-                            clearTimeout(touchTimer);
-                            touchTimer = null;
-                        }
-                    });
-                }
-            }
 
-            container.appendChild(div);
-        });
-    }
 
-    /**
-     * Render field - Arena style
-     */
-    renderField(container, field, isYours) {
-        const state = this.game.state;
-        container.innerHTML = '';
 
-        if (field.length === 0) {
-            // Empty field - no message, just empty space
-            return;
-        }
 
-        field.forEach(card => {
-            const isPupil = card.type?.includes('Pupil');
-            const isYourTurn = state.currentPlayer === this.localPlayer;
 
-            // Determine card state
-            const isAttacker = state.attackers.find(a => a.instanceId === card.instanceId);
-            const isBlocker = Object.values(state.blockers).includes(card.instanceId);
 
-            let targetable = false;
 
-            // Check if this card is a valid target in targeting mode
-            if (this.targetingMode && this.pendingAbility) {
-                const { targetType } = this.pendingAbility;
-                if (targetType === 'friendlyPupil' && isYours && isPupil) targetable = true;
-                if (targetType === 'enemyPupil' && !isYours && isPupil) targetable = true;
-                if (targetType === 'anyPupil' && isPupil) targetable = true;
-                if (targetType === 'friendlyCreature' && isYours) targetable = true;
-                if (targetType === 'anyCreature') targetable = true;
-            }
-            // Normal combat targeting
-            else if (isYours && state.combatStep === 'declare-attackers' && isYourTurn) {
-                const isGrounded = card.ability?.toLowerCase().includes('grounded');
-                targetable = isPupil && !card.hasGettingBearings && (!card.isSpent || card.ability?.toLowerCase().includes('relentless')) && !isGrounded;
-            } else if (isYours && state.combatStep === 'declare-blockers' && !isYourTurn) {
-                targetable = isPupil && !card.isSpent && !card.cannotBlock;
-            }
 
-            const isSelected = this.selectedFieldCard?.instanceId === card.instanceId;
 
-            const el = this.renderCard(card, {
-                small: true,
-                selected: isSelected,
-                attacker: isAttacker,
-                blocker: isBlocker,
-                targetable: targetable,
-                spent: card.isSpent,
-                onClick: () => this.handleFieldCardClick(card, isYours)
-            });
 
-            container.appendChild(el);
-        });
-    }
-
-    /**
-     * Render artifacts - compact display in corner
-     */
-    renderArtifacts(container, artifacts, isYours) {
-        if (!container) return;
-        container.innerHTML = '';
-
-        if (artifacts.length === 0) {
-            return;
-        }
-
-        artifacts.forEach(card => {
-            const hasSpendAbility = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
-
-            const el = this.renderCard(card, {
-                small: true,
-                spent: card.isSpent,
-                targetable: hasSpendAbility && !card.isSpent && isYours,
-                onClick: () => this.handleArtifactClick(card, isYours)
-            });
-
-            container.appendChild(el);
-        });
-    }
-
-    /**
-     * Handle artifact click (for spend abilities)
-     */
-    handleArtifactClick(card, isYours) {
-        if (!isYours) return;
-
-        // If in targeting mode, this artifact could be a target
-        if (this.targetingMode && this.pendingAbility) {
-            this.handleTargetSelection(card);
-            return;
-        }
-
-        const hasSpendAbility = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
-        if (hasSpendAbility && !card.isSpent) {
-            // Try to activate spend ability
-            const result = this.game.activateAbility(this.localPlayer, card.instanceId);
-
-            if (result.needsTarget) {
-                // Enter targeting mode
-                this.enterTargetingMode(card, result);
-            } else if (result.success) {
-                this.setMessage(`Activated ${card.name}!`);
-                this.render();
-            } else {
-                this.setMessage(result.error || "Can't activate");
-                this.render();
-            }
-        }
-    }
-
-    /**
-     * Enter targeting mode for an ability
-     */
-    enterTargetingMode(sourceCard, abilityInfo) {
-        this.targetingMode = true;
-        this.pendingAbility = {
-            sourceCard,
-            ...abilityInfo
-        };
-
-        const targetTypeNames = {
-            'friendlyPupil': 'one of your pupils',
-            'enemyPupil': "an opponent's pupil",
-            'anyPupil': 'any pupil',
-            'friendlyCreature': 'one of your creatures',
-            'anyCreature': 'any creature'
-        };
-
-        const targetName = targetTypeNames[abilityInfo.targetType] || 'a target';
-        this.setMessage(`Select ${targetName} for ${sourceCard.name}`);
-        this.render();
-    }
-
-    /**
-     * Handle target selection when in targeting mode
-     */
-    handleTargetSelection(targetCard) {
-        if (!this.pendingAbility) return;
-
-        const { sourceCard, targetType } = this.pendingAbility;
-        const state = this.game.state;
-        const you = state.players[this.localPlayer];
-        const opp = state.players[this.localPlayer === 1 ? 2 : 1];
-
-        // Validate target based on targetType
-        const isYourCard = you.field.some(c => c.instanceId === targetCard.instanceId);
-        const isOppCard = opp.field.some(c => c.instanceId === targetCard.instanceId);
-        const isPupil = targetCard.type?.includes('Pupil');
-
-        let validTarget = false;
-
-        if (targetType === 'friendlyPupil' && isYourCard && isPupil) validTarget = true;
-        if (targetType === 'enemyPupil' && isOppCard && isPupil) validTarget = true;
-        if (targetType === 'anyPupil' && isPupil) validTarget = true;
-        if (targetType === 'friendlyCreature' && isYourCard) validTarget = true;
-        if (targetType === 'anyCreature') validTarget = true;
-
-        if (!validTarget) {
-            this.setMessage('Invalid target!');
-            return;
-        }
-
-        // Execute the ability with the target
-        const result = this.game.activateAbility(this.localPlayer, sourceCard.instanceId, targetCard);
-
-        if (result.success) {
-            this.setMessage(`${sourceCard.name} targeted ${targetCard.name}!`);
-        } else {
-            this.setMessage(result.error || 'Ability failed');
-        }
-
-        // Exit targeting mode
-        this.exitTargetingMode();
-        this.render();
-    }
-
-    /**
-     * Exit targeting mode
-     */
-    exitTargetingMode() {
-        this.targetingMode = false;
-        this.pendingAbility = null;
-    }
-
-    /**
-     * Cancel current targeting
-     */
-    cancelTargeting() {
-        this.exitTargetingMode();
-        this.setMessage('Targeting cancelled');
-        this.render();
-    }
-
-    /**
-     * Render center location card
-     */
-    renderCenterLocation(location) {
-        const container = this.elements.centerLocation;
-        if (!container) return;
-
-        container.innerHTML = '';
-
-        if (!location) {
-            return;
-        }
-
-        // Location icon map
-        const locationIcons = {
-            'Parking Lot': '🚗',
-            'The Workshop': '🔧',
-            'Field': '🌿',
-            'Gym/Weights Room': '🏋️',
-            'Cafeteria': '🍽️',
-            'The Lab': '🔬',
-            'Music Room': '🎵',
-            'The Amphitheater': '🎭',
-            'The Counselor\'s Office': '💬',
-            'Auditorium': '🎬',
-            'The Office': '📋',
-            'The Computer Lab': '💻',
-            'Server Room': '🖥️',
-            'Library': '📚',
-            'Playground': '🎢',
-            'University': '🎓'
-        };
-
-        const icon = locationIcons[location.name] || '🏛️';
-        const abilityText = location.ability || 'No effect';
-
-        const locationEl = document.createElement('div');
-        locationEl.className = 'location-card';
-        locationEl.innerHTML = `
-            <span class="location-icon">${icon}</span>
-            <div class="location-info">
-                <span class="location-name">${location.name}</span>
-                <span class="location-ability">${abilityText}</span>
-            </div>
-        `;
-
-        // Add hover/click preview
-        if (!this.isTouchDevice) {
-            locationEl.addEventListener('mouseenter', (e) => {
-                this.showHoverPreview(location, e);
-            });
-            locationEl.addEventListener('mouseleave', () => {
-                this.hideHoverPreview();
-            });
-            locationEl.addEventListener('mousemove', (e) => {
-                this.updateHoverPreviewPosition(e);
-            });
-        } else {
-            // Mobile: tap to show full preview
-            locationEl.addEventListener('click', () => {
-                this.showPreview(location);
-            });
-        }
-
-        container.appendChild(locationEl);
-    }
 
     /**
      * Render hand - fanned arc layout like MTG Arena
@@ -709,7 +329,10 @@ class RiutizUI {
         const color = this.game.getPrimaryColor(card.cost);
         const c = this.getColor(color);
         const isPupil = card.type?.includes('Pupil');
-        const hasSpendAbility = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
+        // A card in play with an ability its controller can use right now
+        const hasSpendAbility = !inHand && !small ? false
+            : (!inHand && this.game.state && this.game.findInPlay(card.instanceId)
+               && this.game.controllerOf(card) === this.localPlayer && this.usableAbilities(card).length > 0);
 
         let classes = 'card';
         if (small) classes += ' small';
@@ -761,7 +384,7 @@ class RiutizUI {
                 </div>
                 <div class="card-type">${card.type}${card.subTypes ? ' — ' + card.subTypes : ''}</div>
                 <div class="card-art" style="background: linear-gradient(180deg, ${c.hex}20 0%, ${c.bg} 100%); border: 1px solid ${c.hex}40;">${icon}</div>
-                ${isPupil ? `<div class="card-stats"><span class="stat-dice">🎲 ${card.dice}${(card.dieRollBonus || card.cumulativeDieBonus) ? ` +${(card.dieRollBonus || 0) + (card.cumulativeDieBonus || 0)}` : ''}</span><span class="stat-hp">❤️ ${(card.currentEndurance ?? card.endurance) + (card.auraEnduranceBonus || 0) + (card.counters?.plusOne || 0)}${card.auraDamageReduction ? ` 🛡${card.auraDamageReduction}` : ''}</span></div>` : ''}
+                ${isPupil ? `<div class="card-stats"><span class="stat-dice">🎲 ${card.diceNow || card.dice}${card.dieRollBonus ? ` ${card.dieRollBonus > 0 ? '+' : ''}${card.dieRollBonus}` : ''}</span><span class="stat-hp">❤️ ${card.currentEndurance ?? card.endurance}${card.damageReductionTotal ? ` 🛡${card.damageReductionTotal}` : ''}${card.counters?.shield ? ` ◈${card.counters.shield}` : ''}</span></div>` : ''}
                 ${card.ability ? `<div class="card-ability">${this.highlightKeywords(card.ability)}</div>` : ''}
             </div>
             <div class="card-rarity ${card.rarity || 'C'}"></div>
@@ -885,8 +508,7 @@ class RiutizUI {
                 <div style="height: 4rem; display: flex; align-items: center; justify-content: center;
                             font-size: 2rem; opacity: 0.6; background: ${c.bg}; border-radius: 0.25rem; margin-bottom: 0.5rem;">${icon}</div>
                 ${isPupil ? `<div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 0.5rem;">
-                    <span style="color: #fbbf24;" title="Attack Dice">🎲 ${card.dice}</span>
-                    <span style="color: #3b82f6;" title="Attack Damage (points scored when unblocked)">⚔️ ${card.ad}</span>
+                    <span style="color: #fbbf24;" title="Attack dice - an unblocked pupil scores its roll">🎲 ${card.diceNow || card.dice}${card.dieRollBonus ? ` ${card.dieRollBonus > 0 ? '+' : ''}${card.dieRollBonus}` : ''}</span>
                     <span style="color: #ef4444;" title="Endurance (health)">❤️ ${card.currentEndurance ?? card.endurance}</span>
                 </div>` : ''}
                 <div style="font-size: 0.75rem; color: #e4e4e7; line-height: 1.4; min-height: 2rem;">
@@ -997,36 +619,7 @@ class RiutizUI {
         e.currentTarget.style.borderColor = '';
     }
 
-    /**
-     * Handle drop
-     */
-    handleDrop(e, zone) {
-        e.preventDefault();
-        e.currentTarget.style.background = '';
-        e.currentTarget.style.borderColor = '';
 
-        if (!this.draggedCard) return;
-
-        const state = this.game.state;
-        const isYourTurn = state.currentPlayer === this.localPlayer;
-
-        if (!isYourTurn || state.phase !== 'main') {
-            this.setMessage("Can't play cards right now");
-            return;
-        }
-
-        const asResource = zone === 'resource';
-        const result = this.game.playCard(this.localPlayer, this.draggedCard.instanceId, asResource);
-
-        if (!result.success) {
-            this.setMessage(result.error);
-        } else {
-            this.setMessage(asResource ? 'Played as resource!' : `Played ${this.draggedCard.name}!`);
-        }
-
-        this.selectedCard = null;
-        this.render();
-    }
 
     /**
      * Highlight drop zones during drag
@@ -1184,7 +777,7 @@ class RiutizUI {
                     <div class="preview-type">${card.type}${card.subTypes ? ' — ' + card.subTypes : ''}</div>
                 </div>
                 <div class="preview-art" style="background: linear-gradient(180deg, ${c.hex}30 0%, ${c.bg} 100%); border: 1px solid ${c.hex}50;">${icon}</div>
-                ${isPupil ? `<div class="preview-stats"><span style="color: #fbbf24">🎲 ${card.dice}</span><span style="color: #3b82f6">⚔️ AD: ${card.ad}</span><span style="color: #ef4444">❤️ ${card.currentEndurance ?? card.endurance}</span></div>` : ''}
+                ${isPupil ? `<div class="preview-stats"><span style="color: #fbbf24">🎲 ${card.diceNow || card.dice}${card.dieRollBonus ? ` ${card.dieRollBonus > 0 ? '+' : ''}${card.dieRollBonus}` : ''}</span><span style="color: #ef4444">❤️ ${card.currentEndurance ?? card.endurance}</span></div>` : ''}
                 <div class="preview-ability">
                     ${card.ability ? `<p>${this.highlightKeywords(card.ability)}</p>` : '<p class="no-ability">No ability text.</p>'}
                 </div>
@@ -1213,214 +806,677 @@ class RiutizUI {
         this.elements.previewOverlay.classList.add('hidden');
     }
 
+
+
+
+
+
+
     /**
-     * Handle hand card click
+     * Render full game state
      */
-    handleHandCardClick(card) {
+    render() {
         const state = this.game.state;
+        if (!state) return;
+
         const isYourTurn = state.currentPlayer === this.localPlayer;
+        const you = state.players[this.localPlayer];
+        const opp = state.players[this.localPlayer === 1 ? 2 : 1];
 
-        if (!isYourTurn || state.phase !== 'main') return;
+        this.elements.oppPoints.textContent = opp.points + ' pts';
+        this.elements.yourPoints.textContent = you.points + ' pts';
+        this.elements.oppHandCount.textContent = opp.hand.length;
+        this.elements.oppDeckCount.textContent = opp.deck.length;
+        this.elements.yourHandCount.textContent = you.hand.length;
+        this.elements.yourDeckCount.textContent = you.deck.length;
+        this.elements.turnNumber.textContent = state.turn;
 
-        if (this.selectedCard?.instanceId === card.instanceId) {
-            this.selectedCard = null;
+        document.querySelectorAll('.phase').forEach(el => {
+            el.classList.toggle('active', el.dataset.phase === (state.combatStep ? 'combat' : state.phase));
+        });
+
+        this.elements.turnIndicator.textContent = isYourTurn ? 'Your Turn' : "Opponent's Turn";
+        this.elements.turnIndicator.className = 'turn-indicator ' + (isYourTurn ? 'your-turn' : 'opp-turn');
+        if (this.elements.fieldHint) this.elements.fieldHint.textContent = '';
+
+        // An action in progress that is no longer possible (the state moved on) is dropped
+        if (this.action && !this.actionStillValid()) this.action = null;
+
+        this.renderResources(this.elements.oppResources, opp.resources, false);
+        this.renderResources(this.elements.yourResources, you.resources, true);
+
+        const allFieldCards = [...opp.field, ...you.field];
+        const pupilsOrOther = c => c.type !== 'Tool' && c.type !== 'Location';
+        this.renderField(this.elements.oppField, opp.field.filter(pupilsOrOther), false);
+        this.renderField(this.elements.yourField, you.field.filter(pupilsOrOther), true);
+        const location = allFieldCards.find(c => c.type === 'Location') || null;
+        this.renderCenterLocation(location);
+        this.renderArtifacts(this.elements.oppArtifacts, opp.field.filter(c => c.type === 'Tool'), false);
+        this.renderArtifacts(this.elements.yourArtifacts, you.field.filter(c => c.type === 'Tool'), true);
+        this.updateBattlefieldBackground(allFieldCards);
+        this.renderHand(this.elements.yourHand, you.hand);
+        this.renderActionButtons();
+        this.renderChoice();
+        this.renderStatusMessage();
+    }
+
+    // ------------------------------------------------------------------
+    // Messages
+    // ------------------------------------------------------------------
+
+    setMessage(msg) {
+        this._message = msg;
+        this._messageAt = Date.now();
+        if (this.elements.message) this.elements.message.textContent = msg;
+    }
+
+    // What the bar says when nothing was set just now: what to do next, or
+    // the latest thing that happened.
+    renderStatusMessage() {
+        if (!this.elements.message) return;
+        if (this._message && Date.now() - (this._messageAt || 0) < 2500) return;
+        const s = this.game.state;
+        const me = this.localPlayer;
+        const q = this.game.pendingChoice;
+        let text;
+        if (this.action && this.action.specs) {
+            const spec = this.action.specs[this.action.targets.length];
+            text = spec ? `Choose ${spec.label || 'a target'}${spec.optional ? ' (or skip)' : ''}` : '';
+        } else if (q && q.player !== me) {
+            text = 'Opponent is choosing…';
+        } else if (s.combatStep === 'declare-attackers' && s.currentPlayer === me) {
+            text = 'Tap your pupils to attack, then Attack!';
+        } else if (s.combatStep === 'declare-blockers' && s.currentPlayer !== me) {
+            text = this.selectedBlocker ? 'Now tap the attacker it should block' : 'Tap one of your pupils, then the attacker to block';
+        } else if (s.combatStep === 'declare-blockers') {
+            text = 'Waiting for your opponent to block…';
         } else {
-            this.selectedCard = card;
-            this.selectedFieldCard = null;
+            text = s.log && s.log.length ? s.log[s.log.length - 1] : '';
         }
+        this.elements.message.textContent = text;
+    }
 
+    // ------------------------------------------------------------------
+    // Resources
+    // ------------------------------------------------------------------
+
+    renderResources(container, resources, isYours = false) {
+        container.innerHTML = '';
+        const legal = this.legalTargetSet('resource');
+        resources.forEach(res => {
+            const c = res.anyColor ? { hex: '#e4e4e7', bg: '#3f3f46' } : this.getColor(res.color);
+            const div = document.createElement('div');
+            div.className = 'resource-token' + (res.spent ? ' spent' : '') + (legal.has(res.id) ? ' targetable' : '');
+            const bg = res.anyColor
+                ? 'conic-gradient(#f97316, #22c55e, #a855f7, #3b82f6, #a1a1aa, #f97316)'
+                : `radial-gradient(circle at 30% 30%, ${c.hex}, ${c.bg})`;
+            div.style.cssText = `background: ${bg}; border: 2px solid ${legal.has(res.id) ? '#fbbf24' : c.hex}; ${res.spent ? '' : `box-shadow: 0 0 10px ${c.hex}60;`}`;
+            div.textContent = res.anyColor ? '★' : res.color;
+            div.title = (res.cardName || res.color) + (res.temporary ? ' (this turn only)' : '') + (res.anyColor ? ' — any color' : '');
+            if (legal.has(res.id)) div.addEventListener('click', () => this.chooseTarget(res.id));
+            if (res.card && !this.isTouchDevice) {
+                div.addEventListener('mouseenter', (e) => this.showHoverPreview(res.card, e));
+                div.addEventListener('mouseleave', () => this.hideHoverPreview());
+                div.addEventListener('mousemove', (e) => this.updateHoverPreviewPosition(e));
+            }
+            container.appendChild(div);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Field
+    // ------------------------------------------------------------------
+
+    renderField(container, field, isYours) {
+        const state = this.game.state;
+        const me = this.localPlayer;
+        container.innerHTML = '';
+        const legal = this.legalTargetSet('card');
+        const attackingIds = new Set((state.attackers || []).map(a => a.instanceId));
+        const blocks = state.blockers || {};
+        const blockerOf = {};
+        for (const [att, blk] of Object.entries(blocks)) blockerOf[blk] = att;
+
+        field.forEach(card => {
+            const isPupil = card.type?.includes('Pupil');
+            let targetable = legal.has(card.instanceId);
+            if (!this.action) {
+                if (isYours && state.combatStep === 'declare-attackers' && state.currentPlayer === me) {
+                    targetable = isPupil && this.game.canAttack(me, card);
+                } else if (isYours && state.combatStep === 'declare-blockers' && state.currentPlayer !== me) {
+                    targetable = isPupil && !card.isSpent && !this.game.cannotBlock(card);
+                } else if (!isYours && state.combatStep === 'declare-blockers' && state.currentPlayer !== me && this.selectedBlocker) {
+                    targetable = attackingIds.has(card.instanceId);
+                }
+            }
+            const el = this.renderCard(card, {
+                small: true,
+                selected: this.selectedFieldCard?.instanceId === card.instanceId || this.selectedBlocker === card.instanceId,
+                attacker: attackingIds.has(card.instanceId),
+                blocker: !!blockerOf[card.instanceId],
+                targetable,
+                spent: card.isSpent,
+                onClick: () => this.handleFieldCardClick(card, isYours)
+            });
+            // Say who blocks whom
+            const tag = blockerOf[card.instanceId]
+                ? `blocks ${this.game.findInPlay(blockerOf[card.instanceId])?.name || ''}`
+                : (blocks[card.instanceId] ? `blocked by ${this.game.findInPlay(blocks[card.instanceId])?.name || ''}` : '');
+            if (tag) {
+                const t = document.createElement('div');
+                t.className = 'card-combat-tag';
+                t.textContent = tag;
+                t.style.cssText = 'position:absolute;left:0;right:0;bottom:-1.1rem;font-size:0.55rem;text-align:center;color:#93c5fd;white-space:nowrap;overflow:hidden;';
+                el.style.overflow = 'visible';
+                el.appendChild(t);
+            }
+            container.appendChild(el);
+        });
+    }
+
+    renderArtifacts(container, artifacts, isYours) {
+        if (!container) return;
+        container.innerHTML = '';
+        const legal = this.legalTargetSet('card');
+        artifacts.forEach(card => {
+            const el = this.renderCard(card, {
+                small: true,
+                spent: card.isSpent,
+                targetable: legal.has(card.instanceId) || (!this.action && isYours && this.usableAbilities(card).length > 0),
+                onClick: () => this.handleArtifactClick(card, isYours)
+            });
+            container.appendChild(el);
+        });
+    }
+
+    handleArtifactClick(card, isYours) {
+        if (this.action) { this.chooseTarget(card.instanceId); return; }
+        if (!isYours) return;
+        this.selectedFieldCard = this.selectedFieldCard?.instanceId === card.instanceId ? null : card;
+        this.selectedCard = null;
+        this.render();
+    }
+
+    // ------------------------------------------------------------------
+    // Abilities
+    // ------------------------------------------------------------------
+
+    usableAbilities(card) {
+        if (!card) return [];
+        return this.game.getAbilities(this.localPlayer, card.instanceId).filter(a => a.canUse);
+    }
+
+    // ------------------------------------------------------------------
+    // Playing with targets and modes
+    // ------------------------------------------------------------------
+    //
+    // this.action = { kind: 'play'|'resource'|'ability', card, index, mode, specs, targets }
+    // A card or ability that needs targets gathers them here, one tap per
+    // target; the engine says what is legal, so the UI never guesses.
+
+    startAction(kind, card, index = 0) {
+        const g = this.game;
+        let modes = null, specs = [];
+        if (kind === 'ability') {
+            const ab = g.getAbilities(this.localPlayer, card.instanceId)[index];
+            if (!ab) return;
+            if (!ab.canUse) { this.setMessage(ab.reason || 'Not now'); return; }
+            modes = ab.modes; specs = ab.targets;
+        } else {
+            const o = g.getPlayOptions(this.localPlayer, card.instanceId);
+            if (kind === 'play') {
+                if (!o.canPlay) { this.setMessage(o.reason || 'Cannot play that now'); return; }
+                modes = o.modes; specs = o.targets;
+            } else {
+                if (!o.canResource) { this.setMessage(o.resourceReason || 'Cannot play a resource now'); return; }
+                modes = o.resourceModes; specs = o.resourceTargets;
+            }
+        }
+        this.action = { kind, card, index, mode: undefined, specs: null, targets: [] };
+        if (modes && modes.length) { this.showModePicker(modes); return; }
+        this.action.specs = (specs || []).filter(Boolean);
+        this.advanceAction();
+    }
+
+    showModePicker(modes) {
+        this.pickingMode = modes;
+        this.render();
+    }
+
+    chooseMode(i) {
+        if (!this.action || !this.pickingMode) return;
+        const m = this.pickingMode[i];
+        this.pickingMode = null;
+        this.action.mode = m.index;
+        this.action.specs = (m.targets || []).filter(Boolean);
+        this.advanceAction();
+    }
+
+    // Skip optional targets with nothing to choose; run when complete.
+    advanceAction() {
+        const a = this.action;
+        if (!a) return;
+        while (a.targets.length < a.specs.length) {
+            const spec = a.specs[a.targets.length];
+            const legal = this.game.getTargets(this.localPlayer, spec, a.card, a.targets);
+            if (legal.length) break;
+            if (spec.optional || spec.fizzleIfNone) { a.targets.push(undefined); continue; }
+            this.setMessage(`No ${spec.label || 'target'} to choose`);
+            this.action = null;
+            this.render();
+            return;
+        }
+        if (a.targets.length >= a.specs.length) { this.finishAction(); return; }
+        this.render();
+    }
+
+    currentSpec() {
+        const a = this.action;
+        if (!a || !a.specs || a.targets.length >= a.specs.length) return null;
+        return a.specs[a.targets.length];
+    }
+
+    // Which things can be tapped as the current target: 'card' or 'resource'.
+    legalTargetSet(kind) {
+        const spec = this.currentSpec();
+        if (!spec) return new Set();
+        if ((spec.kind === 'resource') !== (kind === 'resource')) return new Set();
+        return new Set(this.game.getTargets(this.localPlayer, spec, this.action.card, this.action.targets));
+    }
+
+    chooseTarget(id) {
+        const spec = this.currentSpec();
+        if (!spec) return;
+        const legal = this.game.getTargets(this.localPlayer, spec, this.action.card, this.action.targets);
+        if (!legal.includes(id)) { this.setMessage(`That is not ${spec.label || 'a legal target'}`); return; }
+        this.action.targets.push(id);
+        this.advanceAction();
+    }
+
+    skipTarget() {
+        const spec = this.currentSpec();
+        if (!spec || !(spec.optional || spec.fizzleIfNone)) return;
+        this.action.targets.push(undefined);
+        this.advanceAction();
+    }
+
+    finishAction() {
+        const a = this.action;
+        this.action = null;
+        this.selectedCard = null;
+        this.selectedFieldCard = null;
+        if (!a) return;
+        const g = this.game;
+        const choices = { mode: a.mode, targets: a.targets };
+        let r;
+        if (a.kind === 'play') r = g.playCard(this.localPlayer, a.card.instanceId, false, choices);
+        else if (a.kind === 'resource') r = g.playCard(this.localPlayer, a.card.instanceId, true, choices);
+        else r = g.activateAbility(this.localPlayer, a.card.instanceId, a.index, choices);
+        if (!r.success) this.setMessage(r.error || 'That did not work');
+        else if (r.refuted) this.setMessage(`${a.card.name} was refuted!`);
+        else if (r.prevented) this.setMessage(`${a.card.name} was prevented from entering!`);
+        this.render();
+    }
+
+    cancelAction() {
+        this.action = null;
+        this.pickingMode = null;
+        this.render();
+    }
+
+    actionStillValid() {
+        const a = this.action;
+        if (!a) return false;
+        const g = this.game;
+        if (g.pendingChoice) return false;
+        if (a.kind === 'ability') return !!g.abilityHost(this.localPlayer, a.card.instanceId);
+        return g.state.players[this.localPlayer].hand.some(c => c.instanceId === a.card.instanceId);
+    }
+
+    // Kept for old callers
+    enterTargetingMode(sourceCard) { this.startAction('ability', sourceCard, 0); }
+    exitTargetingMode() { this.action = null; }
+    cancelTargeting() { this.cancelAction(); }
+    get targetingMode() { return !!this.action; }
+
+    // ------------------------------------------------------------------
+    // Location
+    // ------------------------------------------------------------------
+
+    renderCenterLocation(location) {
+        const container = this.elements.centerLocation;
+        if (!container) return;
+        container.innerHTML = '';
+        if (!location) return;
+        const locationIcons = {
+            'Parking Lot': '🚗', 'The Workshop': '🔧', 'Field': '🌿', 'Gym/Weights Room': '🏋️', 'Cafeteria': '🍽️',
+            'The Lab': '🔬', 'Music Room': '🎵', 'The Amphitheater': '🎭', 'The Counselor\'s Office': '💬',
+            'Auditorium': '🎬', 'The Office': '📋', 'The Computer Lab': '💻', 'Server Room': '🖥️', 'Library': '📚',
+            'Playground': '🎢', 'University': '🎓'
+        };
+        const icon = locationIcons[location.name] || '🏛️';
+        const usable = this.usableAbilities(location);
+        const el = document.createElement('div');
+        el.className = 'location-card' + (usable.length ? ' has-ability' : '');
+        el.innerHTML = `
+            <span class="location-icon">${icon}</span>
+            <div class="location-info">
+                <span class="location-name">${this.esc(location.name)}</span>
+                <span class="location-ability">${this.esc(location.ability || 'No effect')}</span>
+            </div>`;
+        if (usable.length) {
+            el.style.cursor = 'pointer';
+            el.title = 'Tap to use: ' + usable.map(a => a.label).join(', ');
+            el.addEventListener('click', () => {
+                this.selectedFieldCard = this.selectedFieldCard?.instanceId === location.instanceId ? null : location;
+                this.render();
+            });
+        } else if (this.isTouchDevice) {
+            el.addEventListener('click', () => this.showPreview(location));
+        }
+        if (!this.isTouchDevice) {
+            el.addEventListener('mouseenter', (e) => this.showHoverPreview(location, e));
+            el.addEventListener('mouseleave', () => this.hideHoverPreview());
+            el.addEventListener('mousemove', (e) => this.updateHoverPreviewPosition(e));
+        }
+        container.appendChild(el);
+    }
+
+    esc(s) {
+        return String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    // ------------------------------------------------------------------
+    // Clicks
+    // ------------------------------------------------------------------
+
+    handleHandCardClick(card) {
+        if (this.game.pendingChoice) return;
+        if (this.action) return;
+        const o = this.game.getPlayOptions(this.localPlayer, card.instanceId);
+        if (!o.canPlay && !o.canResource) {
+            this.setMessage(o.reason || o.resourceReason || 'Not now');
+            this.selectedCard = null;
+            this.render();
+            return;
+        }
+        this.selectedCard = this.selectedCard?.instanceId === card.instanceId ? null : card;
+        this.selectedFieldCard = null;
         this.render();
         this.onCardClick(card, 'hand');
     }
 
-    /**
-     * Handle field card click
-     */
     handleFieldCardClick(card, isYours) {
-        const state = this.game.state;
-        const isYourTurn = state.currentPlayer === this.localPlayer;
+        const g = this.game;
+        const state = g.state;
+        const me = this.localPlayer;
+        if (g.pendingChoice) return;
 
-        // If in targeting mode, handle target selection
-        if (this.targetingMode && this.pendingAbility) {
-            this.handleTargetSelection(card);
-            return;
-        }
+        if (this.action) { this.chooseTarget(card.instanceId); return; }
 
-        // Combat actions
-        if (state.combatStep === 'declare-attackers' && isYours && isYourTurn) {
-            if (card.type?.includes('Pupil')) {
-                const result = this.game.toggleAttacker(this.localPlayer, card.instanceId);
-                if (!result.success) {
-                    this.setMessage(result.error);
-                }
+        if (state.combatStep === 'declare-attackers' && state.currentPlayer === me) {
+            if (isYours && card.type?.includes('Pupil')) {
+                const r = g.toggleAttacker(me, card.instanceId);
+                if (!r.success) this.setMessage(r.error);
                 this.render();
             }
             return;
         }
 
-        if (state.combatStep === 'declare-blockers') {
-            // Only the defender assigns blockers, and only from its own pupils
-            if (isYourTurn || !isYours) return;
-            const isPupil = card.type?.includes('Pupil');
-            if (!isPupil || card.isSpent) return;
-
-            // Find first unblocked attacker
-            const unblockedAttacker = state.attackers.find(a => !state.blockers[a.instanceId]);
-            if (unblockedAttacker) {
-                const result = this.game.toggleBlocker(this.localPlayer, card.instanceId, unblockedAttacker.instanceId);
-                if (!result.success) this.setMessage(result.error);
-                this.render();
-            }
-            return;
-        }
-
-        // Main phase field card selection
-        if (state.phase === 'main' && isYourTurn && isYours && !state.combatStep) {
-            if (this.selectedFieldCard?.instanceId === card.instanceId) {
-                this.selectedFieldCard = null;
-                this.setMessage(''); // Clear the message when deselecting
-            } else {
-                this.selectedFieldCard = card;
-                this.selectedCard = null;
-
-                const hasSpend = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
-                const isPupil = card.type?.includes('Pupil');
-                const hasGettingBearings = card.hasGettingBearings && isPupil;
-
-                if (hasSpend && hasGettingBearings) {
-                    this.setMessage(card.name + ' has Getting Bearings - wait a turn to activate');
-                } else if (hasSpend && !card.isSpent) {
-                    this.setMessage(card.name + ': ' + card.ability);
-                } else if (card.isSpent) {
-                    this.setMessage(card.name + ' is Spent - will ready next turn.');
+        if (state.combatStep === 'declare-blockers' && state.currentPlayer !== me) {
+            const attackers = (state.attackers || []).map(a => a.instanceId);
+            if (isYours && card.type?.includes('Pupil')) {
+                // Tap an assigned blocker to take it back
+                const assigned = Object.entries(state.blockers).find(([, b]) => b === card.instanceId);
+                if (assigned) { g.toggleBlocker(me, card.instanceId, null); this.selectedBlocker = null; this.render(); return; }
+                if (card.isSpent || g.cannotBlock(card)) { this.setMessage(`${card.name} cannot block`); return; }
+                if (attackers.length === 1) {
+                    const r = g.toggleBlocker(me, card.instanceId, attackers[0]);
+                    if (!r.success) this.setMessage(r.error);
+                    this.selectedBlocker = null;
                 } else {
-                    this.setMessage(card.name + ': ' + (card.ability || 'No activated ability.'));
+                    this.selectedBlocker = this.selectedBlocker === card.instanceId ? null : card.instanceId;
                 }
+                this.render();
+                return;
+            }
+            if (!isYours && this.selectedBlocker && attackers.includes(card.instanceId)) {
+                const r = g.toggleBlocker(me, this.selectedBlocker, card.instanceId);
+                if (!r.success) this.setMessage(r.error);
+                this.selectedBlocker = null;
+                this.render();
+            }
+            return;
+        }
+
+        if (isYours) {
+            this.selectedFieldCard = this.selectedFieldCard?.instanceId === card.instanceId ? null : card;
+            this.selectedCard = null;
+            if (this.selectedFieldCard) {
+                const abs = g.getAbilities(me, card.instanceId);
+                if (!abs.length) this.setMessage(`${card.name}: ${card.ability && card.ability !== 'None' ? card.ability : 'no ability to use'}`);
+                else if (card.hasGettingBearings && card.type?.includes('Pupil') && abs.some(a => a.spend)) this.setMessage(`${card.name} is getting its bearings`);
             }
             this.render();
         }
-
         this.onCardClick(card, 'field');
     }
 
-    /**
-     * Render action buttons
-     */
+    // ------------------------------------------------------------------
+    // Buttons
+    // ------------------------------------------------------------------
+
     renderActionButtons() {
-        const state = this.game.state;
-        const isYourTurn = state.currentPlayer === this.localPlayer;
+        const g = this.game;
+        const state = g.state;
+        const me = this.localPlayer;
+        const isYourTurn = state.currentPlayer === me;
         const btns = this.elements.actionButtons;
         btns.innerHTML = '';
+        if (state.gameOver) return;
 
-        // Targeting mode - show cancel button
-        if (this.targetingMode) {
-            btns.appendChild(this.createButton('✕ Cancel', 'btn-danger', () => {
-                this.cancelTargeting();
-            }));
+        // Choosing a mode
+        if (this.pickingMode) {
+            this.pickingMode.forEach((m, i) => btns.appendChild(this.createButton(m.label, 'btn-purple', () => this.chooseMode(i))));
+            btns.appendChild(this.createButton('✕ Cancel', 'btn-secondary', () => this.cancelAction()));
             return;
         }
+        // Choosing targets
+        if (this.action) {
+            const spec = this.currentSpec();
+            if (spec && (spec.optional || spec.fizzleIfNone)) btns.appendChild(this.createButton('Skip', 'btn-secondary', () => this.skipTarget()));
+            btns.appendChild(this.createButton('✕ Cancel', 'btn-danger', () => this.cancelAction()));
+            return;
+        }
+        if (g.pendingChoice) return;
 
-        // Field card activation
-        if (this.selectedFieldCard && state.phase === 'main' && isYourTurn && !state.combatStep) {
+        // A selected card in play: its abilities
+        if (this.selectedFieldCard) {
             const card = this.selectedFieldCard;
-            const hasSpend = /\bspend\s*[:,]/.test(card.ability?.toLowerCase() || '');
-            const isPupil = card.type?.includes('Pupil');
-            const hasGettingBearings = card.hasGettingBearings && isPupil;
-
-            if (hasSpend && !card.isSpent && !hasGettingBearings) {
-                btns.appendChild(this.createButton('⚡ Activate', 'btn-purple', () => {
-                    const result = this.game.activateAbility(this.localPlayer, card.instanceId);
-                    if (!result.success) {
-                        this.setMessage(result.error);
-                    }
-                    this.selectedFieldCard = null;
-                    this.render();
-                }));
-            } else if (hasSpend && hasGettingBearings) {
-                // Show disabled state for Getting Bearings
-                this.setMessage(card.name + ' has Getting Bearings - wait a turn to activate');
-            }
-            btns.appendChild(this.createButton('✕ Cancel', 'btn-secondary', () => {
-                this.selectedFieldCard = null;
-                this.setMessage(''); // Clear the message when cancelling
-                this.render();
-            }));
+            const abs = g.getAbilities(me, card.instanceId);
+            abs.forEach(a => {
+                const b = this.createButton(`⚡ ${a.label}${a.cost ? ' ' + a.cost : ''}`, a.canUse ? 'btn-purple' : 'btn-secondary',
+                    () => { this.selectedFieldCard = null; this.startAction('ability', card, a.index); });
+                if (!a.canUse) { b.disabled = true; b.title = a.reason || ''; b.style.opacity = '0.5'; }
+                btns.appendChild(b);
+            });
+            btns.appendChild(this.createButton('✕', 'btn-secondary', () => { this.selectedFieldCard = null; this.render(); }));
             return;
         }
 
-        // Hand card actions
-        if (this.selectedCard && state.phase === 'main' && isYourTurn && !this.selectedFieldCard) {
-            btns.appendChild(this.createButton('🔋 Resource', 'btn-secondary', () => {
-                const result = this.game.playCard(this.localPlayer, this.selectedCard.instanceId, true);
-                if (!result.success) this.setMessage(result.error);
-                this.selectedCard = null;
+        // A selected card in hand
+        if (this.selectedCard) {
+            const card = this.selectedCard;
+            const o = g.getPlayOptions(me, card.instanceId);
+            if (o.canResource) btns.appendChild(this.createButton('🔋 Resource', 'btn-secondary', () => this.startAction('resource', card)));
+            const play = this.createButton('▶️ Play', o.canPlay ? 'btn-success' : 'btn-secondary', () => this.startAction('play', card));
+            if (!o.canPlay) { play.style.opacity = '0.5'; play.title = o.reason || ''; }
+            btns.appendChild(play);
+            btns.appendChild(this.createButton('✕', 'btn-secondary', () => { this.selectedCard = null; this.render(); }));
+            return;
+        }
+
+        if (state.combatStep === 'declare-attackers' && isYourTurn) {
+            btns.appendChild(this.createButton('No attack', 'btn-secondary', () => {
+                [...state.attackers].forEach(a => g.toggleAttacker(me, a.instanceId));
+                g.confirmAttackers(me);
                 this.render();
             }));
-
-            const canPay = this.game.canAfford(this.selectedCard, state.players[this.localPlayer]);
-            const playBtn = this.createButton('▶️ Play', canPay ? 'btn-success' : 'btn-secondary', () => {
-                const result = this.game.playCard(this.localPlayer, this.selectedCard.instanceId, false);
-                if (!result.success) {
-                    this.setMessage(result.error);
-                }
-                this.selectedCard = null;
+            const confirmBtn = this.createButton(`✓ Attack! (${state.attackers.length})`, 'btn-danger', () => {
+                const r = g.confirmAttackers(me);
+                if (!r.success) this.setMessage(r.error);
                 this.render();
             });
-            if (!canPay) playBtn.style.opacity = '0.5';
-            btns.appendChild(playBtn);
+            if (state.attackers.length) confirmBtn.style.animation = 'pulse 1s infinite';
+            btns.appendChild(confirmBtn);
             return;
         }
 
-        // Combat button
-        if (state.phase === 'main' && isYourTurn && !this.selectedCard && !this.selectedFieldCard) {
-            btns.appendChild(this.createButton('⚔️ Combat', 'btn-danger', () => {
-                this.game.startCombat(this.localPlayer);
-                this.render();
-            }));
-        }
-
-        // Declare attackers
-        if (state.combatStep === 'declare-attackers' && isYourTurn) {
-            btns.appendChild(this.createButton('Skip', 'btn-secondary', () => {
-                this.game.confirmAttackers(this.localPlayer);
-                this.render();
-            }));
-
-            const confirmBtn = this.createButton(`✓ Attack! (${state.attackers.length})`, 'btn-danger');
-            confirmBtn.style.animation = 'pulse 1s infinite';
-            confirmBtn.onclick = () => {
-                this.game.confirmAttackers(this.localPlayer);
-                this.render();
-            };
-            btns.appendChild(confirmBtn);
-        }
-
-        // Declare blockers - the defender's button (the AI confirms its own)
         if (state.combatStep === 'declare-blockers' && !isYourTurn) {
-            const doneBtn = this.createButton('✓ Done Blocking', 'btn-primary');
-            doneBtn.style.animation = 'pulse 1s infinite';
-            doneBtn.onclick = () => {
-                this.game.confirmBlockers();
+            const doneBtn = this.createButton('✓ Done Blocking', 'btn-primary', () => {
+                const r = g.confirmBlockers(me);
+                if (!r.success) this.setMessage(r.error);
+                this.selectedBlocker = null;
                 this.render();
-            };
+            });
+            doneBtn.style.animation = 'pulse 1s infinite';
             btns.appendChild(doneBtn);
+            return;
         }
 
-        // End turn
-        if ((state.phase === 'main' || state.phase === 'end') && isYourTurn && !state.combatStep && !this.selectedFieldCard) {
-            btns.appendChild(this.createButton('End Turn →', 'btn-warning', () => {
-                this.game.endTurn(this.localPlayer);
+        if (isYourTurn && !state.combatStep && state.phase === 'main' && !state.players[me].flags.combatDone) {
+            btns.appendChild(this.createButton('⚔️ Combat', 'btn-danger', () => {
+                const r = g.startCombat(me);
+                if (!r.success) this.setMessage(r.error);
                 this.render();
             }));
         }
-
-        // Online: the only way out of a match used to be closing the tab
+        if (isYourTurn && !state.combatStep) {
+            btns.appendChild(this.createButton('End Turn →', 'btn-warning', () => {
+                const r = g.endTurn(me);
+                if (!r.success) this.setMessage(r.error);
+                this.render();
+            }));
+        }
         if (this.onConcede && !state.gameOver) {
             btns.appendChild(this.createButton('🏳 Concede', 'btn-danger', () => {
                 if (confirm('Concede this match? It counts as a loss.')) this.onConcede();
             }));
         }
     }
+
+    // ------------------------------------------------------------------
+    // Decisions the engine asks the local player for
+    // ------------------------------------------------------------------
+
+    renderChoice() {
+        let host = document.getElementById('riutiz-choice');
+        const q = this.game.pendingChoice;
+        if (!q || q.player !== this.localPlayer || this.game.state.gameOver) {
+            if (host) host.remove();
+            this._choiceId = null;
+            return;
+        }
+        if (host && this._choiceId === q.id) return;     // already showing this one
+        this._choiceId = q.id;
+        this._picked = [];
+        if (!host) {
+            host = document.createElement('div');
+            host.id = 'riutiz-choice';
+            host.style.cssText = 'position:fixed;inset:0;z-index:4000;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;padding:1rem;';
+            document.body.appendChild(host);
+        }
+        const draw = () => {
+            const picked = this._picked;
+            const isOrder = q.kind === 'order';
+            const reveal = q.reveal || q.max === 0;
+            host.innerHTML = '';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#18181b;border:2px solid #3b82f6;border-radius:1rem;padding:1rem;max-width:44rem;width:100%;max-height:85vh;overflow:auto;';
+            const title = document.createElement('div');
+            title.style.cssText = 'font-weight:bold;font-size:1rem;margin-bottom:0.25rem;color:#e4e4e7;';
+            title.textContent = q.sourceName ? `${q.sourceName}: ${q.prompt}` : q.prompt;
+            const sub = document.createElement('div');
+            sub.style.cssText = 'font-size:0.75rem;color:#a1a1aa;margin-bottom:0.75rem;';
+            sub.textContent = reveal ? '' : isOrder ? 'Tap them in order: first tapped goes on top.'
+                : q.min === q.max ? `Choose ${q.min}.` : `Choose ${q.min === 0 ? 'up to ' : q.min + ' to '}${q.max}.`;
+            box.appendChild(title); box.appendChild(sub);
+            const grid = document.createElement('div');
+            grid.style.cssText = 'display:flex;flex-wrap:wrap;gap:0.5rem;justify-content:center;margin-bottom:0.75rem;';
+            (q.options || []).forEach(o => {
+                const idx = picked.indexOf(o.value);
+                let el;
+                if (o.card) {
+                    el = this.renderCard(o.card, { inHand: true, selected: idx >= 0, onClick: () => toggle(o.value) });
+                    el.style.position = 'relative';
+                    if (idx >= 0 && isOrder) {
+                        const n = document.createElement('div');
+                        n.textContent = String(idx + 1);
+                        n.style.cssText = 'position:absolute;top:0.25rem;left:0.25rem;background:#facc15;color:#000;border-radius:50%;width:1.4rem;height:1.4rem;display:flex;align-items:center;justify-content:center;font-weight:bold;';
+                        el.appendChild(n);
+                    }
+                } else {
+                    el = this.createButton(o.label, idx >= 0 ? 'btn-primary' : 'btn-secondary', () => toggle(o.value));
+                }
+                grid.appendChild(el);
+            });
+            box.appendChild(grid);
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;gap:0.5rem;justify-content:flex-end;';
+            const n = picked.length;
+            const valid = reveal || (isOrder ? n === q.options.length : n >= q.min && n <= q.max);
+            const done = this.createButton(reveal ? 'OK' : q.min === 0 && n === 0 ? 'Skip' : 'Confirm', valid ? 'btn-success' : 'btn-secondary', () => {
+                if (!valid) return;
+                const r = this.game.resolveChoice(this.localPlayer, reveal ? [] : picked);
+                if (!r.success) { this.setMessage(r.error); return; }
+                this._choiceId = null;
+                host.remove();
+                this.render();
+            });
+            if (!valid) done.style.opacity = '0.5';
+            row.appendChild(done);
+            box.appendChild(row);
+            host.appendChild(box);
+        };
+        const toggle = (v) => {
+            if (q.reveal || q.max === 0) return;
+            const i = this._picked.indexOf(v);
+            if (i >= 0) this._picked.splice(i, 1);
+            else if (q.kind === 'order' || this._picked.length < q.max) this._picked.push(v);
+            else if (q.max === 1) this._picked = [v];
+            draw();
+        };
+        draw();
+    }
+
+    /**
+     * Show victory screen
+     */
+    showVictoryScreen(winner, p1Points, p2Points) {
+        this.elements.menuScreen?.classList.add('hidden');
+        this.elements.gameScreen?.classList.add('hidden');
+        this.elements.victoryScreen?.classList.remove('hidden');
+        document.getElementById('riutiz-choice')?.remove();
+        const localWon = winner === this.localPlayer;
+        const reason = this.game.state?.endReason === 'deck' ? ' — a deck ran out of cards' : '';
+        this.elements.winnerText.textContent = (localWon ? 'You Win!' : 'Opponent Wins!') + reason;
+        this.elements.finalScore.textContent = `Final Score: ${p1Points} - ${p2Points}`;
+    }
+
+    /**
+     * Drop a dragged hand card: on the resource zone, as a resource; on the
+     * field, played (asking for targets first if it needs them).
+     */
+    handleDrop(e, zone) {
+        e.preventDefault();
+        e.currentTarget.style.background = '';
+        e.currentTarget.style.borderColor = '';
+        const card = this.draggedCard;
+        if (!card) return;
+        this.selectedCard = null;
+        this.startAction(zone === 'resource' ? 'resource' : 'play', card);
+    }
+
 
     /**
      * Create a button element
@@ -1433,12 +1489,7 @@ class RiutizUI {
         return btn;
     }
 
-    /**
-     * Set message bar text
-     */
-    setMessage(msg) {
-        this.elements.message.textContent = msg;
-    }
+
 
     /**
      * Show game screen
@@ -1449,18 +1500,7 @@ class RiutizUI {
         this.elements.victoryScreen?.classList.add('hidden');
     }
 
-    /**
-     * Show victory screen
-     */
-    showVictoryScreen(winner, p1Points, p2Points) {
-        this.elements.menuScreen?.classList.add('hidden');
-        this.elements.gameScreen?.classList.add('hidden');
-        this.elements.victoryScreen?.classList.remove('hidden');
 
-        const localWon = winner === this.localPlayer;
-        this.elements.winnerText.textContent = localWon ? 'You Win!' : 'Opponent Wins!';
-        this.elements.finalScore.textContent = `Final Score: ${p1Points} - ${p2Points}`;
-    }
 }
 
 // Export
