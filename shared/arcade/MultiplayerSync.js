@@ -168,6 +168,19 @@ class MultiplayerSync {
     }
 
     /**
+     * Publish the whole game state, as the game's adapter wraps it, plus a
+     * little metadata for listings. Not gated on whose turn it is: the
+     * defender writes while blocking, and a choice can belong to either
+     * player - the game engine is what decides who may act.
+     * @param {Object} wrapper - { seq, writer, json, ... }
+     * @param {Object} meta - extra match fields (multi-path keys allowed)
+     */
+    async publishState(wrapper, meta = {}) {
+        await this._matchRef.update({ game_state: wrapper, ...meta });
+        this.lastActionTime = Date.now();
+    }
+
+    /**
      * Update match metadata (turn, phase, etc.)
      * @param {Object} updates - Fields to update
      */
@@ -211,11 +224,13 @@ class MultiplayerSync {
         }
         this._resetTurnTimer();
 
+        // Leave the published state alone unless given one: writing null here
+        // deleted it, and the other seat and any spectators lost the board.
         await this._matchRef.update({
             status: 'completed',
             winner: winner,
             ended_at: this.firebase.serverTimestamp,
-            game_state: finalState
+            ...(finalState ? { game_state: finalState } : {})
         });
 
         // Record result

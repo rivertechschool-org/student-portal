@@ -2128,13 +2128,13 @@
 <script src="../shared/CosmeticRenderer.js?v=10"></script>
 
 <!-- Game Modules -->
-<script src="riutiz/RiutizCards.js?v=2026-09-26a"></script>
-<script src="riutiz/RiutizGame.js?v=2026-09-26a"></script>
-<script src="riutiz/RiutizAI.js?v=2026-09-26a"></script>
-<script src="riutiz/RiutizUI.js?v=2026-09-26a"></script>
-<script src="riutiz/RiutizCollection.js?v=2026-09-26a"></script>
-<script src="riutiz/RiutizDeckBuilder.js?v=2026-09-26a"></script>
-<script src="riutiz/RiutizMultiplayer.js?v=2026-09-26a"></script>
+<script src="riutiz/RiutizCards.js?v=2026-09-26b"></script>
+<script src="riutiz/RiutizGame.js?v=2026-09-26b"></script>
+<script src="riutiz/RiutizAI.js?v=2026-09-26b"></script>
+<script src="riutiz/RiutizUI.js?v=2026-09-26b"></script>
+<script src="riutiz/RiutizCollection.js?v=2026-09-26b"></script>
+<script src="riutiz/RiutizDeckBuilder.js?v=2026-09-26b"></script>
+<script src="riutiz/RiutizMultiplayer.js?v=2026-09-26b"></script>
 
 <script>
 // ============================================
@@ -2670,7 +2670,7 @@ async function joinLobbyWithDeck() {
 
   try {
     const joinedCode = pendingLobbyCode;
-    await multiplayer.joinLobby(pendingLobbyCode, { deckId: selectedDeckId });
+    await multiplayer.joinLobby(pendingLobbyCode, { deck: selectedDeckPayload() });
 
     document.querySelectorAll('.menu-screen').forEach(el => el.classList.add('hidden'));
     enterLobbyScreen(false, joinedCode);
@@ -2702,7 +2702,7 @@ async function startQuickMatch() {
   try {
     await ensureMultiplayer();
 
-    await multiplayer.joinQueue({ mode: selectedGameMode, deckId: selectedDeckId });
+    await multiplayer.joinQueue({ mode: selectedGameMode, deck: selectedDeckPayload() });
 
   } catch (error) {
     queueStatus.textContent = 'Error: ' + error.message;
@@ -2721,7 +2721,7 @@ async function createLobbyWithDeck() {
 
     const result = await multiplayer.createLobby({
       mode: selectedGameMode,
-      deckId: selectedDeckId
+      deck: selectedDeckPayload()
     });
 
     document.querySelectorAll('.menu-screen').forEach(el => el.classList.add('hidden'));
@@ -2844,19 +2844,14 @@ async function cancelQuickMatch() {
 }
 
 // The opponent conceded or the match was completed remotely
+// The adapter reports the end once - from our move, the opponent's, a
+// concession or a timeout - and has already recorded this side's result.
 function onMultiplayerMatchEnd(won, data, mp) {
-  if (mp !== multiplayer || !game || game.state.gameOver) return;   // our engine already ended it
+  if (mp !== multiplayer || !game || !game.state) return;
   const me = mp.localPlayerNumber;
-  game.state.gameOver = true;
-  game.state.winner = won ? me : (me === 1 ? 2 : 1);
-  if (won && window.arcade && !mp._resultRecorded) {
-    mp._resultRecorded = true;
-    const opponent = mp.sync && mp.sync.getOpponent ? mp.sync.getOpponent() : null;
-    Promise.resolve(window.arcade.recordGameResult('riutiz', {
-      won: true,
-      opponent: opponent ? opponent.display_name : undefined,
-      ranked: !!(mp.sync && mp.sync.match && mp.sync.match.mode === 'ranked')
-    })).catch(err => console.warn('Riutiz MP result record failed (non-blocking):', err));
+  if (!game.state.gameOver) {
+    game.state.gameOver = true;
+    game.state.winner = won ? me : (me === 1 ? 2 : 1);
   }
   if (ui) ui.showVictoryScreen(game.state.winner, game.state.players[1].points, game.state.players[2].points);
 }
@@ -2877,7 +2872,8 @@ function updateLobbyUI() {
   container.innerHTML = '';
 
   for (const player of Object.values(lobby.players || {})) {
-    const deckName = player.deck_id ? getDeckName(player.deck_id) : 'No deck';
+    // The other player's deck is not in OUR saved decks: use the name they sent
+    const deckName = player.deck_name || (player.deck_id ? getDeckName(player.deck_id) : 'No deck');
     const div = document.createElement('div');
     div.className = 'lobby-player' + (player.ready ? ' ready' : '');
     div.innerHTML = `
@@ -2891,6 +2887,11 @@ function updateLobbyUI() {
   }
 }
 
+function selectedDeckPayload() {
+  const deck = deckBuilder && deckBuilder.getSavedDecks().find(d => d.id === selectedDeckId);
+  return deck ? { id: deck.id, name: deck.name, cards: [...deck.cards] } : null;
+}
+
 function getDeckName(deckId) {
   if (!deckBuilder) return 'Deck';
   const deck = deckBuilder.savedDecks[deckId];
@@ -2899,7 +2900,7 @@ function getDeckName(deckId) {
 
 async function toggleReady() {
   isReady = !isReady;
-  await multiplayer.setReady(isReady, selectedDeckId);
+  await multiplayer.setReady(isReady, selectedDeckPayload());
   document.getElementById('ready-btn').textContent = isReady ? 'Unready' : 'Ready Up';
   document.getElementById('ready-btn').className = 'btn ' + (isReady ? 'btn-danger' : 'btn-primary');
 }
@@ -2923,68 +2924,32 @@ function startMultiplayerGame(match, mp = multiplayer) {
   // A search or lobby from a session the player already left must not start a match
   if (!mp || mp !== multiplayer || !mp.sync) return;
 
-  // Hide lobby/menu
-  document.querySelectorAll('.menu-screen, .lobby-screen').forEach(el => {
-    el.classList.add('hidden');
-  });
+  document.querySelectorAll('.menu-screen, .lobby-screen').forEach(el => el.classList.add('hidden'));
   const queueStatus = document.getElementById('queue-status');
   queueStatus.classList.add('hidden');
   queueStatus.textContent = '';
   document.getElementById('cancel-queue-btn').classList.add('hidden');
 
-  // Set up UI
   ui = new RiutizUI(game, {
     localPlayer: mp.localPlayerNumber,
     onConcede: () => mp.forfeit().catch(err => console.warn('Concede failed:', err))
   });
   ui.init();
+  wireRedraws(game, ui);
 
-  // The opponent's turn arrives as a full state load; their actions replay into the
-  // engine. Neither used to redraw the board, so the guest stared at an empty field.
-  game.addEventListener('stateLoaded', () => ui.render());
-  mp.onOpponentActionCallback(() => ui.render());
   mp.onStatusChangeCallback((status) => {
     if (status === 'opponent_disconnected') ui.setMessage('Opponent disconnected - waiting for them to return...');
     else if (status === 'opponent_reconnected') ui.setMessage('Opponent reconnected');
   });
 
-  // Set opponent name
-  const opponent = multiplayer.sync.getOpponent();
+  const opponent = mp.sync.getOpponent();
   document.getElementById('opponent-name').textContent = opponent?.display_name || 'Opponent';
 
-  // M3: wire game end -> result recording. Previously no gameOver listener was
-  // attached here, so MultiplayerSync.endMatch (the only place a multiplayer /
-  // ranked result is recorded) never had a caller and legitimate MP wins were
-  // never counted. endMatch marks the Firebase match 'completed' and records
-  // THIS client's win/loss via arcade.recordGameResult with the real match mode.
-  // The _resultRecorded guard makes it fire at most once per match.
-  //
-  // NOTE (still open): this reliably records the result for whichever client's
-  // own engine fires gameOver. Guaranteeing the opponent's client also records
-  // its result (host-authoritative completion + recording off the
-  // onMatchStatusChange('completed') path) needs deeper work on the sync layer
-  // and is left as a follow-up.
-  game.addEventListener('gameOver', (e) => {
-    ui.showVictoryScreen(
-      e.detail.winner,
-      game.state.players[1].points,
-      game.state.players[2].points
-    );
-
-    if (multiplayer && multiplayer.sync && !multiplayer._resultRecorded) {
-      multiplayer._resultRecorded = true;
-      const finalState = typeof game.getSerializableState === 'function'
-        ? game.getSerializableState()
-        : null;
-      multiplayer.sync.endMatch(e.detail.winner, finalState)
-        .catch(err => console.warn('Riutiz MP result record failed (non-blocking):', err));
-    }
-  });
-
-  // Show game
   ui.showGameScreen();
-  ui.setMessage('Match started!');
-  ui.render();
+  // The guest may be here before the host's first state arrives
+  if (game.state) ui.render();
+  const notes = mp.deckNotes && mp.deckNotes[mp.localPlayerNumber];
+  ui.setMessage(notes ? `Your deck could not be used (${notes}) - playing a random deck.` : 'Match started!');
 }
 
 // ============================================

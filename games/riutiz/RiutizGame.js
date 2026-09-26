@@ -1271,8 +1271,10 @@ class RiutizGame extends EventTarget {
     }
 
     // Who may play what, when. Interruptions marked timing 'combat' may be
-    // played during combat by either player (see RULES.md); everything else
-    // only in your own main phase.
+    // played during combat - the attacker while choosing attackers, the
+    // defender while choosing blocks - so only one player can act at a time,
+    // which is also what keeps a multiplayer game from two writers at once.
+    // Everything else only in your own main phase.
     playTimingError(playerNum, card) {
         if (this.state.gameOver) return { error: 'The game is over' };
         if (this.pendingChoice) return { error: 'Finish the current choice first' };
@@ -1281,9 +1283,9 @@ class RiutizGame extends EventTarget {
         const myTurn = this.state.currentPlayer === playerNum;
         const inMain = this.state.phase === 'main' && !this.state.combatStep;
         if (this.isInterruption(card) && (timing === 'combat' || timing === 'any')) {
-            if (this.state.combatStep === 'declare-blockers') return null;   // both players
+            if (!myTurn && this.state.combatStep === 'declare-blockers') return null;   // the defender
             if (timing === 'any' && myTurn && inMain) return null;
-            if (timing === 'combat' && myTurn && this.state.combatStep === 'declare-attackers') return null;
+            if (myTurn && this.state.combatStep === 'declare-attackers') return null;
             return { error: timing === 'combat' ? 'Play this during combat' : 'Not now' };
         }
         if (!myTurn) return { error: 'Not your turn', resourceBlocked: true };
@@ -1435,7 +1437,9 @@ class RiutizGame extends EventTarget {
         const myMain = this.state.currentPlayer === playerNum && this.state.phase === 'main' && !this.state.combatStep;
         if (timing === 'main' && !myMain) return 'Use this in your main phase';
         if (timing === 'combat' && !this.state.combatStep) return 'Use this during combat';
-        if (timing === 'any' && !myMain && this.state.combatStep !== 'declare-blockers') return 'Not now';
+        const defending = this.state.currentPlayer !== playerNum && this.state.combatStep === 'declare-blockers';
+        const attacking = this.state.currentPlayer === playerNum && this.state.combatStep === 'declare-attackers';
+        if (timing === 'any' && !myMain && !defending && !attacking) return 'Not now';
         if (this.modActive(card, m => m.disableAbilities)) return 'Its abilities are ignored this turn';
         if (ab.spend && card.isSpent) return `${card.name} is spent`;
         // Pupils that have not got their bearings cannot Spend yet

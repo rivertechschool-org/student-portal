@@ -30,6 +30,18 @@ class MatchmakingManager {
      * @param {string} options.deckId - Selected deck ID
      * @returns {Promise<string>} Match ID when found
      */
+    // What a player publishes about their deck. deck_cards is a comma-joined
+    // list of card ids - the opponent's client cannot read your saved decks,
+    // and a plain string survives the database untouched.
+    static deckFields(options = {}) {
+        const d = options.deck || null;
+        return {
+            deck_id: (d && d.id) || options.deckId || null,
+            deck_name: (d && d.name) || null,
+            deck_cards: d && Array.isArray(d.cards) ? d.cards.map(String).join(',') : null
+        };
+    }
+
     async joinQueue(options = {}) {
         if (this.inQueue) {
             throw new Error('Already in queue');
@@ -41,7 +53,6 @@ class MatchmakingManager {
         }
 
         const mode = options.mode || 'casual';
-        const deckId = options.deckId;
 
         // Get player rating for matchmaking
         const stats = await this.arcade.getStats(this.gameId);
@@ -52,7 +63,7 @@ class MatchmakingManager {
             user_id: userId,
             display_name: this.arcade.player?.display_name || 'Player',
             mode: mode,
-            deck_id: deckId,
+            ...MatchmakingManager.deckFields(options),
             rating: stats.ranked_rating || 1000,
             joined_at: this.firebase.serverTimestamp
         });
@@ -162,9 +173,9 @@ class MatchmakingManager {
                             clearInterval(checkInterval);
 
                             const matchId = await this._createMatch(
-                                userId, opponent.id, mode,
-                                myData.deck_id, opponent.deck_id,
-                                myRating, opponent.rating || 1000
+                                { ...myData, id: userId, rating: myRating },
+                                { ...opponent, id: opponent.id, rating: opponent.rating || 1000 },
+                                mode
                             );
 
                             // Clean up queue entries
@@ -215,7 +226,11 @@ class MatchmakingManager {
     /**
      * Create a new match
      */
-    async _createMatch(player1Id, player2Id, mode, deck1Id, deck2Id, player1Rating = 1000, player2Rating = 1000) {
+    // seat1/seat2: { id, display_name, deck_id, deck_name, deck_cards, rating }.
+    // Each seat keeps its own name - the second seat used to be "Opponent" and
+    // the first the local player, whoever that was.
+    async _createMatch(seat1, seat2, mode) {
+        const player1Id = seat1.id, player2Id = seat2.id;
         const matchId = this.firebase.generateId();
         const matchRef = this.firebase.ref(`arcade/matches/${this.gameId}/${matchId}`);
 
@@ -234,18 +249,22 @@ class MatchmakingManager {
             players: {
                 1: {
                     supabase_user_id: player1Id,
-                    display_name: this.arcade.player?.display_name || 'Player 1',
-                    deck_id: deck1Id,
-                    rating: player1Rating,
+                    display_name: seat1.display_name || 'Player 1',
+                    deck_id: seat1.deck_id || null,
+                    deck_name: seat1.deck_name || null,
+                    deck_cards: seat1.deck_cards || null,
+                    rating: seat1.rating || 1000,
                     connected: true,
                     last_action: this.firebase.serverTimestamp,
                     points: 0
                 },
                 2: {
                     supabase_user_id: player2Id,
-                    display_name: 'Opponent',
-                    deck_id: deck2Id,
-                    rating: player2Rating,
+                    display_name: seat2.display_name || 'Player 2',
+                    deck_id: seat2.deck_id || null,
+                    deck_name: seat2.deck_name || null,
+                    deck_cards: seat2.deck_cards || null,
+                    rating: seat2.rating || 1000,
                     connected: false,
                     last_action: null,
                     points: 0
@@ -303,7 +322,7 @@ class MatchmakingManager {
                     user_id: userId,
                     display_name: this.arcade.player?.display_name || 'Host',
                     ready: false,
-                    deck_id: options.deckId || null,
+                    ...MatchmakingManager.deckFields(options),
                     is_host: true,
                     joined_at: this.firebase.serverTimestamp
                 }
@@ -426,7 +445,7 @@ class MatchmakingManager {
             user_id: userId,
             display_name: this.arcade.player?.display_name || 'Player',
             ready: false,
-            deck_id: options.deckId || null,
+            ...MatchmakingManager.deckFields(options),
             is_host: false,
             joined_at: this.firebase.serverTimestamp
         });
@@ -472,14 +491,14 @@ class MatchmakingManager {
      * @param {boolean} ready - Ready state
      * @param {string} deckId - Selected deck ID
      */
-    async setReady(ready, deckId = null) {
+    // deck: the { id, name, cards } being brought, or (older callers) a deck id.
+    async setReady(ready, deck = null) {
         if (!this._lobbyRef) return;
 
         const userId = this.firebase.supabaseUserId;
-        await this._lobbyRef.child(`players/${userId}`).update({
-            ready: ready,
-            deck_id: deckId
-        });
+        const fields = deck && typeof deck === 'object' ? MatchmakingManager.deckFields({ deck })
+                                                        : { deck_id: deck };
+        await this._lobbyRef.child(`players/${userId}`).update({ ready: ready, ...fields });
     }
 
     /**
@@ -511,16 +530,12 @@ class MatchmakingManager {
             throw new Error('Not all players are ready');
         }
 
-        // Create the match
-        const [player1Data, player2Data] = players.map(([id, data]) => ({ id, ...data }));
+        // Create the match. The host is seat 1: object key order is id order,
+        // which used to seat whoever happened to sort first.
+        const seats = players.map(([id, data]) => ({ id, ...data }))
+            .sort((a, b) => (b.is_host ? 1 : 0) - (a.is_host ? 1 : 0));
 
-        const matchId = await this._createMatch(
-            player1Data.id,
-            player2Data.id,
-            lobby.mode,
-            player1Data.deck_id,
-            player2Data.deck_id
-        );
+        const matchId = await this._createMatch(seats[0], seats[1], lobby.mode);
 
         // Update lobby status
         await this._lobbyRef.update({
