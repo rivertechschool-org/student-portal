@@ -586,6 +586,11 @@
     /* Hand Area - Fanned Arc */
     .hand-area {
       position: relative;
+      /* The fanned cards rise out of this box into the battlefield. Without a
+         z-index of its own the hand sat BELOW .your-side (z-index 1), which
+         swallowed every click on the top half of every card in the hand. Stays
+         under the action bar (30). */
+      z-index: 5;
       height: 11rem;
       display: flex;
       justify-content: center;
@@ -714,6 +719,9 @@
     .card.selected { box-shadow: 0 0 0 3px #facc15; transform: scale(1.05); z-index: 20; }
     .card.targetable { box-shadow: 0 0 0 2px #fbbf24, 0 0 15px rgba(251, 191, 36, 0.5); }
     .card.spent { transform: rotate(90deg); opacity: 0.6; }
+    /* Rotating a 4x6rem card makes it 6rem wide, but its slot stays 4rem, so a
+       spent card lay over its neighbours and took their clicks. Widen the slot. */
+    .field-zone .card.small.spent { margin: 0 1rem; }
 
     .card-inner { height: 100%; padding: 0.25rem; display: flex; flex-direction: column; }
 
@@ -1627,7 +1635,7 @@
     <h1 class="menu-title">RIUTIZ</h1>
     <p class="menu-subtitle">The Competitive Card Game</p>
     <div class="menu-buttons">
-      <button class="btn btn-primary" onclick="startQuickGame()">Play vs AI</button>
+      <button class="btn btn-primary" onclick="showAIDeckSelect()">Play vs AI</button>
       <button class="btn btn-secondary" onclick="showDeckManagement()">Deck Builder</button>
       <button class="btn btn-purple" onclick="showMultiplayerMenu()" id="multiplayer-btn">Multiplayer</button>
     </div>
@@ -1742,7 +1750,7 @@
     <div class="menu-buttons" style="margin-top: 1rem;">
       <button class="btn btn-primary hidden" id="confirm-deck-btn" onclick="confirmDeckSelection()">Confirm Deck</button>
       <button class="btn btn-warning" onclick="openDeckBuilder()">Build New Deck</button>
-      <button class="btn btn-secondary" onclick="showGameModeSelect()">Back</button>
+      <button class="btn btn-secondary" onclick="deckSelectBack()">Back</button>
     </div>
   </div>
 
@@ -2405,7 +2413,7 @@ function getRandomAIDeck() {
   return randomStarter.deck_list || null;
 }
 
-function startQuickGame() {
+function startQuickGame(playerDeck = null) {
   // M1/M3: this is an AI match. Tear down any multiplayer session left over from
   // a previous online game so beating the AI is never recorded as a ranked win and
   // a still-running search cannot start a match on top of this one.
@@ -2419,6 +2427,7 @@ function startQuickGame() {
   game = new RiutizGame({
     mode: 'vs-ai',
     cardData: CARD_DATA,
+    player1Deck: playerDeck,
     player2Deck: aiDeck
   });
 
@@ -2477,7 +2486,9 @@ function startQuickGame() {
     // duplicate-prevention internally via process_rtc_transaction.
     // Human player is seat 1 in AI matches; multiplayer seat mapping is
     // handled by RiutizMultiplayer when it ships results directly.
-    if (window.arcade && typeof window.arcade.recordGameResult === 'function') {
+    // Offline (signed out, or Firebase unreachable) there is no player to
+    // record against: it used to write to stats/null and be refused.
+    if (window.arcade?.isOnline && typeof window.arcade.recordGameResult === 'function') {
       const won = e.detail.winner === 1;
       // This is the vs-AI code path — an AI match is never ranked.
       window.arcade.recordGameResult('riutiz', {
@@ -2527,13 +2538,34 @@ function selectGameMode(mode) {
   showDeckSelect();
 }
 
+// Play vs AI used to start straight away on a RANDOM deck - the starter deck a
+// student picked, and every deck they built, were never played against the AI.
+// It goes through the same picker multiplayer uses now. A student with no deck
+// that is ready to play still gets a game rather than an empty screen.
+function showAIDeckSelect() {
+  multiplayerAction = 'ai';
+  selectedGameMode = 'casual';
+  if (!deckBuilder || deckBuilder.getDecksForMode('casual').length === 0) {
+    startQuickGame(null);
+    return;
+  }
+  showDeckSelect();
+}
+
+// The picker is shared, so Back has to know where it came from.
+function deckSelectBack() {
+  if (multiplayerAction === 'ai') showMenu();
+  else showGameModeSelect();
+}
+
 function showDeckSelect() {
   document.querySelectorAll('.menu-screen').forEach(el => el.classList.add('hidden'));
   document.getElementById('deck-select-screen').classList.remove('hidden');
 
   // Update label
   const label = document.getElementById('deck-select-mode-label');
-  label.textContent = selectedGameMode === 'casual' ? 'Casual Mode - Any Deck' : 'Ranked Mode - Owned Cards Only';
+  label.textContent = multiplayerAction === 'ai' ? 'Play vs AI - pick your deck'
+    : selectedGameMode === 'casual' ? 'Casual Mode - Any Deck' : 'Ranked Mode - Owned Cards Only';
   label.style.color = selectedGameMode === 'casual' ? 'var(--green)' : 'var(--orange)';
 
   // Populate deck grid
@@ -2598,7 +2630,10 @@ async function confirmDeckSelection() {
     return;
   }
 
-  if (multiplayerAction === 'quickmatch') {
+  if (multiplayerAction === 'ai') {
+    const deck = deckBuilder.getSavedDecks().find(d => d.id === selectedDeckId);
+    startQuickGame(deck ? [...deck.cards] : null);
+  } else if (multiplayerAction === 'quickmatch') {
     await startQuickMatch();
   } else if (multiplayerAction === 'lobby') {
     await createLobbyWithDeck();

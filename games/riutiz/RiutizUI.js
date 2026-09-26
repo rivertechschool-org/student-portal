@@ -648,10 +648,14 @@ class RiutizUI {
         const cardCount = hand.length;
         if (cardCount === 0) return;
 
-        // Calculate fan parameters
-        const maxSpread = Math.min(cardCount * 4.5, 40); // Max spread in rem
+        // Calculate fan parameters. The spread is also capped by the width we
+        // actually have: on a phone a 7-card hand spread to 31.5rem and the two
+        // outer cards sat off the screen, unreachable.
+        const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+        const availRem = (container.clientWidth || window.innerWidth) / remPx;
+        const cardWidth = 6; // .card.in-hand is 6rem wide
+        const maxSpread = Math.max(0, Math.min(cardCount * 4.5, 40, availRem - cardWidth - 1)); // rem
         const maxRotation = Math.min(cardCount * 3, 25); // Max rotation in degrees
-        const cardWidth = 5; // Card width in rem
 
         hand.forEach((card, index) => {
             const wrapper = document.createElement('div');
@@ -1347,7 +1351,8 @@ class RiutizUI {
         // Hand card actions
         if (this.selectedCard && state.phase === 'main' && isYourTurn && !this.selectedFieldCard) {
             btns.appendChild(this.createButton('🔋 Resource', 'btn-secondary', () => {
-                this.game.playCard(this.localPlayer, this.selectedCard.instanceId, true);
+                const result = this.game.playCard(this.localPlayer, this.selectedCard.instanceId, true);
+                if (!result.success) this.setMessage(result.error);
                 this.selectedCard = null;
                 this.render();
             }));

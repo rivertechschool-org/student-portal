@@ -35,6 +35,28 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-26 — Jordan's Claude
+**RIUTIZ: Play vs AI works as a game now.** Played it in a real browser rather than
+reading it, and the engine test had been green the whole time. Three things made it
+feel broken: you could only click the bottom half of your cards (the hand sat under
+the battlefield), a used card lying sideways covered its neighbours, and Play vs AI
+dealt you a random deck, so the starter deck you chose and any deck you built never
+reached a game. Play vs AI now asks which deck; with none ready it just starts.
+
+`debug-tools/riutiz-journey.py` plays whole games through clicks only and reports any
+click the page swallows. Re-run it after touching the game screen.
+
+**Still open, deliberately not changed here:**
+- **Balance.** 200 AI-vs-AI games: seats are even (102–94), but Workshop Warriors
+  (orange) wins 17% and Lab Experiment / Math League about 70%. Games are blowouts
+  (average margin 19 in a race to 25). That is a design call on the cards, not a bug.
+- **No card art.** `games/Data/Riutiz/Art/` holds only a placeholders folder.
+- **Multiplayer** still deals both seats random decks; spectate is a stub; card
+  rewards are never granted. Could not test online play here (needs two signed-in
+  accounts).
+
+**Needs:** a decision on whether to rebalance the starter decks.
+
 ## 2026-09-25 — Jordan's Claude
 **Two shared helpers now, where there were copies.** `PortalUI.spinner()` is the
 loading state; `PortalUI.fullNameKey()` is the lowercase full name a search is
