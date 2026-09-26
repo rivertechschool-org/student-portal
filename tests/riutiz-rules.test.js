@@ -534,5 +534,93 @@ console.log('\n== triggered abilities ==\n');
     check('  so it cannot pay for its own replay', g.playCard(1, again.instanceId).success, false);
 }
 
+console.log('\n== several blockers on one attacker ==\n');
+{
+    const g = newGame();
+    const a = put(g, 1, 'Circuit Enthusiast');
+    const small = put(g, 2, 'The Back Talker');
+    const big = put(g, 2, 'Biology Enthusiast');
+    g.startCombat(1); g.toggleAttacker(1, a.instanceId); g.confirmAttackers(1);
+    ok('two pupils can block one attacker', g.toggleBlocker(2, small.instanceId, a.instanceId).success && g.toggleBlocker(2, big.instanceId, a.instanceId).success);
+    check('  in the order they were assigned', g.blockersOf(a.instanceId), [small.instanceId, big.instanceId]);
+    g.rolls = [6, 1, 2];
+    g.confirmBlockers(2);
+    ok('the attacker\'s 6 exhausts the first blocker (2) and the rest reaches the second', !inPlay(g, small) && big.damage === 4);
+    check('  and both blockers hit the attacker (1 + 2)', a.damage, 3);
+}
+{
+    const g = newGame();
+    const a = put(g, 1, 'Architecture Enthusiast');              // 3 end
+    const b1 = put(g, 2, 'Biology Enthusiast'), b2 = put(g, 2, 'Auxology Enthusiast');
+    g.startCombat(1); g.toggleAttacker(1, a.instanceId); g.confirmAttackers(1);
+    g.toggleBlocker(2, b1.instanceId, a.instanceId); g.toggleBlocker(2, b2.instanceId, a.instanceId);
+    g.rolls = [1, 2, 2];
+    g.confirmBlockers(2);
+    ok('a gang block brings down what neither blocker could alone', !inPlay(g, a));
+}
+{
+    const g = newGame();
+    const a = put(g, 1, 'Train Enthusiast');                     // Overwhelm
+    const b1 = put(g, 2, 'The Back Talker'), b2 = put(g, 2, 'The Back Talker');
+    g.startCombat(1); g.toggleAttacker(1, a.instanceId); g.confirmAttackers(1);
+    g.toggleBlocker(2, b1.instanceId, a.instanceId); g.toggleBlocker(2, b2.instanceId, a.instanceId);
+    g.rolls = [6, 1, 1];
+    g.confirmBlockers(2);
+    check('Overwhelm past two blockers scores what is left after both (6 - 2 - 2)', pts(g, 1), 2);
+}
+{
+    const g = newGame();
+    const a = put(g, 1, 'Dialectology Enthusiast');              // Lethal
+    const b1 = put(g, 2, 'Biology Enthusiast'), b2 = put(g, 2, 'Biology Enthusiast');
+    g.startCombat(1); g.toggleAttacker(1, a.instanceId); g.confirmAttackers(1);
+    g.toggleBlocker(2, b1.instanceId, a.instanceId); g.toggleBlocker(2, b2.instanceId, a.instanceId);
+    g.rolls = [2, 1, 1];
+    g.confirmBlockers(2);
+    ok('Lethal needs only 1 damage per blocker: a roll of 2 exhausts both', !inPlay(g, b1) && !inPlay(g, b2));
+}
+{
+    const g = newGame();
+    const a1 = put(g, 1, 'Architecture Enthusiast'), a2 = put(g, 1, 'The Back Talker');
+    const b = put(g, 2, 'Biology Enthusiast');
+    g.startCombat(1); g.toggleAttacker(1, a1.instanceId); g.toggleAttacker(1, a2.instanceId); g.confirmAttackers(1);
+    g.toggleBlocker(2, b.instanceId, a1.instanceId);
+    g.toggleBlocker(2, b.instanceId, a2.instanceId);
+    check('a pupil blocks one attacker: assigning it again moves it', [g.blockersOf(a1.instanceId), g.blockersOf(a2.instanceId)], [[], [b.instanceId]]);
+}
+{
+    const g = newGame();
+    const a = put(g, 1, 'Circuit Enthusiast');
+    const b1 = put(g, 2, 'Biology Enthusiast'), b2 = put(g, 2, 'Biology Enthusiast');
+    const pn = hand(g, 1, 'Prime Numbers');
+    g.playCard(1, pn.instanceId, false, { targets: [a.instanceId] });
+    g.startCombat(1); g.toggleAttacker(1, a.instanceId); g.confirmAttackers(1);
+    g.toggleBlocker(2, b1.instanceId, a.instanceId);
+    check('Prime Numbers: its target cannot be blocked by more than one pupil', g.toggleBlocker(2, b2.instanceId, a.instanceId).success, false);
+}
+
+console.log('\n== Pen, Workbook, I got a Page! ==\n');
+{
+    const g = newGame({ resources: 0 });
+    g.addResource(1, { colors: ['C'] });
+    const pen = hand(g, 1, 'Pen');
+    check('Pen costs (2) now', g.getPlayOptions(1, pen.instanceId).canPlay, false);
+    g.addResource(1, { colors: ['C'] });
+    check('  and is playable with two', g.getPlayOptions(1, pen.instanceId).canPlay, true);
+}
+{
+    const g = newGame();
+    const wb = put(g, 1, 'Workbook');
+    const page = g.createCardInstance(byName('I got a Page!'), 1, g.state.nextId++);
+    g.state.players[1].deck.splice(10, 0, page);
+    g.activateAbility(1, wb.instanceId, 0);
+    ok('Workbook searches for "I got a Page!"', g.pendingChoice && g.pendingChoice.options.length === 1 && g.pendingChoice.options[0].label === 'I got a Page!');
+    g.resolveChoice(1, [page.instanceId]);
+    ok('  and puts it in your hand', g.state.players[1].hand.some(c => c.instanceId === page.instanceId));
+    const p = put(g, 1, 'Biology Enthusiast');
+    const before = g.state.players[1].hand.length;
+    g.playCard(1, page.instanceId, false, { targets: [p.instanceId] });
+    check('I got a Page!: a +1/+1 counter and a card', [p.counters.plusOne, g.state.players[1].hand.length], [1, before]);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

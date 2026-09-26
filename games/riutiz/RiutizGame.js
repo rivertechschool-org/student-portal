@@ -769,9 +769,7 @@ class RiutizGame extends EventTarget {
         if (!card || !this.findInPlay(card.instanceId)) return false;
         const controller = this.removeFromField(card);
         this.state.attackers = this.state.attackers.filter(a => a.instanceId !== card.instanceId);
-        for (const [att, blk] of Object.entries(this.state.blockers)) {
-            if (att === card.instanceId || blk === card.instanceId) delete this.state.blockers[att];
-        }
+        this.removeFromBlocks(card.instanceId);
         if (!card.isToken) {
             const owner = card.owner || controller;
             this.resetCard(card);
@@ -791,9 +789,7 @@ class RiutizGame extends EventTarget {
         if (!card || !this.findInPlay(card.instanceId)) return false;
         const controller = this.removeFromField(card);
         this.state.attackers = this.state.attackers.filter(a => a.instanceId !== card.instanceId);
-        for (const [att, blk] of Object.entries(this.state.blockers)) {
-            if (att === card.instanceId || blk === card.instanceId) delete this.state.blockers[att];
-        }
+        this.removeFromBlocks(card.instanceId);
         if (!card.isToken) {
             this.resetCard(card);
             this.state.players[card.owner || controller].hand.push(card);
@@ -1600,26 +1596,48 @@ class RiutizGame extends EventTarget {
         if (attacker && this.modActive(attacker, m => m.unblockable) && !this.hasKeyword(blocker, 'blocksUnblockable')) {
             return `${attacker.name} cannot be blocked`;
         }
-        if (attacker && this.modActive(attacker, m => m.primeBlockersOnly)) {
-            const e = this.enduranceWithoutAuras(blocker);
-            let prime = e > 1;
-            for (let i = 2; i * i <= e; i++) if (e % i === 0) prime = false;
-            if (!prime) return `${attacker.name} can only be blocked by a pupil with a prime-number Endurance`;
+
+        return null;
+    }
+
+    // state.blockers is { attackerId: [blockerId, ...] }: several pupils may
+    // block one attacker (in the order they were assigned - which is the
+    // order the attacker's damage reaches them), and each pupil blocks one
+    // attacker. Older saved states held a single id; blockersOf reads both.
+    blockersOf(attackerId) {
+        const b = this.state.blockers[attackerId];
+        return !b ? [] : Array.isArray(b) ? b : [b];
+    }
+
+    // The attacker a pupil is blocking, if any.
+    blockingWhom(blockerId) {
+        for (const att of Object.keys(this.state.blockers)) {
+            if (this.blockersOf(att).includes(blockerId)) return att;
         }
         return null;
     }
 
-    // Assign (or with the same attacker, unassign) a blocker. Without an
-    // attacker id it is removed from whatever it blocks.
+    isBlocking(id) { return this.blockingWhom(id) !== null; }
+
+    removeFromBlocks(id) {
+        delete this.state.blockers[id];
+        for (const att of Object.keys(this.state.blockers)) {
+            const left = this.blockersOf(att).filter(b => b !== id);
+            if (left.length) this.state.blockers[att] = left; else delete this.state.blockers[att];
+        }
+    }
+
+    // Assign a blocker to an attacker, or - given the attacker it already
+    // blocks, or none - take it back.
     toggleBlocker(defenderNum, blockerInstanceId, attackerInstanceId) {
         if (this.state.combatStep !== 'declare-blockers') return { success: false, error: 'Not in blocker declaration' };
         if (defenderNum === this.state.currentPlayer) return { success: false, error: 'The defender blocks' };
         const blocker = this.state.players[defenderNum].field.find(c => c.instanceId === blockerInstanceId);
-        const current = Object.entries(this.state.blockers).find(([, b]) => b === blockerInstanceId);
+        const current = this.blockingWhom(blockerInstanceId);
         if (current) {
-            delete this.state.blockers[current[0]];
-            if (!attackerInstanceId || current[0] === attackerInstanceId) {
-                this.emitEvent('blockerToggled', { blocker, attackerId: current[0], blocking: false });
+            this.removeFromBlocks(blockerInstanceId);
+            if (!attackerInstanceId || current === attackerInstanceId) {
+                this.emitEvent('blockerToggled', { blocker, attackerId: current, blocking: false });
                 return { success: true };
             }
         }
@@ -1628,8 +1646,12 @@ class RiutizGame extends EventTarget {
         if (!this.state.attackers.some(a => a.instanceId === attackerInstanceId)) return { success: false, error: 'Not attacking' };
         const why = this.blockError(defenderNum, blocker, attacker);
         if (why) return { success: false, error: why };
-        // One blocker per attacker: a new one replaces the old
-        this.state.blockers[attackerInstanceId] = blockerInstanceId;
+        const already = this.blockersOf(attackerInstanceId);
+        // Prime Numbers: "cannot be blocked by more than one pupil"
+        if (already.length && attacker && this.modActive(attacker, m => m.maxOneBlocker)) {
+            return { success: false, error: `${attacker.name} cannot be blocked by more than one pupil` };
+        }
+        this.state.blockers[attackerInstanceId] = [...already, blockerInstanceId];
         this.emitEvent('blockerToggled', { blocker, attackerId: attackerInstanceId, blocking: true });
         return { success: true };
     }
@@ -1639,11 +1661,11 @@ class RiutizGame extends EventTarget {
         const out = [];
         for (const a of this.state.attackers) {
             const att = this.findInPlay(a.instanceId);
-            if (!att || this.state.blockers[a.instanceId]) continue;
+            if (!att || this.blockersOf(a.instanceId).length) continue;
             const must = this.hasKeyword(att, 'mustBeBlocked') || this.modActive(att, m => m.mustBeBlocked);
             if (!must) continue;
             const free = this.pupilsOf(defenderNum).filter(b =>
-                !Object.values(this.state.blockers).includes(b.instanceId) && !this.blockError(defenderNum, b, att));
+                !this.isBlocking(b.instanceId) && !this.blockError(defenderNum, b, att));
             if (free.length) out.push(att);
         }
         return out;
@@ -1726,49 +1748,13 @@ class RiutizGame extends EventTarget {
             const att = this.findInPlay(a.instanceId);
             if (!att || this.controllerOf(att) !== ap) continue;
             if (this.modActive(att, m => m.refuted)) { this.log(`${att.name}'s attack is refuted.`); continue; }
-            const blkId = this.state.blockers[a.instanceId];
-            const blk = blkId ? this.findInPlay(blkId) : null;
+            const blks = this.blockersOf(a.instanceId).map(id => this.findInPlay(id))
+                .filter(b => b && this.controllerOf(b) === dp);
             const aRoll = this.combatRoll(att, 'attack');
             const entry = { attacker: att.name, attackRoll: aRoll };
 
-            if (blk && this.controllerOf(blk) === dp) {
-                const bRoll = this.combatRoll(blk, 'block');
-                entry.blocker = blk.name; entry.blockerRoll = bRoll;
-                const aFirst = this.hasKeyword(att, 'firstStrike') && !this.hasKeyword(blk, 'firstStrike');
-                const bFirst = this.hasKeyword(blk, 'firstStrike') && !this.hasKeyword(att, 'firstStrike');
-                const blkRemaining = blk.currentEndurance;
-                let toBlk = 0, toAtt = 0;
-                if (aFirst) {
-                    toBlk = this.combatHit(att, blk, aRoll);
-                    if (this.findInPlay(blk.instanceId) && !blk._markedLethal && blk.currentEndurance > 0) toAtt = this.combatHit(blk, att, bRoll);
-                } else if (bFirst) {
-                    toAtt = this.combatHit(blk, att, bRoll);
-                    if (this.findInPlay(att.instanceId) && !att._markedLethal && att.currentEndurance > 0) toBlk = this.combatHit(att, blk, aRoll);
-                } else {
-                    toBlk = this.combatHit(att, blk, aRoll);
-                    toAtt = this.combatHit(blk, att, bRoll);
-                }
-                entry.damageToBlocker = toBlk; entry.damageToAttacker = toAtt;
-                // Rebuttal: the blocker strikes back at the attacker that hurt it
-                if (toBlk > 0) this.rebuttal(blk, att, toBlk);
-                // Overwhelm: damage beyond what the blocker could take is scored
-                if (this.hasKeyword(att, 'overwhelm') && aRoll > blkRemaining) {
-                    const over = aRoll - Math.max(0, blkRemaining);
-                    pointsScored += this.scoreFor(ap, over, att);
-                    entry.overwhelm = over;
-                }
-                const killed = blk._markedLethal || blk.currentEndurance <= 0;
-                if (killed) {
-                    entry.blockerExhausted = true;
-                    this.keepIfKills(att);
-                    this.trigger('onExhaustsPupil', att, { victim: blk, damage: aRoll });
-                }
-                if (att._markedLethal || att.currentEndurance <= 0) {
-                    entry.attackerExhausted = true;
-                    this.keepIfKills(blk);
-                    this.trigger('onExhaustsPupil', blk, { victim: att, damage: bRoll });
-                }
-                this.trigger('onAttackResolved', att, { unblocked: false, roll: aRoll });
+            if (blks.length) {
+                pointsScored += this.resolveBlocked(att, blks, aRoll, entry, ap);
             } else {
                 entry.unblocked = true;
                 const pts = this.scoreFor(ap, aRoll, att);
@@ -1789,6 +1775,77 @@ class RiutizGame extends EventTarget {
             this.emitEvent('combatResolved', { pointsScored, results, combatLog: results });
         }
         return { success: true, pointsScored, results };
+    }
+
+    // An attacker against one or more blockers. The attacker rolls once and
+    // its damage reaches the blockers in the order they were assigned: each
+    // gets enough to exhaust it (1, if the attacker is Lethal) and the last
+    // takes whatever is left - unless the attacker has Overwhelm, in which
+    // case what is left after them all is scored. Every blocker rolls and
+    // hits the attacker. First strike on either side goes before the other.
+    // Returns the points scored.
+    resolveBlocked(att, blks, aRoll, entry, ap) {
+        const bRolls = blks.map(b => this.combatRoll(b, 'block'));
+        entry.blockers = blks.map((b, i) => ({ name: b.name, roll: bRolls[i] }));
+        entry.blocker = blks.map(b => b.name).join(' + ');
+        entry.blockerRoll = bRolls.reduce((x, y) => x + y, 0);
+        const lethal = this.hasKeyword(att, 'lethal');
+        const overwhelm = this.hasKeyword(att, 'overwhelm');
+
+        // Share out the attacker's roll before anyone is hurt
+        let left = aRoll;
+        const shares = blks.map((b, i) => {
+            const need = lethal ? 1 : Math.max(0, b.currentEndurance);
+            const last = i === blks.length - 1;
+            const give = last && !overwhelm ? left : Math.min(left, need);
+            left -= give;
+            return give;
+        });
+        const overflow = overwhelm ? left : 0;
+
+        const alive = c => this.findInPlay(c.instanceId) && !c._markedLethal && c.currentEndurance > 0;
+        const attFirst = this.hasKeyword(att, 'firstStrike');
+        const strikeBlockers = () => blks.forEach((b, i) => {
+            if (!shares[i] || !this.findInPlay(b.instanceId)) return;
+            const dealt = this.combatHit(att, b, shares[i]);
+            if (dealt > 0) this.rebuttal(b, att, dealt);
+        });
+        const hit = (b) => { if (this.findInPlay(att.instanceId)) this.combatHit(b, att, bRolls[blks.indexOf(b)]); };
+        const firstStrikers = blks.filter(b => this.hasKeyword(b, 'firstStrike'));
+        const ordinary = blks.filter(b => !this.hasKeyword(b, 'firstStrike'));
+
+        // First-striking blockers go first (at the same moment as a
+        // first-striking attacker, so it still gets its blow in).
+        firstStrikers.filter(alive).forEach(hit);
+        if (attFirst) {
+            strikeBlockers();
+            ordinary.filter(alive).forEach(hit);           // only survivors hit back
+        } else {
+            const strikers = ordinary.filter(alive);       // they strike together with the attacker
+            if (alive(att)) strikeBlockers();
+            strikers.forEach(hit);
+        }
+
+        let points = 0;
+        if (overflow > 0) {
+            points = this.scoreFor(ap, overflow, att);
+            entry.overwhelm = overflow;
+        }
+        blks.forEach((b, i) => {
+            if (b._markedLethal || b.currentEndurance <= 0 || !this.findInPlay(b.instanceId)) {
+                entry.blockerExhausted = true;
+                this.keepIfKills(att);
+                this.trigger('onExhaustsPupil', att, { victim: b, damage: shares[i] });
+            }
+        });
+        if (att._markedLethal || att.currentEndurance <= 0) {
+            entry.attackerExhausted = true;
+            const killer = blks.find(b => this.findInPlay(b.instanceId)) || blks[0];
+            this.keepIfKills(killer);
+            this.trigger('onExhaustsPupil', killer, { victim: att, damage: entry.blockerRoll });
+        }
+        this.trigger('onAttackResolved', att, { unblocked: false, roll: aRoll });
+        return points;
     }
 
     // One pupil's combat damage to another.
@@ -2036,6 +2093,7 @@ class RiutizGame extends EventTarget {
         const s = this.state;
         s.attackers = s.attackers || [];
         s.blockers = s.blockers || {};
+        for (const k of Object.keys(s.blockers)) if (!Array.isArray(s.blockers[k])) s.blockers[k] = [s.blockers[k]];
         s.pending = s.pending || [];
         s.log = s.log || [];
         for (const p of [1, 2]) {

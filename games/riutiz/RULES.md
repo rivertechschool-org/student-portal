@@ -29,7 +29,11 @@ Tests: `tests/riutiz-rules.test.js` (the rules, one situation at a time),
 - **Main phase:** one resource per turn; any number of pupils, Tools and
   Locations; **one Interruption per turn** (each player, each turn).
 - **Combat:** once per turn, and it ends your main phase.
-- **Blocking:** one blocker per attacker, one attacker per blocker.
+- **Blocking (changed 2026-09-26):** several pupils may block one attacker; each
+  pupil blocks one. The attacker rolls once and its damage reaches the blockers in
+  the order they were assigned - enough to exhaust each (1 each if it is Lethal),
+  the rest to the last, or with Overwhelm the rest is scored. Every blocker rolls and
+  hits the attacker. First-strikers on either side go first.
 - **Combat Interruptions:** Flash Point, Time Out, Calculated Risk, Structural
   Analysis and Second Opinion can be played during combat — by the defender
   while blocking, too. Everything else is main phase only.
@@ -65,8 +69,9 @@ Tests: `tests/riutiz-rules.test.js` (the rules, one situation at a time),
 | "Support", "Support bonus" | — | The card's **played-as-a-resource** ability. |
 | Teacher's Assistant, The Reformer | Support: Add (2) | As a resource, makes two colourless. |
 | Social Networking Instructor | (S)(S): discard, then draw | (S) is Spend. |
-| Workbook | Search for "I got a Page!" | No such card exists. **Look at the top 2, keep one.** Needs a real card or new text. |
-| Prime Numbers | Cannot be blocked by more than one pupil | Meaningless with one blocker per attacker, so: **can only be blocked by a pupil whose Endurance is a prime number.** Needs new text. |
+| Workbook | Search your deck for "I got a Page!" | As printed. |
+| **I got a Page!** (new, id 263) | — | Added 2026-09-26 as the card Workbook finds: Interruption, (2), "Put a +1/+1 counter on target pupil you control. Draw a card." The effect was chosen here; the card library spreadsheet has no row for it yet. |
+| Prime Numbers | Cannot be blocked by more than one pupil | As printed, now that several pupils can block. |
 | Library | Pupils with Attack Die 3 or greater cannot attack | A d6 or larger cannot attack. |
 | Shy kid | Opponent's attack rolls -1 until end of turn | Lasts through the opponent's next turn (on your own turn it would do nothing). |
 | Proof of Concept | Refute target Interruption | Arms you: the opponent's next Interruption before your next turn is refuted. |
@@ -75,11 +80,19 @@ Tests: `tests/riutiz-rules.test.js` (the rules, one situation at a time),
 | Reinforcement | Play an additional support card | You may play one extra resource this turn. |
 | Tetrix | Pay (3): coin, heads the opponent skips a turn | Once per turn. |
 | Gold Coin | Send home, gain a resource of any colour | The resource arrives **spent**. Ready, it paid for the Coin's own replay: an endless free resource. |
-| Pen | Spend, send home: draw 2 | As printed - but at (1) it can be replayed for 2 cards as long as you have resources. Left out of the starter decks; worth a cost review. |
+| Pen | Spend, send home: draw 2 | Cost raised from (1) to **(2)** on 2026-09-26: at (1) it replayed for 2 cards as long as you had resources. |
 | Receptionist | Protection from a colour | Lasts until your next turn. |
 | Server Room | "the active player may draw" | Asks; the AI says yes while its deck has 4+ cards. |
 
+## The AI
+
+Three difficulties, chosen on the menu (default Normal):
+Easy plays a random card at a random target and blocks at random; Normal looks
+ahead at part of its options with fuzzed judgement; Hard looks at everything,
+gang-blocks and uses combat tricks. In tests Hard beat Easy 12/12, Normal beat
+Easy 12/12, Hard beat Normal 9/12. Balance is measured Hard against Hard.
+
 ## Still open
 
-- **Workbook** and **Prime Numbers** need a design decision (see above).
 - Multiplayer spectating remains a stub, and card rewards are never granted.
+- No card art exists.

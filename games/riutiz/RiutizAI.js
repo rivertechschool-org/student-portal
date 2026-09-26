@@ -15,8 +15,16 @@
 // block to save points or win a trade), plus the same look-ahead for the
 // defender's combat-time cards (Flash Point, Time Out, Calculated Risk...).
 //
-// Public surface used by the page and the tests: new RiutizAI(game, player),
-// takeTurn(), declareBlockers(), answerChoice(), thinkingDelay, actionDelay.
+// Three difficulties (options.difficulty):
+//   easy   - no look-ahead: a random affordable card at a random legal target,
+//            attacks with about half its pupils, blocks at random.
+//   normal - looks ahead, but at only part of its options and with its judge-
+//            ment fuzzed; blocks one-on-one; no combat tricks.
+//   hard   - everything: full look-ahead, gang blocks, combat tricks.
+//
+// Public surface used by the page and the tests: new RiutizAI(game, player,
+// { difficulty }), takeTurn(), declareBlockers(), answerChoice(),
+// thinkingDelay, actionDelay.
 
 class RiutizAI {
     constructor(game, playerNum = 2, options = {}) {
@@ -24,6 +32,7 @@ class RiutizAI {
         this.playerNum = playerNum;
         this.thinkingDelay = options.thinkingDelay ?? 700;
         this.actionDelay = options.actionDelay ?? 600;
+        this.difficulty = RiutizAI.DIFFICULTIES[options.difficulty] ? options.difficulty : 'hard';
         this.aggression = options.aggression ?? 0.5;   // 0 cautious .. 1 reckless
         this.isRunning = false;
         this._blocking = false;
@@ -34,6 +43,16 @@ class RiutizAI {
     }
 
     detach() { this.game.removeEventListener('choiceNeeded', this._onChoice); }
+
+    static get DIFFICULTIES() {
+        return {
+            easy: { label: 'Easy', lookahead: false },
+            normal: { label: 'Normal', lookahead: true, sample: 0.6, noise: 2.5 },
+            hard: { label: 'Hard', lookahead: true, sample: 1, noise: 0 }
+        };
+    }
+
+    get level() { return RiutizAI.DIFFICULTIES[this.difficulty]; }
 
     get g() { return this.game; }
     get me() { return this.playerNum; }
@@ -220,7 +239,9 @@ class RiutizAI {
     bestMove(g = this.game, p = this.me, samples = 1) {
         const base = this.evaluate(g, p);
         let best = null, bestGain = 0.35;
+        const { sample = 1, noise = 0 } = this.level || {};
         for (const c of this.candidates(g, p)) {
+            if (sample < 1 && Math.random() > sample) continue;       // normal overlooks some options
             let total = 0, okRuns = 0;
             for (let s = 0; s < samples; s++) {
                 const sim = this.clone(g);
@@ -230,10 +251,18 @@ class RiutizAI {
                 total += this.evaluate(sim, p); okRuns++;
             }
             if (!okRuns) continue;
-            const gain = total / okRuns - base;
+            const gain = total / okRuns - base + (noise ? (Math.random() * 2 - 1) * noise : 0);
             if (gain > bestGain) { bestGain = gain; best = c; }
         }
         return best ? { move: best, gain: bestGain } : null;
+    }
+
+    // Easy: any card it can play, at any legal target, most of the time.
+    randomMove(g = this.game, p = this.me) {
+        if (Math.random() < 0.2) return null;
+        const plays = this.candidates(g, p).filter(c => c.kind === 'play' || Math.random() < 0.3);
+        if (!plays.length) return null;
+        return { move: plays[Math.floor(Math.random() * plays.length)], gain: 0 };
     }
 
     // ======================================================================
@@ -345,7 +374,7 @@ class RiutizAI {
 
             for (let step = 0; step < 12 && !g.state.gameOver; step++) {
                 await this.waitForOther();
-                const best = this.bestMove(g, this.me);
+                const best = this.level.lookahead ? this.bestMove(g, this.me) : this.randomMove(g, this.me);
                 if (!best) break;
                 const r = this.apply(g, this.me, best.move);
                 if (!r.success) break;
@@ -385,6 +414,14 @@ class RiutizAI {
         if (g.canPlayResource(this.me)) return;
         const pl = g.state.players[this.me];
         if (!pl.hand.length) return;
+        if (!this.level.lookahead) {
+            const c = pl.hand[Math.floor(Math.random() * pl.hand.length)];
+            const o = g.getPlayOptions(this.me, c.instanceId);
+            const specs = o.resourceModes ? o.resourceModes[0].targets : o.resourceTargets;
+            const t = (specs || []).map(sp => g.getTargets(this.me, sp, c, [])[0]);
+            g.playCard(this.me, c.instanceId, true, { mode: o.resourceModes ? 0 : undefined, targets: t });
+            return;
+        }
         const base = this.evaluate(g);
         let best = null, bestScore = -Infinity;
         const need = {};
@@ -431,6 +468,7 @@ class RiutizAI {
         // Close to winning: send everything
         const allIn = myPts + ready.reduce((s, c) => s + this.expectedRoll(g, c), 0) >= g.winCondition && defenders.length < ready.length;
         for (const a of ready) {
+            if (!this.level.lookahead) { if (Math.random() < 0.5) attackers.push(a); continue; }
             const e = this.expectedRoll(g, a);
             if (e <= 0.5 && !g.keywords(a).has('overwhelm')) continue;
             const blockable = this.blockersFor(g, a, this.them);
@@ -475,8 +513,8 @@ class RiutizAI {
 
             this.assignBlockers(g);
 
-            // A combat trick, if one clearly helps
-            const trick = this.bestCombatTrick(g);
+            // A combat trick, if one clearly helps (hard only)
+            const trick = this.difficulty === 'hard' ? this.bestCombatTrick(g) : null;
             if (trick) {
                 this.apply(g, this.me, trick);
                 await this.answerAll();
@@ -489,7 +527,7 @@ class RiutizAI {
                 if (!r.success) {
                     // must-be-blocked: satisfy it with the cheapest pupil
                     for (const att of g.unmetBlockRequirements(this.me)) {
-                        const free = this.blockersFor(g, att, this.me).filter(b => !Object.values(g.state.blockers).includes(b.instanceId))
+                        const free = this.blockersFor(g, att, this.me).filter(b => !g.isBlocking(b.instanceId))
                             .sort((a, b) => this.pupilValue(g, a, this.me) - this.pupilValue(g, b, this.me));
                         if (free[0]) g.toggleBlocker(this.me, free[0].instanceId, att.instanceId);
                     }
@@ -508,6 +546,15 @@ class RiutizAI {
         const attackers = g.state.attackers.map(a => g.findInPlay(a.instanceId)).filter(Boolean)
             .sort((a, b) => this.expectedRoll(g, b) - this.expectedRoll(g, a));
         const used = new Set();
+        if (!this.level.lookahead) {
+            // Easy: each free pupil blocks a random attacker half the time
+            for (const b of g.pupilsOf(this.me)) {
+                if (Math.random() < 0.5 || !attackers.length) continue;
+                const att = attackers[Math.floor(Math.random() * attackers.length)];
+                g.toggleBlocker(this.me, b.instanceId, att.instanceId);
+            }
+            return;
+        }
         const theirPts = g.state.players[this.them].points;
         const incoming = attackers.reduce((s, a) => s + this.expectedRoll(g, a), 0);
         const desperate = theirPts + incoming >= g.winCondition;
@@ -527,6 +574,32 @@ class RiutizAI {
                 if (score > bestScore) { bestScore = score; best = b; }
             }
             if (best) { g.toggleBlocker(this.me, best.instanceId, att.instanceId); used.add(best.instanceId); }
+        }
+        if (this.difficulty === 'hard') this.gangBlock(g, attackers, used);
+    }
+
+    // Two pupils on one attacker when together they can bring down what
+    // neither could alone - and its roll can take out at most one of them.
+    gangBlock(g, attackers, used) {
+        for (const att of attackers) {
+            if (g.modActive(att, m => m.refuted || m.maxOneBlocker)) continue;
+            if (g.hasKeyword(att, 'stubborn')) continue;
+            const current = g.blockersOf(att.instanceId).map(id => g.findInPlay(id)).filter(Boolean);
+            const have = current.reduce((sum, b) => sum + this.expectedRoll(g, b), 0);
+            if (have >= att.currentEndurance) continue;
+            const eAtt = this.expectedRoll(g, att);
+            const spare = this.blockersFor(g, att, this.me).filter(b => !used.has(b.instanceId) && !g.isBlocking(b.instanceId))
+                .sort((a, b) => this.expectedRoll(g, b) - this.expectedRoll(g, a));
+            for (const b of spare) {
+                const together = have + this.expectedRoll(g, b);
+                const bodies = [...current, b].reduce((sum, x) => sum + x.currentEndurance, 0);
+                if (together < att.currentEndurance) continue;
+                if (g.hasKeyword(att, 'lethal') || eAtt >= bodies) continue;      // it would take them all
+                if (this.pupilValue(g, att, this.them) < this.pupilValue(g, b, this.me) * 0.8) continue;
+                g.toggleBlocker(this.me, b.instanceId, att.instanceId);
+                used.add(b.instanceId);
+                break;
+            }
         }
     }
 

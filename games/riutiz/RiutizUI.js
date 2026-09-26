@@ -887,7 +887,7 @@ class RiutizUI {
         } else if (s.combatStep === 'declare-attackers' && s.currentPlayer === me) {
             text = 'Tap your pupils to attack, then Attack!';
         } else if (s.combatStep === 'declare-blockers' && s.currentPlayer !== me) {
-            text = this.selectedBlocker ? 'Now tap the attacker it should block' : 'Tap one of your pupils, then the attacker to block';
+            text = this.selectedBlocker ? 'Now tap the attacker it should block' : 'Tap one of your pupils, then the attacker to block - several can gang up on one';
         } else if (s.combatStep === 'declare-blockers') {
             text = 'Waiting for your opponent to block…';
         } else {
@@ -933,9 +933,13 @@ class RiutizUI {
         container.innerHTML = '';
         const legal = this.legalTargetSet('card');
         const attackingIds = new Set((state.attackers || []).map(a => a.instanceId));
-        const blocks = state.blockers || {};
+        // Several pupils may block one attacker
         const blockerOf = {};
-        for (const [att, blk] of Object.entries(blocks)) blockerOf[blk] = att;
+        const blockedBy = {};
+        for (const att of Object.keys(state.blockers || {})) {
+            blockedBy[att] = this.game.blockersOf(att);
+            blockedBy[att].forEach(b => { blockerOf[b] = att; });
+        }
 
         field.forEach(card => {
             const isPupil = card.type?.includes('Pupil');
@@ -959,9 +963,10 @@ class RiutizUI {
                 onClick: () => this.handleFieldCardClick(card, isYours)
             });
             // Say who blocks whom
+            const nameOf = id => this.game.findInPlay(id)?.name || '';
             const tag = blockerOf[card.instanceId]
-                ? `blocks ${this.game.findInPlay(blockerOf[card.instanceId])?.name || ''}`
-                : (blocks[card.instanceId] ? `blocked by ${this.game.findInPlay(blocks[card.instanceId])?.name || ''}` : '');
+                ? `blocks ${nameOf(blockerOf[card.instanceId])}`
+                : (blockedBy[card.instanceId]?.length ? `blocked by ${blockedBy[card.instanceId].map(nameOf).join(' + ')}` : '');
             if (tag) {
                 const t = document.createElement('div');
                 t.className = 'card-combat-tag';
@@ -1227,8 +1232,7 @@ class RiutizUI {
             const attackers = (state.attackers || []).map(a => a.instanceId);
             if (isYours && card.type?.includes('Pupil')) {
                 // Tap an assigned blocker to take it back
-                const assigned = Object.entries(state.blockers).find(([, b]) => b === card.instanceId);
-                if (assigned) { g.toggleBlocker(me, card.instanceId, null); this.selectedBlocker = null; this.render(); return; }
+                if (g.isBlocking(card.instanceId)) { g.toggleBlocker(me, card.instanceId, null); this.selectedBlocker = null; this.render(); return; }
                 if (card.isSpent || g.cannotBlock(card)) { this.setMessage(`${card.name} cannot block`); return; }
                 if (attackers.length === 1) {
                     const r = g.toggleBlocker(me, card.instanceId, attackers[0]);

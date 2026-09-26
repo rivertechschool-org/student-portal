@@ -70,10 +70,11 @@ function cardCount(g, p) {
     return pl.hand.length + pl.deck.length + inPlay + pl.discard.length + resources + (pl.setAside || []).length;
 }
 
-async function play(seed, deck1, deck2, label) {
+async function play(seed, deck1, deck2, label, levels = ['hard', 'hard']) {
     const env = boot(seed);
     const g = new env.RiutizGame({ cardData: CARDS, player1Deck: deck1, player2Deck: deck2 });
-    const ai = { 1: new env.RiutizAI(g, 1, { thinkingDelay: 0, actionDelay: 0 }), 2: new env.RiutizAI(g, 2, { thinkingDelay: 0, actionDelay: 0 }) };
+    const ai = { 1: new env.RiutizAI(g, 1, { thinkingDelay: 0, actionDelay: 0, difficulty: levels[0] }),
+                 2: new env.RiutizAI(g, 2, { thinkingDelay: 0, actionDelay: 0, difficulty: levels[1] }) };
     const problems = [];
     const sizes = {};
     const audit = (when) => {
@@ -125,6 +126,22 @@ async function play(seed, deck1, deck2, label) {
         const d1 = Array.from({ length: 40 }, pick), d2 = Array.from({ length: 40 }, pick);
         await play(2000 + k, d1, d2, `random decks #${k + 1}`);
     }
+    console.log('\n== the three difficulties ==\n');
+    const tally = {};
+    let dseed = 5000;
+    for (const [hi, lo] of [['hard', 'easy'], ['normal', 'easy'], ['hard', 'normal']]) {
+        let hiWins = 0, n = 0;
+        for (let k = 0; k < 12; k++) {
+            const d = DECKS[k % DECKS.length].deck_list;
+            const seat = k % 2 ? 1 : 2;                                  // both seats
+            const levels = seat === 1 ? [hi, lo] : [lo, hi];
+            const g = await play(dseed++, d, d, `${levels[0]} v ${levels[1]} #${k + 1}`, levels);
+            if (g.state.gameOver) { n++; if (g.state.winner === seat) hiWins++; }
+        }
+        tally[`${hi} v ${lo}`] = `${hiWins}/${n}`;
+        ok(`${hi} beats ${lo} most of the time (${hiWins} of ${n}, same deck both sides)`, hiWins / n >= 0.6);
+    }
+    console.log('        ' + JSON.stringify(tally));
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);
 })();

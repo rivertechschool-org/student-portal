@@ -58,10 +58,13 @@ matched ability text with regexes - plus 24 wrong core rules. Now:
 `debug-tools/riutiz-journey.py` (clicks in Chrome); `riutiz-balance.js` before and
 after touching a starter deck or a card's numbers.
 
-**Needs:** a design decision on **Workbook** (names a card that does not exist) and
-**Prime Numbers** (meaningless with one blocker per attacker) - both have stand-in
-effects, see RULES.md. **Pen** is left out of the starters: at (1), "send home, draw
-2" replays for as long as you have resources. No card art exists yet.
+**Later the same day, at Jordan's request:** three AI difficulties on the menu (Easy /
+Normal / Hard, default Normal - Hard beats most students); several pupils may block
+one attacker; **Pen** costs (2); and **"I got a Page!"** (id 263) now exists so
+Workbook has something to find - its effect was chosen here and the card library
+spreadsheet has no row for it. Starters still 44-54% after the blocking change.
+
+**Needs:** a real two-account match before telling students. No card art exists yet.
 
 ## 2026-09-25 — Jordan's Claude
 **Two shared helpers now, where there were copies.** `PortalUI.spinner()` is the

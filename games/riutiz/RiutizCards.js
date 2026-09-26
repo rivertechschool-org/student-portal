@@ -621,8 +621,8 @@
     // for the Coin's own replay - play, use, replay - an endless free resource.
     R(157, { abilities: [{ label: 'Go home and gain a resource of any color (ready next turn)', spend: true, sendHome: true,
         run(api) { api.g.addResource(api.me, { anyColor: true, colors: ['O', 'G', 'P', 'B', 'Bk'], cardName: 'Gold Coin', spent: true }); } }] });
-    R(158, { abilities: [{ label: 'Look at the top 2 cards, keep one', spend: true, // Workbook. Ruling: there is no card "I got a Page!".
-        run(api) { api.g.lookAtTop(api.me, 2, 1, { sourceName: 'Workbook' }); } }] });
+    R(158, { abilities: [{ label: 'Search your deck for "I got a Page!"', spend: true, // Workbook
+        run(api) { api.g.searchDeck(api.me, c => c.name === 'I got a Page!', { prompt: 'Take "I got a Page!"', sourceName: 'Workbook' }); } }] });
     R(159, { abilities: [{ label: 'A pupil takes 1 more damage from everything this turn', spend: true, targets: [anyHarm()], // Flashcards
         run(api, ctx) { mod(api, ctx.targets[0], { damageTakenBonus: 1, until: EOT }); } }] });
     R(160, { abilities: [{ label: '+1 to die rolls this turn', spend: true, targets: [anyBuff()], run(api, ctx) { mod(api, ctx.targets[0], { die: 1, until: EOT }); } }] }); // Pencil
@@ -768,7 +768,7 @@
         t.mods = t.mods.filter(m => !m.end && m.setEndurance === undefined);
         api.g.refreshAll();
     } } });
-    R(224, { play: { targets: [anyBuff()], run(api, ctx) { mod(api, ctx.targets[0], { primeBlockersOnly: true, until: EOT }); } } }); // Prime Numbers. Ruling: see RULES.md.
+    R(224, { play: { targets: [anyBuff()], run(api, ctx) { mod(api, ctx.targets[0], { maxOneBlocker: true, until: EOT }); } } }); // Prime Numbers
     R(225, { play: { run(api) { api.g.draw(api.me, 2); } } }); // Theorem
     R(226, { play: { targets: [anyHarm()], run(api, ctx) { const t = ctx.targets[0]; api.g.spend(t); t.skipReady = Math.max(t.skipReady || 0, 1); } } }); // System Crash
     R(227, { play: { run(api) { pickFromOpponentHand(api, false); } } }); // Data Breach
@@ -893,6 +893,10 @@
         choices: { zing(api, v) { const t = chosen(api, v); if (t) dmg(api, t, 1); } },
         resource: { run(api) { api.g.pupilsOf(api.me).forEach(c => mod(api, c, { die: 1, until: EOT })); } }
     });
+
+    // I got a Page! - the card Workbook finds. Added 2026-09-26; the card
+    // library spreadsheet has no row for it yet.
+    R(263, { play: { targets: [ally()], run(api, ctx) { api.g.addCounter(ctx.targets[0], 'plusOne', 1); api.g.draw(api.me, 1); } } });
 
     RiutizCards.helpers = { pupil, ally, enemy, anyBuff, anyHarm, tool };
 

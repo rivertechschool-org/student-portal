@@ -11,8 +11,10 @@
 // AI-vs-AI games, every pairing from both seats:
 //   Workshop Warriors 53%  Lab Experiment 44%  Drama Club 46%
 //   Math League 55%  Tech Club 51%   - seat 1 won 405, seat 2 won 395.
-// Pen is left out on purpose: at (1), "send home, draw 2" can be replayed for
-// as long as you have resources, and it carried any deck that held it.
+// Pen was left out while it cost (1) - "send home, draw 2" replayed for as long
+// as you had resources. It costs (2) now. After the change to several blockers
+// per attacker the same lists measured 44-54% (Workshop 52, Lab 44, Drama 47,
+// Math 54, Tech 53).
 
 const fs = require('fs');
 const path = require('path');
