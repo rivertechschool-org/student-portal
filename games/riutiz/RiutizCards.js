@@ -617,8 +617,10 @@
     R(152, { play: { run(api) { api.g.addEffect({ player: api.them, attackDie: -1, by: api.me, until: 'yourNextTurn' }); } } }); // Shy kid. Ruling: lasts through the opponent's next turn.
     R(153, { resource: produces(2, ['C']) }); // The Reformer
     R(156, { resource: produces(1, null, true) }); // The Hoarder
-    R(157, { abilities: [{ label: 'Go home and gain a resource of any color', spend: true, sendHome: true, // Gold Coin
-        run(api) { api.g.addResource(api.me, { anyColor: true, colors: ['O', 'G', 'P', 'B', 'Bk'], cardName: 'Gold Coin' }); } }] });
+    // Gold Coin. Ruling: the new resource arrives SPENT. Arriving ready, it paid
+    // for the Coin's own replay - play, use, replay - an endless free resource.
+    R(157, { abilities: [{ label: 'Go home and gain a resource of any color (ready next turn)', spend: true, sendHome: true,
+        run(api) { api.g.addResource(api.me, { anyColor: true, colors: ['O', 'G', 'P', 'B', 'Bk'], cardName: 'Gold Coin', spent: true }); } }] });
     R(158, { abilities: [{ label: 'Look at the top 2 cards, keep one', spend: true, // Workbook. Ruling: there is no card "I got a Page!".
         run(api) { api.g.lookAtTop(api.me, 2, 1, { sourceName: 'Workbook' }); } }] });
     R(159, { abilities: [{ label: 'A pupil takes 1 more damage from everything this turn', spend: true, targets: [anyHarm()], // Flashcards

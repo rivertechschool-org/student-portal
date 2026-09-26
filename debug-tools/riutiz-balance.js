@@ -22,7 +22,7 @@ const SRC = ['RiutizCards.js', 'RiutizGame.js', 'RiutizAI.js']
 
 const N = parseInt(process.argv[2], 10) || 20;
 const deckFile = process.argv[3] || path.join(G, 'Data', 'Riutiz', 'starter-decks.json');
-const DECKS = JSON.parse(fs.readFileSync(deckFile, 'utf8')).starter_decks;
+const DECKS = require.main === module ? JSON.parse(fs.readFileSync(deckFile, 'utf8')).starter_decks : [];
 
 function boot(seed) {
   const timers = [];
@@ -62,9 +62,12 @@ function boot(seed) {
   };
 }
 
-async function play(seed, d1, d2) {
+async function play(seed, d1, d2, onGame = null) {
   const env = boot(seed);
-  const game = new env.RiutizGame({ mode: 'vs-ai', cardData: CARDS, player1Deck: [...d1.deck_list], player2Deck: [...d2.deck_list] });
+  const game = new env.RiutizGame({ mode: 'vs-ai', cardData: CARDS, player1Deck: [...d1.deck_list], player2Deck: [...d2.deck_list],
+                                    // RIUTIZ_FIRST_DRAWS=0 / RIUTIZ_SECOND_EXTRA=0 try the other openings
+                                    firstPlayerDraws: process.env.RIUTIZ_FIRST_DRAWS !== '0',
+                                    secondPlayerExtraCard: process.env.RIUTIZ_SECOND_EXTRA !== '0' });
   const ai = { 1: new env.RiutizAI(game, 1, { thinkingDelay: 0, actionDelay: 0 }), 2: new env.RiutizAI(game, 2, { thinkingDelay: 0, actionDelay: 0 }) };
   game.addEventListener('turnEnded', e => {
     if (!game.state.gameOver && game.state.turn <= 80) env.later(() => ai[e.detail.nextPlayer].takeTurn());
@@ -73,6 +76,7 @@ async function play(seed, d1, d2) {
     const d = game.state.currentPlayer === 1 ? 2 : 1;
     env.later(() => ai[d].declareBlockers());
   });
+  if (onGame) onGame(game);
   game.startGame();
   ai[1].takeTurn();
   await env.drain();
@@ -89,7 +93,8 @@ async function play(seed, d1, d2) {
   return { over: game.state.gameOver, winner: game.state.winner, turn: game.state.turn, s1: p[1].points, s2: p[2].points, errors: env.errors.length };
 }
 
-(async () => {
+module.exports = { play };
+if (require.main === module) (async () => {
   const names = DECKS.map(d => d.name);
   const wins = {}, games = {}, matrix = {};
   let turns = [], margins = [], capped = 0, errs = 0, seatWins = { 1: 0, 2: 0 };

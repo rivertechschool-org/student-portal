@@ -39,6 +39,12 @@ class RiutizGame extends EventTarget {
         this.state = null;
         this.winCondition = 25;
         this.handSize = 7;
+        // Going first vs second, measured over AI-vs-AI games with the
+        // starter decks: skipping the first draw left seat 1 winning 43%,
+        // drawing left it winning 59%; drawing plus an eighth card for the
+        // second player comes out at 50/50.
+        this.firstPlayerDraws = options.firstPlayerDraws ?? true;
+        this.secondPlayerExtraCard = options.secondPlayerExtraCard ?? true;
         this._depth = 0;
     }
 
@@ -79,7 +85,7 @@ class RiutizGame extends EventTarget {
             blockers: {},
             players: {
                 1: this.createPlayerState(this.player1Deck, 1),
-                2: this.createPlayerState(this.player2Deck, 2)
+                2: this.createPlayerState(this.player2Deck, 2, this.secondPlayerExtraCard ? 1 : 0)
             },
             pending: [],
             effects: [],
@@ -92,13 +98,14 @@ class RiutizGame extends EventTarget {
         };
     }
 
-    createPlayerState(deckCards, playerNum) {
+    createPlayerState(deckCards, playerNum, extraCards = 0) {
         const deck = deckCards && deckCards.length ? this.createDeckFromCards(deckCards, playerNum)
                                                    : this.createRandomDeck(playerNum);
+        const n = this.handSize + extraCards;
         return {
             points: 0,
-            deck: deck.slice(this.handSize),
-            hand: deck.slice(0, this.handSize),
+            deck: deck.slice(n),
+            hand: deck.slice(0, n),
             field: [],
             resources: [],
             discard: [],
@@ -160,8 +167,8 @@ class RiutizGame extends EventTarget {
     startGame() {
         this.state = this.createInitialState();
         this.log('Game started.');
-        // Player 1 does not draw on the first turn: going first is already an edge.
-        this.beginTurn(1, { skipDraw: true, first: true });
+        // Whether the first player skips their opening draw (see RULES.md)
+        this.beginTurn(1, { skipDraw: !this.firstPlayerDraws, first: true });
         this.emitEvent('gameStarted', { state: this.state });
         return this.state;
     }

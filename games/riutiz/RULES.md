@@ -22,7 +22,10 @@ Tests: `tests/riutiz-rules.test.js` (the rules, one situation at a time),
 ## Core rules
 
 - **Turn:** Ready (untap, then start-of-turn effects), Draw, Main, Combat, End.
-  The first player does not draw on turn 1.
+- **Opening hands:** 7 cards; the second player starts with **8**, and the
+  first player draws on turn 1 as normal. Measured over AI-vs-AI games with
+  the starter decks: the first player skipping their draw won seat 1 43% of
+  games, drawing normally 59%, this 50%.
 - **Main phase:** one resource per turn; any number of pupils, Tools and
   Locations; **one Interruption per turn** (each player, each turn).
 - **Combat:** once per turn, and it ends your main phase.
@@ -71,6 +74,8 @@ Tests: `tests/riutiz-rules.test.js` (the rules, one situation at a time),
 | Electronics Enthusiast | Prevent a pupil from entering | Arms you: the next pupil the opponent plays goes back to their hand. |
 | Reinforcement | Play an additional support card | You may play one extra resource this turn. |
 | Tetrix | Pay (3): coin, heads the opponent skips a turn | Once per turn. |
+| Gold Coin | Send home, gain a resource of any colour | The resource arrives **spent**. Ready, it paid for the Coin's own replay: an endless free resource. |
+| Pen | Spend, send home: draw 2 | As printed - but at (1) it can be replayed for 2 cards as long as you have resources. Left out of the starter decks; worth a cost review. |
 | Receptionist | Protection from a colour | Lasts until your next turn. |
 | Server Room | "the active player may draw" | Asks; the AI says yes while its deck has 4+ cards. |
 

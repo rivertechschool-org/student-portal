@@ -36,26 +36,32 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 ---
 
 ## 2026-09-26 — Jordan's Claude
-**RIUTIZ: Play vs AI works as a game now.** Played it in a real browser rather than
-reading it, and the engine test had been green the whole time. Three things made it
-feel broken: you could only click the bottom half of your cards (the hand sat under
-the battlefield), a used card lying sideways covered its neighbours, and Play vs AI
-dealt you a random deck, so the starter deck you chose and any deck you built never
-reached a game. Play vs AI now asks which deck; with none ready it just starts.
+**RIUTIZ was rebuilt: rules engine, every card, the AI, online play, and the starter
+decks.** An audit found about 50 of 262 cards doing what they say - the old engine
+matched ability text with regexes - plus 24 wrong core rules. Now:
 
-`debug-tools/riutiz-journey.py` plays whole games through clicks only and reports any
-click the page swallows. Re-run it after touching the game screen.
+- `games/riutiz/RiutizCards.js` defines every card explicitly; `RiutizGame.js` is the
+  rules. **`games/riutiz/RULES.md` lists every ruling** where card text was unclear -
+  read it before changing a card. Decided with Jordan: an unblocked pupil scores its
+  ROLL (AD is retired), both sides roll in a block, an empty deck ends the game.
+- Going second is worth a card: 7-card hands, the second player starts with 8.
+  Measured, that is the only opening of the three tried that comes out even.
+- The AI looks ahead (plays each move on a copy and keeps the best), so a new or
+  changed card needs no AI code. It is much stronger than the old one.
+- Online: each player plays the deck they chose, over one shared state. Tested with two
+  real clients on a fake Firebase (`tests/riutiz-multiplayer.test.js`), never yet with
+  two real accounts - **worth a real two-account match before telling students.**
+- Starter decks are now mixed (every card type) and tuned: 44-55% each over 800 games.
 
-**Still open, deliberately not changed here:**
-- **Balance.** 200 AI-vs-AI games: seats are even (102–94), but Workshop Warriors
-  (orange) wins 17% and Lab Experiment / Math League about 70%. Games are blowouts
-  (average margin 19 in a race to 25). That is a design call on the cards, not a bug.
-- **No card art.** `games/Data/Riutiz/Art/` holds only a placeholders folder.
-- **Multiplayer** still deals both seats random decks; spectate is a stub; card
-  rewards are never granted. Could not test online play here (needs two signed-in
-  accounts).
+**Re-run after changes:** `tests/riutiz-cards` (every card does something),
+`riutiz-rules`, `riutiz-engine` (whole games), `riutiz-multiplayer`;
+`debug-tools/riutiz-journey.py` (clicks in Chrome); `riutiz-balance.js` before and
+after touching a starter deck or a card's numbers.
 
-**Needs:** a decision on whether to rebalance the starter decks.
+**Needs:** a design decision on **Workbook** (names a card that does not exist) and
+**Prime Numbers** (meaningless with one blocker per attacker) - both have stand-in
+effects, see RULES.md. **Pen** is left out of the starters: at (1), "send home, draw
+2" replays for as long as you have resources. No card art exists yet.
 
 ## 2026-09-25 — Jordan's Claude
 **Two shared helpers now, where there were copies.** `PortalUI.spinner()` is the

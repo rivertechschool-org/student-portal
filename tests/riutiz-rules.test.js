@@ -92,11 +92,11 @@ console.log('\n== turns ==\n');
 {
     const g = newGame();
     const deck = new RiutizGame({ cardData: CARDS }); // for sizes
-    check('player 1 starts with 7 cards and does not draw on turn 1', new RiutizGame({ cardData: CARDS }).handSize, 7);
     const g2 = new RiutizGame({ cardData: CARDS }); g2.startGame();
-    check('  after start, player 1 holds 7', g2.state.players[1].hand.length, 7);
+    check('player 1 starts with 7 and draws on turn 1', g2.state.players[1].hand.length, 8);
+    check('player 2 starts with 8 (going second is worth a card)', g2.state.players[2].hand.length, 8);
     g2.endTurn(1);
-    check('  player 2 draws at the start of their turn', g2.state.players[2].hand.length, 8);
+    check('  and draws at the start of their turn', g2.state.players[2].hand.length, 9);
     check('  it is player 2\'s main phase', [g2.state.currentPlayer, g2.state.phase], [2, 'main']);
 }
 {
@@ -520,6 +520,18 @@ console.log('\n== triggered abilities ==\n');
     g.rolls = [3, 2];
     attack(g, 2, [src], { [src.instanceId]: t.instanceId });
     check('Trigonometry Enthusiast sends its damage back to the attacker', [t.damage, src.damage], [0, 2 + 3]);
+}
+
+{
+    // Gold Coin used to be an endless loop: its resource paid for its own replay
+    const g = newGame({ resources: 0 });
+    g.addResource(1, { colors: ['C'] });
+    const coin = hand(g, 1, 'Gold Coin');
+    g.playCard(1, coin.instanceId);
+    g.activateAbility(1, coin.instanceId, 0);
+    const again = g.state.players[1].hand.find(c => c.instanceId === coin.instanceId);
+    check('Gold Coin goes home and gives a resource that is spent until next turn', g.state.players[1].resources.filter(r => !r.spent).length, 0);
+    check('  so it cannot pay for its own replay', g.playCard(1, again.instanceId).success, false);
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
