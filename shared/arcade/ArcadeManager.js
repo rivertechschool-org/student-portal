@@ -353,8 +353,36 @@ class ArcadeManager {
      * @param {Object} result - { won: boolean, opponentRating: number, ranked: boolean }
      */
     async recordGameResult(gameId, result) {
-        const stats = await this.getStats(gameId);
+        // In one transaction on the stats record. It used to read, add and
+        // write back: a read that failed came back as a blank record, and
+        // the write then replaced a student's whole history with one game;
+        // two tabs finishing together each wrote over the other's result.
+        const ref = this.firebase?.gameRef(gameId, `stats/${this.firebase.supabaseUserId}`);
+        let stats = null;
+        if (ref) {
+            try {
+                const tx = await ref.transaction(cur => {
+                    const next = this._applyResult({ ...this._getDefaultStats(), ...(cur || {}) }, result);
+                    next.last_updated = this.firebase.serverTimestamp;
+                    return next;
+                });
+                stats = tx && tx.snapshot ? tx.snapshot.val() : null;
+            } catch (error) {
+                console.error('Error recording game result:', error);
+            }
+        }
+        await this.incrementGamesPlayed();
 
+        // Award RTC for playing arcade games (non-blocking)
+        this._awardRtcForGame(gameId, result).catch(err => {
+            console.warn('RTC award failed (non-blocking):', err);
+        });
+
+        return stats || this._applyResult(this._getDefaultStats(), result);
+    }
+
+    // One result added to a stats record (changes and returns it)
+    _applyResult(stats, result) {
         if (result.won) {
             stats.wins = (stats.wins || 0) + 1;
             stats.current_streak = (stats.current_streak || 0) + 1;
@@ -374,10 +402,9 @@ class ArcadeManager {
             const opponentRating = result.opponentRating || 1000;
             const gamesPlayed = stats.ranked_games || 0;
 
-            let ratingResult;
-            if (window.ratingManager) {
+            if (typeof window !== 'undefined' && window.ratingManager) {
                 // Use proper ELO calculator
-                ratingResult = window.ratingManager.calculateNewRating(
+                const ratingResult = window.ratingManager.calculateNewRating(
                     myRating,
                     opponentRating,
                     result.won,
@@ -398,15 +425,6 @@ class ArcadeManager {
             // Track peak rating
             stats.peak_rating = Math.max(stats.peak_rating || 1000, stats.ranked_rating);
         }
-
-        await this.updateStats(gameId, stats);
-        await this.incrementGamesPlayed();
-
-        // Award RTC for playing arcade games (non-blocking)
-        this._awardRtcForGame(gameId, result).catch(err => {
-            console.warn('RTC award failed (non-blocking):', err);
-        });
-
         return stats;
     }
 

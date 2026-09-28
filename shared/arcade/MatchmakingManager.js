@@ -42,6 +42,17 @@ class MatchmakingManager {
         };
     }
 
+    // Who actually has a seat: the host, then guests in the order they
+    // joined, up to max_players. Joining is check-then-write, so two guests
+    // who pressed Join together both got in and the lobby held three; every
+    // client works this out from the same data and agrees on who is extra.
+    static seatedIds(lobby) {
+        const all = Object.entries((lobby && lobby.players) || {}).map(([id, p]) => ({ id, ...p }));
+        all.sort((a, b) => ((b.is_host || b.id === lobby.host_id) ? 1 : 0) - ((a.is_host || a.id === lobby.host_id) ? 1 : 0)
+            || (a.joined_at || 0) - (b.joined_at || 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        return all.slice(0, lobby.max_players || 2).map(p => p.id);
+    }
+
     async joinQueue(options = {}) {
         if (this.inQueue) {
             throw new Error('Already in queue');
@@ -473,6 +484,15 @@ class MatchmakingManager {
         // Remove self from lobby on disconnect
         lobbyRef.child(`players/${userId}`).onDisconnect().remove();
 
+        // Someone may have taken the last seat between the check above and
+        // our write: look again, and step back out if we came second.
+        const after = (await lobbyRef.once('value')).val();
+        if (after && !MatchmakingManager.seatedIds(after).includes(userId)) {
+            lobbyRef.child(`players/${userId}`).onDisconnect().cancel();
+            await lobbyRef.child(`players/${userId}`).remove();
+            throw new Error('Lobby is full');
+        }
+
         this.currentLobby = lobby;
         this._lobbyRef = lobbyRef;
         this._setupLobbyListeners();
@@ -539,8 +559,10 @@ class MatchmakingManager {
         const snapshot = await this._lobbyRef.once('value');
         const lobby = snapshot.val();
 
-        // Check all players are ready
-        const players = Object.entries(lobby.players || {});
+        // Check all players are ready - the seated ones: a guest who lost a
+        // race for the last seat is on the way out and must not be picked.
+        const seated = MatchmakingManager.seatedIds(lobby);
+        const players = Object.entries(lobby.players || {}).filter(([id]) => seated.includes(id));
         if (players.length < 2) {
             throw new Error('Need at least 2 players');
         }
@@ -606,6 +628,21 @@ class MatchmakingManager {
         this._lobbyRef.on('value', (snapshot) => {
             if (snapshot.exists()) {
                 this.currentLobby = snapshot.val();
+                // Both racing guests can pass joinLobby's second look before
+                // either write lands; whichever is not seated leaves here.
+                const me = this.firebase.supabaseUserId;
+                const lob = this.currentLobby;
+                if (lob.status === 'waiting' && lob.players && lob.players[me] && lob.host_id !== me
+                        && !MatchmakingManager.seatedIds(lob).includes(me)) {
+                    const ref = this._lobbyRef;
+                    try { ref.child(`players/${me}`).onDisconnect().cancel(); } catch (e) {}
+                    ref.child(`players/${me}`).remove().catch(() => {});
+                    this._cleanupLobbyListeners();
+                    this.currentLobby = null;
+                    this._lobbyRef = null;
+                    this._notifyLobbyListeners({ event: 'lobby_full' });
+                    return;
+                }
                 this._notifyLobbyListeners();
 
                 // Check if match started

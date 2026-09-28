@@ -103,6 +103,32 @@ function sandbox(extra = {}) {
         check('an online win still pays 10', await pay({ won: true }), [10]);
     }
 
+    console.log('\n== a result is added to the record, never written over it ==\n');
+    {
+        const { sb } = sandbox({ portalAuth: null });
+        vm.runInContext(read('shared/arcade/ArcadeManager.js'), sb);
+        const am = Object.create(sb.ArcadeManager.prototype);
+        // Like the real transaction: the first guess is from the local cache
+        // (often nothing), and it runs again with what the server holds.
+        let stored = { wins: 12, losses: 7, total_games: 19, ranked_games: 4, ranked_rating: 1130, best_streak: 5, current_streak: 2 };
+        const ref = {
+            once: async () => { throw new Error('read failed'); },      // the read that used to wipe the record
+            transaction: async fn => {
+                const guess = fn(null);
+                if (guess !== undefined && stored === null) stored = guess;
+                else stored = fn(JSON.parse(JSON.stringify(stored)));
+                return { committed: true, snapshot: { val: () => stored } };
+            }
+        };
+        am.firebase = { supabaseUserId: 'student-1', serverTimestamp: 0, gameRef: () => ref, playerRef: () => null };
+        am._awardRtcForGame = async () => {};
+        const s = await am.recordGameResult('riutiz', { won: true });
+        check('a win adds to what was there', [s.wins, s.losses, s.total_games, s.current_streak], [13, 7, 20, 3]);
+        check('  and the rating and best streak survive', [s.ranked_rating, s.best_streak], [1130, 5]);
+        await Promise.all([am.recordGameResult('riutiz', { won: false }), am.recordGameResult('riutiz', { won: true })]);
+        check('two tabs finishing together both count', [stored.wins, stored.losses, stored.total_games], [14, 8, 22]);
+    }
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);
 })();

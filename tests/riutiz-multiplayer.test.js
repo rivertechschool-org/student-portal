@@ -424,6 +424,25 @@ function cardsSeen(state, seat) {
         check('that seat still gets 40 cards to play with', cardsSeen(guest.game.state, 2).length, 40);
     }
 
+    console.log('\n== two friends press Join at the same moment ==\n');
+    {
+        // Joining was check-then-write: both saw one player, both wrote, and
+        // the two-seat lobby held three.
+        const db = new FakeDB();
+        const host = client(db, 'h3', 'Host', []), a = client(db, 'g3a', 'Ada', []), b = client(db, 'g3b', 'Ben', []);
+        for (const c of [host, a, b]) await c.mp.initialize();
+        const { joinCode, lobbyId } = await host.mp.createLobby({ deck: deckOf(0) });
+        const r = await Promise.allSettled([a.mp.joinLobby(joinCode, { deck: deckOf(1) }), b.mp.joinLobby(joinCode, { deck: deckOf(2) })]);
+        const refused = r.filter(x => x.status === 'rejected').map(x => x.reason.message);
+        check('exactly one of them is turned away, told the lobby is full', refused, ['Lobby is full']);
+        check('  and the lobby holds two players', Object.keys(db.get(`arcade/matchmaking/riutiz/lobbies/${lobbyId}/players`)).length, 2);
+        const late = client(db, 'g3c', 'Cy', []);
+        await late.mp.initialize();
+        let err = null;
+        try { await late.mp.joinLobby(joinCode, { deck: deckOf(1) }); } catch (e) { err = e.message; }
+        check('a third who comes later is turned away too', err, 'Lobby is full');
+    }
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);
 })();

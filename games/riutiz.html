@@ -2245,23 +2245,23 @@
 
 <!-- Arcade System -->
 <script src="../firebase/firebase-config.js"></script>
-<script src="../shared/arcade/FirebaseManager.js?v=2026-09-28c"></script>
-<script src="../shared/arcade/ArcadeManager.js?v=2026-09-28c"></script>
-<script src="../shared/arcade/MatchmakingManager.js?v=2026-09-28c"></script>
-<script src="../shared/arcade/MultiplayerSync.js?v=2026-09-28c"></script>
-<script src="../shared/arcade/LeaderboardManager.js?v=2026-09-28c"></script>
-<script src="../shared/arcade/RatingManager.js?v=2026-09-28c"></script>
-<script src="../shared/arcade/FriendsManager.js?v=2026-09-28c"></script>
+<script src="../shared/arcade/FirebaseManager.js?v=2026-09-28d"></script>
+<script src="../shared/arcade/ArcadeManager.js?v=2026-09-28d"></script>
+<script src="../shared/arcade/MatchmakingManager.js?v=2026-09-28d"></script>
+<script src="../shared/arcade/MultiplayerSync.js?v=2026-09-28d"></script>
+<script src="../shared/arcade/LeaderboardManager.js?v=2026-09-28d"></script>
+<script src="../shared/arcade/RatingManager.js?v=2026-09-28d"></script>
+<script src="../shared/arcade/FriendsManager.js?v=2026-09-28d"></script>
 <script src="../shared/CosmeticRenderer.js?v=10"></script>
 
 <!-- Game Modules -->
-<script src="riutiz/RiutizCards.js?v=2026-09-28c"></script>
-<script src="riutiz/RiutizGame.js?v=2026-09-28c"></script>
-<script src="riutiz/RiutizAI.js?v=2026-09-28c"></script>
-<script src="riutiz/RiutizUI.js?v=2026-09-28c"></script>
-<script src="riutiz/RiutizCollection.js?v=2026-09-28c"></script>
-<script src="riutiz/RiutizDeckBuilder.js?v=2026-09-28c"></script>
-<script src="riutiz/RiutizMultiplayer.js?v=2026-09-28c"></script>
+<script src="riutiz/RiutizCards.js?v=2026-09-28d"></script>
+<script src="riutiz/RiutizGame.js?v=2026-09-28d"></script>
+<script src="riutiz/RiutizAI.js?v=2026-09-28d"></script>
+<script src="riutiz/RiutizUI.js?v=2026-09-28d"></script>
+<script src="riutiz/RiutizCollection.js?v=2026-09-28d"></script>
+<script src="riutiz/RiutizDeckBuilder.js?v=2026-09-28d"></script>
+<script src="riutiz/RiutizMultiplayer.js?v=2026-09-28d"></script>
 
 <script>
 // ============================================
@@ -2342,51 +2342,68 @@ async function init() {
   }
 }
 
-// Handle URL parameters for invites, spectating, and lobbies
+// Handle URL parameters for invites and lobbies.
+//
+// A battle invite used to dead-end: the friend who ACCEPTED made a lobby
+// that nobody was told about, while the one who invited sat on the arcade
+// page waiting. Now the inviter makes the lobby first (?invite=<friend>),
+// picking a deck, and the invite carries its code; accepting opens
+// ?lobby=<code>, which asks the friend for a deck and joins.
 function handleUrlParameters() {
   const params = new URLSearchParams(window.location.search);
+  // Once handled, off the address bar - a refresh must not send it again
+  if ([...params.keys()].length) window.history.replaceState({}, '', window.location.pathname);
 
-  // Handle spectate mode
-  const spectateId = params.get('spectate');
-  if (spectateId) {
-    startSpectating(spectateId);
-    return;
-  }
-
-  // Handle lobby join
   const lobbyId = params.get('lobby');
   if (lobbyId) {
     joinLobbyById(lobbyId);
     return;
   }
 
-  // Handle battle invite from friend
-  const inviteFrom = params.get('invite_from');
-  if (inviteFrom) {
-    handleBattleInvite(inviteFrom);
-  }
-}
-
-async function startSpectating(matchId) {
-  if (!window.arcade?.firebase) {
-    alert('Cannot spectate: Not connected online');
+  const inviteFriendId = params.get('invite');
+  if (inviteFriendId) {
+    startInviteLobby(inviteFriendId);
     return;
   }
 
-  // Initialize friends manager for spectator tracking
-  if (window.arcade) {
-    const friendsManager = new FriendsManager(window.arcade);
-    await friendsManager.initialize();
-    await friendsManager.joinAsSpectator('riutiz', matchId);
+  // Watching a match is not built yet, and an invite accepted from an
+  // older arcade page has no lobby to join.
+  if (params.get('spectate') || params.get('invite_from')) {
+    showToast(params.get('spectate') ? 'Watching matches is not available yet.'
+                                      : 'That invite has expired - ask your friend to send a new one.');
   }
+}
 
-  // TODO: Load match state and show in spectator mode
-  console.log('Spectating match:', matchId);
-  alert('Spectator mode coming soon! Match ID: ' + matchId);
+let pendingInvitee = null;      // friend to invite once the lobby exists
+
+function startInviteLobby(friendId) {
+  if (!window.arcade?.isOnline) {
+    alert('Inviting a friend needs an online connection');
+    return;
+  }
+  pendingInvitee = friendId;
+  multiplayerAction = 'lobby';
+  selectedGameMode = 'casual';
+  showDeckSelect();
+}
+
+async function sendPendingInvite(joinCode) {
+  const friendId = pendingInvitee;
+  pendingInvitee = null;
+  if (!friendId) return;
+  try {
+    const friends = new FriendsManager(window.arcade);
+    await friends.initialize();
+    const r = await friends.sendBattleInvite(friendId, 'riutiz', { lobby_id: joinCode });
+    showToast(r.success ? 'Invite sent - waiting for your friend to join'
+                        : 'The invite did not send: ' + (r.error || 'try again') + '. Your code is ' + joinCode);
+  } catch (e) {
+    showToast('The invite did not send. Your friend can still join with code ' + joinCode);
+  }
 }
 
 async function joinLobbyById(lobbyId) {
-  if (!window.arcade?.firebase) {
+  if (!window.arcade?.isOnline) {
     alert('Cannot join lobby: Not connected online');
     return;
   }
@@ -2395,52 +2412,21 @@ async function joinLobbyById(lobbyId) {
     resetMultiplayer();
     await ensureMultiplayer();
 
-    // Join the lobby (works with both ID and code)
-    await multiplayer.joinLobby(lobbyId);
-
-    document.querySelectorAll('.menu-screen, .game-screen, .victory-screen').forEach(el => {
-      el.classList.add('hidden');
-    });
-    enterLobbyScreen(false, lobbyId);
-    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
-
+    // Pick a deck first, the same as joining by code: joining straight in
+    // brought no deck, and the match could not start.
+    const info = await multiplayer.matchmaking.getLobbyInfo(lobbyId);
+    if (!info) {
+      alert('That game is no longer open.');
+      return;
+    }
+    pendingLobbyCode = lobbyId;
+    selectedGameMode = info.mode || 'casual';
+    multiplayerAction = 'join-lobby';
+    showDeckSelect();
   } catch (error) {
     console.error('Failed to join lobby:', error);
     alert('Failed to join lobby: ' + error.message);
   }
-}
-
-async function handleBattleInvite(fromUserId) {
-  if (!window.arcade?.firebase) {
-    alert('Cannot join game: Not connected online');
-    return;
-  }
-
-  try {
-    resetMultiplayer();
-    await ensureMultiplayer();
-
-    // Create a lobby and send the invite response
-    const result = await multiplayer.createLobby({ mode: 'casual', invitedPlayer: fromUserId });
-
-    // createLobby resolves to { lobbyId, joinCode }; the old `result.success` test was
-    // never true, so accepting an invite silently did nothing.
-    if (!result || !result.joinCode) {
-      throw new Error('Lobby could not be created');
-    }
-    document.querySelectorAll('.menu-screen, .game-screen, .victory-screen').forEach(el => {
-      el.classList.add('hidden');
-    });
-    enterLobbyScreen(true, result.joinCode);
-    multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
-    console.log('Created lobby for battle invite, code:', result.joinCode);
-  } catch (error) {
-    console.error('Failed to handle battle invite:', error);
-    alert('Failed to set up game: ' + error.message);
-  }
-
-  // Clear the URL parameter
-  window.history.replaceState({}, '', window.location.pathname);
 }
 
 // ============================================
@@ -2731,6 +2717,7 @@ function showAIDeckSelect() {
 
 // The picker is shared, so Back has to know where it came from.
 function deckSelectBack() {
+  pendingInvitee = null;
   if (multiplayerAction === 'ai') showMenu();
   else showGameModeSelect();
 }
@@ -2886,6 +2873,7 @@ async function createLobbyWithDeck() {
     enterLobbyScreen(true, result.joinCode);
 
     multiplayer.matchmaking.onLobbyChange(onLobbyEvent);
+    await sendPendingInvite(result.joinCode);
 
   } catch (error) {
     alert('Error creating lobby: ' + error.message);
@@ -2955,6 +2943,12 @@ function onLobbyEvent(data) {
   if (data && data.event === 'match_started') return;
   if (data && data.event === 'lobby_closed') {
     alert('The lobby was closed.');
+    showMultiplayerMenu();
+    return;
+  }
+  if (data && data.event === 'lobby_full') {
+    document.getElementById('lobby-screen').classList.add('hidden');
+    alert('Someone else took the last seat in that lobby.');
     showMultiplayerMenu();
     return;
   }

@@ -1151,8 +1151,8 @@
       </div>
     </section>
 
-    <!-- Active Matches -->
-    <section class="matches-section">
+    <!-- Active Matches: hidden until watching a match is built -->
+    <section class="matches-section" hidden>
       <div class="section-header">
         <h2 class="section-title">Live Matches</h2>
         <a href="#" class="section-link" onclick="refreshMatches()">Refresh</a>
@@ -1186,11 +1186,11 @@
   <script src="../shared/supabase.min.js"></script>
   <script src="../shared/config.js"></script>
   <script src="../firebase/firebase-config.js"></script>
-  <script src="../shared/arcade/FirebaseManager.js?v=2026-09-28b"></script>
-  <script src="../shared/arcade/ArcadeManager.js?v=2026-09-28b"></script>
-  <script src="../shared/arcade/FriendsManager.js?v=2026-09-28b"></script>
-  <script src="../shared/arcade/RatingManager.js?v=2026-09-28b"></script>
-  <script src="../shared/arcade/LeaderboardManager.js?v=2026-09-28b"></script>
+  <script src="../shared/arcade/FirebaseManager.js?v=2026-09-28d"></script>
+  <script src="../shared/arcade/ArcadeManager.js?v=2026-09-28d"></script>
+  <script src="../shared/arcade/FriendsManager.js?v=2026-09-28d"></script>
+  <script src="../shared/arcade/RatingManager.js?v=2026-09-28d"></script>
+  <script src="../shared/arcade/LeaderboardManager.js?v=2026-09-28d"></script>
   <script src="../shared/CosmeticRenderer.js?v=10"></script>
 
   <script>
@@ -1250,8 +1250,8 @@
           leaderboard = new LeaderboardManager(window.arcade, 'riutiz');
           await loadLeaderboard();
 
-          // Load active matches
-          await loadActiveMatches();
+          // (Live matches are not loaded: that list is hidden until watching
+          // a match is built.)
 
           // Initialize friends system
           await initFriends();
@@ -1402,10 +1402,10 @@
       };
 
       let actions = '';
-      if (friend.status === 'in_game' && friend.current_match) {
-        actions = `<button class="friend-action-btn spectate" onclick="spectrateFriend('${friend.id}')">Watch</button>`;
-      } else if (friend.status === 'online') {
-        actions = `<button class="friend-action-btn invite" onclick="inviteFriend('${friend.id}')">Invite</button>`;
+      // (No Watch button while a friend is in a game: watching is not built
+      // yet, and the button only led to a "coming soon" alert.)
+      if (friend.status === 'online') {
+        actions = `<button class="friend-action-btn invite" onclick="inviteFriend(${jsArg(friend.id)})">Invite</button>`;
       }
 
       // Get avatar display from RTC cosmetics
@@ -1525,13 +1525,11 @@
       await friendsManager.declineFriendRequest(fromId);
     }
 
-    async function inviteFriend(friendId) {
-      const result = await friendsManager.sendBattleInvite(friendId, 'riutiz');
-      if (result.success) {
-        showNotification('Battle invite sent!', 'success');
-      } else {
-        showNotification(result.error || 'Failed to send invite', 'error');
-      }
+    // The inviter makes the lobby (and picks a deck) on the game page, which
+    // then sends the invite with the lobby's code. Sending it from here left
+    // both players with no lobby to meet in.
+    function inviteFriend(friendId) {
+      window.location.href = `riutiz.html?invite=${encodeURIComponent(friendId)}`;
     }
 
     async function spectrateFriend(friendId) {
@@ -1607,7 +1605,7 @@
         if (result.lobbyId) {
           window.location.href = `${game}.html?lobby=${encodeURIComponent(result.lobbyId)}`;
         } else {
-          window.location.href = `${game}.html?invite_from=${encodeURIComponent(result.fromId)}`;
+          showNotification('That invite has expired - ask your friend to send a new one', 'error');
         }
       }
     }
@@ -1907,8 +1905,10 @@
       const list = document.getElementById('leaderboard-list');
 
       try {
-        const entries = await leaderboard.getLeaderboard('ranked', 10);
-        const myRank = await leaderboard.getPlayerRank();
+        // (game, options): this used to be called as ('ranked', 10), which
+        // read a game called "ranked" and so the board was always empty.
+        const entries = await leaderboard.getLeaderboard('riutiz', { limit: 10 });
+        const myRank = await leaderboard.getPlayerRank('riutiz');
 
         if (entries.length === 0) {
           list.innerHTML = `
@@ -1924,7 +1924,7 @@
         list.innerHTML = entries.map((entry, i) => {
           const rank = i + 1;
           const rankClass = rank === 1 ? 'gold' : rank === 2 ? 'silver' : rank === 3 ? 'bronze' : '';
-          const isSelf = entry.player_id === window.arcade?.supabaseUserId;
+          const isSelf = entry.user_id === window.arcade?.userId;
           const rating = entry.ranked_rating || 1000;
           const tier = window.ratingManager ? window.ratingManager.getTier(rating) : { icon: '', color: 'var(--orange)' };
 
@@ -1955,7 +1955,7 @@
 
         // Add "You" row if not in top 10
         if (myRank && myRank.rank > 10) {
-          const myRating = myRank.ranked_rating || 1000;
+          const myRating = myRank.stats?.ranked_rating || 1000;
           const myTier = window.ratingManager ? window.ratingManager.getTier(myRating) : { icon: '', color: 'var(--orange)' };
 
           const myCos = myCosmetics;
