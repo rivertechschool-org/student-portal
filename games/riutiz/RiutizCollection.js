@@ -15,7 +15,9 @@ class RiutizCollection {
      */
     async load() {
         this.unavailable = false;
-        if (this.arcade && this.arcade.isOnline) {
+        // Decided once: see RiutizDeckBuilder.loadDecks
+        this.useCloud = !!(this.arcade && this.arcade.isOnline);
+        if (this.useCloud) {
             try {
                 this.collection = await this.arcade.getCollection(this.gameId);
             } catch (e) {
@@ -99,7 +101,7 @@ class RiutizCollection {
      */
     async save() {
         if (this.unavailable) return;     // never overwrite a collection we could not read
-        if (this.arcade && this.arcade.isOnline) {
+        if (this.useCloud) {
             await this.arcade.saveCollection(this.gameId, this.collection);
         } else {
             localStorage.setItem('riutiz_collection', JSON.stringify(this.collection));

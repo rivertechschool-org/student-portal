@@ -304,8 +304,10 @@ class ArcadeManager {
 
         try {
             await ref.remove();
+            return true;
         } catch (error) {
             console.error('Error deleting deck:', error);
+            return false;
         }
     }
 

@@ -33,8 +33,13 @@ class RiutizDeckBuilder {
      * Load saved decks
      */
     async loadDecks() {
-        if (this.arcade && this.arcade.isOnline) {
-            this.savedDecks = await this.arcade.getDecks(this.gameId);
+        // Where decks live is decided ONCE, here. It used to be asked on every
+        // save and delete, so a wifi blip sent one save to this browser and
+        // the next load (online) did not have it - or brought a deleted deck
+        // back. The Firebase SDK itself queues writes while disconnected.
+        this.useCloud = !!(this.arcade && this.arcade.isOnline);
+        if (this.useCloud) {
+            this.savedDecks = (await this.arcade.getDecks(this.gameId)) || {};
         } else {
             const saved = localStorage.getItem('riutiz_decks');
             if (saved) {
@@ -69,11 +74,15 @@ class RiutizDeckBuilder {
      */
     setMode(mode) {
         this.mode = mode;
-        // Clear deck if switching to ranked and cards aren't owned
+        // Ranked: keep only as many copies as are owned. It used to drop only
+        // cards owned not at all, so 4 copies of a card owned twice survived
+        // here and failed at Save instead.
         if (mode === 'ranked' && this.collection) {
-            this.currentDeck = this.currentDeck.filter(cardId =>
-                this.collection.getQuantity(cardId) > 0
-            );
+            const kept = {};
+            this.currentDeck = this.currentDeck.filter(cardId => {
+                kept[cardId] = (kept[cardId] || 0) + 1;
+                return kept[cardId] <= this.collection.getQuantity(cardId);
+            });
         }
     }
 
@@ -185,10 +194,10 @@ class RiutizDeckBuilder {
     /**
      * Clear the current deck
      */
+    // Empty the deck being edited - it is still the same deck. Resetting the
+    // id and name here made "Clear, re-add, Save" create a second deck.
     clearDeck() {
         this.currentDeck = [];
-        this.deckName = 'New Deck';
-        this.deckId = null;
     }
 
     /**
@@ -299,27 +308,28 @@ class RiutizDeckBuilder {
 
         if (name) this.deckName = name;
 
+        const id = this.deckId || this.generateId();
         const deck = {
-            id: this.deckId || this.generateId(),
+            id,
             name: this.deckName,
             cards: [...this.currentDeck],
             card_count: this.currentDeck.length,
             primary_color: this.getDeckPrimaryColor(),
             deck_type: this.deckType || this.mode, // 'casual' or 'ranked'
             is_valid: true,
-            created_at: Date.now(),
+            created_at: this.savedDecks[id]?.created_at || Date.now(),   // an edit keeps its birthday
             updated_at: Date.now()
         };
 
+        // Save to backend - and say so when it did not work: a failed save
+        // used to report "Deck saved!" and the deck was gone on reload.
+        if (this.useCloud) {
+            const saved = await this.arcade.saveDeck(this.gameId, deck);
+            if (!saved) return { success: false, errors: ["Couldn't save to the server - check your connection and try again"] };
+        }
         this.deckId = deck.id;
         this.savedDecks[deck.id] = deck;
-
-        // Save to backend
-        if (this.arcade && this.arcade.isOnline) {
-            await this.arcade.saveDeck(this.gameId, deck);
-        } else {
-            localStorage.setItem('riutiz_decks', JSON.stringify(this.savedDecks));
-        }
+        if (!this.useCloud) localStorage.setItem('riutiz_decks', JSON.stringify(this.savedDecks));
 
         return { success: true, deckId: deck.id };
     }
@@ -403,16 +413,15 @@ class RiutizDeckBuilder {
             return { success: false, error: 'Deck not found' };
         }
 
-        delete this.savedDecks[deckId];
-
-        if (this.arcade && this.arcade.isOnline) {
-            await this.arcade.deleteDeck(this.gameId, deckId);
-        } else {
-            localStorage.setItem('riutiz_decks', JSON.stringify(this.savedDecks));
+        if (this.useCloud) {
+            const ok = await this.arcade.deleteDeck(this.gameId, deckId);
+            if (ok === false) return { success: false, error: "Couldn't delete it - check your connection and try again" };
         }
+        delete this.savedDecks[deckId];
+        if (!this.useCloud) localStorage.setItem('riutiz_decks', JSON.stringify(this.savedDecks));
 
         if (this.deckId === deckId) {
-            this.clearDeck();
+            this.clear();
         }
 
         return { success: true };
