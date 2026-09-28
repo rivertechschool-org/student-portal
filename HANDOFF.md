@@ -49,6 +49,11 @@ now capped at 100 a school day (applied).
 the two secrets, deploy `firebase-token` and `arcade-record-result`, publish the rules -
 in that order - then one real two-account match.
 
+**Until then online play is switched OFF** (Jordan's call): `MULTIPLAYER_ENABLED = false` in
+`games/riutiz.html` and `games/arcade-menu.html` hides Multiplayer, Friends and the
+leaderboard, and invite/lobby links just say it is not available yet. Flip both to `true`
+after the steps above.
+
 ## 2026-09-28 — Jordan's Claude
 **RIUTIZ and arcade follow-up audit.** Fixed and live: every game against the AI was
 drawn behind the deck picker; the layout on phones, phone landscape and tablets (the side
