@@ -103,7 +103,7 @@ function sandbox(extra = {}) {
         check('an online win still pays 10', await pay({ won: true }), [10]);
     }
 
-    console.log('\n== a result is added to the record, never written over it ==\n');
+    console.log('\n== a game against the computer is added to its record, never written over it ==\n');
     {
         const { sb } = sandbox({ portalAuth: null });
         vm.runInContext(read('shared/arcade/ArcadeManager.js'), sb);
@@ -111,6 +111,7 @@ function sandbox(extra = {}) {
         // Like the real transaction: the first guess is from the local cache
         // (often nothing), and it runs again with what the server holds.
         let stored = { wins: 12, losses: 7, total_games: 19, ranked_games: 4, ranked_rating: 1130, best_streak: 5, current_streak: 2 };
+        const paths = [];
         const ref = {
             once: async () => { throw new Error('read failed'); },      // the read that used to wipe the record
             transaction: async fn => {
@@ -120,13 +121,55 @@ function sandbox(extra = {}) {
                 return { committed: true, snapshot: { val: () => stored } };
             }
         };
-        am.firebase = { supabaseUserId: 'student-1', serverTimestamp: 0, gameRef: () => ref, playerRef: () => null };
+        am.firebase = { supabaseUserId: 'student-1', isAuthenticated: true, serverTimestamp: 0,
+                        gameRef: (g, p) => { paths.push(p); return ref; }, playerRef: () => null };
         am._awardRtcForGame = async () => {};
-        const s = await am.recordGameResult('riutiz', { won: true });
+        const s = await am.recordGameResult('riutiz', { won: true, vsAI: true, difficulty: 'hard' });
+        check('it goes to ai_stats, not the leaderboard record', paths[0], 'ai_stats/student-1');
         check('a win adds to what was there', [s.wins, s.losses, s.total_games, s.current_streak], [13, 7, 20, 3]);
         check('  and the rating and best streak survive', [s.ranked_rating, s.best_streak], [1130, 5]);
-        await Promise.all([am.recordGameResult('riutiz', { won: false }), am.recordGameResult('riutiz', { won: true })]);
+        await Promise.all([am.recordGameResult('riutiz', { won: false, vsAI: true }), am.recordGameResult('riutiz', { won: true, vsAI: true })]);
         check('two tabs finishing together both count', [stored.wins, stored.losses, stored.total_games], [14, 8, 22]);
+    }
+
+    console.log('\n== an online match is recorded by the server ==\n');
+    {
+        const asked = [];
+        const { sb } = sandbox({
+            portalAuth: { supabase: { auth: { getSession: async () => ({ data: { session: { access_token: 'jwt' } } }) } } },
+            fetch: async (url, opts) => { asked.push({ url, body: JSON.parse(opts.body) });
+                                          return { ok: true, json: async () => ({ stats: { wins: 4 } }) }; }
+        });
+        vm.runInContext(read('shared/arcade/ArcadeManager.js'), sb);
+        const am = Object.create(sb.ArcadeManager.prototype);
+        let wrote = false;
+        am.firebase = { supabaseUserId: 'student-1', isAuthenticated: true,
+                        gameRef: () => ({ transaction: async () => { wrote = true; } }), playerRef: () => null };
+        am._awardRtcForGame = async () => {};
+        const s = await am.recordGameResult('riutiz', { won: true, ranked: true, matchId: 'm-7', opponentRating: 5000 });
+        check('the browser asks the server, naming only the match', [/arcade-record-result$/.test(asked[0].url), asked[0].body],
+              [true, { game_id: 'riutiz', match_id: 'm-7' }]);
+        check('  never writing a record itself', wrote, false);
+        check('  and shows the record the server sent back', s.wins, 4);
+    }
+
+    console.log('\n== RTC goes to the portal profile, even with the arcade offline ==\n');
+    {
+        const calls = [];
+        const { sb } = sandbox({
+            portalAuth: { userProfile: { id: 'profile-9' }, supabase: { rpc: async (n, a) => { calls.push(a); return { data: null, error: null }; } } }
+        });
+        vm.runInContext(read('shared/arcade/ArcadeManager.js'), sb);
+        const am = Object.create(sb.ArcadeManager.prototype);
+        am.firebase = { supabaseUserId: null, isAuthenticated: false };     // Firebase never came up
+        await am.recordGameResult('riutiz', { won: true, vsAI: true, difficulty: 'normal' });
+        await new Promise(r => setTimeout(r, 0));
+        check('a win against Normal still pays 3, to the profile id', calls.map(c => [c.p_user_id, c.p_amount]), [['profile-9', 3]]);
+        calls.length = 0;
+        await am._awardRtcForGame('riutiz', { won: true, matchId: 'm-7' });
+        await am._awardRtcForGame('riutiz', { won: true, matchId: 'm-7' });
+        check('an online win is paid against the match, so the server can refuse a repeat',
+              calls.map(c => c.p_reference_id), ['arcade_riutiz_m-7', 'arcade_riutiz_m-7']);
     }
 
     console.log(`\n${pass} passed, ${fail} failed`);

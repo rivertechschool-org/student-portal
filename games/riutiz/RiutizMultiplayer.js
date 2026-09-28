@@ -157,13 +157,21 @@ class RiutizMultiplayer {
         this.sync.onStateChange((wrapper) => this.onRemoteState(wrapper));
         this.sync.onStatusChange((status, data) => this.onMatchStatusChange(status, data));
 
-        if (this.localPlayerNumber === 1) {
+        // A match already under way is RESUMED - by either seat, whoever wrote
+        // last. Rejoining (a reload, a second tab) used to re-deal when it was
+        // the host, restarting the match, and a guest ignored a state it had
+        // written itself as its own echo and was left with no game.
+        if (match.game_state && typeof match.game_state.json === 'string') {
+            this.resumeFrom(match.game_state);
+        } else if (this.localPlayerNumber === 1) {
             await this.initializeGameState(match);
-        } else if (match.game_state) {
-            this.onRemoteState(match.game_state);
         }
 
-        await this.sync.updateMatch({ status: 'active', started_at: Date.now() });
+        // Only a match that is starting becomes active: this used to reopen a
+        // finished one when a player came back to it.
+        if (match.status === 'starting' || !match.status) {
+            await this.sync.updateMatch({ status: 'active', started_at: Date.now() });
+        }
         if (this._onMatchStart) this._onMatchStart(match);
         return match;
     }
@@ -214,13 +222,36 @@ class RiutizMultiplayer {
             turn: s.turn,
             json: JSON.stringify(s)
         };
-        await this.sync.publishState(wrapper, {
-            current_player: s.currentPlayer,
-            turn: s.turn,
-            phase: s.combatStep ? 'combat' : s.phase,
-            'players/1/points': s.players[1].points,
-            'players/2/points': s.players[2].points
-        });
+        try {
+            await this.sync.publishState(wrapper, {
+                current_player: s.currentPlayer,
+                turn: s.turn,
+                phase: s.combatStep ? 'combat' : s.phase,
+                'players/1/points': s.players[1].points,
+                'players/2/points': s.players[2].points
+            });
+        } catch (err) {
+            // Refused - the stored board has moved past ours (the other seat
+            // wrote first). Take the stored one, or both sides would sit on
+            // boards the other ignores.
+            console.warn('Our move was not accepted; catching up:', err && err.message);
+            const stored = await this.sync.readGameState().catch(() => null);
+            if (stored && typeof stored.json === 'string') this.resumeFrom(stored, true);
+            return;
+        }
+        this.checkGameOver();
+    }
+
+    // Take a published state as ours whoever wrote it, and carry on its count.
+    // force: adopt its count even if ours is higher (our own write was refused).
+    resumeFrom(wrapper, force = false) {
+        let state;
+        try { state = JSON.parse(wrapper.json); }
+        catch (e) { console.error('Unreadable match state:', e); return; }
+        this.seq = force ? (Number(wrapper.seq) || 0) : Math.max(this.seq, Number(wrapper.seq) || 0);
+        this._applyingRemote = true;
+        try { this.game.loadState(state); }
+        finally { this._applyingRemote = false; }
         this.checkGameOver();
     }
 
@@ -263,6 +294,7 @@ class RiutizMultiplayer {
             if (status === 'abandoned' && won && this.arcade?.recordGameResult) {
                 const opp = this.sync?.getOpponent?.();
                 this.arcade.recordGameResult('riutiz', {
+                    matchId: this.matchId,
                     won: true, ranked: this.sync?.match?.mode === 'ranked',
                     opponent: opp?.display_name, opponentRating: opp?.rating
                 }).catch(err => console.warn('Recording the win failed:', err));

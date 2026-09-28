@@ -330,39 +330,29 @@ class ArcadeManager {
     }
 
     /**
-     * Update player statistics
+     * Record a game result.
+     *
+     * Against the computer (result.vsAI): kept in ai_stats, which the player
+     * writes themselves - it is not on the leaderboard. RTC is paid through
+     * the portal's own session, so it works even when Firebase does not.
+     *
+     * Online (result.matchId): the server adds the match to both players'
+     * records (arcade-record-result), reading the match to see who won.
+     *
      * @param {string} gameId - Game identifier
-     * @param {Object} updates - Stats to update
-     */
-    async updateStats(gameId, updates) {
-        const ref = this.firebase?.gameRef(gameId, `stats/${this.firebase.supabaseUserId}`);
-        if (!ref) return;
-
-        try {
-            const current = await this.getStats(gameId);
-            const newStats = { ...current, ...updates, last_updated: this.firebase.serverTimestamp };
-            await ref.set(newStats);
-        } catch (error) {
-            console.error('Error updating stats:', error);
-        }
-    }
-
-    /**
-     * Record a game result
-     * @param {string} gameId - Game identifier
-     * @param {Object} result - { won: boolean, opponentRating: number, ranked: boolean }
+     * @param {Object} result - { won, ranked, vsAI, difficulty, matchId, forfeit }
      */
     async recordGameResult(gameId, result) {
-        // In one transaction on the stats record. It used to read, add and
-        // write back: a read that failed came back as a blank record, and
-        // the write then replaced a student's whole history with one game;
-        // two tabs finishing together each wrote over the other's result.
-        const ref = this.firebase?.gameRef(gameId, `stats/${this.firebase.supabaseUserId}`);
         let stats = null;
-        if (ref) {
+        const online = !!this.firebase?.isAuthenticated;
+
+        if (result.vsAI && online) {
+            // One transaction: a failed read can never replace the record
+            // with a single game, and two tabs cannot overwrite each other.
             try {
+                const ref = this.firebase.gameRef(gameId, `ai_stats/${this.firebase.supabaseUserId}`);
                 const tx = await ref.transaction(cur => {
-                    const next = this._applyResult({ ...this._getDefaultStats(), ...(cur || {}) }, result);
+                    const next = this._applyResult({ ...this._getDefaultStats(), ...(cur || {}) }, { ...result, ranked: false });
                     next.last_updated = this.firebase.serverTimestamp;
                     return next;
                 });
@@ -370,15 +360,39 @@ class ArcadeManager {
             } catch (error) {
                 console.error('Error recording game result:', error);
             }
+        } else if (result.matchId) {
+            stats = await this._recordMatchOnServer(gameId, result.matchId);
         }
-        await this.incrementGamesPlayed();
+        if (online) await this.incrementGamesPlayed();
 
         // Award RTC for playing arcade games (non-blocking)
         this._awardRtcForGame(gameId, result).catch(err => {
             console.warn('RTC award failed (non-blocking):', err);
         });
 
-        return stats || this._applyResult(this._getDefaultStats(), result);
+        return stats || this._applyResult(this._getDefaultStats(), { ...result, ranked: result.vsAI ? false : result.ranked });
+    }
+
+    // Ask the server to record a finished online match. Either player may ask,
+    // any number of times: it counts once. Returns the caller's record.
+    async _recordMatchOnServer(gameId, matchId) {
+        try {
+            const session = window.portalAuth?.supabase
+                ? (await window.portalAuth.supabase.auth.getSession())?.data?.session : null;
+            if (!session?.access_token) return null;
+            const resp = await fetch(
+                'https://joxvhzxkrcigknsdrusr.supabase.co/functions/v1/arcade-record-result', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+                    body: JSON.stringify({ game_id: gameId, match_id: matchId })
+                });
+            const body = await resp.json().catch(() => ({}));
+            if (!resp.ok) { console.warn('Recording the match failed:', body.error || resp.status); return null; }
+            return body.stats || null;
+        } catch (error) {
+            console.warn('Recording the match failed:', error);
+            return null;
+        }
     }
 
     // One result added to a stats record (changes and returns it)
@@ -451,7 +465,10 @@ class ArcadeManager {
         const supabase = window.portalAuth?.supabase;
         if (!supabase) return;
 
-        const userId = this.firebase?.supabaseUserId;
+        // RTC belongs to the portal PROFILE: the balance is looked up by
+        // profile id, which is not always the login id. And it must not need
+        // Firebase - with the arcade offline, beating the computer paid nothing.
+        const userId = window.portalAuth?.userProfile?.id || this.firebase?.supabaseUserId;
         if (!userId) return;
 
         // Conceding pays nothing: +5 for a forfeit let two friends take turns
@@ -484,8 +501,10 @@ class ArcadeManager {
             desc = `Won ${gameId}`;
         }
 
-        // Use timestamp-based reference so each game session earns separately
-        const refId = `arcade_${gameId}_${Date.now()}`;
+        // An online match pays once per player however often this runs (the
+        // server refuses a second award with the same reference); a game
+        // against the computer is its own session.
+        const refId = result.matchId ? `arcade_${gameId}_${result.matchId}` : `arcade_${gameId}_${Date.now()}`;
 
         await supabase.rpc('process_rtc_transaction', {
             p_user_id: userId,

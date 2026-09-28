@@ -205,7 +205,8 @@ class MatchmakingManager {
                             const matchId = await this._createMatch(
                                 { ...myData, id: userId, rating: myRating },
                                 { ...opponent, id: opponent.id, rating: opponent.rating || 1000 },
-                                mode
+                                mode,
+                                true
                             );
 
                             // Clean up queue entries
@@ -260,7 +261,10 @@ class MatchmakingManager {
     // seat1/seat2: { id, display_name, deck_id, deck_name, deck_cards, rating }.
     // Each seat keeps its own name - the second seat used to be "Opponent" and
     // the first the local player, whoever that was.
-    async _createMatch(seat1, seat2, mode) {
+    // fromQueue: seat 2 is waiting in the quick-match queue and learns of the
+    // match through its queue entry. A lobby guest has no entry; writing one
+    // left an orphan in the queue.
+    async _createMatch(seat1, seat2, mode, fromQueue = false) {
         const player1Id = seat1.id, player2Id = seat2.id;
         const matchId = this.firebase.generateId();
         const matchRef = this.firebase.ref(`arcade/matches/${this.gameId}/${matchId}`);
@@ -310,9 +314,11 @@ class MatchmakingManager {
         await matchRef.set(match);
 
         // Also notify the other player
-        await this.firebase.ref(`arcade/matchmaking/${this.gameId}/queue/${player2Id}`).update({
-            match_id: matchId
-        });
+        if (fromQueue) {
+            await this.firebase.ref(`arcade/matchmaking/${this.gameId}/queue/${player2Id}`).update({
+                match_id: matchId
+            });
+        }
 
         console.log('Created match:', matchId);
         return matchId;

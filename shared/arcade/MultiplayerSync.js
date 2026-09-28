@@ -57,14 +57,22 @@ class MultiplayerSync {
             throw new Error('You are not a player in this match');
         }
 
+        // Claim the seat for THIS tab. The same student with the match open in
+        // a second tab (or on a second computer) used to have two copies both
+        // writing as one player; now the newest one holds the seat and the
+        // other stands down (see _standDown).
+        this._session = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        this._takenOver = false;
+
         // Mark as connected
         await this._matchRef.child(`players/${this.localPlayerNumber}`).update({
             connected: true,
+            session_id: this._session,
             last_action: this.firebase.serverTimestamp
         });
 
         // Set disconnection handler
-        this._matchRef.child(`players/${this.localPlayerNumber}/connected`).onDisconnect().set(false);
+        this._armDisconnect();
 
         // ...and say so again every time the connection comes back. It used to
         // be written once: a Chromebook lid closed for 30 seconds set it false
@@ -75,9 +83,8 @@ class MultiplayerSync {
             this._connectedRef = info;
             this._onConnected = (snap) => {
                 if (snap.val() !== true || !this._matchRef) return;
-                const mine = this._matchRef.child(`players/${this.localPlayerNumber}/connected`);
-                mine.onDisconnect().set(false);
-                mine.set(true);
+                this._armDisconnect();
+                this._matchRef.child(`players/${this.localPlayerNumber}/connected`).set(true);
             };
             info.on('value', this._onConnected);
         }
@@ -94,6 +101,14 @@ class MultiplayerSync {
         return this.match;
     }
 
+    // What the database does for this seat if the connection drops: marks it
+    // gone and stamps when.
+    _armDisconnect() {
+        const seat = this._matchRef.child(`players/${this.localPlayerNumber}`);
+        seat.child('connected').onDisconnect().set(false);
+        seat.child('left_at').onDisconnect().set(this.firebase.serverTimestamp);
+    }
+
     /**
      * Set up Firebase listeners
      */
@@ -102,6 +117,11 @@ class MultiplayerSync {
         this._matchRef.on('value', (snapshot) => {
             if (snapshot.exists()) {
                 const newMatch = snapshot.val();
+                const seat = newMatch.players?.[this.localPlayerNumber]?.session_id;
+                if (seat && this._session && seat !== this._session) {
+                    this._standDown();
+                    return;
+                }
                 const oldMatch = this.match;
                 this.match = newMatch;
 
@@ -142,6 +162,7 @@ class MultiplayerSync {
      * @returns {Promise<void>}
      */
     async submitAction(action) {
+        if (this._takenOver) return;
         if (!this.isConnected) {
             throw new Error('Not connected to match');
         }
@@ -193,8 +214,15 @@ class MultiplayerSync {
      * @param {Object} meta - extra match fields (multi-path keys allowed)
      */
     async publishState(wrapper, meta = {}) {
+        if (this._takenOver || !this._matchRef) return;
         await this._matchRef.update({ game_state: wrapper, ...meta });
         this.lastActionTime = Date.now();
+    }
+
+    // The board as the database holds it now
+    async readGameState() {
+        if (!this._matchRef) return null;
+        return (await this._matchRef.child('game_state').once('value')).val();
     }
 
     /**
@@ -202,6 +230,7 @@ class MultiplayerSync {
      * @param {Object} updates - Fields to update
      */
     async updateMatch(updates) {
+        if (this._takenOver || !this._matchRef) return;
         await this._matchRef.update(updates);
     }
 
@@ -234,6 +263,7 @@ class MultiplayerSync {
      * @param {Object} finalState - Final game state
      */
     async endMatch(winner, finalState) {
+        if (this._takenOver) return;     // the other tab records it
         this._ended = true;
         // Cancel pending timers to prevent stale callbacks
         if (this._reconnectTimeout) {
@@ -247,6 +277,8 @@ class MultiplayerSync {
         await this._matchRef.update({
             status: 'completed',
             winner: winner,
+            // This seat's own copy of the result, read when the match is recorded
+            [`players/${this.localPlayerNumber}/result`]: winner,
             ended_at: this.firebase.serverTimestamp,
             ...(finalState ? { game_state: finalState } : {})
         });
@@ -254,6 +286,7 @@ class MultiplayerSync {
         // Record result
         const won = winner === this.localPlayerNumber;
         await this.arcade.recordGameResult(this.gameId, {
+            matchId: this.matchId,
             won,
             opponent: this.match.players[this.opponentPlayerNumber].display_name,
             ranked: this.match.mode === 'ranked',
@@ -269,6 +302,7 @@ class MultiplayerSync {
      * Abandon the match (forfeit)
      */
     async abandonMatch() {
+        if (this._takenOver) return;
         const winner = this.opponentPlayerNumber;
         this._ended = true;
 
@@ -283,10 +317,12 @@ class MultiplayerSync {
             status: 'abandoned',
             winner: winner,
             abandoned_by: this.localPlayerNumber,
+            [`players/${this.localPlayerNumber}/conceded`]: true,     // see endMatch
             ended_at: this.firebase.serverTimestamp
         });
 
         await this.arcade.recordGameResult(this.gameId, {
+            matchId: this.matchId,
             won: false,
             opponent: this.match.players[this.opponentPlayerNumber].display_name,
             ranked: this.match.mode === 'ranked',
@@ -371,6 +407,7 @@ class MultiplayerSync {
         });
 
         await this.arcade.recordGameResult(this.gameId, {
+            matchId: this.matchId,
             won: true,
             opponent: this.match.players[this.opponentPlayerNumber].display_name,
             ranked: this.match.mode === 'ranked',
@@ -545,11 +582,29 @@ class MultiplayerSync {
     // Cleanup
     // ==========================================
 
+    // Another tab or computer signed in as this player took the seat. Stop
+    // everything WITHOUT writing: no result, no forfeit, and the "I've gone"
+    // handler is cancelled - otherwise closing this tab later would tell the
+    // opponent the player left while they are still playing in the other one.
+    _standDown() {
+        if (this._takenOver) return;
+        this._takenOver = true;
+        for (const f of ['connected', 'left_at']) {
+            try { this._matchRef.child(`players/${this.localPlayerNumber}/${f}`).onDisconnect().cancel(); } catch (e) {}
+        }
+        const listeners = this._statusListeners.slice();
+        this.destroy();
+        listeners.forEach(cb => { try { cb('taken_over', {}); } catch (e) { console.error(e); } });
+    }
+
     destroy() {
         this._ended = true;
         if (this._matchRef) {
             this._matchRef.off();
-            try { this._matchRef.child(`players/${this.localPlayerNumber}/connected`).off(); } catch (e) {}
+            // off() on the match does not reach listeners on its children
+            for (const n of [this.localPlayerNumber, this.opponentPlayerNumber]) {
+                try { this._matchRef.child(`players/${n}/connected`).off(); } catch (e) {}
+            }
         }
         if (this._connectedRef && this._onConnected) {
             this._connectedRef.off('value', this._onConnected);

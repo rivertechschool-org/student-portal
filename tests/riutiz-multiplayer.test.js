@@ -195,6 +195,7 @@ function makeRef(db, p, query = null, owner = null) {
 
 // ------------------------------------------------------------- one browser
 function client(db, userId, name, results) {
+    const connection = Symbol(userId);
     const errors = [];
     const sb = {
         console: { log() {}, info() {}, warn() {}, error: (...a) => errors.push(a.map(x => (x && x.stack) || String(x)).join(' ')) },
@@ -213,7 +214,9 @@ function client(db, userId, name, results) {
             supabaseUserId: userId,
             serverTimestamp: { '.sv': 'timestamp' },
             generateId: () => `m${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
-            ref: (p) => makeRef(db, p, null, userId)
+            // listeners belong to this browser, not this student: two tabs of
+            // one account must not detach each other's
+            ref: (p) => makeRef(db, p, null, connection)
         },
         getStats: async () => ({ ranked_rating: 1000 }),
         setCurrentMatch: async () => {},
@@ -394,6 +397,31 @@ function cardsSeen(state, seat) {
         check('a concession records the loss AND credits the winner, once each',
               m.results.map(r => [r.userId, r.won]).sort(), [['g-concede', false], ['h-concede', true]]);
         check('  and the conceding side is flagged a forfeit (it earns no RTC)', m.results.find(r => r.userId === 'g-concede').forfeit, true);
+    }
+
+    console.log('\n== the same student in two tabs ==\n');
+    {
+        // Two copies used to write as one player at once. The newest now
+        // holds the seat and the older one stands down without writing.
+        const m = await startedMatch('twotabs');
+        const tab2 = client(m.db, 'g-twotabs', 'Guest', m.results);
+        await tab2.mp.initialize();
+        const said = [];
+        m.guest.mp.onStatusChangeCallback(s => said.push(s));
+        await tab2.mp.joinMatch(m.host.mp.matchId);
+        await until(() => said.includes('taken_over'), 3000);
+        check('the first tab is told the match moved', said.includes('taken_over'), true);
+        check('  and holds the seat no longer', [m.guest.mp.sync.isConnected, m.guest.mp.sync._takenOver], [false, true]);
+        let late = null;
+        await m.guest.mp.sync.publishState({ seq: 999, writer: 2, json: '{}' }).catch(e => { late = e.message; });
+        check('  a late move from it writes nothing', [late, m.db.get(`${m.path}/game_state/seq`) !== 999], [null, true]);
+        const a = autopilot(m.host), b = autopilot(tab2);
+        const done = await until(() => m.host.game.state?.gameOver && tab2.game.state?.gameOver, 240000, 50);
+        a.stop(); b.stop();
+        await until(() => m.results.length >= 2, 3000);
+        await wait(200);
+        check('the match plays to the end in the second tab', done, true);
+        check('  and the student is recorded once', m.results.filter(r => r.userId === 'g-twotabs').length, 1);
     }
 
     console.log('\n== a deck that is not a legal deck ==\n');

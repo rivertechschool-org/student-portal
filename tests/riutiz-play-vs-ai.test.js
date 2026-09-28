@@ -138,9 +138,13 @@ function finishRest() {
   }
 
   // ------------------------------------------------------------- 5. offline
-  console.log('\n== signed out, nothing is recorded ==\n');
-  ok('the vs-AI result is only recorded when the arcade is online',
-     /window\.arcade\?\.isOnline && typeof window\.arcade\.recordGameResult === 'function'/.test(start));
+  // The result is handed to the arcade whether or not Firebase came up: RTC
+  // goes through the portal session, and ArcadeManager writes a record only
+  // when signed in to the arcade (tests/riutiz-collection-rtc.test.js).
+  console.log('\n== the result reaches the arcade even with Firebase down ==\n');
+  ok('the vs-AI result is handed over without requiring the arcade to be online',
+     /if \(window\.arcade && typeof window\.arcade\.recordGameResult === 'function'\)/.test(start)
+     && !/window\.arcade\?\.isOnline && typeof window\.arcade\.recordGameResult/.test(start));
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
