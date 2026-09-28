@@ -273,8 +273,10 @@ class RiutizUI {
         // outer cards sat off the screen, unreachable.
         const remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
         const availRem = (container.clientWidth || window.innerWidth) / remPx;
-        const cardWidth = 6; // .card.in-hand is 6rem wide
-        const maxSpread = Math.max(0, Math.min(cardCount * 4.5, 40, availRem - cardWidth - 1)); // rem
+        // the card's real width (smaller on short screens), and room for the
+        // edge cards' rotation so they do not hang off a phone screen
+        const cardWidth = window.innerHeight <= 500 ? 3.2 : window.innerWidth <= 480 ? 5 : 6;   // .card.in-hand, per the CSS
+        const maxSpread = Math.max(0, Math.min(cardCount * 4.5, 40, availRem - cardWidth - 2.5)); // rem
         const maxRotation = Math.min(cardCount * 3, 25); // Max rotation in degrees
 
         hand.forEach((card, index) => {
@@ -297,7 +299,10 @@ class RiutizUI {
             const yOffset = Math.abs(centeredProgress) * 1.5; // rem
 
             // Z-index: center cards on top when fanned, but hovered card always on top
-            const zIndex = Math.round((1 - Math.abs(centeredProgress)) * 10) + 1;
+            // Strictly rising toward the centre. Rounding a curve gave two
+            // neighbours the same z at 13+ cards and buried one completely.
+            const mid = (cardCount - 1) / 2;
+            const zIndex = index <= mid ? index + 1 : cardCount - index;
 
             wrapper.style.cssText = `
                 left: calc(50% + ${xOffset}rem - ${cardWidth / 2}rem);
@@ -868,13 +873,20 @@ class RiutizUI {
         this._message = msg;
         this._messageAt = Date.now();
         if (this.elements.message) this.elements.message.textContent = msg;
+        // and hand the bar back to the status once this has been read
+        clearTimeout(this._messageTimer);
+        this._messageTimer = setTimeout(() => this.renderStatusMessage(), 2600);
     }
 
     // What the bar says when nothing was set just now: what to do next, or
     // the latest thing that happened.
     renderStatusMessage() {
         if (!this.elements.message) return;
-        if (this._message && Date.now() - (this._messageAt || 0) < 2500) return;
+        // "Choose a target" and the blocking prompt are instructions; an older
+        // message ("Combat resolved!") used to sit over them for 2.5 seconds.
+        const asking = !!(this.action && this.action.specs) ||
+            (this.game.state?.combatStep === 'declare-blockers' && this.game.state.currentPlayer !== this.localPlayer);
+        if (!asking && this._message && Date.now() - (this._messageAt || 0) < 2500) return;
         const s = this.game.state;
         const me = this.localPlayer;
         const q = this.game.pendingChoice;
@@ -964,16 +976,23 @@ class RiutizUI {
             });
             // Say who blocks whom
             const nameOf = id => this.game.findInPlay(id)?.name || '';
-            const tag = blockerOf[card.instanceId]
+            const by = blockedBy[card.instanceId] || [];
+            const full = blockerOf[card.instanceId]
                 ? `blocks ${nameOf(blockerOf[card.instanceId])}`
-                : (blockedBy[card.instanceId]?.length ? `blocked by ${blockedBy[card.instanceId].map(nameOf).join(' + ')}` : '');
-            if (tag) {
+                : (by.length ? `blocked by ${by.map(nameOf).join(' + ')}` : '');
+            if (full) {
+                // On a slot that does not rotate with a spent card, and short:
+                // "blocked by 2" with the names on hover.
+                const slot = document.createElement('div');
+                slot.className = 'card-slot';
+                slot.appendChild(el);
                 const t = document.createElement('div');
                 t.className = 'card-combat-tag';
-                t.textContent = tag;
-                t.style.cssText = 'position:absolute;left:0;right:0;bottom:-1.1rem;font-size:0.55rem;text-align:center;color:#93c5fd;white-space:nowrap;overflow:hidden;';
-                el.style.overflow = 'visible';
-                el.appendChild(t);
+                t.textContent = by.length > 1 ? `blocked by ${by.length}` : full;
+                t.title = full;
+                slot.appendChild(t);
+                container.appendChild(slot);
+                return;
             }
             container.appendChild(el);
         });
