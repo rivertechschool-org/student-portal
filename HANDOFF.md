@@ -35,6 +35,26 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-28 — Jordan's Claude
+**RIUTIZ and arcade follow-up audit.** Fixed and live: every game against the AI was
+drawn behind the deck picker; the layout on phones, phone landscape and tablets (the side
+columns sat over the field); deck saves that failed but said "saved"; decks and collections
+lost to a wifi blip; online matches that hung after a disconnect; the arcade leaderboard
+(it asked for the wrong game); battle invites (now the inviter makes the lobby and the
+invite carries its code); a two-seat lobby taking three; a game result that could wipe a
+student's record. Watching a match is not built, so its buttons are hidden.
+
+Decided with Jordan: against the computer only a **win** pays RTC - Easy 0, Normal 3,
+Hard 8, up to 40 a day; conceding pays nothing. Students who chose a starter before the
+rebuild are given the missing copies of that starter once, when the game loads.
+
+`firebase/firebase-rules.json` and `firebase/SETUP.md` moved to the backend repo
+(`firebase/`), with a list of arcade follow-ups.
+
+**Needs (Luke):** read `firebase/HARDENING.md` in the backend repo and publish the
+rules change it describes - **the leaderboard stays empty until then.** Still: a real
+two-account match before telling students.
+
 ## 2026-09-26 — Jordan's Claude
 **RIUTIZ was rebuilt: rules engine, every card, the AI, online play, and the starter
 decks.** An audit found about 50 of 262 cards doing what they say - the old engine

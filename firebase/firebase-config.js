@@ -12,7 +12,8 @@
 //    uid unrelated to the student, every identity rule silently stops matching,
 //    and the failure looks like a permissions bug rather than a login one.
 // 5. Copy your config values below
-// 6. Set up security rules (see firebase-rules.json in this folder)
+// 6. Security rules and setup notes live in the private student-portal-backend
+//    repo, under firebase/
 
 const FIREBASE_CONFIG = {
     apiKey: "AIzaSyCvxpPE05zpBkcADLMs4W2EIqmgYFpVWNY",
