@@ -35,6 +35,20 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-28 (later) — Jordan's Claude
+**The arcade's online side is ready to switch on; it has never been on.** `firebase-token`
+was never deployed, so every student has been playing RIUTIZ offline: no online matches,
+cloud decks or leaderboard. The client now resumes a match after a reload or reconnect
+(it used to restart it or freeze it), keeps one tab per seat, records online results on
+the server, and pays RTC for beating the computer even while Firebase is down. The
+backend repo has the rules, a new `arcade-record-result` function, and a Firebase-emulator
+suite that plays whole matches with separate accounts (`firebase/SETUP.md`). Arcade RTC is
+now capped at 100 a school day (applied).
+
+**Needs (Jordan):** a Firebase service-account key for the arcade project. With it: set
+the two secrets, deploy `firebase-token` and `arcade-record-result`, publish the rules -
+in that order - then one real two-account match.
+
 ## 2026-09-28 — Jordan's Claude
 **RIUTIZ and arcade follow-up audit.** Fixed and live: every game against the AI was
 drawn behind the deck picker; the layout on phones, phone landscape and tablets (the side
