@@ -34,6 +34,7 @@ class MultiplayerSync {
      */
     async initialize(matchId) {
         this.matchId = matchId;
+        this._ended = false;
         this._matchRef = this.firebase.ref(`arcade/matches/${this.gameId}/${matchId}`);
 
         // Load initial match state
@@ -64,6 +65,22 @@ class MultiplayerSync {
 
         // Set disconnection handler
         this._matchRef.child(`players/${this.localPlayerNumber}/connected`).onDisconnect().set(false);
+
+        // ...and say so again every time the connection comes back. It used to
+        // be written once: a Chromebook lid closed for 30 seconds set it false
+        // for good, and the opponent "won by timeout" two minutes later while
+        // this player was back and playing.
+        const info = this.firebase.db?.ref?.('.info/connected');
+        if (info) {
+            this._connectedRef = info;
+            this._onConnected = (snap) => {
+                if (snap.val() !== true || !this._matchRef) return;
+                const mine = this._matchRef.child(`players/${this.localPlayerNumber}/connected`);
+                mine.onDisconnect().set(false);
+                mine.set(true);
+            };
+            info.on('value', this._onConnected);
+        }
 
         // Set up listeners
         this._setupListeners();
@@ -217,6 +234,7 @@ class MultiplayerSync {
      * @param {Object} finalState - Final game state
      */
     async endMatch(winner, finalState) {
+        this._ended = true;
         // Cancel pending timers to prevent stale callbacks
         if (this._reconnectTimeout) {
             clearTimeout(this._reconnectTimeout);
@@ -252,6 +270,7 @@ class MultiplayerSync {
      */
     async abandonMatch() {
         const winner = this.opponentPlayerNumber;
+        this._ended = true;
 
         // Cancel any pending reconnect timeout to prevent race with timeout handler
         if (this._reconnectTimeout) {
@@ -271,6 +290,7 @@ class MultiplayerSync {
             won: false,
             opponent: this.match.players[this.opponentPlayerNumber].display_name,
             ranked: this.match.mode === 'ranked',
+            opponentRating: this.match.players[this.opponentPlayerNumber].rating,
             forfeit: true
         });
 
@@ -306,12 +326,21 @@ class MultiplayerSync {
     // Disconnect Handling
     // ==========================================
 
+    // Is there still a match to win or lose?
+    _matchLive() {
+        return !!this.match && this.match.status === 'active' && !this._ended;
+    }
+
     _handleOpponentDisconnect() {
+        if (!this._matchLive()) return;      // after the match, leaving is not forfeiting
         console.log('Opponent disconnected');
         this._notifyStatusListeners('opponent_disconnected');
 
-        // Start reconnect timeout
+        // One timer at a time: a second disconnect used to orphan the first,
+        // which then fired even after a reconnect cancelled the second.
+        if (this._reconnectTimeout) clearTimeout(this._reconnectTimeout);
         this._reconnectTimeout = setTimeout(() => {
+            this._reconnectTimeout = null;
             this._handleOpponentTimeout();
         }, 120000); // 2 minute timeout
     }
@@ -326,6 +355,11 @@ class MultiplayerSync {
     }
 
     async _handleOpponentTimeout() {
+        // Re-check at the moment it fires: the match may have finished, or the
+        // opponent come back, in the two minutes since.
+        if (!this._matchLive()) return;
+        if (this.match.players?.[this.opponentPlayerNumber]?.connected) return;
+        this._ended = true;
         console.log('Opponent timed out');
 
         // Local player wins by timeout
@@ -340,8 +374,11 @@ class MultiplayerSync {
             won: true,
             opponent: this.match.players[this.opponentPlayerNumber].display_name,
             ranked: this.match.mode === 'ranked',
+            opponentRating: this.match.players[this.opponentPlayerNumber].rating,
             timeout: true
         });
+
+        await this.arcade.setCurrentMatch(null);
 
         this._notifyStatusListeners('completed', {
             winner: this.localPlayerNumber,
@@ -509,8 +546,14 @@ class MultiplayerSync {
     // ==========================================
 
     destroy() {
+        this._ended = true;
         if (this._matchRef) {
             this._matchRef.off();
+            try { this._matchRef.child(`players/${this.localPlayerNumber}/connected`).off(); } catch (e) {}
+        }
+        if (this._connectedRef && this._onConnected) {
+            this._connectedRef.off('value', this._onConnected);
+            this._connectedRef = null;
         }
 
         if (this._actionLogRef) {

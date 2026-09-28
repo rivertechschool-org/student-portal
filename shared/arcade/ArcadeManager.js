@@ -1,6 +1,11 @@
 // shared/arcade/ArcadeManager.js
 // Core arcade system for player profiles, statistics, and cross-game functionality
 
+// RTC for beating the computer, by difficulty, and the most a student can
+// earn that way in a day (decided with Jordan, 2026-09-28).
+const RIUTIZ_AI_RTC = { easy: 0, normal: 3, hard: 8 };
+const AI_RTC_DAILY_CAP = 40;
+
 class ArcadeManager {
     constructor() {
         this.firebase = null;
@@ -200,13 +205,11 @@ class ArcadeManager {
         const ref = this.firebase?.gameRef(gameId, `collections/${this.firebase.supabaseUserId}`);
         if (!ref) return { cards: {}, starter_deck_claimed: false };
 
-        try {
-            const snapshot = await ref.once('value');
-            return snapshot.val() || { cards: {}, starter_deck_claimed: false };
-        } catch (error) {
-            console.error('Error loading collection:', error);
-            return { cards: {}, starter_deck_claimed: false };
-        }
+        // A failed read is NOT an empty collection. Reporting it as one showed
+        // the student the starter picker again, and the next save wrote the
+        // empty collection over their real one. Let the caller tell them apart.
+        const snapshot = await ref.once('value');
+        return snapshot.val() || { cards: {}, starter_deck_claimed: false };
     }
 
     /**
@@ -431,10 +434,29 @@ class ArcadeManager {
         const userId = this.firebase?.supabaseUserId;
         if (!userId) return;
 
+        // Conceding pays nothing: +5 for a forfeit let two friends take turns
+        // conceding for RTC.
+        if (result.forfeit) return;
+
         let amount = 5; // Base: played a game
         let desc = `Played ${gameId}`;
 
-        if (result.won && result.ranked) {
+        if (result.vsAI) {
+            // Against the computer only a win pays, by difficulty, up to a
+            // daily limit - Easy is there to learn on, not to farm. (Checked
+            // here in the browser only; the real limit belongs server-side.)
+            if (!result.won) return;
+            amount = RIUTIZ_AI_RTC[result.difficulty] || 0;
+            if (!amount) return;
+            const day = new Date().toISOString().slice(0, 10);
+            const key = `arcade-ai-rtc-${userId}-${gameId}-${day}`;
+            let earned = 0;
+            try { earned = parseInt(localStorage.getItem(key), 10) || 0; } catch (e) {}
+            amount = Math.min(amount, AI_RTC_DAILY_CAP - earned);
+            if (amount <= 0) return;
+            try { localStorage.setItem(key, String(earned + amount)); } catch (e) {}
+            desc = `Beat the ${result.difficulty} computer in ${gameId}`;
+        } else if (result.won && result.ranked) {
             amount = 15;
             desc = `Ranked win in ${gameId}`;
         } else if (result.won) {

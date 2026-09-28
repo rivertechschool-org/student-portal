@@ -1499,8 +1499,13 @@ class RiutizUI {
      * Show game screen
      */
     showGameScreen() {
+        // Every menu-style screen, not just the main menu: Play vs AI comes
+        // through the deck picker, which used to stay up above the game.
+        document.querySelectorAll('.menu-screen, .lobby-screen, .deck-management-screen, .deck-builder-screen')
+            .forEach(el => el.classList.add('hidden'));
         this.elements.menuScreen?.classList.add('hidden');
         this.elements.gameScreen?.classList.remove('hidden');
+        window.scrollTo?.(0, 0);
         this.elements.victoryScreen?.classList.add('hidden');
     }
 

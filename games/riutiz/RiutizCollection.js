@@ -14,8 +14,16 @@ class RiutizCollection {
      * Load collection from Firebase
      */
     async load() {
+        this.unavailable = false;
         if (this.arcade && this.arcade.isOnline) {
-            this.collection = await this.arcade.getCollection(this.gameId);
+            try {
+                this.collection = await this.arcade.getCollection(this.gameId);
+            } catch (e) {
+                // Could not read it: say so, and never save over the real one
+                console.error('Could not load the card collection:', e);
+                this.unavailable = true;
+                this.collection = { cards: {}, starter_deck_claimed: true, chosen_starter: null };
+            }
         } else {
             // Load from localStorage for offline play
             const saved = localStorage.getItem('riutiz_collection');
@@ -26,8 +34,33 @@ class RiutizCollection {
 
         // Load starter deck definitions
         await this.loadStarterDecks();
+        this.collection.cards = this.collection.cards || {};
+        await this.topUpStarter();
 
         return this.collection;
+    }
+
+    // The starter decks were rebuilt on 2026-09-26. A student who chose one
+    // before then owns the OLD list, so the starter shown to them - and any
+    // ranked deck built from it - needed cards they did not have. Grant the
+    // missing copies of the starter they chose, once; nobody loses a card.
+    async topUpStarter() {
+        if (this.unavailable || !this.collection.starter_deck_claimed) return false;
+        const deck = (this.starterDecks || []).find(d => d.id === this.collection.chosen_starter);
+        if (!deck || !deck.cards) return false;
+        let changed = false;
+        for (const [cardId, n] of Object.entries(deck.cards)) {
+            const have = this.collection.cards[cardId]?.quantity || 0;
+            if (have < n) {
+                this.collection.cards[cardId] = { ...(this.collection.cards[cardId] || {}), quantity: n, earned_at: Date.now() };
+                changed = true;
+            }
+        }
+        if (changed) {
+            this.collection.total_cards = this.getTotalCards();
+            await this.save();
+        }
+        return changed;
     }
 
     /**
@@ -65,6 +98,7 @@ class RiutizCollection {
      * Save collection
      */
     async save() {
+        if (this.unavailable) return;     // never overwrite a collection we could not read
         if (this.arcade && this.arcade.isOnline) {
             await this.arcade.saveCollection(this.gameId, this.collection);
         } else {

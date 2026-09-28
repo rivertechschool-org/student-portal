@@ -2127,23 +2127,23 @@
 
 <!-- Arcade System -->
 <script src="../firebase/firebase-config.js"></script>
-<script src="../shared/arcade/FirebaseManager.js"></script>
-<script src="../shared/arcade/ArcadeManager.js"></script>
-<script src="../shared/arcade/MatchmakingManager.js"></script>
-<script src="../shared/arcade/MultiplayerSync.js"></script>
-<script src="../shared/arcade/LeaderboardManager.js"></script>
-<script src="../shared/arcade/RatingManager.js"></script>
-<script src="../shared/arcade/FriendsManager.js"></script>
+<script src="../shared/arcade/FirebaseManager.js?v=2026-09-28a"></script>
+<script src="../shared/arcade/ArcadeManager.js?v=2026-09-28a"></script>
+<script src="../shared/arcade/MatchmakingManager.js?v=2026-09-28a"></script>
+<script src="../shared/arcade/MultiplayerSync.js?v=2026-09-28a"></script>
+<script src="../shared/arcade/LeaderboardManager.js?v=2026-09-28a"></script>
+<script src="../shared/arcade/RatingManager.js?v=2026-09-28a"></script>
+<script src="../shared/arcade/FriendsManager.js?v=2026-09-28a"></script>
 <script src="../shared/CosmeticRenderer.js?v=10"></script>
 
 <!-- Game Modules -->
-<script src="riutiz/RiutizCards.js?v=2026-09-26d"></script>
-<script src="riutiz/RiutizGame.js?v=2026-09-26d"></script>
-<script src="riutiz/RiutizAI.js?v=2026-09-26d"></script>
-<script src="riutiz/RiutizUI.js?v=2026-09-26d"></script>
-<script src="riutiz/RiutizCollection.js?v=2026-09-26d"></script>
-<script src="riutiz/RiutizDeckBuilder.js?v=2026-09-26d"></script>
-<script src="riutiz/RiutizMultiplayer.js?v=2026-09-26d"></script>
+<script src="riutiz/RiutizCards.js?v=2026-09-28a"></script>
+<script src="riutiz/RiutizGame.js?v=2026-09-28a"></script>
+<script src="riutiz/RiutizAI.js?v=2026-09-28a"></script>
+<script src="riutiz/RiutizUI.js?v=2026-09-28a"></script>
+<script src="riutiz/RiutizCollection.js?v=2026-09-28a"></script>
+<script src="riutiz/RiutizDeckBuilder.js?v=2026-09-28a"></script>
+<script src="riutiz/RiutizMultiplayer.js?v=2026-09-28a"></script>
 
 <script>
 // ============================================
@@ -2202,19 +2202,21 @@ async function init() {
       await collection.load();
     }
 
-    // Check if player needs to choose a starter deck
-    if (collection.needsStarterDeck()) {
-      showStarterDeckSelection();
-    }
-
-    // Initialize deck builder
+    // The deck builder is ready BEFORE the starter picker appears: picking a
+    // starter saves a deck through it, and an early click used to save nothing.
     deckBuilder = new RiutizDeckBuilder(collection, CARD_DATA, { arcade: window.arcade });
     await deckBuilder.loadDecks();
+
+    if (collection.unavailable) {
+      status.textContent = "Couldn't load your cards - refresh to try again.";
+    } else if (collection.needsStarterDeck()) {
+      showStarterDeckSelection();
+    }
 
     // Check for URL parameters (battle invites, spectating, lobbies)
     handleUrlParameters();
 
-    setTimeout(() => status.textContent = '', 2000);
+    if (!collection.unavailable) setTimeout(() => status.textContent = '', 2000);
 
   } catch (err) {
     status.textContent = 'Error loading. Refresh to retry.';
@@ -2355,7 +2357,12 @@ function showStarterDeckSelection() {
   });
 }
 
+let claimingStarter = false;
 async function selectStarterDeck(deckId) {
+  // One claim: a double-click used to save two copies of the starter deck
+  if (claimingStarter) return;
+  claimingStarter = true;
+  document.querySelectorAll('.starter-deck-card').forEach(el => { el.style.pointerEvents = 'none'; el.style.opacity = '0.6'; });
   const status = document.getElementById('loading-status');
   status.textContent = 'Setting up your collection...';
 
@@ -2374,6 +2381,8 @@ async function selectStarterDeck(deckId) {
     deckBuilder.currentDeck = Array.isArray(deckList) ? [...deckList] : [];
     deckBuilder.deckName = deck.name;
     deckBuilder.deckId = null;
+    // It is made of cards they now own, and the Starter card says Ranked
+    deckBuilder.deckType = 'ranked';
     await deckBuilder.saveDeck(deck.name);
   }
 
@@ -2383,6 +2392,15 @@ async function selectStarterDeck(deckId) {
     showMenu();
   }, 1000);
 }
+
+// Text other people wrote - display names, deck names, invites - goes into
+// the page as TEXT. Interpolated raw into innerHTML it ran as code on the
+// other student's screen, on rivertech.me where their portal login lives.
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+// An id placed inside an inline onclick="f('...')"
+function jsArg(v) { return esc(JSON.stringify(String(v ?? ''))); }
 
 // ============================================
 // GAME FUNCTIONS
@@ -2493,10 +2511,9 @@ function startQuickGame(playerDeck = null) {
       game.state.players[2].points
     );
 
-    // Award RTC via ArcadeManager. Riutiz is currently the only game wired
+    // Record the result, and RTC for a win by difficulty (ArcadeManager
+    // applies the amounts and the daily limit). Riutiz is the only game wired
     // to the gamification loop; other games have been intentionally detached.
-    // ArcadeManager handles the per-call cap, rate limiting, and
-    // duplicate-prevention internally via process_rtc_transaction.
     // Human player is seat 1 in AI matches; multiplayer seat mapping is
     // handled by RiutizMultiplayer when it ships results directly.
     // Offline (signed out, or Firebase unreachable) there is no player to
@@ -2506,7 +2523,9 @@ function startQuickGame(playerDeck = null) {
       // This is the vs-AI code path — an AI match is never ranked.
       window.arcade.recordGameResult('riutiz', {
         won,
-        ranked: false
+        ranked: false,
+        vsAI: true,
+        difficulty: ai ? ai.difficulty : 'normal'
       }).catch(err => console.warn('Riutiz RTC award failed (non-blocking):', err));
     }
   });
@@ -2637,7 +2656,7 @@ function populateDeckSelectGrid() {
            onclick="${isValidForRanked ? `selectDeck('${deck.id}')` : ''}">
         <div class="deck-select-name">
           <span class="deck-select-color ${deck.primary_color || 'C'}"></span>
-          ${deck.name}
+          ${esc(deck.name)}
         </div>
         <div class="deck-select-info">
           <span>${deck.card_count} cards</span>
@@ -2725,6 +2744,7 @@ async function startQuickMatch() {
     await multiplayer.joinQueue({ mode: selectedGameMode, deck: selectedDeckPayload() });
 
   } catch (error) {
+    if (/cancelled/i.test(error.message)) return;      // the player pressed Cancel Search
     queueStatus.textContent = 'Error: ' + error.message;
     console.error(error);
   }
@@ -2898,8 +2918,8 @@ function updateLobbyUI() {
     div.className = 'lobby-player' + (player.ready ? ' ready' : '');
     div.innerHTML = `
       <div>
-        <div>${player.display_name}${player.is_host ? ' (Host)' : ''}</div>
-        <div style="font-size: 0.75rem; color: #71717a;">${deckName}</div>
+        <div>${esc(player.display_name)}${player.is_host ? ' (Host)' : ''}</div>
+        <div style="font-size: 0.75rem; color: #71717a;">${esc(deckName)}</div>
       </div>
       <span class="ready-badge">${player.ready ? 'Ready' : 'Not Ready'}</span>
     `;
@@ -3030,7 +3050,7 @@ function renderDeckManagement() {
       <div class="deck-card">
         <div class="deck-card-icon starter">${chosenStarter.icon || '🎴'}</div>
         <div class="deck-entry-info">
-          <div class="deck-entry-name">${chosenStarter.name}</div>
+          <div class="deck-entry-name">${esc(chosenStarter.name)}</div>
           <div class="deck-card-meta">
             <span>${chosenStarter.deck_list?.length || 40} cards</span>
             <span class="deck-card-type starter">Starter</span>
@@ -3059,7 +3079,7 @@ function renderDeckManagement() {
         <div class="deck-card">
           <div class="deck-card-icon ${iconClass}">${typeIcon}</div>
           <div class="deck-entry-info">
-            <div class="deck-entry-name">${deck.name}</div>
+            <div class="deck-entry-name">${esc(deck.name)}</div>
             <div class="deck-card-meta">
               <span>${deck.card_count || deck.cards?.length || 0} cards</span>
               <span class="deck-card-type ${deckType}">${deckType}</span>
@@ -3266,7 +3286,7 @@ function showDeckViewModal(deckName, deckCards) {
 
   modal.innerHTML = `
     <div class="deck-type-modal-content" style="max-height: 80vh; overflow-y: auto;">
-      <div class="deck-type-modal-title">${deckName} (${deckCards.length} cards)</div>
+      <div class="deck-type-modal-title">${esc(deckName)} (${deckCards.length} cards)</div>
       <div style="margin: 1rem 0; max-height: 50vh; overflow-y: auto;">
         ${cardsHtml || '<p style="color: #71717a;">No cards in deck</p>'}
       </div>
@@ -3496,7 +3516,7 @@ function showSavedDecks() {
       html += `
         <div class="saved-deck-row" onclick="loadSavedDeck('${deck.id}')">
           <div class="saved-deck-info">
-            <div class="saved-deck-name">${deck.name}</div>
+            <div class="saved-deck-name">${esc(deck.name)}</div>
             <div class="saved-deck-count">${deck.card_count} cards</div>
           </div>
           <button class="deck-card-remove" onclick="event.stopPropagation(); deleteSavedDeck('${deck.id}')">×</button>

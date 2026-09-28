@@ -146,10 +146,12 @@ function snap(p, val) {
              forEach(fn) { if (v && typeof v === 'object') Object.entries(v).forEach(([k, x]) => fn(snap(p + '/' + k, x))); } };
 }
 
-function makeRef(db, p, query = null) {
+// Each client has its own listeners: off() on one client never deafens
+// another, as with the real SDK.
+function makeRef(db, p, query = null, owner = null) {
     const ref = {
         key: FakeDB.parts(p).pop() || null,
-        child: (c) => makeRef(db, `${p}/${c}`),
+        child: (c) => makeRef(db, `${p}/${c}`, null, owner),
         async set(v) { db.put(p, v); db.changed(p); },
         async update(obj) {
             for (const [k, v] of Object.entries(obj)) db.put(`${p}/${k}`, v);
@@ -158,7 +160,7 @@ function makeRef(db, p, query = null) {
         async remove() { db.put(p, null); db.changed(p); },
         push(v) {
             const k = `k${String(++db.n).padStart(6, '0')}`;
-            const r = makeRef(db, `${p}/${k}`);
+            const r = makeRef(db, `${p}/${k}`, null, owner);
             if (v !== undefined) { db.put(`${p}/${k}`, v); db.changed(p); }
             return r;
         },
@@ -171,7 +173,7 @@ function makeRef(db, p, query = null) {
             return snap(p, val);
         },
         on(event, cb) {
-            const l = { path: p, event, cb, seen: new Set() };
+            const l = { path: p, event, cb, owner, seen: new Set() };
             if (event !== 'value') {
                 // child_added delivers what exists now as well
                 const val = db.get(p);
@@ -181,10 +183,10 @@ function makeRef(db, p, query = null) {
             setTimeout(() => db.fire(l), 0);
             return cb;
         },
-        off(event, cb) { db.listeners = db.listeners.filter(l => !(l.path === p && (!event || l.event === event) && (!cb || l.cb === cb))); },
+        off(event, cb) { db.listeners = db.listeners.filter(l => !(l.owner === owner && l.path === p && (!event || l.event === event) && (!cb || l.cb === cb))); },
         async transaction(fn) { const v = fn(db.get(p)); if (v !== undefined) { db.put(p, v); db.changed(p); } return { committed: true, snapshot: snap(p, db.get(p)) }; },
         onDisconnect: () => ({ set: async () => {}, remove: async () => {}, cancel: () => {} }),
-        orderByChild: (c) => ({ equalTo: (v) => makeRef(db, p, { child: c, equals: v }) }),
+        orderByChild: (c) => ({ equalTo: (v) => makeRef(db, p, { child: c, equals: v }, owner) }),
         orderByKey: () => ({ limitToLast: () => ref, on: ref.on }),
         limitToLast: () => ref
     };
@@ -196,7 +198,9 @@ function client(db, userId, name, results) {
     const errors = [];
     const sb = {
         console: { log() {}, info() {}, warn() {}, error: (...a) => errors.push(a.map(x => (x && x.stack) || String(x)).join(' ')) },
-        setTimeout, clearTimeout, setInterval, clearInterval, EventTarget, CustomEvent, Event, Promise, JSON, Math, Date
+        // The two-minute reconnect window runs in 150ms here
+        setTimeout: (fn, ms, ...a) => setTimeout(fn, ms >= 60000 ? 150 : ms, ...a),
+        clearTimeout, setInterval, clearInterval, EventTarget, CustomEvent, Event, Promise, JSON, Math, Date
     };
     sb.window = sb;
     vm.createContext(sb);
@@ -209,7 +213,7 @@ function client(db, userId, name, results) {
             supabaseUserId: userId,
             serverTimestamp: { '.sv': 'timestamp' },
             generateId: () => `m${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
-            ref: (p) => makeRef(db, p)
+            ref: (p) => makeRef(db, p, null, userId)
         },
         getStats: async () => ({ ranked_rating: 1000 }),
         setCurrentMatch: async () => {},
@@ -307,6 +311,89 @@ function cardsSeen(state, seat) {
         check('and each side is told how it went', [ended.host, ended.guest], [hs.winner === 1, hs.winner === 2]);
         check('the match is marked completed', db.get(`arcade/matches/riutiz/${host.mp.matchId}/status`), 'completed');
         check('no errors on either side', [host.errors.slice(0, 2), guest.errors.slice(0, 2)], [[], []]);
+    }
+
+    // A started lobby match between two fresh clients, not yet played.
+    async function startedMatch(tag) {
+        const db = new FakeDB();
+        const results = [];
+        const host = client(db, `h-${tag}`, 'Host', results), guest = client(db, `g-${tag}`, 'Guest', results);
+        await host.mp.initialize(); await guest.mp.initialize();
+        const starts = { host: 0, guest: 0 }, ends = {};
+        host.mp.onMatchStartCallback(() => starts.host++);
+        guest.mp.onMatchStartCallback(() => starts.guest++);
+        host.mp.onMatchEndCallback((won) => { ends.host = won; });
+        guest.mp.onMatchEndCallback((won) => { ends.guest = won; });
+        const { joinCode } = await host.mp.createLobby({ deck: deckOf(0) });
+        await guest.mp.joinLobby(joinCode, { deck: deckOf(1) });
+        await host.mp.setReady(true, deckOf(0)); await guest.mp.setReady(true, deckOf(1));
+        await wait(50);
+        await host.mp.startMatchFromLobby();
+        await until(() => starts.host && starts.guest && !!guest.game.state);
+        await wait(100);
+        const path = `arcade/matches/riutiz/${host.mp.matchId}`;
+        const setConnected = (seat, v) => { db.put(`${path}/players/${seat}/connected`, v); db.changed(`${path}/players/${seat}/connected`); };
+        return { db, host, guest, results, starts, ends, path, setConnected };
+    }
+
+    console.log('\n== joining, searching, leaving ==\n');
+    {
+        const m = await startedMatch('join');
+        check('the host starts its match once, not twice (lobby listener + its own start)', m.starts.host, 1);
+        let inits = 0;
+        const orig = m.host.mp.sync.initialize.bind(m.host.mp.sync);
+        m.host.mp.sync.initialize = (id) => { inits++; return orig(id); };
+        m.host.mp.matchId = null; m.host.mp.sync.isConnected = false;
+        await Promise.all([m.host.mp.joinMatch('again'), m.host.mp.joinMatch('again')].map(p => p.catch(() => {})));
+        check('two joins of one match at once share one attempt', inits, 1);
+    }
+    {
+        const db = new FakeDB();
+        const solo = client(db, 'solo', 'Solo', []);
+        await solo.mp.initialize();
+        let settled = null;
+        solo.mp.joinQueue({ mode: 'casual', deck: deckOf(0) }).then(() => { settled = 'matched'; }, e => { settled = e.message; });
+        await wait(100);
+        await solo.mp.leaveQueue();
+        await wait(50);
+        check('Cancel Search ends the search (it used to keep polling, never settling)', settled, 'Queue cancelled');
+        check('  and removes the queue entry', db.get('arcade/matchmaking/riutiz/queue/solo'), null);
+    }
+
+    console.log('\n== disconnects ==\n');
+    {
+        const m = await startedMatch('blip');
+        m.setConnected(2, false);
+        await wait(40);
+        m.setConnected(2, true);
+        await wait(400);
+        check('a guest who drops and comes back is not beaten by timeout', [m.results.length, m.ends.host], [0, undefined]);
+    }
+    {
+        const m = await startedMatch('gone');
+        m.setConnected(2, false);
+        await until(() => m.results.length >= 1, 3000);
+        await wait(300);
+        check('a guest who stays away loses by timeout: the host is credited once', m.results.map(r => [r.userId, r.won, !!r.timeout]), [['h-gone', true, true]]);
+    }
+    {
+        const m = await startedMatch('after');
+        m.host.game.endGame(1, 'points');
+        m.host.mp.schedulePublish();
+        await until(() => m.results.length >= 2, 3000);
+        const n = m.results.length;
+        m.setConnected(2, false);
+        await wait(400);
+        check('leaving AFTER the match is over records nothing more', m.results.length, n);
+    }
+    {
+        const m = await startedMatch('concede');
+        await m.guest.mp.forfeit();
+        await until(() => m.results.length >= 2, 3000);
+        await wait(200);
+        check('a concession records the loss AND credits the winner, once each',
+              m.results.map(r => [r.userId, r.won]).sort(), [['g-concede', false], ['h-concede', true]]);
+        check('  and the conceding side is flagged a forfeit (it earns no RTC)', m.results.find(r => r.userId === 'g-concede').forfeit, true);
     }
 
     console.log('\n== a deck that is not a legal deck ==\n');

@@ -166,6 +166,14 @@ async def play_one(pg, gi, log):
         await pg.click('.deck-select-card >> nth=0')
         await pg.click('#confirm-deck-btn')
         await pg.wait_for_timeout(700)
+    # The game has to be what is on screen - not somewhere below a menu that
+    # stayed up. Playwright scrolls to whatever it clicks, which is how the
+    # deck picker sitting over every vs-AI game went unnoticed.
+    shown = await pg.evaluate("""() => [...document.querySelectorAll('.menu-screen, .lobby-screen, .deck-management-screen, .deck-builder-screen')]
+        .filter(e => !e.classList.contains('hidden') && e.offsetParent !== null).map(e => e.id)""")
+    top = await pg.evaluate("() => document.getElementById('game-screen').getBoundingClientRect().top")
+    if shown or abs(top) > 2:
+        log.append(f'GAME NOT ON SCREEN: still showing {shown}, game screen at y={top}')
     last_sig, last_change, t0 = None, time.time(), time.time()
     turn_states = {}
     shots = set()

@@ -84,14 +84,21 @@ class MatchmakingManager {
     async leaveQueue() {
         if (!this.inQueue) return;
 
+        // Stop the search itself - the 2s poll and the listeners - not just the
+        // queue entry. Nulling the callback without calling it left the old
+        // poll running, so Cancel then Quick Match again searched twice (and
+        // could make two matches).
+        if (this._queueCallback) {
+            const cancel = this._queueCallback;
+            this._queueCallback = null;
+            try { cancel(); } catch (e) {}
+        }
+
         if (this._queueRef) {
+            this._queueRef.off();
             this._queueRef.onDisconnect().cancel();
             await this._queueRef.remove();
             this._queueRef = null;
-        }
-
-        if (this._queueCallback) {
-            this._queueCallback = null;
         }
 
         this.inQueue = false;
@@ -132,6 +139,8 @@ class MatchmakingManager {
                         .filter(([id, data]) => {
                             if (id === userId) return false;
                             if (data.mode !== mode) return false;
+                            // already matched, or being matched, by someone else
+                            if (data.match_id || data.claimed_by) return false;
 
                             // For ranked, filter by rating range
                             if (mode === 'ranked') {
@@ -168,9 +177,19 @@ class MatchmakingManager {
                             (myData.joined_at < opponent.joined_at) ||
                             (myData.joined_at === opponent.joined_at && userId < opponent.id);
 
-                        if (shouldCreate) {
+                        if (shouldCreate && !myData.match_id && !myData.claimed_by) {
+                            // Claim them first. Two searchers could both pick the
+                            // same player and put them in two matches at once.
+                            const claim = await queueRef.child(opponent.id).transaction(cur => {
+                                if (cur === null) return null;      // not cached yet: the server's value comes next
+                                if (cur.match_id || cur.claimed_by) return;   // taken: abort
+                                return { ...cur, claimed_by: userId };
+                            });
+                            if (!claim || !claim.committed || claim.snapshot?.val()?.claimed_by !== userId) return;
+                            if (resolved) return;
                             resolved = true;
                             clearInterval(checkInterval);
+                            this._queueRef?.off();
 
                             const matchId = await this._createMatch(
                                 { ...myData, id: userId, rating: myRating },
@@ -209,6 +228,7 @@ class MatchmakingManager {
                 if (data?.match_id && !resolved) {
                     resolved = true;
                     clearInterval(checkInterval);
+                    this._queueRef?.off();
                     this.inQueue = false;
                     resolve(data.match_id);
                 }
@@ -604,6 +624,19 @@ class MatchmakingManager {
         if (this._lobbyRef) {
             this._lobbyRef.off();
         }
+    }
+
+    // Once a match has started the lobby is finished with: stop listening, and
+    // stop the host's disconnect handler from deleting it mid-match (the guest
+    // was told "the lobby was closed" over their game).
+    stopWatchingLobby() {
+        if (!this._lobbyRef) return;
+        this._lobbyRef.off();
+        try { this._lobbyRef.onDisconnect().cancel(); } catch (e) {}
+        try { this._lobbyRef.child(`players/${this.firebase.supabaseUserId}`).onDisconnect().cancel(); } catch (e) {}
+        this._lobbyListeners = [];
+        this.currentLobby = null;
+        this._lobbyRef = null;
     }
 
     /**

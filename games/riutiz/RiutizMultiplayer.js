@@ -131,9 +131,22 @@ class RiutizMultiplayer {
     // The match
     // ==========================================
 
-    async joinMatch(matchId) {
-        // The host reaches here twice (its own startMatch and the lobby listener)
-        if (this.matchId === matchId && this.sync && this.sync.isConnected) return this.sync.match;
+    // The host reaches here twice at once: its own startMatch, and the lobby
+    // listener that fires on its own write before that call returns. A second
+    // run re-dealt the cards (which the guest ignored as an older state) and
+    // doubled every listener, so the second caller now waits on the first.
+    joinMatch(matchId) {
+        if (this._joining && this._joiningId === matchId) return this._joining;
+        if (this.matchId === matchId && this.sync && this.sync.isConnected) return Promise.resolve(this.sync.match);
+        this._joiningId = matchId;
+        this._joining = this._joinMatch(matchId).finally(() => { this._joining = null; });
+        return this._joining;
+    }
+
+    async _joinMatch(matchId) {
+        // Leave the lobby behind: its listeners otherwise reported "the lobby
+        // was closed" mid-match when the host's connection blipped.
+        this.matchmaking?.stopWatchingLobby?.();
         this.matchId = matchId;
         this._resultRecorded = false;
         this.seq = 0;
@@ -240,10 +253,21 @@ class RiutizMultiplayer {
     }
 
     onMatchStatusChange(status, data) {
-        if ((status === 'abandoned' || (status === 'completed' && data && data.win_reason === 'opponent_timeout'))
-            && !this._resultRecorded) {
+        const ended = status === 'abandoned' || (status === 'completed' && data && data.win_reason === 'opponent_timeout');
+        if (ended && !this._resultRecorded) {
             this._resultRecorded = true;
-            if (this._onMatchEnd) this._onMatchEnd(data.winner === this.localPlayerNumber, data);
+            if (this.sync) this.sync._ended = true;
+            const won = data.winner === this.localPlayerNumber;
+            // The side that conceded recorded its own loss; the one left here
+            // was never credited with the win.
+            if (status === 'abandoned' && won && this.arcade?.recordGameResult) {
+                const opp = this.sync?.getOpponent?.();
+                this.arcade.recordGameResult('riutiz', {
+                    won: true, ranked: this.sync?.match?.mode === 'ranked',
+                    opponent: opp?.display_name, opponentRating: opp?.rating
+                }).catch(err => console.warn('Recording the win failed:', err));
+            }
+            if (this._onMatchEnd) this._onMatchEnd(won, data);
         }
         if (this._onStatusChange) this._onStatusChange(status, data);
     }
