@@ -17187,6 +17187,7 @@
         const key = this._weekSessionsKey();
         if (this._weekSessionsFor === key || this._weekSessionsLoading === key) return;
         this._weekSessionsLoading = key;
+        const seq = (this._weekSessionsSeq = (this._weekSessionsSeq || 0) + 1);
         const ids = (this.classes || []).map(c => c.id).filter(Boolean);
         const monday = this._weekMonday(new Date());
         const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
@@ -17203,13 +17204,27 @@
           // Outlines are a nicety. Without them the week still works; with a
           // failed read, painting everything red would be a lie.
           console.warn('Could not load this week\'s attendance sessions:', e);
-          this._weekSessionsLoading = null;
+          if (seq === this._weekSessionsSeq) this._weekSessionsLoading = null;
           return;
         }
+        // A register saved while this read was in flight started a newer one;
+        // this answer predates that save, so let the newer one land instead.
+        if (seq !== this._weekSessionsSeq) return;
         this._weekSessions = map;
         this._weekSessionsFor = key;
         this._weekSessionsLoading = null;
         if (this.currentSection === 'classes') this.renderClasses();
+      }
+
+      // The register modal opens over the Classes page, so saving, canceling
+      // or restoring a class there leaves the week grid behind it holding the
+      // sessions it read on arrival: the outline stayed red until a reload.
+      // Called after each of those writes to read the week again; the grid
+      // re-renders when the answer lands.
+      _weekAttendanceChanged() {
+        this._weekSessionsFor = null;
+        this._weekSessionsLoading = null;
+        if (this.currentSection === 'classes') this.loadWeekAttendance();
       }
 
       // -- Class filter bar (subject/grade/day) ------------------------------
@@ -42821,6 +42836,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         // Refresh the modal to show updated status
         this.showClassAttendance(classId, date, period);
+        this._weekAttendanceChanged();
 
       } catch (error) {
         console.error('Error saving class attendance:', error);
@@ -42908,6 +42924,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         // Refresh the attendance modal
         this.showClassAttendance(classId, date, period);
+        this._weekAttendanceChanged();
 
       } catch (error) {
         console.error('Error canceling class:', error);
@@ -42937,6 +42954,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         // Refresh the attendance modal
         this.showClassAttendance(classId, date, period);
+        this._weekAttendanceChanged();
 
       } catch (error) {
         console.error('Error restoring class:', error);
