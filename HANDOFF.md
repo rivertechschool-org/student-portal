@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-29 (later) — Jordan's Claude
+**The emergency roll call: never says "drill", ends on a green SAFE screen, has contacts
+and day-group filters, and rows no longer move when tapped.** The same board runs for a
+real emergency, so the screen, bar and buttons now say the kind ("🔥 Fire") or
+"Emergency"; code names still say drill. When an admin turns it off, every staff screen
+goes green until tapped OK (remembered per device, so it does not return; an event that
+ended in the last 8 hours still reaches a phone that was asleep). 📞 on each row opens
+that child's emergency contacts. Group chips filter by day group, counting a child in
+every group they belong to. Rows used to vanish from "To account for" the moment they
+were ticked, sliding the next child under the teacher's thumb; now they stay put and turn
+green until the filter changes, and the list keeps its scroll position on refresh.
+**Needs:** nothing. The backend migration it depends on is applied.
+
 ## 2026-09-29 — Jordan's Claude
 **Assignment templates are back.** Create and Edit Assignment have a "Save as template"
 box (off by default), and Create has a **From Template** button: search the templates,

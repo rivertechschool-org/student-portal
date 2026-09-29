@@ -73,7 +73,7 @@ function validSectionLists() {
     const entries = (html.match(/showSection\('materials-requests'\)/g) || []).length;
     ok('more than one way in', entries > 1);
     ok('  one of them on the staff dashboard, beside the other daily actions',
-       /Emergency drill[\s\S]{0,1600}showSection\('materials-requests'\)[\s\S]{0,200}Materials/.test(html));
+       /showDrillBoard\(\)">\s*🚨 Emergency\s*<[\s\S]{0,1600}showSection\('materials-requests'\)[\s\S]{0,200}Materials/.test(html));
   }
 
   {

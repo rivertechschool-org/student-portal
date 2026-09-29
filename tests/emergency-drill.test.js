@@ -37,7 +37,7 @@ const check = (label, actual, expected) => {
 };
 const ok = (label, cond) => check(label, !!cond, true);
 
-function extract(name) {
+function extract(name, { sync = false } = {}) {
   const re = new RegExp('\\n      (?:async\\s+)?' + name + '\\s*\\(', 'g');
   const m = re.exec(html);
   if (!m) throw new Error('method not found: ' + name);
@@ -59,7 +59,10 @@ function extract(name) {
   const args = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
   // Everything is lifted async: half of these are, and a caller that awaits a
   // plain value is harmless while the reverse is a silent pending promise.
-  const Ctor = Object.getPrototypeOf(async function () {}).constructor;
+  //
+  // Except the helpers the templates call inline (sync: true). An async one
+  // would put "[object Promise]" into the markup instead of its text.
+  const Ctor = sync ? Function : Object.getPrototypeOf(async function () {}).constructor;
   return new Ctor(args, html.slice(start + 1, i - 1));
 }
 
@@ -112,14 +115,21 @@ function makeApp({ role = 'teacher', rpc = null } = {}) {
       : id === 'drill-end-panel'  ? app.endPanel
       : id === 'drill-bar'        ? app.bar
       : id === 'modal-drill'      ? (app.modalOpen ? {} : null) : null,
-    createElement: () => ({ style: {}, remove() { app.bar = null; } }),
+    createElement: () => ({ style: {}, setAttribute() {}, remove() { app.bar = null; } }),
     body: { appendChild: (el) => { app.bar = el; } },
   };
   for (const m of ['renderDrillModal', '_renderDrillList', 'drillAccount', '_mergeDrill',
                    'setDrillFilter', 'filterDrill', 'closeDrill', 'endDrill', 'startDrill',
                    '_drillElapsed', '_checkDrillActive', '_renderDrillBar', 'leaveDrillView',
-                   'confirmEndDrill', '_startDrillClock', '_startDrillWatch']) {
+                   'confirmEndDrill', '_startDrillClock', '_startDrillWatch',
+                   '_drillStatus', '_drillKindLabel', '_drillHeadHtml', '_drillChipsHtml',
+                   '_drillGroupChipsHtml', '_drillGroupsOf', '_drillGroupLabel', 'setDrillGroup',
+                   '_showAllClear', 'dismissAllClear', '_removeAllClear', '_allClearAcked', 'showDrillContacts']) {
     app[m] = extract(m);
+  }
+  for (const m of ['_drillKindLabel', '_drillHeadHtml', '_drillChipsHtml', '_drillGroupChipsHtml',
+                   '_drillGroupsOf', '_drillGroupLabel', '_drillElapsed', '_allClearAcked']) {
+    app[m] = extract(m, { sync: true });
   }
   app.showDrillBoard = async () => { app.opened = (app.opened || 0) + 1; app.modalOpen = true; };
   app._startDrillPoll = () => { app.polling = true; };
@@ -438,10 +448,174 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     ok('everyone accounted for says so', /Everyone is accounted for/.test(app.list.innerHTML));
   }
 
+  console.log('\n== it never says "drill" ==\n');
+
+  {
+    // The same board runs for a real fire. A teacher reading "drill" in the
+    // middle of one may slow down. Code identifiers are stripped first: the
+    // RPCs and ids are named for it, the words on screen are not.
+    const words = (text) => (text || '').replace(/<[^>]*>/g, ' ');
+    for (const role of ['teacher', 'admin']) {
+      const app = makeApp({ role });
+      await app.renderDrillModal.call(app);
+      ok(`the roll call (${role}) never says drill`, !/drill/i.test(words(app.body) + words(app.list.innerHTML)));
+      check(`  its title is the kind of emergency (${role})`, app.modals[0].title, '\u{1F525} Fire');
+      if (role === 'admin') {
+        await app.endDrill.call(app);
+        ok('  nor does turning it off', !/drill/i.test(words(app.endPanel.innerHTML)));
+      }
+    }
+    const idle = makeApp();
+    idle._drill = { drill: null, students: [] };
+    await idle.renderDrillModal.call(idle);
+    ok('nor does the start screen', !/drill/i.test(words(idle.body)) && !/drill/i.test(idle.modals[0].title));
+    const left = makeApp({ rpc: async () => ({ id: 'd1', kind: 'lockdown' }) });
+    left._drillActive = { id: 'd1', kind: 'lockdown' };
+    await left.leaveDrillView.call(left);
+    ok('nor the red bar', !/drill/i.test(left.bar.textContent) && /Lockdown/.test(left.bar.textContent));
+    ok('nor the message on leaving', left.notices.every(n => !/drill/i.test(n)));
+    ok('the dashboard buttons say Emergency', !/\u{1F6A8} Emergency drill/u.test(html));
+  }
+
+  console.log('\n== the all-clear ==\n');
+
+  const ENDED = { id: 'd1', kind: 'fire', outcome: 'complete',
+                  ended_at: '2026-09-24T15:20:00Z', ended_by: 'A Admin' };
+
+  {
+    // Every staff screen: the watcher finds it ended and goes green.
+    const app = makeApp({ rpc: async () => ({ active: null, ended: ENDED }) });
+    app._drillActive = { id: 'd1', kind: 'fire' };
+    await app._checkDrillActive.call(app);
+    ok('when it ends every screen goes green', app.bar && /SAFE/.test(app.bar.innerHTML));
+    ok('  and says it is over', /The emergency is over/.test(app.bar.innerHTML));
+    ok('  and has to be tapped away', /dismissAllClear\('d1'\)/.test(app.bar.innerHTML));
+    ok('  it takes the roll call off the screen', app.closed === 'drill');
+  }
+
+  {
+    const app = makeApp({ rpc: async () => ({ active: null, ended: { ...ENDED, outcome: 'test' } }) });
+    await app._checkDrillActive.call(app);
+    ok('a test says it was a test', /That was a test/.test(app.bar.innerHTML));
+  }
+
+  {
+    // Once tapped away on this screen, the next watch tick must not bring it back.
+    const app = makeApp({ rpc: async () => ({ active: null, ended: ENDED }) });
+    await app._checkDrillActive.call(app);
+    await app.dismissAllClear.call(app, 'd1');
+    app.bar = null;
+    await app._checkDrillActive.call(app);
+    check('once dismissed it stays dismissed', app.bar, null);
+  }
+
+  {
+    const app = makeApp({ rpc: async () => ({ active: null, ended: null }) });
+    await app._checkDrillActive.call(app);
+    check('nothing ended recently means no green screen', app.bar, null);
+  }
+
+  {
+    const app = makeApp({ role: 'admin',
+      rpc: async (fn) => fn === 'rt_drill_end'
+        ? { success: true, id: 'd1', outcome: 'complete', unaccounted_at_end: 0 } : null });
+    await app.confirmEndDrill.call(app, 'complete');
+    ok('the admin who turns it off sees the all-clear too', app.bar && /SAFE/.test(app.bar.innerHTML));
+  }
+
+  {
+    // A database from before rt_drill_status: the old question still works.
+    const app = makeApp({ rpc: async (fn) => {
+      if (fn === 'rt_drill_status') throw new Error('Could not find the function public.rt_drill_status');
+      return { id: 'd9', kind: 'fire', started_at: '2026-09-24T15:00:00Z' };
+    } });
+    app.modalOpen = false;
+    await app._checkDrillActive.call(app);
+    check('without the new function it falls back to the old check', app.opened, 1);
+  }
+
+  console.log('\n== the list does not move under a thumb ==\n');
+
+  {
+    const app = makeApp();
+    await app.renderDrillModal.call(app);
+    const before = app.list.innerHTML.match(/(Marisol|Teodor|Winnow)/g);
+    await app.drillAccount.call(app, 's1', 'safe');
+    const after = app.list.innerHTML.match(/(Marisol|Teodor|Winnow)/g);
+    check('a ticked child stays in the same place', after, before);
+    ok('  and turns green instead', /✓ SAFE/.test(app.list.innerHTML));
+    ok('  the count still drops', />\s*1\s*</.test(app.body));
+
+    // Somebody else ticks Teodor; the refresh must not remove him either.
+    const fresh = BOARD();
+    fresh.students[0].state = 'safe';
+    fresh.students[1].state = 'safe';
+    await app._mergeDrill.call(app, fresh);
+    await app.renderDrillModal.call(app);
+    check('  nor does another teacher\'s tick move anyone',
+          app.list.innerHTML.match(/(Marisol|Teodor|Winnow)/g), before);
+
+    // Changing the filter is the moment the list may tidy up.
+    await app.setDrillFilter.call(app, 'todo');
+    ok('changing the filter then drops the accounted',
+       !/Marisol/.test(app.list.innerHTML) && /Winnow/.test(app.list.innerHTML));
+  }
+
+  console.log('\n== day groups ==\n');
+
+  {
+    const app = makeApp();
+    app._drill.students[0].groups = ['FullYoungMiddle', 'MondayYoungerNon-Musical'];
+    app._drill.students[1].groups = ['FullYoungMiddle'];
+    app._drill.students[2].groups = ['FullOldElementary'];
+    app._drill.students[3].groups = ['FullHigh'];
+    await app.renderDrillModal.call(app);
+    ok('a quick filter for each group on the board', /Full Young Middle/.test(app.body)
+       && /Full Old Elementary/.test(app.body) && /Monday Younger Non/.test(app.body));
+    ok('  not for a group whose only child is marked absent', !/Full High/.test(app.body));
+    await app.setDrillGroup.call(app, 'MondayYoungerNon-Musical');
+    ok('picking one shows only that group, including a child whose FIRST group is another',
+       /Marisol/.test(app.list.innerHTML) && !/Teodor/.test(app.list.innerHTML) && !/Winnow/.test(app.list.innerHTML));
+    await app.setDrillGroup.call(app, 'MondayYoungerNon-Musical');
+    ok('picking it again shows everyone', /Teodor/.test(app.list.innerHTML) && /Winnow/.test(app.list.innerHTML));
+  }
+
+  console.log('\n== emergency contacts ==\n');
+
+  const withContactsOpen = () => {
+    const orig = global.document.getElementById;
+    global.document.getElementById = (id) => id === 'modal-drill-contacts' ? {} : orig(id);
+  };
+
+  {
+    const app = makeApp({ rpc: async () => ({ success: true, contacts: [
+      { name: 'Ines Vance', relationship: 'Mother', phone: '(208) 555-0101', is_primary: true, can_pickup: true },
+      { name: 'Oren Vance', relationship: 'Father', phone: '208-555-0102', phone_secondary: '208-555-0199' },
+    ] }) });
+    await app.renderDrillModal.call(app);
+    ok('every row has a contacts button', (app.list.innerHTML.match(/showDrillContacts\(/g) || []).length === 3);
+    withContactsOpen();
+    await app.showDrillContacts.call(app, 's1');
+    check('it asks for that one child', app.calls[0], { fn: 'rt_drill_contacts', args: { p_student_id: 's1' } });
+    const last = app.modals[app.modals.length - 1];
+    check('  in its own window over the roll call', last.id, 'drill-contacts');
+    ok('  with each contact', /Ines Vance/.test(last.body) && /Oren Vance/.test(last.body));
+    ok('  and phone numbers you can tap to call', /href="tel:2085550101"/.test(last.body));
+    ok('  including a second number', /208-555-0199/.test(last.body));
+    ok('  primary marked', /PRIMARY/.test(last.body));
+  }
+
+  {
+    const app = makeApp({ rpc: async () => ({ success: true, contacts: [] }) });
+    withContactsOpen();
+    await app.showDrillContacts.call(app, 's2');
+    ok('none on file says so', /No emergency contacts are on file for Teodor Ilic/.test(app.modals[app.modals.length - 1].body));
+  }
+
   console.log('\n== the wiring ==\n');
 
   ok('teachers reach it from their dashboard',
-     /onclick="app\.showDrillBoard\(\)"[\s\S]{0,80}Emergency drill/.test(html));
+     /onclick="app\.showDrillBoard\(\)"[\s\S]{0,80}🚨 Emergency/.test(html));
   ok('  and staff reach it from the attendance screen',
      (html.match(/app\.showDrillBoard\(\)/g) || []).length >= 2);
   ok('closing it stops the refresh loop', /closeDrill\(\)\s*{\s*this\._stopDrillPoll\(\);/.test(html));

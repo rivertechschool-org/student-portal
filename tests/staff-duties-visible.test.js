@@ -112,7 +112,7 @@ function makeApp({ rota = ROTA, rotaError = null, throws = false } = {}) {
     const callers = (html.match(/app\.showSection\('staff-duties'\)/g) || []).length;
     ok('more than one way to reach the duty screen', callers > 1);
     ok('  one of them sits beside the other staff actions',
-       /Emergency drill[\s\S]{0,400}showSection\('staff-duties'\)[\s\S]{0,120}Staff Duties/.test(html));
+       /showDrillBoard\(\)">\s*🚨 Emergency\s*<[\s\S]{0,400}showSection\('staff-duties'\)[\s\S]{0,120}Staff Duties/.test(html));
   }
 
   console.log('\n== today\'s duty is on the dashboard ==\n');

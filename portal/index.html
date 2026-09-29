@@ -2836,22 +2836,28 @@
       }
 
       async _checkDrillActive() {
-        let active = null;
+        let status;
         try {
-          active = await this._pickupRpc('rt_drill_active');
+          status = await this._drillStatus();
         } catch (_e) {
-          // Not worth a message. The next tick asks again, and a drill nobody
+          // Not worth a message. The next tick asks again, and one nobody
           // can reach is still reachable from the button on the dashboard.
           return;
         }
+        const active = status.active;
         this._drillActive = active || null;
 
         if (!active) {
-          // It ended. Clear the bar and let the portal be a portal again.
+          // It ended. Clear the bar - and if it ended recently and this
+          // screen has not said so yet, go green until somebody taps OK.
           this._drillLeftId = null;
           this._renderDrillBar();
+          if (status.ended) this._showAllClear(status.ended);
           return;
         }
+
+        // A new one started while the last all-clear was still up.
+        if (document.getElementById('emergency-all-clear')) this._removeAllClear();
 
         // Stepping out applies to the drill you stepped out OF. A new one
         // pulls everybody back in, including whoever left the last.
@@ -2859,6 +2865,25 @@
         if (this._drillLeftId !== active.id && !document.getElementById('modal-drill')) {
           this.showDrillBoard();
         }
+      }
+
+      // What is running AND what ended recently, in one small call.
+      // rt_drill_status is newer than rt_drill_active; on a database without
+      // it, fall back (no all-clear then, only the running check).
+      async _drillStatus() {
+        if (!this._drillStatusMissing) {
+          try {
+            const r = await this._pickupRpc('rt_drill_status');
+            if (r && typeof r === 'object' && ('active' in r || 'ended' in r)) {
+              return { active: r.active || null, ended: r.ended || null };
+            }
+            return { active: r || null, ended: null };
+          } catch (e) {
+            if (!/rt_drill_status|does not exist|could not find the function/i.test(e?.message || '')) throw e;
+            this._drillStatusMissing = true;
+          }
+        }
+        return { active: (await this._pickupRpc('rt_drill_active')) || null, ended: null };
       }
 
       // The way back, and the reason leaving is survivable. It sits above
@@ -2877,7 +2902,7 @@
           bar.onclick = () => { this._drillLeftId = null; this._renderDrillBar(); this.showDrillBoard(); };
           document.body.appendChild(bar);
         }
-        bar.textContent = `\u{1F6A8} ${this._drillActive.kind} drill in progress \u2014 tap to account for students`;
+        bar.textContent = `${this._drillKindLabel(this._drillActive.kind)} \u2014 emergency in progress \u2014 tap to account for students`;
       }
 
       // Stepping out is deliberate and remembered only for this drill.
@@ -2886,7 +2911,7 @@
         this._drillLeftId = this._drillActive?.id || this._drill?.drill?.id || null;
         this.closeDrill();
         this._renderDrillBar();
-        this.showNotification('The drill is still running. The red bar takes you back.', 'info', 7000);
+        this.showNotification('The emergency is still running. The red bar takes you back.', 'info', 7000);
       }
 
       checkPasswordSetupRequired() {
@@ -6902,7 +6927,7 @@
                     🚗 Pickup
                   </button>
                   <button class="btn btn-secondary" onclick="app.showDrillBoard()">
-                    🚨 Emergency drill
+                    🚨 Emergency
                   </button>
                   <button class="btn btn-secondary" onclick="app.showSection('staff-duties'); app.renderStaffDuties();">
                     🧭 Staff Duties
@@ -31898,7 +31923,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                 <button class="btn btn-primary" onclick="app.showDailyAttendanceRoster()">📋 Take Attendance</button>
                 <button class="btn btn-primary" onclick="app.showPickupBoard()">🚗 Pickup</button>
-                <button class="btn btn-secondary" onclick="app.showDrillBoard()">🚨 Emergency drill</button>
+                <button class="btn btn-secondary" onclick="app.showDrillBoard()">🚨 Emergency</button>
                 <button class="btn btn-secondary" onclick="app.showSection('admin-dashboard'); app.renderAdminDashboard();">
                   ← Back to Dashboard
                 </button>
@@ -36981,24 +37006,40 @@ Students you had withdrawn stay withdrawn.`)) {
         return (typeof data === 'string') ? JSON.parse(data) : data;
       }
 
-      // ---- Emergency drill -----------------------------------------------
+      // ---- Emergency roll call --------------------------------------------
       //
       // Shared roll call. Any member of staff can tick any child, because in
       // an evacuation a teacher takes whoever is nearest, not whoever is on
       // their register.
+      //
+      // The code says "drill" throughout (the tables and RPCs are named for
+      // it), but the screen never does: the same board runs for a real fire,
+      // and a teacher reading "drill" in the middle of one may slow down.
       async showDrillBoard() {
         try {
           this._drillPending = new Set();
           this._drillFilter  = 'todo';
           this._drillSearch  = '';
+          this._drillGroup   = null;
+          this._drillShown   = null;
           this._drill = await this._pickupRpc('rt_drill_board');
           this.renderDrillModal();
           this._startDrillPoll();
           this._startDrillClock();
         } catch (e) {
           console.error('showDrillBoard failed:', e);
-          this.showNotification('Could not open the drill board: ' + e.message, 'error');
+          this.showNotification('Could not open the emergency roll call: ' + e.message, 'error');
         }
+      }
+
+      // What the screen calls each kind. Never "drill".
+      _drillKindLabel(kind) {
+        return ({
+          fire:       '\u{1F525} Fire',
+          lockdown:   '\u{1F512} Lockdown',
+          earthquake: '\u{1F30D} Earthquake',
+          evacuation: '\u{1F6B6} Evacuation',
+        })[kind] || '\u{1F6A8} Emergency';
       }
 
       // Other people are ticking the same list from other phones, so the board
@@ -37012,6 +37053,14 @@ Students you had withdrawn stay withdrawn.`)) {
           this._drillPolling = true;
           try {
             const fresh = await this._pickupRpc('rt_drill_board');
+            // An admin turned it off from another screen. Go straight to the
+            // all-clear rather than redrawing this as the "start one" screen,
+            // which is what it used to fall through to.
+            if (!fresh?.drill && this._drill?.drill) {
+              this.closeDrill();
+              await this._checkDrillActive();
+              return;
+            }
             this._mergeDrill(fresh);
             this.renderDrillModal();
           } catch (_e) {
@@ -37045,7 +37094,7 @@ Students you had withdrawn stay withdrawn.`)) {
           this._drill = await this._pickupRpc('rt_drill_board');
           this.renderDrillModal();
           this._startDrillPoll();
-          this.showNotification('Drill started. Everyone on staff sees this list.', 'success');
+          this.showNotification('Emergency started. Everyone on staff sees this list.', 'success');
         } catch (e) {
           this.showNotification('Could not start it: ' + e.message, 'error');
         }
@@ -37070,11 +37119,11 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>` : `
               <div style="font-weight:700; margin-bottom:6px;">Everyone is accounted for.</div>`}
             <div style="font-size:13px; color:var(--muted); margin-bottom:10px;">
-              Which was this? It stays on the record either way.
+              Which was this? It stays on the record either way. Every staff screen then shows the all-clear.
             </div>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
               <button class="btn btn-secondary" onclick="app.confirmEndDrill('test')">It was a test</button>
-              <button class="btn btn-primary"   onclick="app.confirmEndDrill('complete')">Complete \u2014 all clear</button>
+              <button class="btn btn-primary"   onclick="app.confirmEndDrill('complete')">Complete — all clear</button>
               <button class="btn btn-secondary" onclick="document.getElementById('drill-end-panel').innerHTML='';">Keep it running</button>
             </div>
           </div>`;
@@ -37084,17 +37133,20 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           const r = await this._pickupRpc('rt_drill_end', { p_outcome: outcome });
           if (!r || r.success === false) throw new Error((r && r.error) || 'could not turn it off');
+          const kind = this._drill?.drill?.kind;
           this._stopDrillPoll();
           clearInterval(this._drillClock);
           this._drillActive = null;
           this._drillLeftId = null;
           this._renderDrillBar();
-          this._drill = await this._pickupRpc('rt_drill_board');
-          this.renderDrillModal();
+          this.closeDrill();
           this.showNotification(
             `Turned off as ${outcome === 'test' ? 'a test' : 'complete'}. `
             + `${r.unaccounted_at_end || 0} were unaccounted for at the end.`,
             (r.unaccounted_at_end ? 'error' : 'success'), 10000);
+          // The admin gets the same all-clear as everyone else, straight away
+          // rather than on the next watch tick.
+          this._showAllClear({ id: r.id, kind, outcome, ended_at: new Date().toISOString(), ended_by: 'you' });
         } catch (e) {
           this.showNotification('Could not turn it off: ' + e.message, 'error');
         }
@@ -37131,10 +37183,28 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
-      setDrillFilter(f) { this._drillFilter = f; this.renderDrillModal(); }
+      // Changing what is being looked at is the one moment the list may
+      // rearrange, so each of these starts the "keep rows in place" set over.
+      setDrillFilter(f) { this._drillFilter = f; this._drillShown = null; this.renderDrillModal(); }
+      setDrillGroup(g) {
+        this._drillGroup = (g && g !== this._drillGroup) ? g : null;
+        this._drillShown = null;
+        this.renderDrillModal();
+      }
       filterDrill() {
         this._drillSearch = document.getElementById('drill-search')?.value || '';
+        this._drillShown = null;
         this._renderDrillList();
+      }
+
+      // A child's day groups. Older boards carried only group_name.
+      _drillGroupsOf(s) {
+        return Array.isArray(s.groups) && s.groups.length ? s.groups : (s.group_name ? [s.group_name] : []);
+      }
+
+      // "HomeschoolOlderTuesday" -> "Homeschool Older Tuesday".
+      _drillGroupLabel(g) {
+        return String(g || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/-/g, '‑');
       }
 
       renderDrillModal() {
@@ -37143,18 +37213,16 @@ Students you had withdrawn stay withdrawn.`)) {
         const isAdmin = this.userInfo?.profile?.user_type === 'admin';
 
         if (!b.drill) {
-          this.showModal('drill', 'Emergency drill', `
+          this.showModal('drill', '\u{1F6A8} Emergency', `
             <div>
               <p style="color: var(--muted); font-size: 14px; margin-bottom: 16px;">
-                Starting a drill puts the same roll call on every member of staff's screen.
-                Anyone can tick any child \u2014 whoever is standing with them.
+                Starting one puts the same roll call on every member of staff's screen.
+                Anyone can tick any child — whoever is standing with them.
               </p>
               <div style="display: grid; gap: 10px;">
-                ${[['fire', '\u{1F525} Fire'], ['lockdown', '\u{1F512} Lockdown'],
-                   ['earthquake', '\u{1F30D} Earthquake'], ['evacuation', '\u{1F6B6} Evacuation'],
-                   ['other', 'Other']]
-                  .map(([k, label]) => `<button class="btn btn-primary" style="padding:14px; font-size:16px;"
-                     onclick="app.startDrill('${k}')">${label}</button>`).join('')}
+                ${['fire', 'lockdown', 'earthquake', 'evacuation', 'other']
+                  .map(k => `<button class="btn btn-primary" style="padding:14px; font-size:16px;"
+                     onclick="app.startDrill('${k}')">${this._drillKindLabel(k)}</button>`).join('')}
               </div>
               <div style="display:flex; justify-content:flex-end; margin-top:18px;">
                 <button class="btn btn-secondary" onclick="app.closeDrill()">Close</button>
@@ -37163,18 +37231,67 @@ Students you had withdrawn stay withdrawn.`)) {
           return;
         }
 
-        const all = b.students || [];
-        const openIn   = all.filter(s => s.bucket === 'in' && !s.state).length;
-        const openUnk  = all.filter(s => s.bucket === 'unknown' && !s.state).length;
-        const done     = all.filter(s => s.state).length;
-        const started  = b.drill.started_at ? new Date(b.drill.started_at) : null;
+        // Already on screen for this event: update the numbers and the list in
+        // place. Rebuilding the modal threw away the list's scroll position on
+        // every tick and every 5s refresh, so the row under a teacher's thumb
+        // kept changing - the mis-tap this screen can least afford.
+        const head = document.getElementById('drill-head');
+        if (head && head.dataset && head.dataset.drillId === String(b.drill.id)) {
+          head.innerHTML = this._drillHeadHtml(b);
+          const chips = document.getElementById('drill-chips');
+          if (chips) chips.innerHTML = this._drillChipsHtml(b);
+          const groups = document.getElementById('drill-groups');
+          if (groups) groups.innerHTML = this._drillGroupChipsHtml(b);
+          this._renderDrillList();
+          return;
+        }
 
-        const chip = (id, label, n) => `
-          <button class="btn ${this._drillFilter === id ? 'btn-primary' : 'btn-secondary'} small"
-                  onclick="app.setDrillFilter('${id}')">${label} ${n}</button>`;
-
-        this.showModal('drill', `${esc(b.drill.kind)} drill`, `
+        this.showModal('drill', esc(this._drillKindLabel(b.drill.kind)), `
           <div>
+            <div id="drill-head" data-drill-id="${esc(b.drill.id)}">${this._drillHeadHtml(b)}</div>
+
+            ${/* One row each, swiped sideways. The school has a dozen day
+                  groups; wrapped, they pushed the list off a phone screen. */''}
+            <div id="drill-chips" style="display:flex; gap:6px; flex-wrap:nowrap; overflow-x:auto; margin:10px 0 6px; padding-bottom:2px;">${this._drillChipsHtml(b)}</div>
+            <div id="drill-groups" style="display:flex; gap:6px; flex-wrap:nowrap; overflow-x:auto; margin:0 0 10px; padding-bottom:2px;">${this._drillGroupChipsHtml(b)}</div>
+
+            <input type="search" id="drill-search" value="${esc(this._drillSearch || '')}"
+              placeholder="Find a child by name" oninput="app.filterDrill()" autocomplete="off"
+              style="width:100%; box-sizing:border-box; padding:10px 12px; font-size:16px;
+                     border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);">
+            <div style="font-size:11px; color:var(--muted); margin-top:4px;">
+              Tap a name to mark them safe. They stay where they are, turned green; tap again to undo.
+            </div>
+
+            <div id="drill-list" style="display:flex; flex-direction:column; gap:6px;
+                                        max-height:50vh; overflow-y:auto; margin-top:10px;"></div>
+
+            <div id="drill-end-panel"></div>
+
+            <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;">
+              ${isAdmin ? `<button class="btn btn-primary" onclick="app.endDrill()">Turn off</button>` : ''}
+              ${/* Not "Close". Closing implies it is over, and for everyone
+                    except an admin it is not. */''}
+              <button class="btn btn-secondary" onclick="app.leaveDrillView()">I need something else</button>
+            </div>
+          </div>`);
+
+        this._renderDrillList();
+      }
+
+      // The counts, the clock and the unknown warning. Its height depends only
+      // on whether the day HAD unknown children (a register fact that does not
+      // change mid-event), never on how many are left, so updating it cannot
+      // push the list down or up.
+      _drillHeadHtml(b) {
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const all = b.students || [];
+        const openIn  = all.filter(s => s.bucket === 'in' && !s.state).length;
+        const openUnk = all.filter(s => s.bucket === 'unknown' && !s.state).length;
+        const hadUnk  = all.some(s => s.bucket === 'unknown');
+        const done    = all.filter(s => s.state).length;
+        const started = b.drill.started_at ? new Date(b.drill.started_at) : null;
+        return `
             <div style="display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; margin-bottom:6px;">
               <div>
                 <div style="font-size:40px; font-weight:800; line-height:1;
@@ -37183,10 +37300,10 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
                 <div style="font-size:12px; color:var(--muted);">unaccounted for</div>
               </div>
-              ${openUnk ? `
+              ${hadUnk ? `
                 <div>
-                  <div style="font-size:26px; font-weight:700; line-height:1; color:var(--warning, #e67e22);">${openUnk}</div>
-                  <div style="font-size:12px; color:var(--muted);">unknown \u2014 no register</div>
+                  <div style="font-size:26px; font-weight:700; line-height:1; color:${openUnk ? 'var(--warning, #e67e22)' : 'var(--muted)'};">${openUnk}</div>
+                  <div style="font-size:12px; color:var(--muted);">unknown — no register</div>
                 </div>` : ''}
               <div>
                 <div style="font-size:26px; font-weight:700; line-height:1;">${done}</div>
@@ -37200,44 +37317,61 @@ Students you had withdrawn stay withdrawn.`)) {
                      font-variant-numeric:tabular-nums; line-height:1;">${esc(this._drillElapsed())}</div>
                 <div style="font-size:12px; color:var(--muted);">
                   since ${started ? esc(started.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })) : ''}
-                  ${b.drill.started_by ? `\u00b7 ${esc(b.drill.started_by)}` : ''}
+                  ${b.drill.started_by ? `· ${esc(b.drill.started_by)}` : ''}
                 </div>
               </div>
             </div>
 
-            ${openUnk ? `
+            ${hadUnk ? `
               <div style="font-size:12px; padding:8px 10px; margin:8px 0; border-radius:6px;
-                          background:rgba(230,126,34,0.10); border:1px solid var(--warning, #e67e22);">
-                <strong>${openUnk} ${openUnk === 1 ? 'child was' : 'children were'} due in today with no register entry.</strong>
-                Nobody knows whether they are in the building. Account for them or mark them off-site.
-              </div>` : ''}
+                          background:${openUnk ? 'rgba(230,126,34,0.10)' : 'transparent'};
+                          border:1px solid ${openUnk ? 'var(--warning, #e67e22)' : 'var(--border)'};">
+                ${openUnk ? `
+                  <strong>${openUnk} ${openUnk === 1 ? 'child was' : 'children were'} due in today with no register entry.</strong>
+                  Nobody knows whether they are in the building. Account for them or mark them off-site.`
+                : `Every child with no register entry has been accounted for.`}
+              </div>` : ''}`;
+      }
 
-            <div style="display:flex; gap:6px; flex-wrap:wrap; margin:10px 0;">
-              ${chip('todo', 'To account for', openIn + openUnk)}
-              ${chip('unknown', 'Unknown', openUnk)}
-              ${chip('done', 'Accounted', done)}
-              ${chip('all', 'Everyone', all.length)}
-            </div>
+      _drillChipsHtml(b) {
+        const all = b.students || [];
+        const openIn  = all.filter(s => s.bucket === 'in' && !s.state).length;
+        const openUnk = all.filter(s => s.bucket === 'unknown' && !s.state).length;
+        const done    = all.filter(s => s.state).length;
+        const chip = (id, label, n) => `
+          <button class="btn ${this._drillFilter === id ? 'btn-primary' : 'btn-secondary'} small" style="white-space:nowrap; flex:none;"
+                  onclick="app.setDrillFilter('${id}')">${label} ${n}</button>`;
+        return chip('todo', 'To account for', openIn + openUnk)
+             + chip('unknown', 'Unknown', openUnk)
+             + chip('done', 'Accounted', done)
+             + chip('all', 'Everyone', all.length);
+      }
 
-            <input type="search" id="drill-search" value="${esc(this._drillSearch || '')}"
-              placeholder="Find a child by name" oninput="app.filterDrill()" autocomplete="off"
-              style="width:100%; box-sizing:border-box; padding:10px 12px; font-size:16px;
-                     border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);">
-
-            <div id="drill-list" style="display:flex; flex-direction:column; gap:6px;
-                                        max-height:50vh; overflow-y:auto; margin-top:10px;"></div>
-
-            <div id="drill-end-panel"></div>
-
-            <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;">
-              ${isAdmin ? `<button class="btn btn-primary" onclick="app.endDrill()">Turn off</button>` : ''}
-              ${/* Not "Close". Closing implies the drill is over, and for
-                    everyone except an admin it is not. */''}
-              <button class="btn btn-secondary" onclick="app.leaveDrillView()">I need something else</button>
-            </div>
-          </div>`);
-
-        this._renderDrillList();
+      // Quick filters for the day groups. Only groups with somebody on today's
+      // board are offered, each with how many are still to find in it.
+      _drillGroupChipsHtml(b) {
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const counts = new Map();
+        (b.students || []).forEach(s => {
+          if (s.bucket === 'out') return;
+          this._drillGroupsOf(s).forEach(g => {
+            const c = counts.get(g) || { left: 0 };
+            if (!s.state) c.left++;
+            counts.set(g, c);
+          });
+        });
+        if (!counts.size) return '';
+        const names = [...counts.keys()].sort((x, y) => x.localeCompare(y));
+        const cur = this._drillGroup;
+        return `<span style="font-size:12px; color:var(--muted); align-self:center; flex:none;">Groups:</span>`
+          + names.map(g => {
+              const on = cur === g;
+              const left = counts.get(g).left;
+              return `<button class="btn ${on ? 'btn-primary' : 'btn-secondary'} small" style="white-space:nowrap; flex:none;"
+                        onclick="app.setDrillGroup('${this.jsAttr(g)}')"
+                        title="${on ? 'Show every group' : 'Only this group'}">${esc(this._drillGroupLabel(g))}
+                        <span style="opacity:.75;">· ${left ? `${left} left` : '✓'}</span></button>`;
+            }).join('');
       }
 
       closeDrill() { this._stopDrillPoll(); clearInterval(this._drillClock); this.closeModal('drill'); }
@@ -37263,56 +37397,215 @@ Students you had withdrawn stay withdrawn.`)) {
         }, 1000);
       }
 
-      // Only the list is redrawn while typing, so the search box keeps focus -
-      // and the counts above it stay put rather than jumping under a thumb.
+      // Only the list is redrawn while typing, so the search box keeps focus.
+      //
+      // ROWS DO NOT MOVE. Ticking a child used to drop them out of "To account
+      // for" at once, so every row below slid up one - and the next tap landed
+      // on the child who slid into place. Now a row that is on screen stays on
+      // screen, in the same spot, and just turns green; it only leaves when
+      // the teacher changes the filter, group or search (setDrillFilter etc.
+      // reset _drillShown). The scroll position is kept across redraws too.
       _renderDrillList() {
         const host = document.getElementById('drill-list');
         if (!host) return;
         const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
         const q = (this._drillSearch || '').trim().toLowerCase();
         const f = this._drillFilter || 'todo';
+        const g = this._drillGroup || null;
+        const shown = this._drillShown instanceof Set ? this._drillShown : null;
 
-        let rows = (this._drill?.students || []).filter(s => {
-          if (f === 'todo')    return !s.state && s.bucket !== 'out';
-          if (f === 'unknown') return s.bucket === 'unknown' && !s.state;
-          if (f === 'done')    return !!s.state;
+        const matches = (s) => {
+          if (f === 'todo'    && !(!s.state && s.bucket !== 'out')) return false;
+          if (f === 'unknown' && !(s.bucket === 'unknown' && !s.state)) return false;
+          if (f === 'done'    && !s.state) return false;
+          if (g && !this._drillGroupsOf(s).includes(g)) return false;
+          if (q && !`${s.first_name || ''} ${s.last_name || ''} ${this._drillGroupsOf(s).join(' ')} grade ${s.grade_level || ''}`
+                .toLowerCase().includes(q)) return false;
           return true;
-        });
-        if (q) rows = rows.filter(s =>
-          `${s.first_name || ''} ${s.last_name || ''} ${s.group_name || ''} grade ${s.grade_level || ''}`
-            .toLowerCase().includes(q));
+        };
+        const rows = (this._drill?.students || []).filter(s => matches(s) || (shown && shown.has(s.student_id)));
+        this._drillShown = new Set(rows.map(s => s.student_id));
 
         if (!rows.length) {
           host.innerHTML = `<div class="empty-state"><h3>${
-            f === 'todo' ? 'Everyone is accounted for' : 'Nobody here'}</h3></div>`;
+            f === 'todo' && !g && !q ? 'Everyone is accounted for' : 'Nobody here'}</h3></div>`;
           return;
         }
 
+        const scroll = host.scrollTop || 0;
         host.innerHTML = rows.map(s => {
           const on = !!s.state;
           const unknown = s.bucket === 'unknown';
           const edge = on ? 'var(--success, #2ecc71)'
                      : unknown ? 'var(--warning, #e67e22)' : 'var(--border)';
+          const groups = this._drillGroupsOf(s).map(x => this._drillGroupLabel(x)).join(', ');
           return `
           <div style="display:flex; align-items:stretch; gap:6px;">
             <button onclick="app.drillAccount('${this.jsAttr(s.student_id)}', ${on ? 'null' : "'safe'"})"
-              style="flex:1; text-align:left; padding:12px 14px; font-size:16px; cursor:pointer;
-                     border:2px solid ${edge}; border-radius:8px; color:var(--text);
-                     background:${on ? 'rgba(46,204,113,0.12)' : 'var(--card)'};">
-              <span style="font-weight:600;">${esc(s.first_name)} ${esc(s.last_name)}</span>
-              ${s.grade_level ? `<span style="color:var(--muted); font-size:12px;"> Gr ${esc(s.grade_level)}</span>` : ''}
-              ${unknown && !on ? `<span style="color:var(--warning, #e67e22); font-size:11px; font-weight:700;"> \u00b7 NO REGISTER</span>` : ''}
-              <div style="font-size:11px; color:var(--muted); margin-top:2px;">
-                ${s.group_name ? esc(s.group_name) : ''}${on && s.accounted_by_name
-                  ? ` \u00b7 ${s.state === 'offsite' ? 'off-site' : 'safe'}, by ${esc(s.accounted_by_name)}` : ''}
-              </div>
+              style="flex:1; min-width:0; text-align:left; padding:12px 14px; font-size:16px; cursor:pointer;
+                     border:3px solid ${edge}; border-radius:8px; color:var(--text);
+                     display:flex; align-items:center; gap:10px;
+                     background:${on ? 'rgba(46,204,113,0.14)' : 'var(--card)'};">
+              ${/* Both lines are single-line and clipped, and NO REGISTER stays
+                    after the tick (it is a fact about the register, not a
+                    state), so ticking never changes a row's height and pushes
+                    the rows below it along - on a phone, "by <name>" wrapping
+                    to a third line did exactly that. */''}
+              <span style="flex:1; min-width:0;">
+                <span style="display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                  <span style="font-weight:600;">${esc(s.first_name)} ${esc(s.last_name)}</span>
+                  ${s.grade_level ? `<span style="color:var(--muted); font-size:12px;"> Gr ${esc(s.grade_level)}</span>` : ''}
+                  ${unknown ? `<span style="color:var(--warning, #e67e22); font-size:11px; font-weight:700;"> · NO REGISTER</span>` : ''}
+                </span>
+                ${/* Once accounted for, the second line says so in place of
+                      the groups, rather than a badge beside the name that
+                      would squeeze the name on a phone. */''}
+                <span style="display:block; font-size:11px; color:var(--muted); margin-top:2px;
+                             white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                  ${on
+                    ? `<span style="color:var(--success, #2ecc71); font-weight:800; font-size:12px;">✓ ${s.state === 'offsite' ? 'OFF-SITE' : 'SAFE'}</span>${
+                        s.accounted_by_name ? ` · by ${esc(s.accounted_by_name)}` : ''}`
+                    : (esc(groups) || '&nbsp;')}
+                </span>
+              </span>
             </button>
-            ${on ? '' : `
-              <button class="btn btn-secondary" style="white-space:nowrap;"
-                      title="Confirmed not in the building - went home, collected earlier"
-                      onclick="app.drillAccount('${this.jsAttr(s.student_id)}', 'offsite')">Off-site</button>`}
+            ${/* Kept in the row even once accounted for, only hidden, so the
+                  name button never changes width under a thumb. */''}
+            <button class="btn btn-secondary" style="white-space:nowrap; min-width:70px; padding-left:8px; padding-right:8px; visibility:${on ? 'hidden' : 'visible'};"
+                    title="Confirmed not in the building - went home, collected earlier"
+                    ${on ? 'tabindex="-1" aria-hidden="true"' : ''}
+                    onclick="app.drillAccount('${this.jsAttr(s.student_id)}', 'offsite')">Off-site</button>
+            <button class="btn btn-secondary" style="min-width:48px;" title="Emergency contacts"
+                    aria-label="Emergency contacts for ${esc(s.first_name)} ${esc(s.last_name)}"
+                    onclick="app.showDrillContacts('${this.jsAttr(s.student_id)}')">\u{1F4DE}</button>
           </div>`;
         }).join('');
+        host.scrollTop = scroll;
+      }
+
+      // One child's emergency contacts, fetched when asked for rather than
+      // carried in the board that refreshes every 5s. Opens over the roll
+      // call, which stays underneath (and keeps refreshing) for when it closes.
+      async showDrillContacts(studentId) {
+        const s = (this._drill?.students || []).find(x => x.student_id === studentId) || {};
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Student';
+        const shell = (body) => this.showModal('drill-contacts', `\u{1F4DE} ${esc(name)}`, `
+          <div>${body}
+            <div style="display:flex; justify-content:flex-end; margin-top:16px;">
+              <button class="btn btn-primary" onclick="app.closeModal('drill-contacts')">Back to the roll call</button>
+            </div>
+          </div>`, true);
+
+        shell('<p style="color:var(--muted);">Loading contacts…</p>');
+        let r;
+        try {
+          r = await this._pickupRpc('rt_drill_contacts', { p_student_id: studentId });
+          if (!r || r.success === false) throw new Error((r && r.error) || 'refused');
+        } catch (e) {
+          if (!document.getElementById('modal-drill-contacts')) return;
+          shell(`<p style="color:var(--danger, #e74c3c);">Could not load contacts: ${esc(e.message)}</p>`);
+          return;
+        }
+        // Closed while it loaded: do not pop it back open.
+        if (!document.getElementById('modal-drill-contacts')) return;
+
+        const tel = (p) => p ? `<a href="tel:${esc(String(p).replace(/[^\d+]/g, ''))}"
+             style="font-size:20px; font-weight:700; color:var(--accent); text-decoration:none;">${esc(p)}</a>` : '';
+        const list = r.contacts || [];
+        shell(list.length ? list.map(c => `
+          <div style="padding:12px 14px; border:1px solid var(--border); border-radius:8px; margin-bottom:8px;">
+            <div style="font-weight:700;">
+              ${esc(c.name)}
+              ${c.is_primary ? `<span style="font-size:11px; padding:2px 6px; border-radius:4px; margin-left:6px;
+                                  background:var(--accent); color:#000;">PRIMARY</span>` : ''}
+            </div>
+            <div style="font-size:12px; color:var(--muted); margin-bottom:6px;">
+              ${esc(c.relationship || '')}${c.can_pickup ? ' · may pick up' : ''}
+            </div>
+            <div>${tel(c.phone)}</div>
+            ${c.phone_secondary ? `<div style="margin-top:4px;">${tel(c.phone_secondary)}</div>` : ''}
+            ${c.note ? `<div style="font-size:12px; color:var(--muted); margin-top:6px;">${esc(c.note)}</div>` : ''}
+          </div>`).join('')
+          : `<p style="color:var(--muted);">No emergency contacts are on file for ${esc(name)}.</p>`);
+      }
+
+      // ---- the all-clear ---------------------------------------------------
+      //
+      // When an emergency ends, every staff screen goes green and says SAFE,
+      // and stays that way until somebody at that screen taps it away. Before
+      // this the roll call simply vanished, which looks exactly like the page
+      // breaking - nobody could tell "over" from "crashed".
+      //
+      // Acknowledged per device, in localStorage, keyed by the event's id; the
+      // server only says what ended and when (rt_drill_status, last 8 hours).
+      _allClearAcked(id) {
+        if (!id) return true;
+        if (this._allClearAckedIds && this._allClearAckedIds.has(id)) return true;
+        try {
+          return (JSON.parse(localStorage.getItem('rt-emergency-all-clear-ack') || '[]')).includes(id);
+        } catch (_e) { return false; }
+      }
+
+      dismissAllClear(id) {
+        this._allClearAckedIds = this._allClearAckedIds || new Set();
+        this._allClearAckedIds.add(id);
+        try {
+          const seen = JSON.parse(localStorage.getItem('rt-emergency-all-clear-ack') || '[]');
+          seen.push(id);
+          localStorage.setItem('rt-emergency-all-clear-ack', JSON.stringify(seen.slice(-20)));
+        } catch (_e) { /* private window: remembered for this page only */ }
+        this._removeAllClear();
+      }
+
+      _removeAllClear() {
+        document.getElementById('emergency-all-clear')?.remove();
+        if (document.documentElement?.style) {
+          document.documentElement.style.overflow = '';
+          document.documentElement.style.scrollbarGutter = '';
+        }
+      }
+
+      _showAllClear(ended) {
+        if (!ended || this._allClearAcked(ended.id)) return;
+        // It replaces the roll call and the red bar, not sits on top of them.
+        if (document.getElementById('modal-drill')) this.closeDrill();
+        document.getElementById('drill-bar')?.remove();
+        document.getElementById('modal-drill-contacts') && this.closeModal('drill-contacts');
+
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const at = ended.ended_at ? new Date(ended.ended_at) : null;
+        let el = document.getElementById('emergency-all-clear');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'emergency-all-clear';
+          el.setAttribute('role', 'alertdialog');
+          el.style.cssText = 'position:fixed; inset:0; z-index:100000; background:#15803d; color:#fff;' +
+            'display:flex; flex-direction:column; align-items:center; justify-content:center;' +
+            'text-align:center; padding:24px; gap:14px; box-sizing:border-box;';
+          document.body.appendChild(el);
+        }
+        // No page scrollbar - nor the gutter the stylesheet reserves for one
+        // (scrollbar-gutter: stable) - while it is up, so the green reaches
+        // every edge on a desktop too. Phones overlay their scrollbars already.
+        if (document.documentElement?.style) {
+          document.documentElement.style.overflow = 'hidden';
+          document.documentElement.style.scrollbarGutter = 'auto';
+        }
+        el.innerHTML = `
+          <div style="font-size:88px; line-height:1;">✓</div>
+          <div style="font-size:clamp(56px, 16vw, 120px); font-weight:900; letter-spacing:.06em; line-height:1;">SAFE</div>
+          <div style="font-size:22px; font-weight:700; max-width:560px;">
+            ${ended.outcome === 'test'
+              ? 'That was a test. The all-clear has been given.'
+              : 'The emergency is over. All clear.'}
+          </div>
+          <div style="font-size:15px; opacity:.9;">
+            ${esc(this._drillKindLabel(ended.kind))}${at ? ` · ended ${esc(at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}` : ''}${ended.ended_by ? ` by ${esc(ended.ended_by)}` : ''}
+          </div>
+          <button onclick="app.dismissAllClear('${this.jsAttr(ended.id)}')"
+            style="margin-top:12px; padding:16px 40px; font-size:20px; font-weight:800; border:none;
+                   border-radius:12px; background:#fff; color:#15803d; cursor:pointer;">OK</button>`;
       }
 
       async showPickupBoard() {
