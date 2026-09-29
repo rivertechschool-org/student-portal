@@ -43,9 +43,9 @@ submission settings fill the form. Due date, quarter, students and publishing ar
 set fresh. It is a flag on the assignment itself, not the old separate templates table,
 so a template stays current when its assignment is edited. Game and Skill Mastery
 assignments cannot be templates (they are stored elsewhere).
-**Needs:** Luke — apply the new migration in the backend repo that adds `is_template` to
-`assignments`. Until then, ticking the box or opening From Template says the database
-update is missing; creating and editing ordinary assignments is unaffected.
+**Needs:** nothing. The backend migration adding `is_template` to `assignments` was
+applied to the live database on 2026-09-29 — don't apply it again (it is harmless if
+you do).
 
 ## 2026-09-28 (later) — Jordan's Claude
 **The arcade's online side is ready to switch on; it has never been on.** `firebase-token`
