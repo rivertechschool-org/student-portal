@@ -35,6 +35,15 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-29 (evening) — Jordan's Claude
+**Emergencies are recorded, with a log for admins.** Turning one off now saves the state
+it ended in (expected, safe, off-site, still missing, who was missing, how long until
+everyone was found) alongside the kind, drill-or-real verdict, times and who started and
+ended it. **📜 Emergency log** (Attendance screen, and the Emergency screen when nothing
+is running) lists them with flags, opens each one's full roll call, takes notes
+afterwards, and downloads CSV. The two events run on 2026-09-29 were backfilled.
+**Needs:** nothing; the backend migration is applied.
+
 ## 2026-09-29 (later) — Jordan's Claude
 **The emergency roll call: never says "drill", ends on a green SAFE screen, has contacts
 and day-group filters, and rows no longer move when tapped.** The same board runs for a

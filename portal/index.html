@@ -31924,6 +31924,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <button class="btn btn-primary" onclick="app.showDailyAttendanceRoster()">📋 Take Attendance</button>
                 <button class="btn btn-primary" onclick="app.showPickupBoard()">🚗 Pickup</button>
                 <button class="btn btn-secondary" onclick="app.showDrillBoard()">🚨 Emergency</button>
+                <button class="btn btn-secondary" onclick="app.showDrillLog()">📜 Emergency log</button>
                 <button class="btn btn-secondary" onclick="app.showSection('admin-dashboard'); app.renderAdminDashboard();">
                   ← Back to Dashboard
                 </button>
@@ -37119,11 +37120,15 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>` : `
               <div style="font-weight:700; margin-bottom:6px;">Everyone is accounted for.</div>`}
             <div style="font-size:13px; color:var(--muted); margin-bottom:10px;">
-              Which was this? It stays on the record either way. Every staff screen then shows the all-clear.
+              Which was this? It goes in the emergency log with the time, the counts above and who was
+              still open. Every staff screen then shows the all-clear.
             </div>
+            <textarea id="drill-end-note" rows="2" placeholder="Note for the log (optional) \u2014 what happened, what to do differently"
+              style="width:100%; box-sizing:border-box; margin-bottom:10px; padding:8px; font-size:14px;
+                     border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);"></textarea>
             <div style="display:flex; gap:8px; flex-wrap:wrap;">
               <button class="btn btn-secondary" onclick="app.confirmEndDrill('test')">It was a test</button>
-              <button class="btn btn-primary"   onclick="app.confirmEndDrill('complete')">Complete — all clear</button>
+              <button class="btn btn-primary"   onclick="app.confirmEndDrill('complete')">Real emergency \u2014 all clear</button>
               <button class="btn btn-secondary" onclick="document.getElementById('drill-end-panel').innerHTML='';">Keep it running</button>
             </div>
           </div>`;
@@ -37131,7 +37136,9 @@ Students you had withdrawn stay withdrawn.`)) {
 
       async confirmEndDrill(outcome) {
         try {
-          const r = await this._pickupRpc('rt_drill_end', { p_outcome: outcome });
+          // Only sent when written, so a blank box never clears an earlier note.
+          const note = (document.getElementById('drill-end-note')?.value || '').trim();
+          const r = await this._pickupRpc('rt_drill_end', note ? { p_outcome: outcome, p_note: note } : { p_outcome: outcome });
           if (!r || r.success === false) throw new Error((r && r.error) || 'could not turn it off');
           const kind = this._drill?.drill?.kind;
           this._stopDrillPoll();
@@ -37141,9 +37148,10 @@ Students you had withdrawn stay withdrawn.`)) {
           this._renderDrillBar();
           this.closeDrill();
           this.showNotification(
-            `Turned off as ${outcome === 'test' ? 'a test' : 'complete'}. `
-            + `${r.unaccounted_at_end || 0} were unaccounted for at the end.`,
-            (r.unaccounted_at_end ? 'error' : 'success'), 10000);
+            `Turned off as ${outcome === 'test' ? 'a test' : 'a real emergency'}, and recorded in the emergency log. `
+            + `${r.unaccounted_at_end || 0} were unaccounted for at the end`
+            + `${r.unknown_at_end ? `, and ${r.unknown_at_end} with no register were never found` : ''}.`,
+            ((r.unaccounted_at_end || r.unknown_at_end) ? 'error' : 'success'), 10000);
           // The admin gets the same all-clear as everyone else, straight away
           // rather than on the next watch tick.
           this._showAllClear({ id: r.id, kind, outcome, ended_at: new Date().toISOString(), ended_by: 'you' });
@@ -37224,7 +37232,8 @@ Students you had withdrawn stay withdrawn.`)) {
                   .map(k => `<button class="btn btn-primary" style="padding:14px; font-size:16px;"
                      onclick="app.startDrill('${k}')">${this._drillKindLabel(k)}</button>`).join('')}
               </div>
-              <div style="display:flex; justify-content:flex-end; margin-top:18px;">
+              <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:18px; flex-wrap:wrap;">
+                ${isAdmin ? `<button class="btn btn-secondary" onclick="app.showDrillLog()">\u{1F4DC} Emergency log</button>` : ''}
                 <button class="btn btn-secondary" onclick="app.closeDrill()">Close</button>
               </div>
             </div>`);
@@ -37606,6 +37615,239 @@ Students you had withdrawn stay withdrawn.`)) {
           <button onclick="app.dismissAllClear('${this.jsAttr(ended.id)}')"
             style="margin-top:12px; padding:16px 40px; font-size:20px; font-weight:800; border:none;
                    border-radius:12px; background:#fff; color:#15803d; cursor:pointer;">OK</button>`;
+      }
+
+      // ---- the emergency log (admins) ------------------------------------
+      //
+      // Every emergency is kept: kind, drill or real, who started and ended
+      // it, when, and the state it ended in (rt_drill_end snapshots the counts
+      // and exactly who was still open, because the live board is recomputed
+      // from today's register and would say nothing useful tomorrow). Here,
+      // unlike on the running screen, "drill" is the right word: this is the
+      // record of which ones were practice.
+      _drillDur(sec) {
+        if (sec == null) return '';
+        const s = Math.max(0, Math.round(sec)), m = Math.floor(s / 60);
+        return m >= 60 ? `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+                       : `${m}:${String(s % 60).padStart(2, '0')}`;
+      }
+
+      _drillOutcomeLabel(outcome, running) {
+        if (running) return 'Running';
+        return outcome === 'test' ? 'Drill' : outcome === 'complete' ? 'Real emergency' : 'Not recorded';
+      }
+
+      async showDrillLog() {
+        let rows;
+        try {
+          rows = await this._pickupRpc('rt_drill_history', { p_limit: 200 });
+        } catch (e) {
+          this.showNotification('Could not load the emergency log: ' + e.message, 'error');
+          return;
+        }
+        this._drillLog = Array.isArray(rows) ? rows : [];
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const list = this._drillLog;
+
+        const drills = list.filter(r => r.outcome === 'test').length;
+        const real   = list.filter(r => r.outcome === 'complete').length;
+        const timed  = list.filter(r => r.outcome === 'test' && r.all_accounted_s != null);
+        const avg    = timed.length ? timed.reduce((n, r) => n + r.all_accounted_s, 0) / timed.length : null;
+
+        this.showModal('drill-log', '\u{1F4DC} Emergency log', `
+          <div>
+            <div style="display:flex; gap:18px; flex-wrap:wrap; margin-bottom:12px; font-size:13px; color:var(--muted);">
+              <span><strong style="color:var(--text); font-size:18px;">${list.length}</strong> recorded</span>
+              <span><strong style="color:var(--text); font-size:18px;">${drills}</strong> drills</span>
+              <span><strong style="color:var(--text); font-size:18px;">${real}</strong> real</span>
+              ${avg != null ? `<span><strong style="color:var(--text); font-size:18px;">${esc(this._drillDur(avg))}</strong> average time to account for everyone (drills)</span>` : ''}
+            </div>
+            <div style="display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow-y:auto;">
+              ${list.length ? list.map(r => this._drillLogCardHtml(r)).join('')
+                : '<div class="empty-state"><h3>No emergencies recorded yet</h3></div>'}
+            </div>
+            <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;">
+              ${list.length ? `<button class="btn btn-secondary" onclick="app.downloadDrillLogCsv()">⬇ Download CSV</button>` : ''}
+              <button class="btn btn-primary" onclick="app.closeModal('drill-log')">Close</button>
+            </div>
+          </div>`, true);
+      }
+
+      _drillLogCardHtml(r) {
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const running = !r.ended_at;
+        const start = r.started_at ? new Date(r.started_at) : null;
+        const end = r.ended_at ? new Date(r.ended_at) : null;
+        const t = (d) => d ? d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+        const real = r.outcome === 'complete';
+        const badge = running ? 'var(--danger, #e74c3c)' : real ? 'var(--danger, #e74c3c)' : 'var(--accent)';
+        const recorded = r.expected_count != null;
+        const open = (r.unaccounted_count || 0) + (r.unknown_count || 0);
+
+        // The flags worth seeing without opening anything.
+        const flags = [];
+        if (!running && recorded) {
+          if (r.all_accounted_s != null) flags.push(`<span style="color:var(--success, #2ecc71);">✓ Everyone accounted for in ${esc(this._drillDur(r.all_accounted_s))}</span>`);
+          if (r.unaccounted_count) flags.push(`<span style="color:var(--danger, #e74c3c);">⚠ Ended with ${r.unaccounted_count} unaccounted for</span>`);
+          if (r.unknown_count) flags.push(`<span style="color:var(--warning, #e67e22);">⚠ ${r.unknown_count} with no register never resolved</span>`);
+          if (!r.staff_count) flags.push(`<span style="color:var(--muted);">Nobody ticked anyone</span>`);
+        }
+
+        return `
+          <div class="card" style="margin:0; padding:12px 14px;">
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+              <strong>${esc(this._drillKindLabel(r.kind))}</strong>
+              <span style="font-size:11px; font-weight:800; padding:2px 8px; border-radius:4px; color:#fff; background:${badge};">
+                ${esc(this._drillOutcomeLabel(r.outcome, running).toUpperCase())}</span>
+              <span style="margin-left:auto; font-size:12px; color:var(--muted);">
+                ${start ? esc(start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })) : ''}
+              </span>
+            </div>
+            <div style="font-size:13px; margin-top:6px;">
+              ${esc(t(start))}${end ? ` – ${esc(t(end))}` : ' – still running'}
+              · ${esc(this._drillDur(r.duration_s))} long
+              ${r.started_by ? ` · started by ${esc(r.started_by)}` : ''}${r.ended_by ? `, ended by ${esc(r.ended_by)}` : ''}
+            </div>
+            ${recorded ? `
+              <div style="font-size:12px; color:var(--muted); margin-top:4px;">
+                ${r.expected_count} expected · ${r.safe_count} safe · ${r.offsite_count} off-site
+                · ${open} still open at the end · ${r.staff_count} staff ticking
+              </div>` : ''}
+            ${flags.length ? `<div style="font-size:12px; margin-top:6px; display:flex; gap:12px; flex-wrap:wrap;">${flags.join('')}</div>` : ''}
+            ${r.note ? `<div style="font-size:12px; margin-top:6px; padding:6px 8px; border-left:3px solid var(--border);">${esc(r.note)}</div>` : ''}
+            <div style="margin-top:8px;">
+              <button class="btn btn-secondary small" onclick="app.showDrillDetail('${this.jsAttr(r.id)}')">Roll call &amp; notes</button>
+            </div>
+          </div>`;
+      }
+
+      // One event in full: every tick in order, with the time since it
+      // started, and who was still open when it was turned off.
+      async showDrillDetail(id) {
+        const r = (this._drillLog || []).find(x => x.id === id) || {};
+        let d;
+        try {
+          d = await this._pickupRpc('rt_drill_detail', { p_id: id });
+          if (!d || d.success === false) throw new Error((d && d.error) || 'refused');
+        } catch (e) {
+          this.showNotification('Could not load that event: ' + e.message, 'error');
+          return;
+        }
+        this._drillDetail = { id, event: r, ...d };
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const start = r.started_at ? new Date(r.started_at).getTime() : null;
+        const since = (at) => (start && at) ? '+' + this._drillDur((new Date(at).getTime() - start) / 1000) : '';
+        const name = (s) => `${esc(s.first_name)} ${esc(s.last_name)}${s.grade_level ? ` <span style="color:var(--muted); font-size:11px;">Gr ${esc(s.grade_level)}</span>` : ''}`;
+        const open = d.unresolved || [], acc = d.accounted || [];
+
+        this.showModal('drill-detail', `${esc(this._drillKindLabel(r.kind))} · ${esc(this._drillOutcomeLabel(r.outcome, !r.ended_at))}`, `
+          <div>
+            <div style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+              ${r.started_at ? esc(new Date(r.started_at).toLocaleString()) : ''}
+              ${r.duration_s != null ? ` · ${esc(this._drillDur(r.duration_s))} long` : ''}
+              ${r.all_accounted_s != null ? ` · everyone accounted for at +${esc(this._drillDur(r.all_accounted_s))}` : ''}
+            </div>
+
+            <label style="font-weight:600; font-size:13px;">Notes — what happened, what to do differently</label>
+            <textarea id="drill-detail-note" rows="3" style="width:100%; box-sizing:border-box; margin:6px 0;
+              padding:8px; border:1px solid var(--border); border-radius:8px; background:var(--card); color:var(--text);">${esc(r.note || '')}</textarea>
+            <div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+              <button class="btn btn-secondary small" onclick="app.saveDrillNote('${this.jsAttr(id)}')">Save note</button>
+            </div>
+
+            <div style="max-height:45vh; overflow-y:auto;">
+              <h4 style="margin:0 0 6px; color:${open.length ? 'var(--danger, #e74c3c)' : 'var(--success, #2ecc71)'};">
+                Still open when it ended (${open.length})</h4>
+              ${open.length ? open.map(s => `<div style="padding:4px 0; font-size:14px;">${name(s)}</div>`).join('')
+                : `<div style="font-size:13px; color:var(--muted);">${r.expected_count == null ? 'Not recorded for this event.' : 'Nobody — every child was accounted for.'}</div>`}
+
+              <h4 style="margin:14px 0 6px;">Accounted for (${acc.length})</h4>
+              ${acc.length ? acc.map(s => `
+                <div style="display:flex; gap:10px; padding:4px 0; font-size:14px; align-items:baseline;">
+                  <span style="font-variant-numeric:tabular-nums; color:var(--muted); min-width:52px;">${esc(since(s.accounted_at))}</span>
+                  <span style="flex:1;">${name(s)}</span>
+                  <span style="font-size:12px; color:${s.state === 'offsite' ? 'var(--warning, #e67e22)' : 'var(--success, #2ecc71)'};">
+                    ${s.state === 'offsite' ? 'off-site' : 'safe'}${s.by ? ` · ${esc(s.by)}` : ''}</span>
+                </div>`).join('')
+                : '<div style="font-size:13px; color:var(--muted);">Nobody was ticked.</div>'}
+            </div>
+
+            <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;">
+              <button class="btn btn-secondary" onclick="app.downloadDrillDetailCsv()">⬇ Download CSV</button>
+              <button class="btn btn-primary" onclick="app.closeModal('drill-detail')">Back to the log</button>
+            </div>
+          </div>`, true);
+      }
+
+      async saveDrillNote(id) {
+        const note = document.getElementById('drill-detail-note')?.value || '';
+        try {
+          const r = await this._pickupRpc('rt_drill_set_note', { p_id: id, p_note: note });
+          if (!r || r.success === false) throw new Error((r && r.error) || 'refused');
+          const row = (this._drillLog || []).find(x => x.id === id);
+          if (row) row.note = note.trim() || null;
+          this.showNotification('Note saved', 'success');
+          // The log behind shows notes too; redraw it so it is not stale.
+          if (document.getElementById('modal-drill-log')) {
+            this.closeModal('drill-detail');
+            await this.showDrillLog();
+          }
+        } catch (e) {
+          this.showNotification('Could not save the note: ' + e.message, 'error');
+        }
+      }
+
+      _drillCsv(rows) {
+        const cell = (v) => {
+          const s = v == null ? '' : String(v);
+          // A leading = + - @ would run as a formula in a spreadsheet.
+          const safe = /^[=+\-@]/.test(s) ? `'${s}` : s;
+          return `"${safe.replace(/"/g, '""')}"`;
+        };
+        return rows.map(r => r.map(cell).join(',')).join('\r\n') + '\r\n';
+      }
+
+      _drillDownload(csv, filename) {
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      downloadDrillLogCsv() {
+        const iso = (t) => t ? new Date(t).toLocaleString() : '';
+        const rows = [['Date', 'Kind', 'Drill or real', 'Started', 'Ended', 'Duration', 'Time to account for everyone',
+                       'Expected', 'Safe', 'Off-site', 'Unaccounted at end', 'No register, unresolved',
+                       'Staff ticking', 'Started by', 'Ended by', 'Notes']];
+        (this._drillLog || []).forEach(r => rows.push([
+          r.school_day || (r.started_at ? new Date(r.started_at).toLocaleDateString() : ''),
+          r.kind, this._drillOutcomeLabel(r.outcome, !r.ended_at), iso(r.started_at), iso(r.ended_at),
+          this._drillDur(r.duration_s), this._drillDur(r.all_accounted_s),
+          r.expected_count, r.safe_count, r.offsite_count, r.unaccounted_count, r.unknown_count,
+          r.staff_count, r.started_by, r.ended_by, r.note]));
+        this._drillDownload(this._drillCsv(rows), `emergency-log-${new Date().toISOString().slice(0, 10)}.csv`);
+      }
+
+      downloadDrillDetailCsv() {
+        const d = this._drillDetail;
+        if (!d) return;
+        const start = d.event?.started_at ? new Date(d.event.started_at).getTime() : null;
+        const rows = [['Student', 'Grade', 'Status', 'Time', 'Minutes after start', 'Accounted by']];
+        (d.accounted || []).forEach(s => rows.push([
+          `${s.first_name || ''} ${s.last_name || ''}`.trim(), s.grade_level,
+          s.state === 'offsite' ? 'Off-site' : 'Safe',
+          s.accounted_at ? new Date(s.accounted_at).toLocaleTimeString() : '',
+          (start && s.accounted_at) ? this._drillDur((new Date(s.accounted_at).getTime() - start) / 1000) : '',
+          s.by]));
+        (d.unresolved || []).forEach(s => rows.push([
+          `${s.first_name || ''} ${s.last_name || ''}`.trim(), s.grade_level, 'STILL OPEN AT END', '', '', '']));
+        const day = d.event?.school_day || new Date().toISOString().slice(0, 10);
+        this._drillDownload(this._drillCsv(rows), `emergency-${day}-${d.event?.kind || 'event'}.csv`);
       }
 
       async showPickupBoard() {

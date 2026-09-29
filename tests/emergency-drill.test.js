@@ -612,6 +612,115 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     ok('none on file says so', /No emergency contacts are on file for Teodor Ilic/.test(app.modals[app.modals.length - 1].body));
   }
 
+  console.log('\n== it is recorded ==\n');
+
+  const logApp = (rpc, role = 'admin') => {
+    const app = makeApp({ role, rpc });
+    for (const m of ['showDrillLog', 'showDrillDetail', 'saveDrillNote', 'downloadDrillLogCsv',
+                     'downloadDrillDetailCsv']) app[m] = extract(m);
+    for (const m of ['_drillLogCardHtml', '_drillDur', '_drillOutcomeLabel', '_drillCsv']) {
+      app[m] = extract(m, { sync: true });
+    }
+    app.downloads = [];
+    app._drillDownload = (csv, name) => app.downloads.push({ csv, name });
+    return app;
+  };
+
+  {
+    // A note written when turning it off goes with the verdict...
+    const app = makeApp({ role: 'admin',
+      rpc: async (fn) => fn === 'rt_drill_end'
+        ? { success: true, id: 'd1', outcome: 'test', unaccounted_at_end: 0, unknown_at_end: 0 } : null });
+    const orig = global.document.getElementById;
+    global.document.getElementById = (id) => id === 'drill-end-note' ? { value: '  Door 3 was locked  ' } : orig(id);
+    await app.confirmEndDrill.call(app, 'test');
+    check('a note written on ending is sent with the verdict', app.calls[0].args,
+          { p_outcome: 'test', p_note: 'Door 3 was locked' });
+    ok('  and it says it went in the log', app.notices.some(n => /recorded in the emergency log/.test(n)));
+  }
+
+  {
+    const app = makeApp({ role: 'admin',
+      rpc: async () => ({ success: true, id: 'd1', outcome: 'complete', unaccounted_at_end: 0, unknown_at_end: 3 }) });
+    await app.confirmEndDrill.call(app, 'complete');
+    ok('ending with unresolved no-register children is reported as an error',
+       app.notices.some(n => /^error:.*3 with no register were never found/.test(n)));
+    ok('  and a real one is called real', app.notices.some(n => /a real emergency/.test(n)));
+  }
+
+  {
+    const app = makeApp({ role: 'admin' });
+    await app.renderDrillModal.call(app);
+    await app.endDrill.call(app);
+    ok('the end panel asks for a note', /id="drill-end-note"/.test(app.endPanel.innerHTML));
+    ok('  and says real rather than "complete"', /Real emergency/.test(app.endPanel.innerHTML));
+  }
+
+  const LOG = [
+    { id: 'e2', kind: 'fire', outcome: 'test', started_at: '2026-09-29T17:00:00Z', ended_at: '2026-09-29T17:04:10Z',
+      started_by: 'A Admin', ended_by: 'A Admin', duration_s: 250, all_accounted_s: 185,
+      expected_count: 40, safe_count: 38, offsite_count: 2, unaccounted_count: 0, unknown_count: 0, staff_count: 5,
+      note: '=HYPERLINK("x")' },
+    { id: 'e1', kind: 'lockdown', outcome: 'complete', started_at: '2026-09-20T17:00:00Z', ended_at: '2026-09-20T17:30:00Z',
+      duration_s: 1800, all_accounted_s: null, expected_count: 40, safe_count: 30, offsite_count: 0,
+      unaccounted_count: 6, unknown_count: 4, staff_count: 3 },
+  ];
+
+  {
+    const app = logApp(async () => LOG);
+    await app.showDrillLog.call(app);
+    const body = app.modals[app.modals.length - 1].body;
+    ok('the log lists every event', /Fire/.test(body) && /Lockdown/.test(body));
+    ok('  says which were drills and which were real', /DRILL/.test(body) && /REAL EMERGENCY/.test(body));
+    ok('  with how long they ran', /4:10 long/.test(body) && /30:00 long/.test(body));
+    ok('  the time to account for everyone', /Everyone accounted for in 3:05/.test(body));
+    ok('  and flags one that ended with children missing', /Ended with 6 unaccounted for/.test(body)
+       && /4 with no register never resolved/.test(body));
+    ok('  with the counts it ended on', /40 expected · 38 safe · 2 off-site/.test(body));
+    ok('  and the average drill time', /3:05<\/strong> average time/.test(body));
+  }
+
+  {
+    const app = logApp(async () => LOG);
+    await app.showDrillLog.call(app);
+    await app.downloadDrillLogCsv.call(app);
+    const csv = app.downloads[0].csv;
+    ok('the log downloads as CSV', /^"Date","Kind","Drill or real"/.test(csv) && /"Real emergency"/.test(csv));
+    ok('  and a note cannot run as a spreadsheet formula', /"'=HYPERLINK\(""x""\)"/.test(csv));
+  }
+
+  {
+    const app = logApp(async (fn) => fn === 'rt_drill_history' ? LOG : {
+      success: true,
+      accounted: [{ first_name: 'Marisol', last_name: 'Vance', state: 'safe', accounted_at: '2026-09-20T17:02:30Z', by: 'B Teacher' }],
+      unresolved: [{ first_name: 'Winnow', last_name: 'Ash', grade_level: 2 }] });
+    await app.showDrillLog.call(app);
+    await app.showDrillDetail.call(app, 'e1');
+    const body = app.modals[app.modals.length - 1].body;
+    ok('one event shows who was still open when it ended', /Still open when it ended \(1\)/.test(body) && /Winnow/.test(body));
+    ok('  and every tick, with the time since it started', /\+2:30/.test(body) && /Marisol/.test(body) && /B Teacher/.test(body));
+    ok('  and a place for notes afterwards', /id="drill-detail-note"/.test(body));
+    await app.downloadDrillDetailCsv.call(app);
+    ok('  and downloads as CSV', /"Winnow Ash","2","STILL OPEN AT END"/.test(app.downloads[0].csv));
+  }
+
+  {
+    const app = logApp(async () => ({ success: true }));
+    const orig = global.document.getElementById;
+    global.document.getElementById = (id) => id === 'drill-detail-note' ? { value: 'Alarm quiet in the gym' } : orig(id);
+    await app.saveDrillNote.call(app, 'e1');
+    check('a note can be added afterwards', app.calls[0], { fn: 'rt_drill_set_note', args: { p_id: 'e1', p_note: 'Alarm quiet in the gym' } });
+  }
+
+  {
+    const t = makeApp({ role: 'teacher' }); t._drill = { drill: null, students: [] };
+    await t.renderDrillModal.call(t);
+    const a = makeApp({ role: 'admin' }); a._drill = { drill: null, students: [] };
+    await a.renderDrillModal.call(a);
+    ok('admins get the log from the start screen', /showDrillLog\(\)/.test(a.body));
+    ok('  teachers do not', !/showDrillLog\(\)/.test(t.body));
+  }
+
   console.log('\n== the wiring ==\n');
 
   ok('teachers reach it from their dashboard',
