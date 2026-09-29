@@ -22007,8 +22007,21 @@ Students you had withdrawn stay withdrawn.`)) {
           </option>`
         ).join('') || '<option value="">No quarters available</option>';
 
+        // Kept for applyAssignmentTemplate, which maps a template from another
+        // class onto this class's categories by name.
+        this.createAssignmentCategories = categories || [];
+
         const modalContent = `
           <form id="create-assignment-form">
+            <!-- Start from a template: fills the form, the teacher still picks
+                 due date, quarter and students. -->
+            <div style="display: flex; justify-content: flex-end; margin-bottom: 10px;">
+              <button type="button" class="btn btn-secondary small" onclick="app.showAssignmentTemplatePicker('${classId}')">
+                📋 From Template
+              </button>
+            </div>
+            <div id="assignment-template-banner" style="display: none; background: rgba(106, 169, 255, 0.1); border: 1px solid var(--accent); padding: 10px 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px;"></div>
+
             <!-- Assignment Type Selector -->
             <div class="form-group">
               <label for="assignment-type">Assignment Type *</label>
@@ -22195,7 +22208,19 @@ Students you had withdrawn stay withdrawn.`)) {
                 Publish immediately (visible to students)
               </label>
             </div>
-      
+
+            <div id="template-section" class="form-group">
+              <label style="display: flex; align-items: center; gap: 10px;">
+                <input type="checkbox" id="assignment-is-template">
+                <div>
+                  <strong>Save as template</strong>
+                  <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                    Lists this assignment under "From Template" so it can be reused as the start of a new one.
+                  </div>
+                </div>
+              </label>
+            </div>
+
             <div class="form-group">
               <label style="display: flex; align-items: center; gap: 10px;">
                 <input type="checkbox" id="graded-offline">
@@ -22283,6 +22308,197 @@ Students you had withdrawn stay withdrawn.`)) {
             }
           });
         }, 100);
+      }
+
+      // A template is an ordinary assignment with is_template set - ticked on
+      // create or edit. Postgres names the column in its error when the
+      // migration adding it has not been applied yet; say that plainly.
+      assignmentTemplateError(error) {
+        const msg = error?.message || String(error);
+        return /is_template/.test(msg)
+          ? 'Templates need a database update that has not been applied yet. Untick "Save as template" to continue.'
+          : msg;
+      }
+
+      // "From Template" in Create Assignment: a searchable list of every
+      // assignment marked as a template that this user can see, across all
+      // their classes, newest first.
+      async showAssignmentTemplatePicker(classId) {
+        const { data: templates, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('assignments')
+          .select('id, class_id, title, description, assignment_type, max_points, grading_type, rubric_id, category_id, graded_offline, rtc_reward, max_submit_size_mb, updated_at, classes(name)')
+          .eq('is_template', true)
+          .order('updated_at', { ascending: false })
+          .limit(1000));
+
+        if (error) {
+          this.showNotification('Could not load templates: ' + this.assignmentTemplateError(error), 'error');
+          return;
+        }
+
+        this.assignmentTemplates = templates || [];
+        this.assignmentTemplateClassId = classId;
+
+        const content = this.assignmentTemplates.length === 0 ? `
+            <p style="color: var(--muted);">
+              No templates yet. Tick <strong>Save as template</strong> when creating or editing an
+              assignment and it will be listed here.
+            </p>
+            <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('assignment-template-picker')">Close</button>
+            </div>
+          ` : `
+            <input type="text" id="assignment-template-search" placeholder="Search templates by title, class or description..."
+              oninput="app.renderAssignmentTemplateList(this.value)" style="width: 100%; margin-bottom: 12px;" autocomplete="off">
+            <div id="assignment-template-list" style="max-height: 55vh; overflow-y: auto;"></div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('assignment-template-picker')">Cancel</button>
+            </div>
+          `;
+
+        this.showModal('assignment-template-picker', '📋 Start From a Template', content, true);
+        if (this.assignmentTemplates.length) {
+          this.renderAssignmentTemplateList('');
+          setTimeout(() => document.getElementById('assignment-template-search')?.focus(), 50);
+        }
+      }
+
+      renderAssignmentTemplateList(query) {
+        const list = document.getElementById('assignment-template-list');
+        if (!list) return;
+
+        // Descriptions are Quill HTML; search and preview the text only.
+        const plain = (html) => {
+          const div = document.createElement('div');
+          div.innerHTML = html || '';
+          return (div.textContent || '').replace(/\s+/g, ' ').trim();
+        };
+
+        // Every word has to appear somewhere, in any order.
+        const words = (query || '').toLowerCase().split(/\s+/).filter(Boolean);
+        const matches = this.assignmentTemplates.filter(t => {
+          const hay = `${t.title} ${t.classes?.name || ''} ${plain(t.description)}`.toLowerCase();
+          return words.every(w => hay.includes(w));
+        });
+
+        if (matches.length === 0) {
+          list.innerHTML = '<p style="color: var(--muted);">No templates match that search.</p>';
+          return;
+        }
+
+        list.innerHTML = matches.map(t => {
+          const desc = plain(t.description);
+          const kind = t.assignment_type === 'info'
+            ? 'Information only'
+            : `${t.max_points ?? 100} pts · ${t.grading_type === 'rubric' ? 'Rubric' : 'Points'}${t.graded_offline ? ' · Offline' : ''}`;
+          return `
+            <div class="card" style="margin: 0 0 8px 0; padding: 12px; cursor: pointer;" onclick="app.applyAssignmentTemplate('${t.id}')">
+              <div style="font-weight: 600;">${this.escapeHtml(t.title)}</div>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 3px;">
+                ${this.escapeHtml(t.classes?.name || 'Unknown class')} · ${kind}
+              </div>
+              ${desc ? `<div style="font-size: 12px; color: var(--muted); margin-top: 5px;">${this.escapeHtml(desc.length > 140 ? desc.slice(0, 140) + '…' : desc)}</div>` : ''}
+            </div>
+          `;
+        }).join('');
+      }
+
+      // Copies a template's content into the open Create Assignment form. The
+      // due date, quarter, students and publish setting are left as they are:
+      // those belong to this assignment, not to the template. The new one is
+      // not a template itself unless the teacher ticks the box.
+      async applyAssignmentTemplate(templateId) {
+        const t = (this.assignmentTemplates || []).find(x => x.id === templateId);
+        if (!t) return;
+        this.closeModal('assignment-template-picker');
+
+        const set = (id, value) => {
+          const el = document.getElementById(id);
+          if (el && value != null) el.value = value;
+        };
+
+        // Older rows carry 'homework' and the like; anything that is not
+        // info-only is a regular assignment in this form.
+        const typeSelect = document.getElementById('assignment-type');
+        if (typeSelect) {
+          typeSelect.value = t.assignment_type === 'info' ? 'info' : 'regular';
+          this.toggleAssignmentType();
+        }
+
+        set('assignment-title', t.title);
+        if (this.assignmentDescriptionEditor) {
+          this.assignmentDescriptionEditor.root.innerHTML = t.description || '';
+        }
+        set('assignment-max-points', t.max_points);
+        set('assignment-max-submit-size', t.max_submit_size_mb);
+        set('assignment-rtc-reward', t.rtc_reward ?? 0);
+        this.updateRtcTierPreview('assignment');
+
+        const offline = document.getElementById('graded-offline');
+        if (offline) offline.checked = !!t.graded_offline;
+
+        // Categories belong to a class. Same class: use it directly. Another
+        // class: pick this class's category with the same name, if any, and
+        // otherwise leave the default selected.
+        const categorySelect = document.getElementById('assignment-category');
+        if (categorySelect && t.category_id) {
+          let targetId = null;
+          if (t.class_id === this.assignmentTemplateClassId) {
+            targetId = t.category_id;
+          } else {
+            const { data: cat } = await this.supabaseQuery(() => this.auth.supabase
+              .from('grade_categories')
+              .select('name')
+              .eq('id', t.category_id)
+              .maybeSingle());
+            const name = cat?.name?.trim().toLowerCase();
+            targetId = name
+              ? (this.createAssignmentCategories || []).find(c => c.name?.trim().toLowerCase() === name)?.id
+              : null;
+          }
+          if (targetId && [...categorySelect.options].some(o => o.value === targetId)) {
+            categorySelect.value = targetId;
+          }
+        }
+
+        // Grading last: switching to rubric reloads the rubric list, which
+        // resets the selection to the default, so the template's rubric is
+        // chosen after that finishes.
+        if (t.assignment_type !== 'info') {
+          const gradingSelect = document.getElementById('grading-type');
+          if (gradingSelect) {
+            gradingSelect.value = t.grading_type === 'rubric' ? 'rubric' : 'points';
+            await this.toggleGradingMethod();
+          }
+          const rubricSelect = document.getElementById('assignment-rubric');
+          if (t.grading_type === 'rubric' && t.rubric_id && rubricSelect) {
+            // The list only holds the default rubrics and this user's own; a
+            // template from a colleague can use one of theirs.
+            if (![...rubricSelect.options].some(o => o.value === t.rubric_id)) {
+              const { data: rubric } = await this.supabaseQuery(() => this.auth.supabase
+                .from('rubrics')
+                .select('id, name')
+                .eq('id', t.rubric_id)
+                .maybeSingle());
+              if (rubric) {
+                const opt = document.createElement('option');
+                opt.value = rubric.id;
+                opt.textContent = rubric.name;
+                rubricSelect.appendChild(opt);
+              }
+            }
+            if ([...rubricSelect.options].some(o => o.value === t.rubric_id)) {
+              rubricSelect.value = t.rubric_id;
+            }
+          }
+        }
+
+        const banner = document.getElementById('assignment-template-banner');
+        if (banner) {
+          banner.innerHTML = `📋 Filled from template <strong>${this.escapeHtml(t.title)}</strong>${t.classes?.name ? ` (${this.escapeHtml(t.classes.name)})` : ''}. Set the due date, quarter and students, then create.`;
+          banner.style.display = 'block';
+        }
+        this.showNotification('Template applied', 'success');
       }
 
       updateRtcTierPreview(prefix) {
@@ -22401,6 +22617,12 @@ Students you had withdrawn stay withdrawn.`)) {
           max_submit_size_mb: isInfoType ? 1024 : (parseInt(document.getElementById('assignment-max-submit-size')?.value) || 1024)
         };
 
+        // Only sent when ticked: the column defaults to false, and leaving it
+        // out keeps ordinary creates working on a database without it.
+        if (document.getElementById('assignment-is-template')?.checked) {
+          assignmentData.is_template = true;
+        }
+
       if (!assignmentData.title) {
         this.showNotification('Please fill in required fields', 'error');
         return;
@@ -22487,7 +22709,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
       } catch (error) {
         console.error('Error creating assignment:', error);
-        this.showNotification('Error creating assignment: ' + error.message, 'error');
+        this.showNotification('Error creating assignment: ' + this.assignmentTemplateError(error), 'error');
       }
     }
 
@@ -22796,7 +23018,21 @@ Students you had withdrawn stay withdrawn.`)) {
                   Published (visible to students)
                 </label>
               </div>
-      
+
+              <!-- data-has-column: the row came back with is_template, so the
+                   database has it and an unticked box can be saved as false. -->
+              <div class="form-group">
+                <label style="display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" id="edit-assignment-is-template" ${assignment.is_template ? 'checked' : ''} data-has-column="${'is_template' in assignment ? '1' : ''}">
+                  <div>
+                    <strong>Save as template</strong>
+                    <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                      Lists this assignment under "From Template" so it can be reused as the start of a new one.
+                    </div>
+                  </div>
+                </label>
+              </div>
+
               <!-- Student Selection Section -->
               <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
                 <div class="form-group" style="margin: 0;">
@@ -22929,22 +23165,32 @@ Students you had withdrawn stay withdrawn.`)) {
       
           const maxSubmitSizeMb = parseInt(document.getElementById('edit-assignment-max-submit-size')?.value) || 10;
 
+          const updates = {
+            title,
+            description,
+            due_date: dueDate,
+            max_points: maxPoints,
+            max_submit_size_mb: maxSubmitSizeMb,
+            category_id: categoryId || null,
+            is_published: isPublished,
+            assigned_to_all: !assignToSpecific,
+            grading_type: gradingType,
+            rubric_id: rubricId || null,
+            updated_at: new Date().toISOString()
+          };
+
+          // Written whenever the database has the column (so unticking
+          // clears it), or when ticked (so a missing column is reported
+          // rather than the tick silently going nowhere).
+          const templateBox = document.getElementById('edit-assignment-is-template');
+          if (templateBox && (templateBox.checked || templateBox.dataset.hasColumn)) {
+            updates.is_template = templateBox.checked;
+          }
+
           // Update assignment
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
-            .update({
-              title,
-              description,
-              due_date: dueDate,
-              max_points: maxPoints,
-              max_submit_size_mb: maxSubmitSizeMb,
-              category_id: categoryId || null,
-              is_published: isPublished,
-              assigned_to_all: !assignToSpecific,
-              grading_type: gradingType,
-              rubric_id: rubricId || null,
-              updated_at: new Date().toISOString()
-            })
+            .update(updates)
             .eq('id', assignmentId));
       
           if (error) throw error;
@@ -23002,7 +23248,7 @@ Students you had withdrawn stay withdrawn.`)) {
       
         } catch (error) {
           console.error('Error updating assignment:', error);
-          this.showNotification('Error: ' + error.message, 'error');
+          this.showNotification('Error: ' + this.assignmentTemplateError(error), 'error');
         }
       }
 
@@ -26446,6 +26692,13 @@ Students you had withdrawn stay withdrawn.`)) {
         // Hide all special sections first
         if (gameSection) gameSection.style.display = 'none';
         if (skillSection) skillSection.style.display = 'none';
+
+        // Game and skill assignments are written to homework_assignments, which
+        // has no template flag - only regular and info assignments can be one.
+        const templateSection = document.getElementById('template-section');
+        if (templateSection) {
+          templateSection.style.display = (assignmentType === 'game' || assignmentType === 'skill_mastery') ? 'none' : 'block';
+        }
 
         // Show/hide based on type
         if (assignmentType === 'game') {

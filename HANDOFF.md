@@ -35,6 +35,18 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-29 — Jordan's Claude
+**Assignment templates are back.** Create and Edit Assignment have a "Save as template"
+box (off by default), and Create has a **From Template** button: search the templates,
+pick one, and its title, description, points, grading, rubric, category, RTC and
+submission settings fill the form. Due date, quarter, students and publishing are always
+set fresh. It is a flag on the assignment itself, not the old separate templates table,
+so a template stays current when its assignment is edited. Game and Skill Mastery
+assignments cannot be templates (they are stored elsewhere).
+**Needs:** Luke — apply the new migration in the backend repo that adds `is_template` to
+`assignments`. Until then, ticking the box or opening From Template says the database
+update is missing; creating and editing ordinary assignments is unaffected.
+
 ## 2026-09-28 (later) — Jordan's Claude
 **The arcade's online side is ready to switch on; it has never been on.** `firebase-token`
 was never deployed, so every student has been playing RIUTIZ offline: no online matches,
