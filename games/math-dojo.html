@@ -26273,12 +26273,19 @@ const lessons = {
                     answerLabel: "P(green) =",
                     interactiveSteps: [
                         {
-                            prompt: "What is the probability formula?",
+                            // The formula in words is the point of this step, but a
+                            // student who goes straight to this spinner's numbers has
+                            // shown they know it, so those count too - as written
+                            // or simplified.
+                            prompt: "What is the probability formula? (in words)",
                             hint: "P = something / something...",
                             answer: "favorable / total",
-                            acceptableAnswers: ["favorable / total", "favorable/total", "favorable outcomes / total outcomes"],
+                            formatHint: "Write it in words, e.g., distance / time",
+                            acceptableAnswers: ["favorable / total", "favorable/total", "favorable outcomes / total outcomes",
+                                `${favorable}/${total}`, (() => { const g = gcd(favorable, total); return `${favorable / g}/${total / g}`; })()],
                             commonMistakes: {
-                                "total / favorable": "It's FAVORABLE over TOTAL, not the other way around!"
+                                "total / favorable": "It's FAVORABLE over TOTAL, not the other way around!",
+                                "total/favorable": "It's FAVORABLE over TOTAL, not the other way around!"
                             }
                         },
                         {
@@ -45262,14 +45269,47 @@ function getSmartPlaceholder(step) {
         return 'e.g., x = 5, y = 3';
     }
 
+    // One variable, two solutions after one "=": "x = 1/2, 3". The fraction
+    // rule below would otherwise answer "e.g., 3/4".
+    if (/^[a-z]\s*=\s*[^=,]+,\s*[^=,]+$/i.test(rawAnswer)) {
+        return 'e.g., x = 1/2, 4 (list both solutions)';
+    }
+
     // Function form like y = mx + b
     if (/^y\s*=\s*[\-\d]?\d*[a-z]/i.test(rawAnswer)) {
         return 'e.g., y = 2x + 3';
     }
 
+    // ---- Formulas written with words or letters ----
+    //
+    // Checked BEFORE the fraction rule below, which fires on any "/". The
+    // answer "favorable / total" was showing "e.g., 3/4", so students typed
+    // the probability as numbers when the step wanted the formula; the Law of
+    // Sines (a/sin(A) = b/sin(B)) was told the same. No digits, some letters,
+    // and a / or = means a formula, not a number. It sits ahead of the
+    // equation and polynomial rules too, which gave the Law of Cosines
+    // "e.g., 2x + 3" and u = sin(x) "e.g., 3y = 12". Superscript powers are
+    // not digits, so c² = a² + b² - 2ab·cos(C) counts as a formula.
+    // A number written straight onto letters is a coefficient (the 2 in 2ab),
+    // not a value to work out, so it does not stop this being a formula.
+    const withoutCoefficients = rawAnswer.replace(/\d+(?=[a-z])/gi, '').replace(/_\d+/g, '');   // and subscripts: b_1
+    if (!/\d/.test(withoutCoefficients) && /[a-z]/i.test(rawAnswer) && /[\/=]/.test(rawAnswer)) {
+        const MATH_WORDS = /^(sin|cos|tan|sec|csc|cot|log|ln|sqrt|cbrt|lim|pi|arc\w*)$/i;
+        const words = (rawAnswer.match(/[a-z]{3,}/gi) || []).filter(w => !MATH_WORDS.test(w));
+        return words.length
+            ? 'Write the formula in words, e.g., distance / time'
+            : `Write the formula with letters, e.g., A = l × w${/[²³⁴⁵⁶^]/.test(rawAnswer) ? ' (use ^ for powers)' : ''}`;
+    }
+
+    // A logarithm expression such as log(33)/log(5) is typed as written; the
+    // fraction rule's "e.g., 3/4" suggested working it out to a number.
+    if (/\b(log|ln)\s*\(/i.test(rawAnswer)) {
+        return 'e.g., log(8)/log(2) (type it as written)';
+    }
+
     // Equation with operators on both sides
     if (/^[a-z\d\s+\-*\/^]+=\s*[a-z\d\s+\-*\/^()]+$/i.test(rawAnswer) && /=/.test(rawAnswer)) {
-        return 'e.g., a² + b² = c² (write the full equation)';
+        return 'e.g., 3y = 12 (write the whole equation)';
     }
 
     // Factored polynomial: (x+a)(x-b)
@@ -45395,6 +45435,18 @@ function getSmartPlaceholder(step) {
     // DNE / does not exist
     if (['dne', "doesn't exist", "does not exist"].includes(answer)) {
         return 'DNE (does not exist)';
+    }
+
+    // ---- Answers that are only words ----
+    //
+    // Everything below keys off the ACCEPTABLE answers as well as the answer,
+    // so a word answer with a numeric alternative picked up a numeric example:
+    // "perpendicular" (also accepting "90°") was shown "e.g., 30° or 30
+    // degrees". If the expected answer itself is only words, say so.
+    // A real word, not a name made of capitals ("XY", "AB") or a variable ("x").
+    if (/^[a-z][a-z\s'\-]*$/i.test(rawAnswer) && /[a-z]{3,}/.test(rawAnswer) && !/^(pi|π)$/i.test(rawAnswer)) {
+        const wordCount = rawAnswer.split(/\s+/).length;
+        return wordCount >= 2 ? `Type a ${wordCount}-word phrase` : 'Type your answer in words';
     }
 
     // ---- Symbols and special characters ----
@@ -47331,12 +47383,17 @@ if ('speechSynthesis' in window) {
     }
     if (mode === 2) {
       // a ≠ 1, with roots p/a and q — the case the skill never produced.
-      const a=ri(2,4), p=ri(1,5), q=ri(1,5);
+      const a=ri(2,4), p=ri(1,5); let q=ri(1,5);
+      // Two distinct roots: p/a equal to q would be a repeated root, and the
+      // answer "x = 2, 2" reads like a mistake.
+      if (p === a*q) q = q === 5 ? 4 : q + 1;
       // a x² − (p + a q) x + p q  has roots p/a and q
       const b=-(p + a*q), c=p*q;
       const bs=b<0?`- ${Math.abs(b)}`:`+ ${b}`;
       const g=(x,y)=>y?g(y,x%y):x; const d=g(p,a);
-      const rootStr = (p/d===a/d) ? "1" : `${p/d}/${a/d}`;
+      // Reduced, and written as a whole number when it is one: 4/2 used to come
+      // out as "2/1", which no textbook writes and a student would not type.
+      const rootStr = (a/d === 1) ? String(p/d) : `${p/d}/${a/d}`;
       const answer=`x = ${rootStr}, ${q}`;
       const options=sh(U(answer, [`x = ${p}, ${q}`, `x = ${rootStr}, ${-q}`, `x = ${a}, ${q}`]));
       return { question:`Solve using the quadratic formula: ${a}x^2 ${bs}x + ${c} = 0`, answer, options, subType:"solve_a",
