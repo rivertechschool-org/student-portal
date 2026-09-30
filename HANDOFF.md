@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-09-30 — Jordan's Claude
+**The emergency roll call now asks only for children who attend that day.** It used to
+read the "attends Monday..Friday" checkboxes on student profiles, and every active
+student has all five ticked, so on a Wednesday it asked for the Tuesday/Thursday/Friday
+homeschool groups too (71 extra "unknowns"). It now uses each student's timetable, the
+same one the morning register reads. Children with no attending days set at all are
+still asked for, tagged NO DAYS SET, because that is a records gap rather than a child
+who stays home — setting their days removes them on their off days. Past events in the
+emergency log were recounted with the new rule.
+**Needs:** nothing to apply. Worth doing: set the days for the four active students who
+have none, and consider clearing or removing the unused attends_ checkboxes so nobody
+trusts them again.
+
 ## 2026-09-29 (evening) — Jordan's Claude
 **Emergencies are recorded, with a log for admins.** Turning one off now saves the state
 it ended in (expected, safe, off-site, still missing, who was missing, how long until

@@ -742,6 +742,38 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     ok('  teachers do not', !/showDrillLog\(\)/.test(t.body));
   }
 
+  console.log('\n== who is on the list ==\n');
+
+  {
+    // The board is built server-side from the timetable (student_schedule);
+    // a child with no attending days set comes back flagged, and the screen
+    // must say which kind of unknown they are.
+    const app = makeApp();
+    app._drill.students.push({ student_id: 's5', first_name: 'Quill', last_name: 'Orsay', grade_level: 5,
+      bucket: 'unknown', register: null, no_days_set: true, groups: [], state: null });
+    await app.renderDrillModal.call(app);
+    ok('a child with no days set is tagged as such', /Quill[\s\S]{0,400}NO DAYS SET/.test(app.list.innerHTML));
+    ok('  and one simply not yet marked is still NO REGISTER', /Winnow[\s\S]{0,400}NO REGISTER/.test(app.list.innerHTML));
+    ok('  and the warning says how many have no days set', /1 has <strong>no attending days set/.test(app.body));
+  }
+
+  {
+    // The warning box must not change shape as children are found, or the
+    // list under it moves.
+    const app = makeApp();
+    await app.renderDrillModal.call(app);
+    const strip = (h) => h.replace(/\d+/g, '#').replace(/(rgba?\([^)]*\)|var\([^)]*\)|transparent)/g, 'C');
+    const before = strip(app.body.match(/still to find[\s\S]*?off-site\./)[0]);
+    await app.drillAccount.call(app, 's3', 'safe');
+    const after = strip(app.body.match(/still to find[\s\S]*?off-site\./)[0]);
+    check('the unknown warning keeps the same wording once they are all found', after, before);
+    ok('  and says none are left', /0 of 1 still to find/.test(app.body));
+  }
+
+  ok('the board asks the timetable, not the attends_ flags (see the backend migration)',
+     !/attends_(monday|tuesday|wednesday|thursday|friday)/.test(
+       html.slice(html.indexOf('_drillHeadHtml(b) {'), html.indexOf('async showDrillContacts('))));
+
   console.log('\n== the wiring ==\n');
 
   ok('teachers reach it from their dashboard',
