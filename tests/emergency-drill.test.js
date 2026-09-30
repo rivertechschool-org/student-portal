@@ -445,7 +445,12 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     const app = makeApp();
     app._drill.students.forEach(s => { if (s.bucket !== 'out') s.state = 'safe'; });
     await app.renderDrillModal.call(app);
-    ok('everyone accounted for says so', /Everyone is accounted for/.test(app.list.innerHTML));
+    // Nobody leaves the list: all three are still there, all green, and the
+    // number at the top is what says it is done.
+    ok('everyone accounted for still shows everyone',
+       /Marisol/.test(app.list.innerHTML) && /Teodor/.test(app.list.innerHTML) && /Winnow/.test(app.list.innerHTML));
+    ok('  every one of them green', (app.list.innerHTML.match(/✓ SAFE/g) || []).length === 3);
+    ok('  and the count reads zero', />\s*0\s*<\/div>\s*<div[^>]*>unaccounted for/.test(app.body));
   }
 
   console.log('\n== it never says "drill" ==\n');
@@ -555,10 +560,26 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     check('  nor does another teacher\'s tick move anyone',
           app.list.innerHTML.match(/(Marisol|Teodor|Winnow)/g), before);
 
-    // Changing the filter is the moment the list may tidy up.
+    // Not even changing the filter, group or search takes a ticked child
+    // out: they stay, green-bordered, in the same order.
     await app.setDrillFilter.call(app, 'todo');
-    ok('changing the filter then drops the accounted',
-       !/Marisol/.test(app.list.innerHTML) && /Winnow/.test(app.list.innerHTML));
+    check('re-picking "To account for" keeps the accounted, in order',
+          app.list.innerHTML.match(/(Marisol|Teodor|Winnow)/g), before);
+    await app.setDrillFilter.call(app, 'unknown');
+    await app.setDrillFilter.call(app, 'todo');
+    check('  so does going to another filter and back',
+          app.list.innerHTML.match(/(Marisol|Teodor|Winnow)/g), before);
+    app._drill.students[2].groups = ['FullOldElementary'];
+    await app.drillAccount.call(app, 's3', 'safe');
+    await app.setDrillFilter.call(app, 'unknown');
+    ok('  "Unknown" keeps an unknown child once found', /Winnow/.test(app.list.innerHTML));
+    await app.setDrillFilter.call(app, 'todo');
+    await app.setDrillGroup.call(app, 'FullOldElementary');
+    ok('  and so does a group filter', /Winnow/.test(app.list.innerHTML) && /✓ SAFE/.test(app.list.innerHTML));
+    app.searchBox.value = 'mar';
+    await app.filterDrill.call(app);
+    await app.setDrillGroup.call(app, 'FullOldElementary');
+    ok('  and a search', /Marisol/.test(app.list.innerHTML) && /✓ SAFE/.test(app.list.innerHTML));
   }
 
   console.log('\n== day groups ==\n');
