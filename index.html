@@ -1164,8 +1164,10 @@
                 this.handleHashNavigation();
                 window.addEventListener('hashchange', () => this.handleHashNavigation());
 
-                // Handle messages from game iframes
+                // Handle messages from game iframes. Every game and skill tree
+                // this page hosts is same-origin; nothing else gets a say.
                 window.addEventListener('message', (event) => {
+                    if (event.origin !== window.location.origin || !event.data) return;
                     if (event.data.action === 'closeGame') {
                         this.closeGame();
                     } else if (event.data.action === 'exitFullscreen') {
@@ -1199,8 +1201,41 @@
                     window.PortalUI.showNotification(`Welcome back, ${detail.profile?.first_name || 'User'}!`, 'success');
                 } else if (detail.event === 'SIGNED_OUT') {
                     this._lastSignedInUserId = null;
+                    this.clearSharedGameStorage();
                     this.showLoginForm();
                     document.body.classList.remove('authenticated');
+                }
+            }
+
+            // Local-storage keys that older game builds wrote WITHOUT saying
+            // whose they were, so on a shared device the next student loaded
+            // the last one's progress (and Math Dojo then saved it to the new
+            // student's account). Current builds key everything by ?userId=
+            // and tag it with an owner; these leftovers are only ever someone
+            // else's data, so they go at sign-out. Per-student keys
+            // (<name>_<profile id>, owner-tagged) are left: they are only read
+            // back for the student they belong to.
+            clearSharedGameStorage() {
+                const exact = [
+                    'math_skill_states', 'math_skill_progress_guest', 'subskill_progress',
+                    'current_user_id', 'dojo_session_complete', 'belt_test_complete',
+                    'dojo_lesson_complete', 'pe_log_local', 'pe_states_local',
+                    'tq_save_local', 'wasteland_adventure_save',
+                    'english_lyceum_rank', 'science_lab_rank', 'chronicle_hall_rank',
+                    'art_studio_rank', 'life_compass_rank', 'berean_hall_rank'
+                ];
+                try {
+                    exact.forEach(k => localStorage.removeItem(k));
+                    // The skill tree's unscoped '<subject>_skill_states' and
+                    // 'skillTreeProgress_<subject>' keys, for every subject.
+                    const doomed = [];
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i);
+                        if (/^[a-z]+_skill_states$/.test(k) || /^skillTreeProgress_/.test(k)) doomed.push(k);
+                    }
+                    doomed.forEach(k => localStorage.removeItem(k));
+                } catch (e) {
+                    console.warn('Could not clear shared game storage:', e);
                 }
             }
 
@@ -1399,8 +1434,12 @@
                 document.addEventListener('fullscreenchange', () => this.handleFullscreenChange());
                 document.addEventListener('webkitfullscreenchange', () => this.handleFullscreenChange());
 
-                // Legacy logout
-                this.addSafeEventListener('logout-btn', 'click', () => this.auth.logout());
+                // Legacy logout. Clear the device-shared game keys first: the
+                // next person to sign in on this browser must not inherit them.
+                this.addSafeEventListener('logout-btn', 'click', () => {
+                    this.clearSharedGameStorage();
+                    this.auth.logout();
+                });
             }
 
             addSafeEventListener(elementId, event, handler) {
@@ -4656,7 +4695,7 @@
                 document.getElementById('game-iframe-container').classList.remove('hidden');
                 
                 const iframe = document.getElementById('game-iframe');
-                iframe.src = game.url;
+                iframe.src = this.withStudentId(game.url);
                 document.getElementById('current-game-title').textContent = game.title;
                 
                 // Enable touch events in iframe
@@ -4666,6 +4705,16 @@
                 };
                 
                 console.log(`🎮 Opened game: ${game.title}`);
+            }
+
+            // Games keep their local progress per student (shared devices), so
+            // they need to be told whose it is: ?userId=<profile id>. The
+            // profile id, not the auth uid - that is the id the database rows
+            // use (studentRecordId in shared/config.js explains the difference).
+            withStudentId(url) {
+                const id = this.auth.getUserInfo().profile?.id;
+                if (!id) return url;
+                return url + (url.includes('?') ? '&' : '?') + 'userId=' + encodeURIComponent(id);
             }
 
             closeGame() {
@@ -5108,8 +5157,12 @@
                 this.currentIframe = null;
                 this.messageHandlers = new Map();
                 
-                // Set up message listener for skill tree communication
+                // Set up message listener for skill tree communication.
+                // Same-origin only: these messages write to the signed-in
+                // student's record, and every page this host embeds (games/,
+                // SkillTreeViewer.html, viewer/3d/) is served from this origin.
                 window.addEventListener('message', (event) => {
+                    if (event.origin !== window.location.origin) return;
                     this.handleSkillTreeMessage(event);
                 });
             }
@@ -5317,6 +5370,11 @@
                         this.handleTechQuestSave(event.source, event.data);
                         break;
 
+                    case 'GAME_SESSION_SUMMARY':
+                        // Homework progress: portal/index.html turns these into
+                        // assignment progress. Nothing to save on the student site.
+                        break;
+
                     default:
                         console.log('Unknown message from skill tree/game:', event.data.type);
                 }
@@ -5338,6 +5396,13 @@
             async handleResetSkillProgress(data) {
                 const { subject } = data;
                 if (!subject) return;
+                // RESET deletes a whole subject from the record. It comes from
+                // the skill tree's override code, which only staff can use; the
+                // tree is just a page, so check again here.
+                if (!this.isStaffSession()) {
+                    console.warn('Ignoring RESET_SKILL_PROGRESS: override codes are staff-only');
+                    return;
+                }
 
                 console.log('🔄 Resetting skill progress for:', subject);
 
@@ -5366,6 +5431,7 @@
                         // Also clear localStorage fallback
                         localStorage.removeItem(`skill_progress_${userId}`);
                         localStorage.removeItem('math_skill_states');
+                        localStorage.removeItem(`${String(subject).toLowerCase()}_skill_states_${userId}`);
                         console.log('✅ LocalStorage cleared');
                     } else {
                         console.log('No user logged in, skipping database reset');
@@ -5375,83 +5441,166 @@
                 }
             }
 
+            // Is the signed-in person staff? Gates the skill tree's override
+            // messages. UX-level like every client check (RLS is the control).
+            isStaffSession() {
+                const t = this.portal.auth.getUserInfo().profile?.user_type;
+                return t === 'teacher' || t === 'admin';
+            }
+
+            // BACKFILL_SKILLS comes from two places:
+            //   - a Math Dojo belt test (reason absent / 'belt_test'): the skills
+            //     that test assessed, each with the state it earned;
+            //   - the skill tree's BACKFILL override code (reason 'override'):
+            //     staff marking prerequisites mastered.
+            // This used to save EVERY sent skill as mastered/100, whatever state
+            // it was sent with - so a belt test turned "unlocked" and "70%" into
+            // mastery. Now the sent state is honoured:
+            //   - sent as mastered -> upsert as mastered (never lowering a score)
+            //   - anything else    -> insert only when the student has no row
+            //     for that skill yet; an existing row is never overwritten or
+            //     downgraded (ignoreDuplicates = ON CONFLICT DO NOTHING).
+            planBackfillRows(userId, subject, skills, source, now, cached) {
+                const KEEP = ['activated', 'in_progress', 'available'];
+                const bySkill = new Map();
+                for (const s of skills) {
+                    const name = s && (s.skillName || s.skill);
+                    if (!name) continue;
+                    const st = s.state;
+                    if (st !== 'mastered' && !KEEP.includes(st)) continue;   // 'locked' etc. says nothing
+                    const prev = bySkill.get(name);
+                    if (prev && prev.state === 'mastered') continue;           // strongest claim wins
+                    const score = Math.max(0, Math.min(100, Math.round(Number(s.mastery_score ?? s.masteryScore) || 0)));
+                    bySkill.set(name, { state: st, score });
+                }
+                const masteredRows = [], insertOnlyRows = [];
+                for (const [name, { state, score }] of bySkill) {
+                    if (state === 'mastered') {
+                        const prevScore = (cached && cached[name] && cached[name].mastery_score) || 0;
+                        masteredRows.push({
+                            user_id: userId, subject, skill_name: name,
+                            state: 'mastered',
+                            mastery_score: Math.max(score || 100, prevScore),
+                            last_practiced: now,
+                            mastered_at: now,          // the server keeps the first one
+                            source, updated_at: now
+                        });
+                    } else {
+                        insertOnlyRows.push({
+                            user_id: userId, subject, skill_name: name,
+                            state, mastery_score: score,
+                            source, updated_at: now
+                        });
+                    }
+                }
+                return { masteredRows, insertOnlyRows };
+            }
+
             async handleBackfillSkills(data) {
                 const { subject, skills } = data;
-                if (!subject || !skills || skills.length === 0) return;
+                if (!subject || !Array.isArray(skills) || skills.length === 0) return;
 
-                console.log(`🔄 Backfilling ${skills.length} prerequisite skills to Supabase for ${subject}`);
-
-                // Update local progress
-                if (!this.skillProgress[subject]) {
-                    this.skillProgress[subject] = {};
+                const isOverride = data.reason === 'override';
+                if (isOverride && !this.isStaffSession()) {
+                    console.warn('Ignoring BACKFILL_SKILLS override: override codes are staff-only');
+                    return;
                 }
+                const source = isOverride ? 'teacher' : 'belt_test';
+                if (!this.portal.auth.isAuthenticated()) return;
 
+                const userId = this.portal.auth.getUserInfo().profile.id;
                 const now = new Date().toISOString();
-                for (const s of skills) {
-                    this.skillProgress[subject][s.skillName] = {
-                        state: 'mastered',
-                        mastery_score: 100,
-                        last_practiced: now,
-                        practice_count: 1,
-                        decay_rate: 14,
-                        mastered_at: now
+                if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                const cached = this.skillProgress[subject];
+                const { masteredRows, insertOnlyRows } =
+                    this.planBackfillRows(userId, subject, skills, source, now, cached);
+
+                console.log(`🔄 Backfill (${source}) for ${subject}: ${masteredRows.length} mastered, ${insertOnlyRows.length} insert-if-new`);
+
+                // Local cache mirrors what the database will hold.
+                for (const r of masteredRows) {
+                    cached[r.skill_name] = {
+                        ...cached[r.skill_name],
+                        state: 'mastered', mastery_score: r.mastery_score, last_practiced: now,
+                        decay_rate: (cached[r.skill_name] && cached[r.skill_name].decay_rate) || 14,
+                        mastered_at: (cached[r.skill_name] && cached[r.skill_name].mastered_at) || now
                     };
                 }
-
-                // Bulk upsert to Supabase
-                if (this.portal.auth.isAuthenticated()) {
-                    try {
-                        const userId = this.portal.auth.getUserInfo().profile.id;
-
-                        const rows = skills.map(s => ({
-                            user_id: userId,
-                            subject: subject,
-                            skill_name: s.skillName,
-                            state: 'mastered',
-                            mastery_score: 100,
-                            last_practiced: now,
-                            practice_count: 1,
-                            mastered_at: now,
-                            updated_at: now
-                        }));
-
-                        const deduped = Array.from(
-                            rows.reduce((m, r) => m.set(`${r.user_id}|${r.subject}|${r.skill_name}`, r), new Map()).values()
-                        );
-                        const { error } = await this.portal.auth.supabase
-                            .from('skill_progress')
-                            .upsert(deduped, { onConflict: 'user_id,subject,skill_name' });
-
-                        if (error) {
-                            console.error('Failed to backfill skills to database:', error);
-                        } else {
-                            console.log(`✅ Backfilled ${skills.length} skills to database`);
-                        }
-                    } catch (e) {
-                        console.error('Error backfilling skills:', e);
+                for (const r of insertOnlyRows) {
+                    if (!cached[r.skill_name]) {
+                        cached[r.skill_name] = { state: r.state, mastery_score: r.mastery_score, practice_count: 0, decay_rate: 14 };
                     }
                 }
 
+                try {
+                    const sb = this.portal.auth.supabase;
+                    if (masteredRows.length > 0) {
+                        const { error } = await sb.from('skill_progress')
+                            .upsert(masteredRows, { onConflict: 'user_id,subject,skill_name' });
+                        if (error) console.error('Failed to save backfilled mastery:', error);
+                    }
+                    if (insertOnlyRows.length > 0) {
+                        const { error } = await sb.from('skill_progress')
+                            .upsert(insertOnlyRows, { onConflict: 'user_id,subject,skill_name', ignoreDuplicates: true });
+                        if (error) console.error('Failed to insert backfilled skills:', error);
+                    }
+                } catch (e) {
+                    console.error('Error backfilling skills:', e);
+                }
+
                 this.updateSkillsCounter();
+            }
+
+            // Which entries of the Dojo's local skill map are worth writing?
+            // Only real changes, and never a mastery claim: the map is the
+            // Dojo's local cache, and every mastery it holds was already sent
+            // with its evidence (DOGO_SESSION_COMPLETE, DOGO_LESSON_COMPLETE,
+            // BACKFILL_SKILLS) and saved from there. Writing it again from the
+            // cache is how leftovers became someone's mastery. A cached state
+            // below what the student already has is stale, not a downgrade.
+            filterDojoMapChanges(subject, skills) {
+                const MASTERY = ['mastered', 'activated'];
+                const cached = this.skillProgress[subject] || {};
+                const out = {};
+                Object.entries(skills || {}).forEach(([name, skill]) => {
+                    if (!skill || !skill.state) return;
+                    const prev = cached[name];
+                    const prevState = prev && (typeof prev === 'string' ? prev : prev.state);
+                    if (MASTERY.includes(skill.state) && !MASTERY.includes(prevState)) return;
+                    if (MASTERY.includes(prevState) && !MASTERY.includes(skill.state)) return;
+                    if (prev && prevState === skill.state &&
+                        (prev.mastery_score || 0) === (skill.mastery_score || 0)) return;
+                    out[name] = skill;
+                });
+                return out;
             }
 
             handleDojoSkillUpdate(data) {
                 console.log('📥 Received skill update from Dojo');
                 const subject = data.subject || 'Math';
 
+                // Shared devices: the Dojo tags its map with the student it
+                // belongs to (?userId= we passed). A map with any other owner -
+                // a guest's, or the previous student's - is never saved here.
+                const me = this.portal.auth.getUserInfo().profile?.id;
+                if (!me || !data.owner || String(data.owner) !== String(me)) {
+                    console.warn('Ignoring Dojo skill map: it is not the signed-in student\'s');
+                    return;
+                }
+
                 // Update local skill progress for the relevant subject
                 if (data.skills) {
-                    // Merge into local progress (don't overwrite, merge per-skill)
+                    const changed = this.filterDojoMapChanges(subject, data.skills);
                     if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
-                    Object.entries(data.skills).forEach(([name, skill]) => {
+                    Object.entries(changed).forEach(([name, skill]) => {
                         this.skillProgress[subject][name] = {
                             ...this.skillProgress[subject][name],
                             ...skill
                         };
                     });
 
-                    // Save all updated skills to Supabase
-                    this.bulkSaveSkillsToSupabase(subject, data.skills);
+                    // Save only what changed
+                    if (Object.keys(changed).length > 0) this.bulkSaveSkillsToSupabase(subject, changed, 'dojo');
                 }
 
                 // Update skills counter
@@ -5513,6 +5662,7 @@
                             mastery_score: data.masteryScore || 0,
                             last_practiced: now,
                             practice_count: this.skillProgress[subject][skillName].practice_count,
+                            source: 'dojo',
                             updated_at: now
                         }, { onConflict: 'user_id,subject,skill_name' });
                     if (error) console.error('Failed to save skill progress:', error);
@@ -5595,6 +5745,9 @@
                         .select('save')
                         .eq('user_id', profile.id)
                         .maybeSingle();
+                    // A failed read is NOT "no save": say so (loadFailed), or the
+                    // game starts fresh and its next autosave overwrites the real
+                    // save. GRIDFALL holds off saving until a load succeeds.
                     if (error) console.error('Failed to load quest save:', error);
                     // also send teacher-verified project rubric evidence so the game can
                     // sync project-node mastery onto the skill tree (student owns those rows)
@@ -5605,31 +5758,48 @@
                         .order('recorded_at', { ascending: false })
                         .limit(500);
                     if (pErr) console.error('Failed to load project log:', pErr);
-                    source.postMessage({ type: 'TQ_SAVE_DATA', save: (data && data.save) || null, projects: projects || [] }, '*');
+                    source.postMessage({
+                        type: 'TQ_SAVE_DATA',
+                        save: error ? null : ((data && data.save) || null),
+                        projects: projects || [],
+                        loadFailed: !!error,
+                        error: error ? error.message : null
+                    }, '*');
                 } catch (e) {
                     console.error('Error sending quest save:', e);
+                    try {
+                        source.postMessage({ type: 'TQ_SAVE_DATA', save: null, projects: [], loadFailed: true,
+                            error: String((e && e.message) || e) }, '*');
+                    } catch (_) {}
                 }
             }
 
             async handleTechQuestSave(source, data) {
                 // Persist the GRIDFALL save blob. Identity from the session, never the message.
-                if (!this.portal.auth.isAuthenticated()) return;
+                // Every outcome is answered (echoing the game's `seq`), because the
+                // game only shows "saved" on an ok:true for its latest save.
+                const seq = (data && data.seq !== undefined) ? data.seq : null;
+                const reply = (ok, error) => {
+                    if (source) source.postMessage({ type: 'TQ_SAVED', ok, error: error || null, seq }, '*');
+                };
+                if (!this.portal.auth.isAuthenticated()) { reply(false, 'not signed in'); return; }
                 try {
                     const profile = this.portal.auth.getUserInfo().profile;
-                    if (!data.save || typeof data.save !== 'object') return;
+                    if (!data.save || typeof data.save !== 'object') { reply(false, 'bad save'); return; }
                     const blob = JSON.stringify(data.save);
                     if (blob.length > 400000) {   // sanity cap ~400KB
-                        if (source) source.postMessage({ type: 'TQ_SAVED', ok: false, error: 'save too large' }, '*');
+                        reply(false, 'save too large');
                         return;
                     }
                     const { error } = await this.portal.auth.supabase
                         .from('tech_quest_saves')
                         .upsert({ user_id: profile.id, save: data.save, updated_at: new Date().toISOString() },
                                 { onConflict: 'user_id' });
-                    if (source) source.postMessage({ type: 'TQ_SAVED', ok: !error, error: error ? error.message : null }, '*');
+                    reply(!error, error ? error.message : null);
                     if (error) console.error('Failed to save quest:', error);
                 } catch (e) {
                     console.error('Error saving quest:', e);
+                    reply(false, String((e && e.message) || e));
                 }
             }
 
@@ -5648,6 +5818,13 @@
                         ? data.skillProgress
                         : Object.entries(data.skillProgress).map(([skill, p]) => ({ skill, ...p }));
                     const seen = new Set();
+                    // Label every row with what produced it (skill_progress_history
+                    // keeps it): a belt test, a recall run, a lesson, a subject game
+                    // (which sends `game`), or ordinary Dojo practice.
+                    const source = data.mode === 'placement' ? 'belt_test'
+                        : data.mode === 'retention' ? 'recall'
+                        : data.mode === 'learning' ? 'lesson'
+                        : data.game ? 'game' : 'dojo';
 
                     // Phase 2 BKT — index by skill name so legacy upserts can
                     // pick up p_mastered + last_evidence_at + decay reset.
@@ -5678,6 +5855,7 @@
                             mastery_score: progress.masteryScore || 0,
                             last_practiced: now,
                             practice_count: this.skillProgress[subject][skillName].practice_count,
+                            source,
                             updated_at: now
                         };
                         // Layer BKT data on top when this skill has it.
@@ -5706,6 +5884,7 @@
                             last_evidence_at: bu.last_evidence_at || now,
                             last_practiced: now,
                             decay_steps_applied: 0,
+                            source,
                             updated_at: now
                         });
                     }
@@ -5779,6 +5958,7 @@
                             last_practiced: now,
                             practice_count: this.skillProgress[subject][skillName].practice_count,
                             mastered_at: now,
+                            source: 'lesson',
                             updated_at: now
                         }, { onConflict: 'user_id,subject,skill_name' });
                     if (error) console.error('Failed to save lesson completion:', error);
@@ -5884,122 +6064,171 @@
                 }
             }
 
+            // One entry per skill name. A skill that cleared in ANY slot counts
+            // as cleared and is dropped from failed: the line-up pads repeats of
+            // the same skill, and a later miss should not undo an earned clear
+            // (the same rule Math Dojo's endRetentionGauntlet applies).
+            dedupeGauntletLists(cleared, failed) {
+                const key = (s) => s && (s.skill || s.domain);
+                const uniq = (arr) => {
+                    const seen = new Set(), out = [];
+                    for (const s of (Array.isArray(arr) ? arr : [])) {
+                        const k = key(s);
+                        if (!k || seen.has(k)) continue;
+                        seen.add(k); out.push(s);
+                    }
+                    return out;
+                };
+                const c = uniq(cleared);
+                const clearedKeys = new Set(c.map(key));
+                return { cleared: c, failed: uniq(failed).filter(s => !clearedKeys.has(key(s))) };
+            }
+
+            // What a recall run may write. Recall is a CHECK on what the student
+            // already has, so it only touches skills that already have a row
+            // (`existing`, freshly read from the database), and:
+            //   cleared + mastered   -> stays mastered, score raised to >= 90
+            //   cleared + activated  -> stays activated, score raised to >= 90
+            //   cleared + anything else -> practice recorded, state unchanged
+            //                          (a clear confirms mastery, never creates it)
+            //   failed  + mastered   -> demoted to activated, score capped at 70
+            //   failed  + anything else -> practice recorded, never promoted
+            //                          (it used to write 'activated' - which the
+            //                          tree shows as Mastered - for a FAILED skill)
+            // `existing` null means the lookup failed: write nothing rather
+            // than guess.
+            planRecallRows(userId, subject, cleared, failed, existing, now) {
+                const rows = [];
+                if (!existing) return rows;
+                const base = (name, prev) => ({
+                    user_id: userId, subject, skill_name: name,
+                    last_practiced: now,
+                    practice_count: (prev.practice_count || 0) + 1,
+                    source: 'recall', updated_at: now
+                });
+                for (const c of cleared) {
+                    const name = c.skill || c.domain;
+                    const prev = existing.get(name);
+                    if (!prev) continue;
+                    const row = { ...base(name, prev), state: prev.state, mastery_score: prev.mastery_score || 0 };
+                    if (prev.state === 'mastered' || prev.state === 'activated') {
+                        row.mastery_score = Math.max(prev.mastery_score || 0, 90);
+                    }
+                    rows.push(row);
+                }
+                for (const f of failed) {
+                    const name = f.skill || f.domain;
+                    const prev = existing.get(name);
+                    if (!prev) continue;
+                    const row = { ...base(name, prev), state: prev.state, mastery_score: prev.mastery_score || 0 };
+                    if (prev.state === 'mastered') {
+                        row.state = 'activated';
+                        row.mastery_score = Math.min(prev.mastery_score || 70, 70);
+                    } else if (prev.state === 'activated') {
+                        row.mastery_score = Math.min(prev.mastery_score || 70, 70);
+                    }
+                    rows.push(row);
+                }
+                return rows;
+            }
+
             async handleGauntletComplete(data) {
                 if (!this.portal.auth.isAuthenticated()) return;
                 try {
                     const subject = data.subject || 'Math';
-                    // Per-subject RTC namespace so Math and English 24h cooldowns
-                    // never collide. Math keeps its original 'retention_gauntlet' type.
-                    const refType = subject === 'Math' ? 'retention_gauntlet' : `recall_trials_${subject.toLowerCase()}`;
                     const label = subject === 'Math' ? 'Retention Gauntlet' : 'Recall Trials';
                     const userId = this.portal.auth.getUserInfo().profile.id;
                     const now = new Date().toISOString();
-                    const cleared = Array.isArray(data.cleared) ? data.cleared : [];
-                    const failed = Array.isArray(data.failed) ? data.failed : [];
+                    const sb = this.portal.auth.supabase;
+                    const { cleared, failed } = this.dedupeGauntletLists(data.cleared, data.failed);
 
                     // ----- Per-category reward rates -----
                     // recent (top 7 freshly mastered)        = 3 RTC/clear
                     // touch_on (recap of stale-but-recent)   = 2 RTC/clear
                     // retention (long-term recall, > 30 days)= 1 RTC/clear
-                    // No total cap and no per-day session multiplier — students can
-                    // grind every Math skill they own in a single day, but each
-                    // skill cleared via retention_gauntlet is locked out for 24h.
+                    // The amount actually minted is decided server-side by
+                    // award_skill_gauntlet_rtc (with its own daily caps); these
+                    // rates only shape the projection the game shows.
                     const PER_CATEGORY_RTC = { recent: 3, touch_on: 2, retention: 1 };
 
-                    // Per-skill 24h cooldown: skills already rewarded via the gauntlet
-                    // in the last 24h do not pay again, even if cleared again.
+                    // Per-skill 24h cooldown: a skill already cleared in a recall
+                    // run for this subject in the last 24h does not pay again.
+                    // This used to look for rtc_transactions of type
+                    // 'retention_gauntlet' / 'recall_trials_*' with the skill in
+                    // reference_id - but the RPC writes type 'skill_gauntlet' and
+                    // a reference id with no skill in it, so it never matched.
+                    // The per-skill record of a clear is the session log below.
                     const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
                     const recentlyRewarded = new Set();
                     try {
-                        const { data: recentTx } = await this.portal.auth.supabase
-                            .from('rtc_transactions')
-                            .select('reference_id')
+                        const { data: recentRuns } = await sb
+                            .from('math_dojo_sessions')
+                            .select('skill_details')
                             .eq('user_id', userId)
-                            .eq('reference_type', refType)
+                            .eq('subject', subject)
+                            .eq('mode', 'retention')
                             .gte('created_at', dayAgo);
-                        (recentTx || []).forEach(tx => {
-                            // reference_id format: retention:<userId>:<skillName>:<timestamp>
-                            if (!tx.reference_id) return;
-                            const parts = tx.reference_id.split(':');
-                            if (parts[0] === 'retention' && parts.length >= 4) {
-                                const skillName = parts.slice(2, -1).join(':');
-                                recentlyRewarded.add(skillName);
-                            }
+                        (recentRuns || []).forEach(run => {
+                            (Array.isArray(run.skill_details) ? run.skill_details : []).forEach(d => {
+                                if (d && d.cleared) recentlyRewarded.add(d.skill || d.domain);
+                            });
                         });
                     } catch (_) {}
 
-                    const eligibleForRtc = cleared.filter(c => !recentlyRewarded.has(c.skill || c.domain));
-                    const skippedCooldown = cleared.length - eligibleForRtc.length;
-                    const rtcAward = eligibleForRtc.reduce((sum, c) => sum + (PER_CATEGORY_RTC[c.category] ?? 1), 0);
-
-                    // Demote skills that failed the gauntlet: mastered -> activated
-                    if (failed.length > 0) {
-                        const rows = failed.map(f => {
-                            const name = f.skill || f.domain;
-                            if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
-                            const prev = this.skillProgress[subject][name] || {};
-                            this.skillProgress[subject][name] = {
-                                ...prev,
-                                state: 'activated',
-                                last_practiced: now
-                            };
-                            return {
-                                user_id: userId,
-                                subject: subject,
-                                skill_name: name,
-                                state: 'activated',
-                                mastery_score: Math.min(prev.mastery_score || 70, 70),
-                                last_practiced: now,
-                                practice_count: (prev.practice_count || 0) + 1,
-                                updated_at: now
-                            };
-                        });
-                        const { error: demoteErr } = await this.portal.auth.supabase
-                            .from('skill_progress')
-                            .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
-                        if (demoteErr) console.error('Failed to demote gauntlet failures:', demoteErr);
-                        else console.log(`✅ Demoted ${rows.length} skills from gauntlet failure`);
+                    // The student's current rows for these skills. Recall may only
+                    // touch skills that already exist (planRecallRows).
+                    const names = [...new Set([...cleared, ...failed].map(s => s.skill || s.domain).filter(Boolean))];
+                    let existing = null;
+                    if (names.length > 0) {
+                        try {
+                            const { data: rows, error } = await sb
+                                .from('skill_progress')
+                                .select('skill_name, state, mastery_score, practice_count, mastered_at')
+                                .eq('user_id', userId)
+                                .eq('subject', subject)
+                                .in('skill_name', names);
+                            if (error) console.error('Recall: could not read existing skills, writing nothing:', error);
+                            else existing = new Map((rows || []).map(r => [r.skill_name, r]));
+                        } catch (e) {
+                            console.error('Recall: could not read existing skills, writing nothing:', e);
+                        }
+                    } else {
+                        existing = new Map();
                     }
 
-                    // Bump last_practiced on cleared skills so retention shows as recent
-                    if (cleared.length > 0) {
-                        const rows = cleared.map(c => {
-                            const name = c.skill || c.domain;
-                            const prev = (this.skillProgress[subject] && this.skillProgress[subject][name]) || {};
-                            if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
-                            this.skillProgress[subject][name] = { ...prev, state: 'mastered', last_practiced: now };
-                            return {
-                                user_id: userId,
-                                subject: subject,
-                                skill_name: name,
-                                state: 'mastered',
-                                mastery_score: Math.max(prev.mastery_score || 0, 90),
-                                last_practiced: now,
-                                practice_count: (prev.practice_count || 0) + 1,
-                                mastered_at: prev.mastered_at || now,
-                                updated_at: now
+                    const rows = this.planRecallRows(userId, subject, cleared, failed, existing, now);
+                    if (rows.length > 0) {
+                        if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                        rows.forEach(r => {
+                            this.skillProgress[subject][r.skill_name] = {
+                                ...(this.skillProgress[subject][r.skill_name] || {}),
+                                state: r.state, mastery_score: r.mastery_score,
+                                last_practiced: now, practice_count: r.practice_count
                             };
                         });
-                        const { error: clearedErr } = await this.portal.auth.supabase
+                        const { error: recallErr } = await sb
                             .from('skill_progress')
                             .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
-                        if (clearedErr) console.error('Failed to refresh cleared gauntlet skills:', clearedErr);
+                        if (recallErr) console.error('Failed to save recall results:', recallErr);
+                        else console.log(`✅ Recall updated ${rows.length} existing skills`);
                     }
 
-                    // Per-skill RTC award: one transaction per eligible skill so the
-                    // per-skill 24h cooldown lookup can identify them next time. Each
-                    // amount is the per-category rate (recent 3 / touch_on 2 / retention 1).
+                    // Only clears of skills the student actually has can pay.
+                    const eligibleForRtc = cleared.filter(c => {
+                        const name = c.skill || c.domain;
+                        return existing && existing.has(name) && !recentlyRewarded.has(name);
+                    });
+                    const skippedCooldown = cleared.filter(c => recentlyRewarded.has(c.skill || c.domain)).length;
+
+                    // Award through the dedicated system-granted RPC, which
+                    // computes and mints the amount server-side. Swallow any
+                    // error (e.g. RPC not yet deployed) and fall back to 0 so the
+                    // gauntlet flow never crashes.
                     let actualAwarded = 0;
                     const rewardedByCategory = { recent: 0, touch_on: 0, retention: 0 };
                     if (eligibleForRtc.length > 0) {
-                        // H-11: process_rtc_transaction with 'earn_skill' is rejected
-                        // for student callers by the hardened RPC (awards 0). Route
-                        // gauntlet awards through the dedicated system-granted RPC,
-                        // which computes and mints the amount server-side. Swallow any
-                        // error (e.g. RPC not yet deployed) and fall back to 0 so the
-                        // gauntlet flow never crashes.
                         try {
-                            const { data: awarded, error: rtcErr } = await this.portal.auth.supabase
+                            const { data: awarded, error: rtcErr } = await sb
                                 .rpc('award_skill_gauntlet_rtc', { p_skill_count: eligibleForRtc.length });
                             if (rtcErr) console.error('Failed to award gauntlet RTC:', rtcErr);
                             else actualAwarded = Number(awarded) || 0;
@@ -6009,13 +6238,18 @@
                         console.log(`🪙 Awarded ${actualAwarded} RTC for ${label}`);
                     }
 
-                    // Log session to math_dojo_sessions so the weekly card picks it up
+                    // Log session to math_dojo_sessions so the weekly card picks it
+                    // up - and so the next run's cooldown can see these clears.
                     try {
+                        const stateOf = (name) => {
+                            const r = rows.find(x => x.skill_name === name);
+                            return r ? r.state : null;
+                        };
                         const skillDetails = [
-                            ...cleared.map(c => ({ skill: c.skill, domain: c.domain, tier: c.tier, state: 'mastered', cleared: true })),
-                            ...failed.map(f => ({ skill: f.skill, domain: f.domain, tier: f.tier, state: 'activated', cleared: false }))
+                            ...cleared.map(c => ({ skill: c.skill, domain: c.domain, tier: c.tier, state: stateOf(c.skill || c.domain), cleared: true })),
+                            ...failed.map(f => ({ skill: f.skill, domain: f.domain, tier: f.tier, state: stateOf(f.skill || f.domain), cleared: false }))
                         ];
-                        await this.portal.auth.supabase
+                        await sb
                             .from('math_dojo_sessions')
                             .insert({
                                 user_id: userId,
@@ -6057,7 +6291,7 @@
                 }
             }
 
-            async bulkSaveSkillsToSupabase(subject, skills) {
+            async bulkSaveSkillsToSupabase(subject, skills, source = 'dojo') {
                 if (!this.portal.auth.isAuthenticated()) return;
                 try {
                     const userId = this.portal.auth.getUserInfo().profile.id;
@@ -6075,6 +6309,7 @@
                             last_practiced: skill.last_practiced || now,
                             practice_count: skill.practice_count || 0,
                             mastered_at: skill.mastered_at || null,
+                            source,
                             updated_at: now
                         });
                     });
@@ -6127,20 +6362,12 @@
             }
 
             sendSkillData(subject, source) {
-                // Merge localStorage data with Supabase data to prevent data loss
+                // Server data only. This used to merge in the device-wide
+                // 'math_skill_states' key - i.e. whichever student last used this
+                // browser - and that seeded the tree and the games with someone
+                // else's skills. The tree already merges the signed-in student's
+                // OWN local copy itself (owner-tagged, see SkillTreeViewer.html).
                 let progress = {};
-                try {
-                    if (subject === 'Math') {
-                        const localData = localStorage.getItem('math_skill_states');
-                        if (localData) {
-                            const parsed = JSON.parse(localData);
-                            const localSkills = parsed.skills || parsed;
-                            Object.assign(progress, localSkills);
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Failed to read localStorage for skill data merge:', e);
-                }
 
                 // Supabase data takes priority — check both new domain name and legacy subject name
                 const progressSubject = this.getProgressSubject(subject);
@@ -6161,70 +6388,53 @@
                 }, '*');
             }
         
+            // SKILL_UNLOCKED: the skill tree reporting a click. Its "Start This
+            // Skill" button is a student choosing to work on a skill - never
+            // evidence of mastery - but this used to save it as mastered/100.
+            // Older cached trees still send state 'activated' for that click,
+            // and 'mastered' when the tree re-derives a Dojo result the Dojo has
+            // already reported with its evidence. So whatever state arrives,
+            // this only records intent: an 'in_progress' row when the student
+            // has no row for the skill yet, and nothing otherwise (an existing
+            // row is never overwritten or downgraded).
             async handleSkillUnlocked(data) {
-                const { subject, skillName, state } = data;
-                const now = new Date().toISOString();
+                const { subject, skillName } = data || {};
+                if (!subject || !skillName) return;
 
                 // Use legacy subject name for skill_progress storage consistency
                 const progressSubject = this.getProgressSubject(subject);
-
-                // Update local progress with new format
                 if (!this.skillProgress[progressSubject]) {
                     this.skillProgress[progressSubject] = {};
                 }
-                const isMastery = state === 'activated' || state === 'mastered';
+                if (this.skillProgress[progressSubject][skillName]) return;
+
                 this.skillProgress[progressSubject][skillName] = {
-                    state: isMastery ? 'mastered' : state,
-                    mastery_score: isMastery ? 100 : 50,
-                    last_practiced: now,
-                    practice_count: 1,
+                    state: 'in_progress',
+                    mastery_score: 0,
+                    practice_count: 0,
                     decay_rate: 14,
-                    mastered_at: isMastery ? now : null
+                    mastered_at: null
                 };
 
-                // Save to database
-                if (this.portal.auth.isAuthenticated()) {
-                    try {
-                        const userId = this.portal.auth.getUserInfo().profile.id;
-
-                        // Save to Supabase with all new fields
-                        // Use legacy subject name for backwards compat with existing data
-                        const { error } = await this.portal.auth.supabase
-                            .from('skill_progress')
-                            .upsert({
-                                user_id: userId,
-                                subject: progressSubject,
-                                skill_name: skillName,
-                                state: isMastery ? 'mastered' : state,
-                                mastery_score: isMastery ? 100 : 50,
-                                last_practiced: now,
-                                practice_count: 1,
-                                mastered_at: isMastery ? now : null,
-                                updated_at: now
-                            }, { onConflict: 'user_id,subject,skill_name' });
-
-                        if (error) {
-                            console.warn('Failed to save to database:', error);
-                            // Fallback to localStorage
-                            localStorage.setItem(`skill_progress_${userId}`, JSON.stringify(this.skillProgress));
-                        }
-                        
-                        // Update counter
-                        this.updateSkillsCounter();
-                        
-                        // Show success notification
-                        window.PortalUI.showNotification(
-                            `🌟 Skill unlocked: ${skillName}!`, 
-                            'success', 
-                            3000
-                        );
-                        
-                    } catch (error) {
-                        console.error('Error saving skill progress:', error);
-                        // Still save to localStorage as fallback
-                        const userId = this.portal.auth.getUserInfo().profile.id;
-                        localStorage.setItem(`skill_progress_${userId}`, JSON.stringify(this.skillProgress));
-                    }
+                if (!this.portal.auth.isAuthenticated()) return;
+                try {
+                    const userId = this.portal.auth.getUserInfo().profile.id;
+                    const { error } = await this.portal.auth.supabase
+                        .from('skill_progress')
+                        .upsert({
+                            user_id: userId,
+                            subject: progressSubject,
+                            skill_name: skillName,
+                            state: 'in_progress',
+                            mastery_score: 0,
+                            source: 'skill_tree',
+                            updated_at: new Date().toISOString()
+                        }, { onConflict: 'user_id,subject,skill_name', ignoreDuplicates: true });
+                    if (error) console.warn('Failed to record started skill:', error);
+                    this.updateSkillsCounter();
+                    window.PortalUI.showNotification(`🌱 Started: ${skillName}`, 'success', 3000);
+                } catch (error) {
+                    console.error('Error recording started skill:', error);
                 }
             }
 
@@ -6313,6 +6523,7 @@
                             last_evidence_at: bu.last_evidence_at || now,
                             last_practiced: now,
                             decay_steps_applied: 0,
+                            source: 'game',
                             updated_at: now
                         }));
                         const { error: bktErr } = await this.portal.auth.supabase
@@ -6404,9 +6615,14 @@
                 // Math has migrated to the merged 3D viewer; other subjects stay
                 // on SkillTreeViewer.html until their merged graphs land.
                 const cacheBust = Date.now();
+                // userId keys the tree's local storage per student; userType
+                // lets it offer the override codes to staff only.
+                const prof = this.portal.auth.getUserInfo().profile || {};
+                const who = (prof.id ? `&userId=${encodeURIComponent(prof.id)}` : '') +
+                    (prof.user_type ? `&userType=${encodeURIComponent(prof.user_type)}` : '');
                 iframe.src = (subject === 'Math')
-                    ? `viewer/3d/index.html?subject=${encodeURIComponent(subject)}&v=${cacheBust}`
-                    : `SkillTreeViewer.html?subject=${encodeURIComponent(subject)}&v=${cacheBust}`;
+                    ? `viewer/3d/index.html?subject=${encodeURIComponent(subject)}${who}&v=${cacheBust}`
+                    : `SkillTreeViewer.html?subject=${encodeURIComponent(subject)}${who}&v=${cacheBust}`;
                 
                 // Clear container and add iframe
                 container.innerHTML = '';
