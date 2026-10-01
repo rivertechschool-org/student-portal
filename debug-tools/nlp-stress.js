@@ -2458,3 +2458,131 @@ app._terminalAllClasses = _c43;
 app._terminalAllGroups = _g43;
 app.userInfo = _u43;
 console.log(`round 43: ${p43} pass, ${f43} fail`);
+
+// -- round 44: where students are in their skills ----------------------------
+// Riven read grades, attendance and missing work and never a line of practice
+// data, so "what is Ari stuck on" came back as an account card and "who hasn't
+// practised this week" as nothing at all. Four READ intents now answer them
+// (see the PRACTICE block in _matchIntent). This grid is the phrasings teachers
+// actually use, the neighbours that must NOT move, and the context trap: a
+// class-wide question asked right after one student was discussed.
+console.log('\n== round 44: practice, skills and game assignments ==');
+let p44 = 0, f44 = 0;
+const t44 = (label, ok) => { ok ? p44++ : f44++; if (!ok) { console.log('  FAIL', label); process.exitCode = 1; } };
+[
+  // one student: stuck / struggling / help with
+  ['what is clementine stuck on', 'STUDENT_PRACTICE', 'Clementine Vasquez'],
+  ['what is clementine stuck on in maths', 'STUDENT_PRACTICE', 'Clementine Vasquez'],
+  ['is noah stuck in reading', 'STUDENT_PRACTICE', 'Noah Williams'],
+  ['where is rosalind struggling', 'STUDENT_PRACTICE', 'Rosalind Ashgrove'],
+  ['what does noah need help with in maths', 'STUDENT_PRACTICE', 'Noah Williams'],
+  ['what does noah need help with in english', 'STUDENT_PRACTICE', 'Noah Williams'],
+  ['what does mia need help with in pe', 'STUDENT_PRACTICE', 'Mia Wilson'],
+  ['is ava struggling with long division', 'STUDENT_PRACTICE', 'Ava Davis'],
+  // one student: how are they doing in practice
+  ['how is clementine doing in math practice', 'STUDENT_PRACTICE', 'Clementine Vasquez'],
+  ['how is lucas doing on his skills', 'STUDENT_PRACTICE', 'Lucas Anderson'],
+  ['how is lucas doing in the games', 'STUDENT_PRACTICE', 'Lucas Anderson'],
+  ['how is mia doing on math dojo', 'STUDENT_PRACTICE', 'Mia Wilson'],
+  ["show me rosalind's skills", 'STUDENT_PRACTICE', 'Rosalind Ashgrove'],
+  ['when did mason last practise', 'STUDENT_PRACTICE', 'Mason Thomas'],
+  // one student: mastered
+  ['what has rosalind mastered this week', 'STUDENT_PRACTICE', 'Rosalind Ashgrove'],
+  ['what has rosalind mastered this month', 'STUDENT_PRACTICE', 'Rosalind Ashgrove'],
+  ['what has olivia mastered', 'STUDENT_PRACTICE', 'Olivia Brown'],
+  // who hasn't practised
+  ["who hasn't practised this week", 'PRACTICE_INACTIVE', null],
+  ['who hasnt practiced in 10 days', 'PRACTICE_INACTIVE', null],
+  ["who hasn't practised this week in math", 'PRACTICE_INACTIVE', null],
+  ["who hasn't played math dojo this week", 'PRACTICE_INACTIVE', null],
+  ["who hasn't used math dojo this week", 'PRACTICE_INACTIVE', null],
+  ["which students haven't practiced this week", 'PRACTICE_INACTIVE', null],
+  ["who's inactive", 'PRACTICE_INACTIVE', null],
+  ['who is inactive in robotics', 'PRACTICE_INACTIVE', null],
+  // who is stuck
+  ['who is stuck', 'PRACTICE_STUCK', null],
+  ['who is stuck in math', 'PRACTICE_STUCK', null],
+  ['whos stuck in reading', 'PRACTICE_STUCK', null],
+  ['any kids stuck on long division', 'PRACTICE_STUCK', null],
+  ['which students are struggling with fractions', 'PRACTICE_STUCK', null],
+  ['who is struggling with long division', 'PRACTICE_STUCK', null],
+  ['who needs help with fractions', 'PRACTICE_STUCK', null],
+  ['who is fading in math', 'PRACTICE_STUCK', null],
+  // game / skill assignments
+  ['how did math do on the fractions dojo', 'HOMEWORK_RESULTS', null],
+  ['how did the robotics class do on the circuits game', 'HOMEWORK_RESULTS', null],
+  ["who hasn't done the fractions assignment", 'HOMEWORK_RESULTS', null],
+  ["who hasn't finished the multiplication game", 'HOMEWORK_RESULTS', null],
+  ["who hasn't played the fractions assignment", 'HOMEWORK_RESULTS', null],
+  ['who has finished the math dojo assignment', 'HOMEWORK_RESULTS', null],
+  ['has everyone finished the fractions game', 'HOMEWORK_RESULTS', null],
+  ["who hasn't done their homework", 'HOMEWORK_RESULTS', null],
+  ['has noah finished the dojo assignment', 'HOMEWORK_RESULTS', 'Noah Williams'],
+].forEach(([text, want, who]) => {
+  app._nlpContext = {};
+  const got = run(text);
+  t44(`"${text}" -> ${want}${who ? ' / ' + who : ''} (got ${got.intent} ${got.student || ''})`,
+      got.intent === want && (who ? got.student === who : (want === 'STUDENT_PRACTICE' ? true : !got.student || want === 'HOMEWORK_RESULTS')));
+});
+
+// The neighbours. None of these has a practice word in it, and every one
+// must land exactly where it did before the practice intents existed.
+[
+  ['how is clementine doing', 'STUDENT_BRIEFING'],
+  ['how is clementine doing in math', 'VIEW_GRADES'],
+  ['what does clementine need help with', 'STUDENT_BRIEFING'],
+  ['is clementine struggling', 'STUDENT_BRIEFING'],
+  ['who is struggling', 'ATTENDANCE_ISSUES'],
+  // this roster has an English class by now, so it is the class grades
+  // reader - which is where it went on the clean file too
+  ['who is failing english', 'VIEW_GRADES'],
+  ['what homework does ari have', 'VIEW_HOMEWORK'],
+  ['any overdue homework in math class', 'VIEW_HOMEWORK'],
+  ["who hasn't been here this week", 'ATTENDANCE_ISSUES'],
+  ['give clementine a c in skill grade in math', 'SET_GRADE'],
+  ['Give clementine a b in participation and a c in skill', 'SET_GRADE'],
+  // an award for mastering something is an AWARD
+  ['give clementine 5 rtc for mastering fractions', 'ADD_RTC'],
+  ['give noah 3 rtc for finishing the dojo', 'ADD_RTC'],
+  // a note about being stuck is a NOTE
+  ['note for noah: stuck on fractions all week', 'ADD_NOTE'],
+].forEach(([text, want]) => {
+  app._nlpContext = {};
+  const got = run(text).intent;
+  t44(`neighbour "${text}" stays ${want} (got ${got})`, got === want);
+});
+
+// The context trap. Right after a student is discussed, a class-wide practice
+// question must stay class-wide: "reading" contains the follow-up word "read",
+// and injecting the last student turned "who is stuck in reading" into a
+// question about one child.
+['who is stuck in reading', "who hasn't practised this week", "who's inactive",
+ 'who has finished the math dojo assignment', 'which students are struggling with fractions'].forEach((text) => {
+  app._nlpContext = { lastStudent: app._terminalAllStudents[0], timestamp: Date.now() };
+  const got = run(text);
+  t44(`"${text}" after a student is still class-wide (got ${got.intent} ${got.student || ''})`,
+      got.intent !== 'STUDENT_PRACTICE' && !got.student);
+});
+// ...and the per-student follow-up does carry over.
+app._nlpContext = {};
+run('what is clementine stuck on');
+{
+  const got = run('what has she mastered this month');
+  t44(`"what has she mastered" follows on from Clementine (got ${got.intent} ${got.student})`,
+      got.intent === 'STUDENT_PRACTICE' && got.student === 'Clementine Vasquez');
+}
+app._nlpContext = {};
+
+// No trigger word is a person. The words that pick these intents, alone and in
+// a frame, must never resolve to anybody on this roster.
+['stuck', 'mastered', 'mastery', 'practise', 'practised', 'practice', 'dojo', 'inactive',
+ 'fading', 'struggling', 'finished', 'played', 'games', 'skills', 'maths'].forEach((w) => {
+  for (const s of [w, `who is ${w}`, `show me the ${w}`]) {
+    app._nlpContext = {};
+    const n = app._normalizeInput(s);
+    const e = app._extractEntities(app._resolvePronouns(n), s);
+    t44(`"${s}" names nobody (got ${e.student ? (e.student.ambiguous ? 'a picker' : (e.student.student || e.student).full_name) : 'nobody'})`, !e.student);
+  }
+});
+app._nlpContext = {};
+console.log(`round 44: ${p44} pass, ${f44} fail`);

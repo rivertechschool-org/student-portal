@@ -144,6 +144,10 @@ const CONTEXTS = [
   { c: (n) => `was ${n} here yesterday`, what: 'an attendance question' },
   { c: (n) => `${n}s grades`, what: 'a possessive' },
   { c: (n) => `how is ${n} doing`, what: 'a briefing' },
+  // Practice questions. "stuck", "mastered" and "maths" sit right beside the
+  // name, and none of them may change who it means.
+  { c: (n) => `what is ${n} stuck on in maths`, what: 'a practice question' },
+  { c: (n) => `what has ${n} mastered this month`, what: 'a mastery question' },
 ];
 // Writes get their own list, because the rule there is stricter: an ambiguous
 // name must never reach the write at all.

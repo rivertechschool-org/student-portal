@@ -89,6 +89,11 @@ const ROSTER = [
   ['Latimer', 'Layne'],     // "late"
   ['Quinlan', 'Quarles'],   // "quarter"
   ['Homer', 'Homewood'],    // "homework"
+  // The practice vocabulary ("what is X stuck on", "who hasn't played the dojo",
+  // "what has X mastered") - same construction, same worst case.
+  ['Masterson', 'Stucky'],  // "stuck"; "master" opens the first name
+  ['Gamelin', 'Dorjo'],     // "dojo"; "game" opens the first name
+  ['Fadia', 'Player'],      // "played"; "fadi" opens "fading"
   ['Rosalind', 'Ashgrove'], // an ordinary name, to prove matching still works
 ];
 app._terminalAllStudents = ROSTER.map(([f, l], i) => ({
@@ -147,6 +152,12 @@ const DOMAIN = ['math', 'science', 'reading', 'writing', 'history', 'bible', 'ar
   'strike', 'strikes', 'note', 'notes', 'message', 'behavior', 'progress',
   'goal', 'goals', 'skill', 'skills', 'level', 'score', 'scores', 'average',
   'percent', 'total', 'list'];
+// What teachers say about practice and skills. Taken from the portal's own
+// labels and the progress screens' vocabulary, not from anybody's name.
+const PRACTICE = ['practice', 'practise', 'practiced', 'practised', 'practicing',
+  'practising', 'mastered', 'mastery', 'master', 'stuck', 'struggling', 'fading',
+  'inactive', 'active', 'dojo', 'game', 'games', 'played', 'playing', 'finished',
+  'done', 'completed', 'started', 'results', 'help', 'maths'];
 
 // The shapes those words arrive in.
 const FRAMES = [
@@ -166,8 +177,8 @@ for (const s of app._terminalAllStudents) {
   IS_A_NAME.add(s.first_name.toLowerCase());
   IS_A_NAME.add(s.last_name.toLowerCase());
 }
-const CORPUS = [...TIME, ...SCHOOL, ...ATTEND, ...DOMAIN].filter(w => !IS_A_NAME.has(w));
-const CLASHES = [...TIME, ...SCHOOL, ...ATTEND, ...DOMAIN].filter(w => IS_A_NAME.has(w));
+const CORPUS = [...TIME, ...SCHOOL, ...ATTEND, ...DOMAIN, ...PRACTICE].filter(w => !IS_A_NAME.has(w));
+const CLASHES = [...TIME, ...SCHOOL, ...ATTEND, ...DOMAIN, ...PRACTICE].filter(w => IS_A_NAME.has(w));
 
 console.log(`== a bare word is nobody ==  (${CORPUS.length} words)`);
 for (const w of CORPUS) nobody(w, 'a bare ordinary word');
@@ -220,6 +231,14 @@ somebody('how many days has weston missed', 'Weston Weeks');
 somebody('rosalinds attendance this quarter', 'Rosalind Ashgrove');
 somebody('give teodor 5 rtc for the test', 'Teodor Tesla');
 somebody('homers homework', 'Homer Homewood');
+// ...and in the practice questions, where the vocabulary is the trap.
+somebody('what is masterson stuck on', 'Masterson Stucky');
+somebody('what has masterson mastered this month', 'Masterson Stucky');
+somebody('has gamelin played the dojo this week', 'Gamelin Dorjo');
+somebody('what is fadia stuck on in maths', 'Fadia Player');
+nobody('who is stuck', 'the class-wide question');
+nobody("who hasn't played math dojo this week", 'the class-wide question');
+nobody('who has finished the dojo game', 'the class-wide question');
 
 console.log('\n' + '-'.repeat(72));
 if (fails.length) {
