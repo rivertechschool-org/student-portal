@@ -907,9 +907,11 @@
        results. Classes rather than inline styles, because the phone rules
        further down rewrite any inline flex/grid they find, and a table here
        must keep its sticky first column rather than becoming display:block. */
+    /* max-width, not width, is what holds it: a later .modal-content rule
+       gives every modal flex: 1, so width alone is stretched to the screen. */
     #modal-class-progress .modal-content {
-      width: min(1100px, calc(100vw - 32px));
-      max-width: 100%;
+      width: calc(100vw - 32px);
+      max-width: 1100px;
     }
     .cp-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
     .cp-title { font-size: 17px; font-weight: 700; color: var(--accent); }
@@ -939,6 +941,15 @@
     .cp-table thead th { position: sticky; top: 0; background: var(--card); z-index: 1; font-weight: 600; }
     .cp-table .cp-group th { font-size: 11px; color: var(--muted); font-weight: 500; border-bottom: none; }
     .cp-table .cp-name { position: sticky; left: 0; background: var(--card); text-align: left; z-index: 2; }
+    /* The grid is as wide as its squares, not the modal: stretched to 100%
+       the name column took everything the squares did not. */
+    .modal-content table.cp-table.cp-grid { width: auto; }
+    /* A subject label over its run of columns must not widen them: width 0
+       plus min-width 100% makes the span take the run's width, not its own. */
+    .cp-grp { display: block; width: 0; min-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hub-term { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px; color: var(--muted); text-align: left; }
+    .hub-term strong { color: var(--text); }
+    .hub-term .hub-term-note { display: block; font-size: 11px; margin-top: 2px; }
     .cp-table thead .cp-name { z-index: 3; }
     .cp-table tbody tr { cursor: pointer; }
     .cp-table tbody tr:hover td { background: rgba(106, 169, 255, 0.06); }
@@ -9147,11 +9158,15 @@
       _hubSkillsHtml(data, history, term, subject) {
         const esc = (s) => this.escapeHtml(s);
         const subjLabel = this._progressSubjectLabel(subject);
+        // A class, not inline styles: the phone rules enlarge any span inside
+        // an inline-styled box, which turned the footnote into body text.
+        const n = (k) => `${k} skill${k === 1 ? '' : 's'}`;
         const termHtml = `
-          <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--muted);text-align:left;">
-            <strong style="color:var(--text);">This term:</strong>
-            ${term.d30} skill${term.d30 === 1 ? '' : 's'} mastered in the last 30 days, ${term.d90} in the last 90 (all subjects)${term.d90 ? ` · ${term.s30} / ${term.s90} in ${esc(subjLabel)}` : ''}.
-            <span style="display:block;font-size:11px;margin-top:2px;">Counts skills the student mastered through their own practice, not ones set by hand.</span>
+          <div class="hub-term">
+            <strong>This term:</strong>
+            ${n(term.d30)} mastered in the last 30 days${term.d30 ? ` (${term.s30} in ${esc(subjLabel)})` : ''},
+            ${n(term.d90)} in the last 90 days${term.d90 ? ` (${term.s90} in ${esc(subjLabel)})` : ''}.
+            <span class="hub-term-note">All subjects. Counts skills the student mastered through their own practice, not ones set by a teacher.</span>
           </div>`;
         if (!data.length) {
           return termHtml + `<div style="text-align:center;padding:30px;color:var(--muted);font-style:italic;">No ${esc(subjLabel)} skill progress recorded yet.</div>`;
@@ -9197,7 +9212,7 @@
         }).join('');
 
         return termHtml + `
-          <div class="keep-columns" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px;">
+          <div class="keep-columns" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:14px;">
             <div style="background:var(--bg);border-radius:8px;padding:10px;text-align:center;">
               <div style="font-size:20px;font-weight:700;color:#10b981;">${mastered.length}</div>
               <div style="font-size:11px;color:var(--muted);">Mastered</div>
@@ -9294,7 +9309,8 @@
           const total = Number(s.total_count) || 0, correct = Number(s.correct_count) || 0;
           rows.push({
             ts: s.started_at, icon: s.source_type === 'game' ? '🎮' : '✏️',
-            activity: s.source_type === 'game' ? (s.game_id || 'Game') : 'Skill practice',
+            // game ids are slugs: practice-pilot -> "Practice Pilot"
+            activity: s.source_type === 'game' ? (s.game_id ? String(s.game_id).split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') : 'Game') : 'Skill practice',
             subject: s.subject || '', questions: total, correct,
             accuracy: total ? Math.round(correct / total * 100) : (s.score !== null && s.score !== undefined ? Math.round(Number(s.score)) : null),
             skills: s.skill_name ? [s.skill_name] : [],
@@ -9314,7 +9330,7 @@
         const subjects = new Set(rows.map(r => r.subject).filter(Boolean));
         const accColor = (a) => a === null ? 'var(--muted)' : a >= 80 ? '#10b981' : a >= 60 ? '#f59e0b' : '#ef4444';
         return `
-          <div class="keep-columns" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px;">
+          <div class="keep-columns" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px;">
             <div style="background:var(--bg);border-radius:8px;padding:10px;text-align:center;">
               <div style="font-size:20px;font-weight:700;color:var(--accent);">${rows.length}</div>
               <div style="font-size:11px;color:var(--muted);">Sessions</div>
@@ -28682,7 +28698,8 @@ Students you had withdrawn stay withdrawn.`)) {
           return `<button class="cp-chip${on ? ' on' : ''}" aria-pressed="${on}" onclick="app.setClassProgressFilter('${key}')">${label} <span class="cp-chip-n">${n}</span></button>`;
         }).join('');
 
-        const TABS = [['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Game & skill assignments']];
+        // Short labels: all three have to fit across a phone.
+        const TABS = [['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments']];
         const tabs = TABS.map(([key, label]) =>
           `<button class="cp-tab${cp.tab === key ? ' on' : ''}" onclick="app.setClassProgressTab('${key}')">${label}</button>`).join('');
 
@@ -28742,7 +28759,7 @@ Students you had withdrawn stay withdrawn.`)) {
         if (!shown.length) return `<div class="cp-empty">${esc(this._classProgressEmptyText(cp.filter, this._progressSubjectLabel(cp.subject)))}</div>`;
         const arrow = (key) => cp.sortKey === key ? (cp.sortDir === 1 ? ' ▲' : ' ▼') : '';
         const th = (key, label, title = '') =>
-          `<th><button class="cp-sort" onclick="app.sortClassProgress('${key}')"${title ? ` title="${esc(title)}"` : ''}>${label}${arrow(key)}</button></th>`;
+          `<th${key === 'name' ? ' class="cp-name"' : ''}><button class="cp-sort" onclick="app.sortClassProgress('${key}')"${title ? ` title="${esc(title)}"` : ''}>${label}${arrow(key)}</button></th>`;
         const subjArg = this.jsAttr(cp.subject || '');
         const rows = shown.map(s => {
           const acc = this._progressAccuracy(s);
@@ -28784,6 +28801,20 @@ Students you had withdrawn stay withdrawn.`)) {
           <div class="cp-note">Tap a student to open their Student Hub on Skill Trees${cp.subject ? ` for ${esc(this._progressSubjectLabel(cp.subject))}` : ''}.</div>`;
       }
 
+      // Short row labels for the grid: "Mara O." - unless two students would
+      // get the same one (two Maras, both O.), in which case those two get
+      // their whole surname. A grid row you cannot tell apart from the next
+      // is a square tapped for the wrong child.
+      _gridRowLabels(students) {
+        const short = (s) => `${s.first_name || ''}${s.last_name ? ' ' + s.last_name.slice(0, 1) + '.' : ''}`.trim();
+        const seen = {};
+        (students || []).forEach(s => { const k = short(s).toLowerCase(); seen[k] = (seen[k] || 0) + 1; });
+        const out = new Map();
+        (students || []).forEach(s => out.set(s.id, seen[short(s).toLowerCase()] > 1
+          ? `${s.first_name || ''} ${s.last_name || ''}`.trim() : short(s)));
+        return out;
+      }
+
       // Students down, skills across. Only skills somebody in the class has a
       // record for - the full curriculum would be hundreds of empty columns.
       // Column order is the RPC's (along the curriculum, by node_id).
@@ -28813,8 +28844,9 @@ Students you had withdrawn stay withdrawn.`)) {
         if (multi) {
           const runs = [];
           cols.forEach(c => { const last = runs[runs.length - 1]; if (last && last.subject === c.subject) last.n++; else runs.push({ subject: c.subject, n: 1 }); });
-          subjRow = `<tr class="cp-group"><th class="cp-name"></th>${runs.map(r => `<th colspan="${r.n}">${esc(this._progressSubjectLabel(r.subject))}</th>`).join('')}</tr>`;
+          subjRow = `<tr class="cp-group"><th class="cp-name"></th>${runs.map(r => `<th colspan="${r.n}" title="${esc(this._progressSubjectLabel(r.subject))}"><span class="cp-grp">${esc(this._progressSubjectLabel(r.subject))}</span></th>`).join('')}</tr>`;
         }
+        const label = this._gridRowLabels(shown);
         const body = shown.map(s => {
           const cells = cols.map(c => {
             const k = byCell.get(`${s.id}\u0001${c.subject}\u0001${c.skill}`);
@@ -28826,7 +28858,7 @@ Students you had withdrawn stay withdrawn.`)) {
             const tip = `${s.first_name} ${s.last_name} - ${c.skill}: ${this._skillStateLabel(k.state)}, ${Math.round(Number(k.mastery) || 0)}${k.flag ? ' (' + k.flag + ')' : ''}`;
             return `<td class="cp-cell${flag}" style="background: ${st.bg}; color: ${st.fg};" title="${esc(tip)}"><button onclick="app.showSkillCellDetail(${n})" aria-label="${esc(tip)}">${text}</button></td>`;
           }).join('');
-          return `<tr><th class="cp-name" scope="row"><button class="cp-link" onclick="app.openStudentHubSkills('${this.jsAttr(s.id)}', '${this.jsAttr(cp.subject || '')}')">${esc(s.first_name)} ${esc((s.last_name || '').slice(0, 1))}${s.last_name ? '.' : ''}</button></th>${cells}</tr>`;
+          return `<tr><th class="cp-name" scope="row"><button class="cp-link" onclick="app.openStudentHubSkills('${this.jsAttr(s.id)}', '${this.jsAttr(cp.subject || '')}')" title="${esc(`${s.first_name || ''} ${s.last_name || ''}`.trim())}">${esc(label.get(s.id))}</button></th>${cells}</tr>`;
         }).join('');
 
         return `
