@@ -4409,3 +4409,27 @@ checks the output now. **A source-grep assertion in a 70k-line file is
 matching somebody else's code more often than you think.**
 
 32 assertions, 9 deliberate breaks, 9 caught.
+
+## Practice Pilot: steering fixed on iPads and tablets (2026-10-01)
+
+Report: on iPads the cursor stuck and the ship only flew one way. Three causes,
+all in `games/practice-pilot.html`'s input handlers:
+
+- **Tapping the on-screen keyboard moved the cursor.** After a tap the browser
+  sends emulated mouse events, and the mouse handlers took them, so every
+  answer pulled the cursor onto the keyboard and the ship flew towards the
+  bottom of the screen. Mouse steering now listens to pointer events of type
+  `mouse` only.
+- **Typing with one hand froze the other.** A single global "touch is on the
+  UI" flag meant a keyboard tap disabled the finger that was steering until it
+  was lifted. Fingers are now tracked by identifier; only the one that started
+  on the playfield steers. `touchcancel` is handled too.
+- **A new run drifted down on its own.** The cursor started mid-screen but the
+  ship sits at one third height on touch devices. It now starts on the ship.
+
+Deliberately unchanged: lifting the steering finger still leaves the ship
+cruising towards the last point at half speed, as before, so a one-handed
+player can let go to type without stopping.
+
+`debug-tools/pilot-touch-journeys.mjs` replays all of it on an emulated iPad
+plus a desktop mouse run: 15 checks, all pass; the old code fails 6.
