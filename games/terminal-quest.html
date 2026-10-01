@@ -2014,20 +2014,133 @@ function restore(s){
   if (s.home) for (const [p, c] of Object.entries(s.home)){ mkdirp(p.slice(0, p.lastIndexOf('/')) || '/'); writeFileAt(p, c); }
   updateStatus();
 }
+// ---- load/save state machine (embedded) ----
+//
+// The cloud save is one row per student, and TQ_SAVE replaces it whole. So a
+// save sent before we know what is in that row can wipe it: the old code
+// booted a fresh game when TQ_LOAD took more than 3.5s, and the first autosave
+// four seconds later overwrote months of progress with level 1.
+//
+//   loadState 'pending'  - TQ_LOAD sent, no answer yet. No cloud saves.
+//   loadState 'failed'   - timed out, or the host said loadFailed. The student
+//                          may keep playing (told nothing is being saved), we
+//                          keep retrying with backoff, and still no cloud saves.
+//   loadState 'loaded'   - the host answered without loadFailed: either the
+//                          save, or a real "no save yet" (save:null). Only now
+//                          are cloud saves allowed.
+//
+// "✓ saved" is only shown once the host acknowledges with TQ_SAVED ok:true;
+// a failed or unanswered save goes back to unsaved and is retried.
+let loadState = 'pending';
+let booted = false;           // the welcome text has been printed once
+let loadAttempt = 0, loadTimer = null;
+const LOAD_BACKOFF_MS = [3500, 5000, 8000, 12000, 20000];   // then every 20s
+let saveSeq = 0, ackedSeq = 0, saveAckTimer = null;
+
+// Standalone (no host) saves go to localStorage, keyed per student when the
+// page has ?userId= - the old single 'tq_save_local' key was shared by
+// everyone on the device, so a second student opened the first one's game.
+const LOCAL_OWNER = new URLSearchParams(location.search).get('userId') || null;
+const LOCAL_SAVE_KEY = LOCAL_OWNER ? 'tq_save_local_' + LOCAL_OWNER : 'tq_save_local';
+function readLocalSave(){
+  try {
+    const p = JSON.parse(localStorage.getItem(LOCAL_SAVE_KEY) || 'null');
+    if (p && typeof p === 'object' && 'owner' in p && 'save' in p) return (p.owner || null) === LOCAL_OWNER ? p.save : null;
+    return LOCAL_OWNER ? null : p;   // untagged legacy blob: only on the unscoped key
+  } catch (e){ return null; }
+}
+
+function setSaveStatus(t){ const el = $('sb-save'); if (el) el.textContent = t; }
 let saveTimer = null;
 function markDirty(){
   saveDirty = true;
-  $('sb-save').textContent = '● unsaved';
+  setSaveStatus(embedded && loadState !== 'loaded' ? '⚠ not saving' : '● unsaved');
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => pushSave(false), 4000);   // autosave
 }
 function pushSave(verbose){
   const save = serialize();
-  if (embedded) postToHost({ type: 'TQ_SAVE', save });
-  else localStorage.setItem('tq_save_local', JSON.stringify(save));
-  saveDirty = false;
-  $('sb-save').textContent = '✓ saved';
-  if (verbose) print('Progress saved to the Grid.', 'ok');
+  if (!embedded){
+    // Synchronous and local: when setItem returns, it is saved.
+    try {
+      localStorage.setItem(LOCAL_SAVE_KEY, JSON.stringify({ owner: LOCAL_OWNER, save }));
+      saveDirty = false; setSaveStatus('✓ saved');
+      if (verbose) print('Progress saved on this device.', 'ok');
+    } catch (e){ setSaveStatus('⚠ save failed'); if (verbose) print('Could not save on this device.', 'warn'); }
+    return;
+  }
+  if (loadState !== 'loaded'){
+    // Never write before we have read: this is the overwrite guard.
+    setSaveStatus('⚠ not saving');
+    if (verbose) print('Not saved yet — still connecting to your saved game. Keep playing; it saves once the connection is back.', 'warn');
+    return;
+  }
+  const seq = ++saveSeq;
+  postToHost({ type: 'TQ_SAVE', save, seq });
+  saveDirty = false;            // a markDirty() after this point re-flags it
+  setSaveStatus('… saving');
+  if (verbose) print('Saving to the Grid…', 'sys');
+  clearTimeout(saveAckTimer);
+  saveAckTimer = setTimeout(() => {
+    // No answer from the host: we do not know that it saved.
+    if (ackedSeq < seq){ saveDirty = true; setSaveStatus('⚠ save not confirmed'); retrySaveSoon(); }
+  }, 10000);
+}
+function retrySaveSoon(){ clearTimeout(saveTimer); saveTimer = setTimeout(() => pushSave(false), 15000); }
+function handleSaveAck(d){
+  // TQ_SAVED carries no seq from older hosts; treat it as answering the latest.
+  ackedSeq = saveSeq;
+  clearTimeout(saveAckTimer);
+  if (d.ok){
+    if (!saveDirty) setSaveStatus('✓ saved');
+  } else {
+    saveDirty = true;
+    setSaveStatus('⚠ save failed');
+    print('(cloud save failed — your progress is kept in this session; retrying)', 'warn');
+    retrySaveSoon();
+  }
+}
+
+function requestLoad(){
+  postToHost({ type: 'TQ_LOAD' });
+  clearTimeout(loadTimer);
+  const wait = LOAD_BACKOFF_MS[Math.min(loadAttempt, LOAD_BACKOFF_MS.length - 1)];
+  loadAttempt++;
+  loadTimer = setTimeout(() => { if (loadState !== 'loaded') loadFailed('timeout'); }, wait);
+}
+function loadFailed(why){
+  const first = loadState === 'pending';
+  loadState = 'failed';
+  if (!booted){
+    booted = true;
+    bootMessage(false);
+  }
+  if (first){
+    print('⚠ Could not reach your saved game yet (' + why + '). You can play, but progress is NOT being saved until it connects. Retrying…', 'warn');
+  }
+  setSaveStatus('⚠ not saving');
+  // A host that answered loadFailed has no pending timer: schedule the retry.
+  clearTimeout(loadTimer);
+  const wait = LOAD_BACKOFF_MS[Math.min(loadAttempt, LOAD_BACKOFF_MS.length - 1)];
+  loadTimer = setTimeout(requestLoad, why === 'timeout' ? 0 : wait);
+}
+function handleLoadData(d){
+  if (loadState === 'loaded') return;              // a duplicate answer to a retry
+  if (d.loadFailed){ loadFailed('the server could not read it'); return; }
+  const wasFailed = loadState === 'failed';
+  loadState = 'loaded';
+  clearTimeout(loadTimer);
+  if (d.save){
+    // The cloud save wins over anything played while disconnected: it is the
+    // student's real history, the offline session is at most a few minutes.
+    restore(d.save);
+    if (d.save.syncedProjects) syncedProjects = d.save.syncedProjects;
+  }
+  syncProjectMastery(d.projects);
+  if (!booted){ booted = true; bootMessage(!!d.save); }
+  else if (wasFailed) print(d.save ? 'Connected — your saved game has been loaded.' : 'Connected — progress will be saved from now on.', 'ok');
+  if (saveDirty || (wasFailed && !d.save)) { pushSave(false); }
+  else setSaveStatus(d.save ? '✓ saved' : '');
 }
 let syncedProjects = {};
 function syncProjectMastery(projects){
@@ -2053,15 +2166,13 @@ function syncProjectMastery(projects){
   }
 }
 window.addEventListener('message', e => {
+  // Only the hosting page (index.html / portal/index.html, same origin) may
+  // hand us a save or acknowledge one.
+  if (e.origin !== window.location.origin) return;
   const d = e.data;
   if (!d || !d.type) return;
-  if (d.type === 'TQ_SAVE_DATA'){
-    restore(d.save);
-    if (d.save && d.save.syncedProjects) syncedProjects = d.save.syncedProjects;
-    syncProjectMastery(d.projects);
-    bootMessage(!!d.save);
-  }
-  else if (d.type === 'TQ_SAVED'){ if (!d.ok) print('(cloud save failed — your progress is kept locally this session)', 'warn'); }
+  if (d.type === 'TQ_SAVE_DATA') handleLoadData(d);
+  else if (d.type === 'TQ_SAVED') handleSaveAck(d);
 });
 
 // ============ input handling ============
@@ -2129,16 +2240,16 @@ function boot(){
   writeFileAt('/home/operative/README.txt',
     'GRIDFALL — field manual\n\nThis terminal is real. ls, cd, cat, grep, pipes — they all work.\nQuests teach and test real skills; finishing one masters it on your skill tree.\nType "help" any time. Type "quest" to see missions.\n— Ops Command');
   if (embedded){
-    postToHost({ type: 'TQ_LOAD' });
-    setTimeout(() => { if (!TQ._booted){ TQ._booted = true; bootMessage(false); } }, 3500);
+    // See the load/save state machine above: retries with backoff, and no
+    // cloud save until a load has actually resolved.
+    setSaveStatus('… loading');
+    requestLoad();
   } else {
-    let s = null;
-    try { s = JSON.parse(localStorage.getItem('tq_save_local') || 'null'); } catch(e){}
+    const s = readLocalSave();
     restore(s); bootMessage(!!s);
-    TQ._booted = true;
+    loadState = 'loaded'; booted = true;
   }
 }
-window.addEventListener('message', e => { if (e.data && e.data.type === 'TQ_SAVE_DATA') TQ._booted = true; });
 
 return { boot, editorRun, editorSubmit, editorClose,
   // exposed for the headless harness:
@@ -2151,7 +2262,9 @@ return { boot, editorRun, editorSubmit, editorClose,
   _typeLine: l => handleTypeLine(l), _DRILLS: () => DRILLS, _BOSSES: () => BOSSES,
   _drillAnswer: g => drillAnswer(g), _bossClockOff: () => { if (Boss) Boss.deadline = Date.now() + 3600000; },
   _answer: t => { const g = GAME['answer'].fn(t.split(' ')); if (g && g.err) print(g.err, 'err'); },
-  _nodeAt: nodeAt, _serialize: serialize, _restore: restore, _questList: questList, _questIndex: null, _booted: false };
+  _nodeAt: nodeAt, _serialize: serialize, _restore: restore, _questList: questList, _questIndex: null,
+  // load/save state, for a harness (and to replace the old _booted flag)
+  get _booted(){ return booted; }, _loadState: () => loadState, _saveDirty: () => saveDirty };
 })();
 
 // ================= TUTORIAL QUEST (engine-owned) =================

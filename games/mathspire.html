@@ -3075,6 +3075,8 @@
         </div>
     </div>
 
+    <!-- GAME_SESSION_SUMMARY reporter: homework progress for the portal -->
+    <script src="../shared/game-session.js"></script>
     <script>
         // Mobile viewport fix - MUST BE FIRST
         (function() {
@@ -4507,6 +4509,17 @@
                 this.combatsWon = 0;
                 this.cardsPlayed = { attack: 0, skill: 0, power: 0, utility: 0 };
 
+                // GAME_SESSION_SUMMARY (shared/game-session.js). One session =
+                // one run: startWithSeed() to victory, defeat, or leaving the
+                // game mid-run. score = the run score reportSkillProgress has
+                // always sent (100 for a victory, else floors + combats, see
+                // runScore()). correct/total = equations that evaluated to a
+                // valid number / equations evaluated this run.
+                this.sessionSummary = (window.GameSessionReporter ? window.GameSessionReporter.create('mathspire', { subject: 'Math' }) : { begin() {}, report() { return null; } }) /* helper missing: play on, report nothing */;
+                this.runInProgress = false;
+                this.equationsValid = 0;
+                this.equationsTotal = 0;
+
                 // Phase 2 BKT — per-skill Bayesian probability state. Each
                 // successful equation evaluation credits the unique skills
                 // represented by its cards (positive BKT update). Failed
@@ -4632,6 +4645,11 @@
             }
 
             startWithSeed(seed, selectedAscension = 0) {
+                // A run starts: restart the summary's active-time clock.
+                this.sessionSummary.begin();
+                this.runInProgress = true;
+                this.equationsValid = 0;
+                this.equationsTotal = 0;
                 console.log('=== START WITH SEED CALLED ===');
                 console.log('Seed:', seed);
                 console.log('Selected Ascension:', selectedAscension);
@@ -6622,6 +6640,9 @@
                     // skill represented by the cards in this equation, based
                     // on whether the equation evaluated to a valid number.
                     this.applyBktForEquation(equationToEvaluate, equationValid);
+                    // Session tally for GAME_SESSION_SUMMARY.
+                    this.equationsTotal++;
+                    if (equationValid) this.equationsValid++;
 
                     if (!equationValid) {
                         // Invalid equation - return non-temp cards to hand, discard temp cards
@@ -9524,22 +9545,37 @@
             }
 
             // Report progress to the parent portal window
+            // Run score, 0-100. Victory = 100, otherwise scale by floors
+            // cleared and combats won. Split out of reportSkillProgress so the
+            // session summary for an abandoned run uses the same definition.
+            runScore(victory) {
+                if (victory) return 100;
+                const floorsCleared = this.currentNode || 0;
+                const maxFloors = 50; // Approximate max floors
+                // Base score on how far they got
+                const progressScore = Math.min(80, Math.round((floorsCleared / maxFloors) * 80));
+                const combatBonus = Math.min(20, this.combatsWon * 2);
+                return progressScore + combatBonus;
+            }
+
+            // Send this run's GAME_SESSION_SUMMARY once (victory, defeat, or
+            // leaving mid-run - whichever comes first).
+            reportSessionSummary(victory) {
+                if (!this.runInProgress) return;
+                this.runInProgress = false;
+                this.sessionSummary.report({
+                    subject: this.assignedSubject,
+                    score: this.runScore(victory),
+                    correct: this.equationsValid,
+                    total: this.equationsTotal
+                });
+            }
+
             reportSkillProgress(victory) {
                 const sessionDuration = Math.round((Date.now() - this.sessionStartTime) / 1000);
                 const floorsCleared = this.currentNode || 0;
-                const maxFloors = 50; // Approximate max floors
-
-                // Calculate score based on progress
-                // Victory = 100, otherwise scale by floors cleared and combats won
-                let score;
-                if (victory) {
-                    score = 100;
-                } else {
-                    // Base score on how far they got
-                    const progressScore = Math.min(80, Math.round((floorsCleared / maxFloors) * 80));
-                    const combatBonus = Math.min(20, this.combatsWon * 2);
-                    score = progressScore + combatBonus;
-                }
+                const score = this.runScore(victory);
+                this.reportSessionSummary(victory);
 
                 // Map card types to math skills
                 const skillsMap = {
@@ -9549,14 +9585,10 @@
 
                 // Report to parent window if embedded
                 if (window.parent !== window) {
-                    // Report skill practice
-                    window.parent.postMessage({
-                        type: 'SKILL_PRACTICE',
-                        subject: this.assignedSubject,
-                        skillName: 'Problem Solving',
-                        score: score,
-                        gameId: 'mathspire'
-                    }, '*');
+                    // No separate SKILL_PRACTICE here any more: the root site
+                    // inserted a practice row for it AND for 'Problem Solving'
+                    // in GAME_SESSION_COMPLETE below, so every run counted twice
+                    // toward the 3-practices-to-master rule. (Same fix as Mathletics.)
 
                     // Report complete game session
                     const skills = Object.entries(skillsMap)
@@ -9884,6 +9916,13 @@
         console.log('Creating game instance...');
         var game = new Game();
         window.game = game;
+
+        // The host can also close the game itself (its own X / tab change),
+        // which unloads this page mid-run. Summarise the run on the way out so
+        // the homework still gets the time and answers it earned.
+        window.addEventListener('pagehide', () => {
+            if (window.game && window.game.reportSessionSummary) window.game.reportSessionSummary(false);
+        });
         console.log('Game instance created');
 
         // Phase 2 BKT — request the student's current skill_progress so the
@@ -9910,6 +9949,10 @@
             } else if (document.webkitFullscreenElement) {
                 document.webkitExitFullscreen();
             }
+
+            // Leaving mid-run ends the session: summarise it (no-op if the run
+            // already ended or never started).
+            if (window.game && window.game.reportSessionSummary) window.game.reportSessionSummary(false);
 
             // Notify parent frame to close the game modal / exit fullscreen
             if (window.parent !== window) {

@@ -3075,6 +3075,8 @@
 
     <!-- Supabase SDK -->
     <script src="../shared/supabase.min.js"></script>
+    <!-- GAME_SESSION_SUMMARY reporter: homework progress for the portal -->
+    <script src="../shared/game-session.js"></script>
 
     <script>
         // ============================================
@@ -4688,6 +4690,7 @@
 
             // Check if player survived the journey
             if (gameState.player.hp <= 0) {
+                reportWastelandSession();   // death ends the session
                 showScreen('gameover-screen');
                 return;
             }
@@ -8451,7 +8454,27 @@
         };
 
         // ============ LOCAL STORAGE SAVE/LOAD SYSTEM ============
-        var SAVE_KEY = 'wasteland_adventure_save';
+        // The save is per student. Hosts pass ?userId=<profile id>; on a shared
+        // school device the old single key meant the next student pressed
+        // CONTINUE and played on (and earned answers under) someone else's
+        // save. With an id the key is suffixed and the blob carries an owner;
+        // a blob whose owner doesn't match is ignored, and the legacy unkeyed
+        // save (whoever made it) is never read. Without an id (standalone
+        // play) the legacy key keeps working as before.
+        var WASTELAND_OWNER = new URLSearchParams(window.location.search).get('userId') || null;
+        var SAVE_KEY = WASTELAND_OWNER ? 'wasteland_adventure_save_' + WASTELAND_OWNER : 'wasteland_adventure_save';
+
+        // The raw save JSON for THIS student, or null.
+        function readOwnSaveJson() {
+            var json = localStorage.getItem(SAVE_KEY);
+            if (!json || !WASTELAND_OWNER) return json;
+            try {
+                var parsed = JSON.parse(json);
+                return parsed && parsed.owner === WASTELAND_OWNER ? json : null;
+            } catch (e) {
+                return null;
+            }
+        }
         var SAVE_VERSION = 6; // Increment when save format changes - v6: added tutorial state
         var TUTORIAL_KEY = 'wasteland_adventure_tutorial';
 
@@ -8820,6 +8843,7 @@
 
                 var saveData = {
                     version: SAVE_VERSION,
+                    owner: WASTELAND_OWNER,   // see readOwnSaveJson()
                     timestamp: Date.now(),
                     distance: gameState.distance,
                     encountersWon: gameState.encountersWon,
@@ -8877,7 +8901,7 @@
 
         function loadGame() {
             try {
-                var savedJson = localStorage.getItem(SAVE_KEY);
+                var savedJson = readOwnSaveJson();
                 if (!savedJson) {
                     console.log('No save data found');
                     return false;
@@ -9035,12 +9059,12 @@
         }
 
         function hasSaveData() {
-            return localStorage.getItem(SAVE_KEY) !== null;
+            return readOwnSaveJson() !== null;
         }
 
         function getSaveInfo() {
             try {
-                var savedJson = localStorage.getItem(SAVE_KEY);
+                var savedJson = readOwnSaveJson();
                 if (!savedJson) return null;
 
                 var saveData = JSON.parse(savedJson);
@@ -14414,6 +14438,40 @@
             }
         }
 
+        // ============ GAME_SESSION_SUMMARY (shared/game-session.js) ============
+        // Wasteland is open-ended, so one session = one sitting: from NEW GAME /
+        // CONTINUE / NEW JOURNEY to death, or to leaving the game (the host
+        // closing it unloads the page - see the pagehide listener). The tallies
+        // on the player are lifetime totals that persist in the save, so the
+        // session's correct/total are the change since the session began.
+        // score = accuracy on this session's math problems, 0-100; null when no
+        // problem was attempted (0% would claim a result there wasn't).
+        var wastelandSummary = (window.GameSessionReporter ? window.GameSessionReporter.create('wasteland-adventure', { subject: 'Math' }) : { begin() {}, report() { return null; } }) /* helper missing: play on, report nothing */;
+        var wastelandSession = null;   // { correct0, attempted0 } while a session is open
+
+        function beginWastelandSession() {
+            reportWastelandSession();   // close any open one first (no-op if none)
+            wastelandSummary.begin();
+            wastelandSession = {
+                correct0: gameState.player.totalCorrect || 0,
+                attempted0: gameState.player.totalAttempted || 0
+            };
+        }
+
+        function reportWastelandSession() {
+            if (!wastelandSession) return;
+            var correct = Math.max(0, (gameState.player.totalCorrect || 0) - wastelandSession.correct0);
+            var total = Math.max(0, (gameState.player.totalAttempted || 0) - wastelandSession.attempted0);
+            wastelandSession = null;
+            wastelandSummary.report({
+                score: total ? (correct / total) * 100 : null,
+                correct: correct,
+                total: total
+            });
+        }
+
+        window.addEventListener('pagehide', reportWastelandSession);
+
         // Start a new game (clears any existing save)
         function startNewGame() {
             if (hasSaveData()) {
@@ -14423,11 +14481,14 @@
                 deleteSave();
             }
             startAdventure();
+            beginWastelandSession();
         }
 
         // Continue from saved game
         function continueGame() {
             if (loadGame()) {
+                // Baseline the session on the loaded lifetime tallies.
+                beginWastelandSession();
                 // Check if player was at base or exploring
                 if (travelState.atBase) {
                     openBaseScreen();
@@ -14460,6 +14521,7 @@
             } else {
                 alert('Failed to load save data. Starting new game.');
                 startAdventure();
+                beginWastelandSession();
             }
         }
 
@@ -19871,11 +19933,13 @@
 
             document.getElementById('gameover-title').textContent = 'YOU DIED';
             document.getElementById('gameover-text').textContent = 'The wasteland claimed another victim...';
+            reportWastelandSession();   // death ends the session
             showScreen('gameover-screen');
         }
         
         function restartGame() {
             startAdventure();
+            beginWastelandSession();
         }
         
         function showCombatMessage(text, type) {

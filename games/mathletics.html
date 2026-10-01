@@ -16,7 +16,9 @@
         }
     </script>
     <script src="../shared/supabase.min.js"></script>
-    
+    <!-- GAME_SESSION_SUMMARY reporter: homework progress for the portal -->
+    <script src="../shared/game-session.js"></script>
+
     <style>
         :root {
             --bg: #0f1216;
@@ -723,6 +725,9 @@
                 this.assignedSubject = 'Math';
                 this.sessionStartTime = null;
                 this.skillsWorkedOn = [];
+                // Session summary for homework progress (shared/game-session.js);
+                // it reads ?homework= and ?subject= from the URL itself.
+                this.sessionSummary = (window.GameSessionReporter ? window.GameSessionReporter.create('mathletics', { subject: 'Math' }) : { begin() {}, report() { return null; } }) /* helper missing: play on, report nothing */;
 
                 this.studentData = {
                     current_range: { min: 0, max: 8 },
@@ -1014,6 +1019,8 @@
             }
             
             startSession(minRange, maxRange, timeLimit, targetProblems, spacedRepetition) {
+                // New session: restart the GAME_SESSION_SUMMARY active-time clock.
+                this.sessionSummary.begin();
                 // Initialize session
                 this.currentSession = {
                     problems: [],
@@ -1221,6 +1228,10 @@
                 if (confirm('Game paused. Continue playing?')) {
                     this.resumeGame();
                 } else {
+                    // Quitting mid-session ends it without the results screen.
+                    // The answers given still count toward homework, so summarise
+                    // them (score = accuracy over the questions answered).
+                    this.reportSessionSummary();
                     this.showMainMenu();
                 }
             }
@@ -1315,6 +1326,23 @@
 
                 // Report skill progress to parent window (portal)
                 this.reportSkillProgress(correctResponses, totalTime);
+                this.reportSessionSummary();
+            }
+
+            // One GAME_SESSION_SUMMARY per session (shared/game-session.js).
+            // score = accuracy (% of answered questions correct); null when no
+            // question was answered, since 0% would claim a result there wasn't.
+            // Idempotent per session, so the quit path and the end path can
+            // both call it.
+            reportSessionSummary() {
+                const responses = (this.currentSession && this.currentSession.responses) || [];
+                const correct = responses.filter(r => r.correct).length;
+                this.sessionSummary.report({
+                    subject: this.assignedSubject,
+                    score: responses.length ? (correct / responses.length) * 100 : null,
+                    correct,
+                    total: responses.length
+                });
             }
 
             // Report progress to the parent portal window
@@ -1348,14 +1376,12 @@
 
                 // Report to parent window if embedded
                 if (window.parent !== window) {
-                    // Report individual skill practice
-                    window.parent.postMessage({
-                        type: 'SKILL_PRACTICE',
-                        subject: this.assignedSubject,
-                        skillName: 'Multiplication',
-                        score: score,
-                        gameId: 'mathletics'
-                    }, '*');
+                    // No separate SKILL_PRACTICE message any more. It carried the
+                    // same 'Multiplication' result as GAME_SESSION_COMPLETE below,
+                    // and the root site inserts a skill_practice_sessions row for
+                    // EACH, so every session was counted as two practices (and the
+                    // practice trigger moved mastery twice). The portal ignores
+                    // SKILL_PRACTICE, so nothing else depended on it.
 
                     // Report complete game session
                     const skills = Object.entries(skillsMap)

@@ -279,6 +279,8 @@
 
 </div>
 
+<!-- GAME_SESSION_SUMMARY reporter shared by every assignable game -->
+<script src="../shared/game-session.js"></script>
 <script>
 /* =========================================================================
    LIFE COMPASS  — Life Skills training game (parallel to Math Dojo)
@@ -290,6 +292,18 @@
 
 const SUBJECT = 'LifeSkills';
 const GAME = 'life-skills';
+
+// One GAME_SESSION_SUMMARY per session (shared/game-session.js) so a teacher's
+// homework assignment of this game can see score, answers and active minutes.
+// begin() at every session start, report() at every session end.
+const SUMMARY = window.GameSessionReporter
+  ? window.GameSessionReporter.create(GAME, { subject: SUBJECT })
+  : { begin(){}, report(){ return null; } };
+
+// The hosts (index.html, portal/index.html) pass ?userId=<profile id>. Anything
+// this game keeps in localStorage is keyed by it and tagged with an owner, so a
+// shared classroom device never shows one student another student's data.
+const USER_ID = new URLSearchParams(location.search).get('userId') || null;
 
 /* ---- Stages (replace Math Dojo's 10 belts with 5 curriculum stages) ---- */
 const STAGES = [
@@ -2259,6 +2273,7 @@ const Game = {
   startPlacement(){
     Object.assign(State, { mode:'placement', skills:[], asked:0, correct:0, scores:{}, bkt:{},
       pStage:3, pStreakUp:0, pStreakDown:0, pHistory:[], startedAt:Date.now() });
+    SUMMARY.begin();
     // Adaptive KST diagnostic: variable length (no fixed count), seeded by the
     // grade on-ramp from the default start stage (3) + any stored bkt.
     State.count = 0;
@@ -2272,7 +2287,9 @@ const Game = {
   startRecall(){
     Object.assign(State,{ mode:'recall', asked:0, correct:0, scores:{}, bkt:{},
       queue:[], recallIdx:0, recallStreak:0, recallSlotMiss:false, cleared:[], failed:[], startedAt:Date.now() });
-    // ask parent for weekly masteries (subject-scoped); fall back to a local set
+    SUMMARY.begin();
+    // ask parent for weekly masteries (subject-scoped); if it does not answer,
+    // fall back only to skills this student has stored evidence for
     recallWaiting = true;
     if (window.parent && window.parent!==window){
       window.parent.postMessage({ type:'DOGO_REQUEST_WEEKLY_MASTERIES', subject:SUBJECT, game:GAME }, '*');
@@ -2304,6 +2321,7 @@ function toggleChip(el, group){
 function startSession(mode, skills, count, fixedStage){
   Object.assign(State,{ mode, skills, count, asked:0, correct:0, scores:{}, bkt:{},
     studyWindow:[], startedAt:Date.now() });
+  SUMMARY.begin();
   State.fixedStage = fixedStage || null;
   document.getElementById('q-streak').classList.add('hidden');
   nextQuestion();
@@ -2314,15 +2332,44 @@ function buildRecallQueue(skillSlots){
   recallWaiting = false;
   let slots = (skillSlots||[]).map(s=>({ skill: dojoSkillFromTree(s.skill) || s.skill, category: s.category||'recent' }));
   if (slots.length===0){
-    // No server masteries — sample a few foundational/fluency skills locally so the mode is still playable.
-    slots = sampleN([...STAGE_SKILLS[1],...STAGE_SKILLS[2],...STAGE_SKILLS[3]],8).map(sk=>({skill:sk, category:'recent'}));
+    // No line-up from the host (no answer in time, or nothing to defend).
+    // Use only skills the student has stored evidence for; never random ones.
+    slots = recallSlotsFromEvidence();
   }
+  if (slots.length===0){ showRecallLocked(); return; }
   State.queue = slots;
   State.recallIdx = 0; State.recallStreak = 0; State.recallSlotMiss=false;
   State.count = 0; // controlled by queue logic
   document.getElementById('q-streak').classList.remove('hidden');
   nextRecallQuestion();
   show('screen-q');
+}
+// Recall line-up built from the host's SKILL_DATA_FOR_DOGO reply: skills that
+// already have a row (practised, mastered) or a stored p_mastered.
+function recallSlotsFromEvidence(){
+  const known = State.knownSkills || {};
+  const out = []; const seen = new Set();
+  for (const [name, rec] of Object.entries(known)){
+    if (!rec || typeof rec!=='object') continue;
+    const evidenced = ['mastered','activated','in_progress','needs_review'].includes(rec.state) ||
+      typeof rec.p_mastered==='number';
+    if (!evidenced) continue;
+    const sk = dojoSkillFromTree(name);
+    if (!sk || seen.has(sk)) continue;
+    seen.add(sk);
+    out.push({ skill: sk, category: rec.state==='in_progress' ? 'touch_on' : 'recent' });
+  }
+  return sampleN(out, Math.min(8, out.length));
+}
+// Nothing to defend yet: say so instead of running a trial on random skills.
+function showRecallLocked(){
+  document.getElementById('res-title').textContent = 'Recall Trials';
+  document.getElementById('res-score').textContent = '🔒';
+  document.getElementById('res-sub').textContent = "Recall Trials unlocks once you've practised some skills.";
+  document.getElementById('res-rank').classList.add('hidden');
+  document.getElementById('res-rtc').textContent = '';
+  document.getElementById('res-skills').innerHTML = '<p class="muted center">Play a session first, then come back to defend what you learned.</p>';
+  show('screen-results');
 }
 // Map a curriculum tree name back to a Life Compass skill (reverse of ENGLISH_TO_TREE_SKILL).
 function dojoSkillFromTree(name){
@@ -2449,7 +2496,12 @@ function grade(isCorrect, chosenIdx){
   sc.total++; if (isCorrect) sc.correct++;
   // BKT lite on the curriculum skill
   const tn = treeName(q.skill);
-  let p = (typeof State.bkt[tn]==='number') ? State.bkt[tn] : 0.3;
+  // State.bkt is cleared at every session start, so the first answer on a
+  // skill used to restart it from 0.3 and the session's write overwrote the
+  // student's stored p_mastered. Seed from the stored value (host reply to
+  // DOGO_REQUEST_SKILL_DATA); 0.3 only when there is none. Seeding at first
+  // touch also covers a reply that arrives after the session started.
+  let p = (typeof State.bkt[tn]==='number') ? State.bkt[tn] : storedPrior(tn);
   p = isCorrect ? p + (1-p)*0.3 : p*0.5;
   State.bkt[tn] = Math.max(0.02, Math.min(0.99, p));
 
@@ -2893,12 +2945,35 @@ function _engIDK(outcome, msg){
 /* =========================================================================
    END / RESULTS
    ========================================================================= */
+// Stored p_mastered for a curriculum (tree) skill, from SKILL_DATA_FOR_DOGO.
+// Falls back to the old 0.3 prior only when the student has no stored value.
+function storedPrior(tn){
+  const rec = State.knownSkills && State.knownSkills[tn];
+  if (rec && typeof rec.p_mastered==='number' && isFinite(rec.p_mastered)){
+    return Math.max(0.02, Math.min(0.99, rec.p_mastered));
+  }
+  return 0.3;
+}
+
+// Session accuracy as an integer percent, for GAME_SESSION_SUMMARY.
+function sessionScore(){ return State.asked>0 ? Math.round(State.correct/State.asked*100) : null; }
+
 function endSession(){
+  SUMMARY.report({ score: sessionScore(), correct: State.correct, total: State.asked });
   sendSessionResults();
   if (State.mode==='study') sendLessonResult();
   renderResults();
 }
 function endRecall(){
+  // The host pads the line-up by repeating skills, so one skill can clear in
+  // one slot and miss in another. Collapse to one entry per skill; a clear in
+  // any slot counts as cleared (a padded repeat must not undo an earned clear).
+  // Same rule as Math Dojo's endRetentionGauntlet and the host handler.
+  const clearedSeen = new Set();
+  State.cleared = State.cleared.filter(x=>!clearedSeen.has(x.skill) && clearedSeen.add(x.skill));
+  const failedSeen = new Set();
+  State.failed = State.failed.filter(x=>!clearedSeen.has(x.skill) && !failedSeen.has(x.skill) && failedSeen.add(x.skill));
+  SUMMARY.report({ score: sessionScore(), correct: State.correct, total: State.asked });
   renderRecallResults();
   // tell parent which skills were defended/failed → RTC + demotions
   if (window.parent && window.parent!==window){
@@ -3027,13 +3102,16 @@ window.addEventListener('message', (event)=>{
 });
 
 /* ---- rank persistence (local; cosmetic) ---- */
+// Signed in: 'life_compass_rank_<id>', and a blob is only shown to its owner.
+// Signed out / standalone: the old shared key, as before.
+function rankKey(){ return USER_ID ? 'life_compass_rank_' + USER_ID : 'life_compass_rank'; }
 function saveRank(stage){
-  try { localStorage.setItem('life_compass_rank', JSON.stringify({stage:stage.id, rank:stage.rank, at:Date.now()})); } catch(e){}
+  try { localStorage.setItem(rankKey(), JSON.stringify({stage:stage.id, rank:stage.rank, at:Date.now(), owner:USER_ID})); } catch(e){}
   updateRankBanner();
 }
 function updateRankBanner(){
   let r='Unranked';
-  try { const v=JSON.parse(localStorage.getItem('life_compass_rank')||'null'); if(v) r=v.rank+` · ${STAGE_BY_ID[v.stage].name}`; } catch(e){}
+  try { const v=JSON.parse(localStorage.getItem(rankKey())||'null'); if(v && (!USER_ID || v.owner===USER_ID)) r=v.rank+` · ${STAGE_BY_ID[v.stage].name}`; } catch(e){}
   const el=document.getElementById('rank-name'); if (el) el.textContent=r;
 }
 

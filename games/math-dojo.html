@@ -1385,6 +1385,8 @@
         </div>
     </div>
 
+    <!-- One GAME_SESSION_SUMMARY per session for homework progress (see the file). -->
+    <script src="../shared/game-session.js"></script>
     <script>
 // ========================================
 // TIER & DOMAIN DEFINITIONS
@@ -3410,38 +3412,71 @@ function getSkillMastery(domain) {
     return skillData ? (skillData.mastery_score || 0) : 0;
 }
 
-// Load skill tree data from localStorage (cross-tab sync)
+// ========================================
+// WHOSE PROGRESS IS THIS? (per-student local storage)
+// ========================================
+// School devices are shared. This page used to keep progress under keys that
+// were the same for everyone on the browser ('math_skill_states',
+// 'math_skill_progress_guest'), so the next student to open the Dojo loaded
+// the previous student's skills - and the host then saved that whole map
+// under the NEW student's account. Every local blob is now keyed by, and
+// tagged with, the student it belongs to:
+//
+//   - The host passes ?userId=<profile id> in the iframe src (index.html,
+//     portal/index.html). That id is the owner.
+//   - Opened standalone (no parent page), the owner is 'guest'.
+//   - Embedded but with no id, there is no owner: nothing is read from or
+//     written to local storage, and the host's server copy is the only
+//     source. Reading 'guest' there would hand a signed-in student whatever
+//     someone else left behind.
+//
+// A blob whose `owner` does not match is ignored, never merged.
+function dojoStorageOwner() {
+    const id = getUserId();
+    if (id) return String(id);
+    const embedded = !!(window.parent && window.parent !== window);
+    return embedded ? null : 'guest';
+}
+
+function dojoOwnedKey(base) {
+    const owner = dojoStorageOwner();
+    return owner ? `${base}_${owner}` : null;
+}
+
+function readOwnedBlob(base) {
+    const key = dojoOwnedKey(base);
+    if (!key) return null;
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return null;
+        const blob = JSON.parse(raw);
+        return (blob && blob.owner === dojoStorageOwner()) ? blob : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function writeOwnedBlob(base, blob) {
+    const key = dojoOwnedKey(base);
+    if (!key) return false;
+    try {
+        localStorage.setItem(key, JSON.stringify({ ...blob, owner: dojoStorageOwner() }));
+        return true;
+    } catch (e) {
+        return false;
+    }
+}
+
+// Load skill tree data from localStorage (cross-tab sync). The Math skill tree
+// viewer writes the same per-owner key ('math_skill_states_<owner>').
 function loadSkillTreeData() {
     try {
-        // Merge data from multiple sources - tree viewer saves to math_skill_states
-        // while user-specific data may be in math_skill_progress_${userId}
-        const userId = getUserId();
-        const userKey = userId ? `math_skill_progress_${userId}` : 'math_skill_progress_guest';
-
-        // Start with tree viewer data (always check this)
-        const treeData = localStorage.getItem('math_skill_states');
-        if (treeData) {
-            const parsed = JSON.parse(treeData);
-            skillTreeData.skills = parsed.skills || parsed;
-            skillTreeData.lastSync = parsed.lastSync || Date.now();
-            console.log('Loaded skill tree data from math_skill_states:', Object.keys(skillTreeData.skills).length, 'skills');
+        const blob = readOwnedBlob('math_skill_states');
+        if (blob && blob.skills) {
+            skillTreeData.skills = blob.skills;
+            skillTreeData.lastSync = blob.lastSync || Date.now();
+            console.log('Loaded skill tree data for this student:', Object.keys(skillTreeData.skills).length, 'skills');
         }
-
-        // Merge with user-specific data if it exists and is newer
-        const userData = localStorage.getItem(userKey);
-        if (userData) {
-            const parsed = JSON.parse(userData);
-            const userSkills = parsed.skills || parsed;
-            const userSync = parsed.lastSync || 0;
-
-            // If user data is newer, merge it (user data takes precedence)
-            if (userSync > (skillTreeData.lastSync || 0)) {
-                Object.assign(skillTreeData.skills, userSkills);
-                skillTreeData.lastSync = userSync;
-                console.log('Merged newer user-specific data:', Object.keys(userSkills).length, 'skills');
-            }
-        }
-
         console.log('Total skills loaded:', Object.keys(skillTreeData.skills).length);
     } catch (e) {
         console.warn('Failed to load skill tree data:', e);
@@ -3451,26 +3486,18 @@ function loadSkillTreeData() {
 // Save skill tree data to localStorage (for cross-tab sync)
 function saveSkillTreeData() {
     try {
-        const userId = getUserId();
-        const userKey = userId ? `math_skill_progress_${userId}` : 'math_skill_progress_guest';
-
-        const dataToSave = {
+        const saved = writeOwnedBlob('math_skill_states', {
             skills: skillTreeData.skills,
             lastSync: Date.now()
-        };
+        });
+        if (saved) console.log('💾 Saved skill progress to localStorage');
 
-        // Save to user-specific key
-        localStorage.setItem(userKey, JSON.stringify(dataToSave));
-
-        // Also save to math_skill_states so Skill Tree can read it
-        localStorage.setItem('math_skill_states', JSON.stringify(dataToSave));
-
-        console.log('💾 Saved skill progress to localStorage');
-
-        // Notify parent (portal) that skill data has been updated
+        // Notify parent (portal) that skill data has been updated. `owner`
+        // lets the host refuse a map that belongs to someone else.
         if (window.parent && window.parent !== window) {
             window.parent.postMessage({
                 type: 'DOJO_SKILL_DATA_UPDATED',
+                owner: getUserId(),
                 skills: skillTreeData.skills,
                 timestamp: Date.now()
             }, '*');
@@ -3480,20 +3507,13 @@ function saveSkillTreeData() {
     }
 }
 
-// Get user ID from various sources
+// The signed-in student's profile id, from the host. Only the host knows who
+// is signed in, so only the host's word counts: the old fallback to a
+// device-wide 'current_user_id' key was whoever last set it.
 function getUserId() {
-    // Try to get from parent window data
     if (window.dojoUserId) return window.dojoUserId;
-
-    // Try URL params
     const params = new URLSearchParams(window.location.search);
-    if (params.get('userId')) return params.get('userId');
-
-    // Try localStorage
-    const stored = localStorage.getItem('current_user_id');
-    if (stored) return stored;
-
-    return null;
+    return params.get('userId') || null;
 }
 
 // ========================================
@@ -3528,7 +3548,8 @@ window.addEventListener('storage', (event) => {
     }
 
     // Skill tree data updated - refresh our local copy
-    if (event.key && (event.key.includes('skill_progress') || event.key === 'math_skill_states')) {
+    // Only this student's own key - another student's write is not news here.
+    if (event.key && event.key === dojoOwnedKey('math_skill_states')) {
         loadSkillTreeData();
         // Refresh UI if we're on skill selection screen
         if (document.getElementById('learning-setup-screen').classList.contains('active')) {
@@ -3810,6 +3831,13 @@ let sessionData = {
     mode: null
 };
 
+// Homework summary reporter. One session here = one startSessionTracking ->
+// endSessionTracking bracket (belt test, sparring arena, lesson, retention
+// gauntlet). A stand-in keeps the Dojo working if the helper failed to load.
+const DOJO_SUMMARY = (window.GameSessionReporter
+    ? window.GameSessionReporter.create('math-dojo', { subject: 'Math' })
+    : { begin() {}, report() { return null; } });
+
 // Start tracking a session
 function startSessionTracking(mode) {
     sessionData = {
@@ -3818,6 +3846,22 @@ function startSessionTracking(mode) {
         skillProgress: {},
         mode: mode
     };
+    DOJO_SUMMARY.begin();
+}
+
+// Report the session that is ending to the host as GAME_SESSION_SUMMARY.
+// Score = percent of this session's questions answered correctly; null when
+// the student left before answering any (a bail is not a 0%).
+function reportDojoSessionSummary() {
+    if (!sessionData.startTime) return;
+    const total = sessionData.questions.length;
+    const correct = sessionData.questions.filter(q => q.correct).length;
+    DOJO_SUMMARY.report({
+        subject: 'Math',
+        score: total > 0 ? Math.round((correct / total) * 100) : null,
+        correct,
+        total
+    });
 }
 
 // Record a question result
@@ -3843,6 +3887,9 @@ function recordQuestionResult(domain, tier, correct, time, generatorKey = null, 
 // answers don't get credited as mastery.
 function endSessionTracking(options = {}) {
     const { promote = true } = options;
+    // Every ended session is reported, including one with no answers.
+    // Idempotent per session, so a second endSessionTracking() is harmless.
+    reportDojoSessionSummary();
     if (!sessionData.startTime || sessionData.questions.length === 0) return;
 
     const sessionDuration = Date.now() - sessionData.startTime;
@@ -4586,17 +4633,29 @@ function applyBeltTestToTree() {
 
     // Send ALL updated skills to parent for Supabase persistence
     // sendSessionResults() only covers directly tested skills, not inferred/unlocked ones
+    // Only the skills THIS belt test said something about, each with the state
+    // this test earned it. This used to send every non-locked skill in the
+    // local map - including anything a previous student left on the device -
+    // and the host saved them all as mastered. The host now saves 'mastered'
+    // rows as belt-test mastery and only INSERTS everything else (never
+    // overwriting an existing row), so the state sent here has to be honest.
     if (window.parent && window.parent !== window) {
         const allUpdatedSkills = [];
-        for (const [name, skill] of Object.entries(skillTreeData.skills)) {
-            if (skill.state && skill.state !== 'locked') {
-                allUpdatedSkills.push({
-                    skillName: name,
-                    state: skill.state,
-                    mastery_score: skill.mastery_score || (skill.state === 'mastered' ? 100 : 0)
-                });
-            }
-        }
+        const sent = new Set();
+        const push = (name, st, score) => {
+            if (!name || !st || sent.has(name)) return;
+            sent.add(name);
+            allUpdatedSkills.push({ skillName: name, state: st, mastery_score: Math.round(score || 0) });
+        };
+        // Strongest evidence first, so a skill listed twice keeps its best
+        // directly-tested result.
+        results.mastered.forEach(r => push(r.skill, 'mastered', 100));
+        results.activated.forEach(r => push(r.skill, 'activated', r.accuracy));
+        results.inProgress.forEach(r => push(r.skill, 'in_progress', r.accuracy));
+        // Inferred and unprobed skills were never asked about: whatever local
+        // state they were given, they are sent as no more than "unlocked".
+        (results.inferred || []).forEach(r => push(r.skill, 'available', 0));
+        (results.unverified || []).forEach(r => push(r.skill || r, 'available', 0));
         if (allUpdatedSkills.length > 0) {
             window.parent.postMessage({
                 type: 'BACKFILL_SKILLS',
@@ -5066,9 +5125,8 @@ window.addEventListener('message', (event) => {
             // Persist the merged state back to localStorage so subsequent
             // loads have the server-augmented view. Don't re-broadcast —
             // that would loop with the parent.
-            const userId = getUserId();
-            const lsKey = userId ? `subskill_progress_${userId}` : 'subskill_progress';
-            localStorage.setItem(lsKey, JSON.stringify(state.completedSubSkills));
+            // Same per-owner rule as the skill map (see dojoStorageOwner).
+            writeOwnedBlob('subskill_progress', { completed: state.completedSubSkills });
             console.log('📥 Merged sub-skill progress from server:', Object.keys(incoming).length, 'domains');
             // Refresh the grid so newly unlocked gates are visible.
             if (typeof updateSkillGrid === 'function' &&
@@ -40762,13 +40820,9 @@ function completeSubSkill(tier, skill, subSkillId) {
 // cross-device durability. If there's no parent (standalone open), we just
 // fall back to localStorage silently.
 function saveSubSkillProgress() {
-    try {
-        const userId = getUserId();
-        const key = userId ? `subskill_progress_${userId}` : 'subskill_progress';
-        localStorage.setItem(key, JSON.stringify(state.completedSubSkills));
-    } catch (e) {
-        console.warn('Could not save sub-skill progress:', e);
-    }
+    // Per-owner key (see dojoStorageOwner) - the old 'subskill_progress'
+    // key was shared by every student on the device.
+    writeOwnedBlob('subskill_progress', { completed: state.completedSubSkills });
 
     // Broadcast to parent so it can persist to Supabase. Parent handler:
     // handleDogoSubSkillProgress in portal/index.html.
@@ -40776,6 +40830,7 @@ function saveSubSkillProgress() {
         try {
             window.parent.postMessage({
                 type: 'DOJO_SUBSKILL_PROGRESS',
+                owner: getUserId(),
                 completedSubSkills: state.completedSubSkills,
                 timestamp: Date.now()
             }, '*');
@@ -40788,11 +40843,10 @@ function saveSubSkillProgress() {
 // Load sub-skill progress from localStorage
 function loadSubSkillProgress() {
     try {
-        const userId = getUserId();
-        const key = userId ? `subskill_progress_${userId}` : 'subskill_progress';
-        const saved = localStorage.getItem(key);
-        if (saved) {
-            state.completedSubSkills = JSON.parse(saved);
+        // Only this student's own blob; a mismatched owner reads as nothing.
+        const blob = readOwnedBlob('subskill_progress');
+        if (blob && blob.completed && typeof blob.completed === 'object') {
+            state.completedSubSkills = blob.completed;
         }
     } catch (e) {
         console.warn('Could not load sub-skill progress:', e);

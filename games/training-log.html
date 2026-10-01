@@ -971,7 +971,32 @@ function bandFromGrade(g){
   return n <= 2 ? 'K-2' : n <= 5 ? '3-5' : n <= 8 ? '6-8' : n <= 10 ? '9-10' : '11-12';
 }
 
-// Standalone/dev fallback: localStorage-backed log
+// Standalone/dev fallback: localStorage-backed log.
+//
+// Keyed per student. These keys used to be the same for everyone on the
+// device, so on a shared school Chromebook the 4s fallback below showed one
+// student the previous student's log and skill states. Hosts pass
+// ?userId=<profile id>; with an id we read and write only that student's keys,
+// and each blob carries an `owner` tag so a mismatched blob is ignored. With no
+// id (standalone dev page) the old unscoped keys are still used.
+const LOCAL_OWNER = new URLSearchParams(location.search).get('userId') || null;
+const localKey = base => LOCAL_OWNER ? `${base}_${LOCAL_OWNER}` : base;
+function readLocal(base, fallback){
+  try {
+    const raw = localStorage.getItem(localKey(base));
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw);
+    // Owner-tagged blob: {owner, data}. An untagged blob is legacy - only
+    // trust it on the unscoped (no-id) key, where it was written.
+    if (parsed && typeof parsed === 'object' && 'owner' in parsed && 'data' in parsed) {
+      return (parsed.owner || null) === LOCAL_OWNER ? parsed.data : fallback;
+    }
+    return LOCAL_OWNER ? fallback : parsed;
+  } catch(e){ return fallback; }
+}
+function writeLocal(base, data){
+  try { localStorage.setItem(localKey(base), JSON.stringify({ owner: LOCAL_OWNER, data })); } catch(e){}
+}
 function bootstrap(){
   if (State.embedded) {
     post({type:'PE_REQUEST_LOG'});
@@ -981,8 +1006,10 @@ function bootstrap(){
   } else loadLocal();
 }
 function loadLocal(){
-  try { State.entries = JSON.parse(localStorage.getItem('pe_log_local') || '[]'); } catch(e){ State.entries = []; }
-  try { State.skillStates = JSON.parse(localStorage.getItem('pe_states_local') || '{}'); } catch(e){ State.skillStates = {}; }
+  const ents = readLocal('pe_log_local', []);
+  State.entries = Array.isArray(ents) ? ents : [];
+  const sts = readLocal('pe_states_local', {});
+  State.skillStates = (sts && typeof sts === 'object') ? sts : {};
   State.loaded = true; render();
 }
 function saveEntry(node, entry_type, value, unit, detail, notes){
@@ -994,7 +1021,7 @@ function saveEntry(node, entry_type, value, unit, detail, notes){
     State.pendingSaves[clientId] = entry;
     post({type:'PE_LOG_ENTRY', clientId, node_id: node.id, entry_type, value, unit, detail, notes});
   } else {
-    localStorage.setItem('pe_log_local', JSON.stringify(State.entries));
+    writeLocal('pe_log_local', State.entries);
   }
   render(); syncStates();
 }
@@ -1044,12 +1071,21 @@ function rubricStatus(node){
   return { latest, scores, avg, mastered, score: Math.round(avg/4*100), history: ver };
 }
 function streakStatus(node){
+  // Only teacher-verified sessions count toward mastery. Self-logged entries
+  // are always unverified (the host forces verified=false), and counting them
+  // let a student tap "Log session" N times and write a mastered skill_progress
+  // row with no evidence behind it. They still show as "pending" so logging a
+  // habit is not wasted - it just waits for a teacher to confirm it.
   const logs = entriesFor(node.id).filter(e => e.entry_type === 'activity');
-  let count;
-  if (node.id === 'P-340') count = new Set(logs.map(e => e.recorded_at.slice(0,10))).size; // unique days
-  else count = logs.length;
+  const ver = logs.filter(e => e.verified);
+  const countOf = list => node.id === 'P-340'
+    ? new Set(list.map(e => e.recorded_at.slice(0,10))).size // unique days
+    : list.length;
+  const count = countOf(ver);                   // verified - drives mastery + score
+  const logged = countOf(logs);                 // everything, for display only
+  const pending = Math.max(0, logged - count);  // self-logged, awaiting a teacher
   const target = node.assess.target;
-  return { count, target, logs, mastered: count >= target, score: Math.min(100, Math.round(count/target*100)),
+  return { count, logged, pending, target, logs, mastered: count >= target, score: Math.min(100, Math.round(count/target*100)),
            todayDone: logs.some(e => e.recorded_at.slice(0,10) === new Date().toISOString().slice(0,10)) };
 }
 function quizStatus(node){
@@ -1106,7 +1142,7 @@ function syncStates(){
     State.skillStates[node.game_skill] = { state: target, mastery_score: st.score || 0 };
     if (State.embedded) post({ type:'DOGO_SKILL_PROGRESS', subject:'Physical', skill: node.game_skill,
       domain: node.cluster, skillState: target, masteryScore: st.score || 0, correct: 0, total: 0, timestamp: new Date().toISOString() });
-    else localStorage.setItem('pe_states_local', JSON.stringify(State.skillStates));
+    else writeLocal('pe_states_local', State.skillStates);
   }
 }
 
@@ -1184,7 +1220,7 @@ function rDash(){
     <div class="stat"><div class="n">${mastered.length}<span style="color:var(--muted);font-size:.9rem">/${all.length}</span></div><div class="l">skills mastered</div></div>
     <div class="stat"><div class="n">${State.entries.length}</div><div class="l">entries logged</div></div>
     <div class="stat"><div class="n">${verCount}</div><div class="l">verified by teacher</div></div>
-    <div class="stat"><div class="n">${sk.count}<span style="color:var(--muted);font-size:.9rem">/${sk.target}</span></div><div class="l">active days logged</div></div>
+    <div class="stat"><div class="n">${sk.count}<span style="color:var(--muted);font-size:.9rem">/${sk.target}</span></div><div class="l">active days verified${sk.pending ? ` (+${sk.pending} pending)` : ''}</div></div>
   </div>`;
   html += '<div class="grid">';
   for (const cl of PE.clusters){
@@ -1293,12 +1329,12 @@ function rKnowledge(){
 }
 
 function rHabits(){
-  let html = '<div class="hint" style="margin-bottom:10px">Habits are yours to log — self-logged sessions count here (and only here).</div><div class="grid">';
+  let html = '<div class="hint" style="margin-bottom:10px">Habits are yours to log. Each session you log shows as pending until a teacher verifies it; verified sessions count toward mastery.</div><div class="grid">';
   for (const node of nodesByType('streak')){
     const st = streakStatus(node);
     html += `<div class="card"><h3>${esc(node.title)}</h3><div class="meta">${esc(node.mastery_criteria)}</div>${stateChip(st)}
       <div class="bar"><i class="${st.mastered?'good':''}" style="width:${st.score}%"></i></div>
-      <div class="rowline"><span class="muted">${esc(node.assess.session_label)}</span><span>${st.count} / ${st.target}</span></div>
+      <div class="rowline"><span class="muted">${esc(node.assess.session_label)}</span><span>${st.count} / ${st.target} verified${st.pending ? ` <span class="muted">(+${st.pending} pending)</span>` : ''}</span></div>
       <div class="logform">
         <input class="val" id="min-${node.id}" placeholder="minutes" inputmode="numeric">
         <button class="act" ${node.id==='P-340'&&st.todayDone?'disabled':''} onclick="logActivity('${node.id}')">${node.id==='P-340'&&st.todayDone?'Logged today ✓':'Log session'}</button>
@@ -1375,7 +1411,7 @@ function finishQuiz(){
   State.skillStates[node.game_skill] = { state: newState, mastery_score: newScore };
   if (State.embedded) post({ type:'DOGO_SKILL_PROGRESS', subject:'Physical', skill: node.game_skill, domain: node.cluster,
     skillState: newState, masteryScore: newScore, correct: Quiz.right, total: Quiz.qs.length, timestamp: new Date().toISOString() });
-  else localStorage.setItem('pe_states_local', JSON.stringify(State.skillStates));
+  else writeLocal('pe_states_local', State.skillStates);
   let html = `<h2>${passed ? '🎉 Passed!' : 'Keep training'}</h2>
     <div style="margin:10px 0">You scored <b>${Quiz.right}/${Quiz.qs.length}</b> (${pct}%). ${passed ? 'Skill mastered!' : 'You need 80% — review the lesson and try again.'}</div>`;
   if (Quiz.wrongs.length){

@@ -1151,6 +1151,14 @@
                 const params = new URLSearchParams(window.location.search);
                 this.currentSubject = params.get('subject') || 'Art';
                 this.isReadOnly = params.get('readonly') === 'true';
+                // Who this tree belongs to, and who is looking at it. The host
+                // (index.html) passes both. userId keys local storage per student
+                // on shared devices (see storageOwner). userType gates the
+                // override codes: they rewrite a student's record, so they are
+                // for staff only. (A UX gate, like every client-side check here;
+                // the host refuses the destructive messages from non-staff too.)
+                this.userId = params.get('userId') || null;
+                this.isStaff = ['teacher', 'admin'].includes(params.get('userType') || '');
 
                 // Update header
                 const header = document.getElementById('viewportHeader');
@@ -1182,12 +1190,28 @@
             }
 
             // === CROSS-TAB COMMUNICATION (localStorage) ===
+            // Whose local storage this page may read and write: the student
+            // the host named, 'guest' when opened standalone, and nobody when
+            // embedded without an id (then the host's copy is the only source).
+            storageOwner() {
+                if (this.userId) return String(this.userId);
+                return (window.parent && window.parent !== window) ? null : 'guest';
+            }
+
+            // Math Dojo tags its cross-tab payloads with userId (null as a
+            // guest). Another student's session on the same device is not
+            // this student's progress.
+            ownsCrossTabPayload(data) {
+                const owner = this.storageOwner();
+                return !!owner && !!data && String(data.userId || 'guest') === owner;
+            }
+
             handleStorageEvent(event) {
                 // Handle Dojo session complete
                 if (event.key === 'dojo_session_complete' && event.newValue) {
                     try {
                         const data = JSON.parse(event.newValue);
-                        this.handleDojoSessionFromStorage(data);
+                        if (this.ownsCrossTabPayload(data)) this.handleDojoSessionFromStorage(data);
                     } catch (e) {
                         console.warn('Failed to parse dojo session data:', e);
                     }
@@ -1197,7 +1221,7 @@
                 if (event.key === 'dojo_lesson_complete' && event.newValue) {
                     try {
                         const data = JSON.parse(event.newValue);
-                        this.handleDojoLessonFromStorage(data);
+                        if (this.ownsCrossTabPayload(data)) this.handleDojoLessonFromStorage(data);
                     } catch (e) {
                         console.warn('Failed to parse dojo lesson data:', e);
                     }
@@ -1207,7 +1231,7 @@
                 if (event.key === 'belt_test_complete' && event.newValue) {
                     try {
                         const data = JSON.parse(event.newValue);
-                        this.handleBeltTestFromStorage(data);
+                        if (this.ownsCrossTabPayload(data)) this.handleBeltTestFromStorage(data);
                     } catch (e) {
                         console.warn('Failed to parse belt test data:', e);
                     }
@@ -1420,6 +1444,12 @@
                 this.updateNodeVisuals(skillName);
             }
 
+            // '<subject>_skill_states_<owner>', or null when there is no owner.
+            skillStatesKey() {
+                const owner = this.storageOwner();
+                return owner ? `${this.currentSubject.toLowerCase()}_skill_states_${owner}` : null;
+            }
+
             // Save progress to localStorage for Dojo to read
             saveProgressToStorage() {
                 if (this.isReadOnly) return; // Don't modify storage in teacher view
@@ -1441,14 +1471,18 @@
                         progress[skillName] = entry;
                     });
 
-                    // Subject-scoped key so activating a Science/Language skill
-                    // doesn't clobber Math state. For Math this resolves to
-                    // 'math_skill_states', preserving the Dojo read contract.
-                    const storageKey = `${this.currentSubject.toLowerCase()}_skill_states`;
-                    localStorage.setItem(storageKey, JSON.stringify({
-                        skills: progress,
-                        lastSync: Date.now()
-                    }));
+                    // Subject-scoped AND student-scoped key, tagged with its
+                    // owner. For Math this is 'math_skill_states_<owner>', the
+                    // key Math Dojo reads. The old unscoped key was shared by
+                    // every student on the device, so the next one inherited it.
+                    const storageKey = this.skillStatesKey();
+                    if (storageKey) {
+                        localStorage.setItem(storageKey, JSON.stringify({
+                            owner: this.storageOwner(),
+                            skills: progress,
+                            lastSync: Date.now()
+                        }));
+                    }
 
                     // Notify parent to forward skill states to Dojo
                     if (window.parent && window.parent !== window) {
@@ -3225,13 +3259,15 @@
               // Merge with localStorage data so we never lose local progress
               let merged = {};
               try {
-                  // Read the subject-scoped key so each subject merges its own
-                  // saved state (Math resolves to 'math_skill_states').
-                  const localData = localStorage.getItem(`${this.currentSubject.toLowerCase()}_skill_states`);
+                  // This student's own saved state only - a blob with any
+                  // other owner (or the old untagged shared key) is ignored.
+                  const storageKey = this.skillStatesKey();
+                  const localData = storageKey ? localStorage.getItem(storageKey) : null;
                   if (localData) {
                       const parsed = JSON.parse(localData);
-                      const localSkills = parsed.skills || parsed;
-                      Object.assign(merged, localSkills);
+                      if (parsed && parsed.owner === this.storageOwner() && parsed.skills) {
+                          Object.assign(merged, parsed.skills);
+                      }
                   }
               } catch (e) {
                   console.warn('Failed to read localStorage for merge:', e);
@@ -3355,26 +3391,35 @@
                 );
             }
 
+            // "Activate" on an available node is the student choosing to start
+            // that skill. It used to mark the node 'activated' - which this
+            // tree shows as Mastered, counts as a met prerequisite, and the host
+            // saved as mastered/100 - from one click and no evidence. It now
+            // records the intent as 'in_progress': the skill is on the student's
+            // path, and mastery has to come from practice (Dojo, lessons, the
+            // subject games), which report it through their own messages.
             activateSkill(skillName) {
                 const skill = this.SKILL_TREE[skillName];
                 if (skill.state !== 'available') return;
 
-                // Send unlock request to parent
+                // Tell the host the student started this skill (never mastery)
                 if (window.parent !== window) {
                     window.parent.postMessage({
                         type: 'SKILL_UNLOCKED',
                         subject: this.currentSubject,
                         skillName: skillName,
-                        state: 'activated'
+                        state: 'in_progress',
+                        intent: 'started'
                     }, '*');
                 }
 
                 // Optimistically update UI
-                skill.state = 'activated';
-                this.skillProgress[skillName] = 'activated';
+                skill.state = 'in_progress';
+                this.skillProgress[skillName] = 'in_progress';
                 this.updateNodeVisuals(skillName);
                 this.updateAvailableSkills();
                 this.updateConnections();
+                this.showNotification(`Started "${skillName}" - practise it to master it`);
 
                 // Save to localStorage so Dojo can see the updates
                 this.saveProgressToStorage();
@@ -3430,9 +3475,9 @@
                     this.skillProgress[skillName] = skill.state;
                 });
 
-                // Clear localStorage data for this subject
-                const storageKey = `${this.currentSubject.toLowerCase()}_skill_states`;
-                localStorage.removeItem(storageKey);
+                // Clear this student's localStorage data for this subject
+                const storageKey = this.skillStatesKey();
+                if (storageKey) localStorage.removeItem(storageKey);
                 localStorage.removeItem(`skillTreeProgress_${this.currentSubject}`);
 
                 // Save fresh state
@@ -3504,6 +3549,9 @@
                 if (backfilledSkills.length > 0 && window.parent && window.parent !== window) {
                     window.parent.postMessage({
                         type: 'BACKFILL_SKILLS',
+                        // A staff override, not a belt test: the host only
+                        // honours it from staff and labels it 'teacher'.
+                        reason: 'override',
                         subject: this.currentSubject,
                         skills: backfilledSkills.map(name => ({
                             skillName: name,
@@ -3564,6 +3612,15 @@
 
                 const enteredCode = input.value.trim().toUpperCase();
 
+                // Override codes rewrite a student's record (reset it, unlock
+                // everything, mark prerequisites mastered). Staff only - and a
+                // student does not get to try codes at all.
+                if (!this.isStaff) {
+                    if (error) error.textContent = 'Override codes are for teachers.';
+                    input.value = '';
+                    return;
+                }
+
                 // Special codes that don't require a pending skill
                 if (enteredCode === 'RESET') {
                     this.resetSkillTree();
@@ -3592,8 +3649,8 @@
                     return;
                 }
 
+                // Never log the expected code: anyone can open the console.
                 const correctCode = this.generateOverrideCode();
-                console.log('Override validation:', { entered: enteredCode, expected: correctCode });
 
                 if (enteredCode === correctCode) {
                     // Correct code - unlock and activate the skill regardless of current state
@@ -4271,10 +4328,13 @@
                         html += `<button class="skill-modal-btn skill-modal-btn-primary" onclick="skillTreeManager.unlockSkillFromModal()">Unlock Skill</button>`;
                     } else {
                         html += `<button class="skill-modal-btn skill-modal-btn-secondary" disabled>Complete prerequisites to unlock</button>`;
-                        html += `<button class="skill-modal-btn skill-modal-btn-secondary" onclick="skillTreeManager.overrideFromModal()" style="margin-top: 8px; font-size: 12px; opacity: 0.7;">Enter Override Code</button>`;
+                        // Staff only - validateAndUnlock refuses students anyway.
+                        if (this.isStaff) {
+                            html += `<button class="skill-modal-btn skill-modal-btn-secondary" onclick="skillTreeManager.overrideFromModal()" style="margin-top: 8px; font-size: 12px; opacity: 0.7;">Enter Override Code</button>`;
+                        }
                     }
                 } else if (skill.state === 'available') {
-                    html += `<button class="skill-modal-btn skill-modal-btn-primary" onclick="skillTreeManager.activateSkillFromModal()">Activate Skill</button>`;
+                    html += `<button class="skill-modal-btn skill-modal-btn-primary" onclick="skillTreeManager.activateSkillFromModal()">Start This Skill</button>`; // marks it In Progress, not Mastered (activateSkill)
                     if (this.currentSubject === 'Math' && !this.isReadOnly) {
                         html += `<button class="skill-modal-btn skill-modal-btn-secondary" onclick="skillTreeManager.learnFromModal()">Learn Skill</button>`;
                         html += `<button class="skill-modal-btn skill-modal-btn-secondary" onclick="skillTreeManager.practiceFromModal()">Practice in Math Dojo</button>`;
@@ -4380,13 +4440,12 @@
             activateSkillFromModal() {
                 if (!this.currentModalSkill) return;
                 const skillName = this.currentModalSkill; // Save before hiding clears it
-                if (this.systemLocked) {
-                    this.hideSkillModal();
-                    this.showOverrideModal(skillName);
-                } else {
-                    this.activateSkill(skillName);
-                    this.hideSkillModal();
-                }
+                // Activation used to sit behind the override code because it
+                // granted mastery. It now only records that the student started
+                // the skill (see activateSkill), so it needs no code - and the
+                // codes are staff-only now, so a student could not enter one.
+                this.activateSkill(skillName);
+                this.hideSkillModal();
             }
 
             practiceFromModal() {
