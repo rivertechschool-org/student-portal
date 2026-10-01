@@ -50932,7 +50932,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-09-22·b';
+      const RIVEN_BUILD = '2026-10-01·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -53823,7 +53823,7 @@ Students you had withdrawn stay withdrawn.`)) {
       // for a different student instead of dumping the generic student card
       let intent = null;
       const reusableIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'STUDENT_PRACTICE'];
       const reuseSrc = (this._nlpContext?.lastIntent && reusableIntents.includes(this._nlpContext.lastIntent))
         ? this._nlpContext.lastIntent
         : this._nlpContext?.lastReadIntent;
@@ -53903,7 +53903,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const studentIntents = ['VIEW_STUDENT', 'ADD_RTC', 'SUBTRACT_RTC', 'VIEW_ATTENDANCE', 'VIEW_HISTORY',
         'BALANCE_AT', 'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'MARK_ATTENDANCE', 'ENROLL_STUDENT',
         'UNENROLL_STUDENT', 'SET_GRADE', 'VIEW_GRADES', 'UPDATE_CONTACT', 'VIEW_CONTACT',
-        'ADD_NOTE', 'VIEW_NOTES', 'COMPARE_STUDENTS', 'TRANSFER_RTC'];
+        'ADD_NOTE', 'VIEW_NOTES', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'STUDENT_PRACTICE'];
       if (entities.student && !entities.student.fromContext && entities.student.score < 0.85
           && studentIntents.includes(intent.intent)) {
         this.terminalPrint(`💭 I think you mean ${entities.student.student.full_name}...`, '#ffd36a');
@@ -54025,7 +54025,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const studentCentric = ['VIEW_STUDENT', 'ADD_RTC', 'SUBTRACT_RTC', 'VIEW_ATTENDANCE', 'VIEW_HISTORY',
         'BALANCE_AT', 'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'MARK_ATTENDANCE', 'ENROLL_STUDENT',
         'UNENROLL_STUDENT', 'SET_GRADE', 'VIEW_GRADES', 'UPDATE_CONTACT', 'VIEW_CONTACT',
-        'ADD_NOTE', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'RELAY_ACTION'];
+        'ADD_NOTE', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'COMPARE_STUDENTS', 'TRANSFER_RTC', 'RELAY_ACTION', 'STUDENT_PRACTICE'];
       const student = this._rivenResolvedStudent(entities);
       if (student && student.full_name && !entities.student?.fromContext && studentCentric.includes(intent.intent)) {
         this._nlpContext.lastStudent = student;
@@ -54035,7 +54035,10 @@ Students you had withdrawn stay withdrawn.`)) {
       // Track the last READ separately so "what about rory?" works even
       // right after a write (set grade -> ask about another student)
       const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES', 'DAILY_ROSTER'];
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES', 'DAILY_ROSTER',
+        // practice reads. Only STUDENT_PRACTICE is about one student, so only
+        // it is in reusableIntents ("what is ari stuck on" -> "what about mia?")
+        'STUDENT_PRACTICE', 'PRACTICE_STUCK', 'PRACTICE_INACTIVE', 'HOMEWORK_RESULTS'];
       if (readIntents.includes(intent.intent)) {
         this._nlpContext.lastReadIntent = intent.intent;
       }
@@ -56332,6 +56335,125 @@ Students you had withdrawn stay withdrawn.`)) {
             /\bwhat (do i need to|should i) (deal with|look at|handle|start with|do)\b/,
           ]
         },
+        // ── PRACTICE: where students are in their skills ────────────────────
+        //
+        // Riven answered grades, attendance and missing work, and never read a
+        // line of skill or practice data, so "what is Ari stuck on" came back as
+        // an account card and "who hasn't practised this week" as nothing at
+        // all. Four intents, all READS, all answered from the progress RPCs:
+        //
+        //   STUDENT_PRACTICE   one student: stuck skills, mastered, last active
+        //   PRACTICE_STUCK     who is stuck, or stuck on a named skill
+        //   PRACTICE_INACTIVE  who has not practised in a window
+        //   HOMEWORK_RESULTS   how a class did on a game/skill assignment
+        //
+        // Weights are set against the neighbours they have to beat, measured in
+        // debug-tools/nlp-stress.js round 44 rather than guessed:
+        //   STUDENT_BRIEFING 6+2 = 18 · VIEW_GRADES "doing in <subj>" 7+2 = 19
+        //   ATTENDANCE_ISSUES 5 = 15 · VIEW_ACTIVITY_ROSTER = 17
+        // so w:9 (+2 for a required student) wins only where a practice word -
+        // stuck, practise, mastered, skills, dojo, games, finished - is actually
+        // in the sentence. Without one, every sentence goes where it went
+        // before: "how is ari doing in math" is still the grades reader.
+        //
+        // notIfCurrency on all four: "give ari 5 rtc for mastering fractions"
+        // is an award, and a read must never stand in front of it.
+        {
+          intent: 'STUDENT_PRACTICE',
+          w: 9,
+          requiresStudent: true,
+          notIfNoteCommand: true,
+          notIfCurrency: true,
+          patterns: [
+            // "what is ari stuck on", "is ari stuck in maths"
+            /\bstuck\b/,
+            // "where is clementine struggling" - WHERE asks for the skills.
+            // (Bare "is ari struggling" stays with STUDENT_BRIEFING.)
+            /\bwhere (is|are) (?:\w+ ){1,2}(struggling|stuck|having (trouble|a hard time)|weak(est)?)\b/,
+            // "what does noah need help with in maths" - a SUBJECT named makes
+            // it a skills question; with nothing after it, it stays the
+            // briefing's "what does X need help with".
+            /\b(need|needs) (some |more )?(help|work|practice|support) (with|on|in)\b.*\b(in|with|on) (math|maths|mathematics|reading|english|language|ela|writing|spelling|grammar|phonics|science|social studies|social|history|geography|art|arts|creative|life skills|lifeskills|bible|programming|coding|robotics|pe|physical education)\b/,
+            // "...need help with fractions" - a skill named outright.
+            /\b(need|needs) (some |more )?(help|work|practice|support) (with|on) (?!(?:anything|everything|stuff|things|today|now|this|that|it)\b)[a-z]{3,}/,
+            // "is ari struggling with long division", "having trouble on fractions"
+            /\b(struggling|having (trouble|a hard time)) (with|on) (?!(?:anything|everything|stuff|things|today|it)\b)[a-z]{3,}/,
+            // "how is ari doing in math practice / on his skills / in the games"
+            /\bhow (is|are|has|have) (?:\w+ ){0,3}(been )?doing\b.*\b(practi[cs]e|practi[cs]ing|skills?|mastery|dojo|games?)\b/,
+            /\b(practi[cs]e|skills?|mastery|dojo) (progress|summary|report|overview|stats|history)\b/,
+            // "what has rosalind mastered this week"
+            /\bwhat (has|have|did) (?:\w+ ){1,2}master(ed)?\b/,
+            /\b(mastered|mastery)\b/,
+            // "when did ari last practise", "how much has ari practised"
+            /\b(when|how (much|often)) (has|is|does|did) (?:\w+ ){1,2}(been )?(last )?(practi[cs]|play(ed|ing)? (on )?(the )?(dojo|games?))/,
+            /\blast (practi[cs]ed|practi[cs]e|active|played|session)\b/,
+            // "ari skills", "show ari's skills" - but never a skill GRADE.
+            // "Skill" is also one of the three grade columns, so "give
+            // clementine a c in skill" and "set ari's skill grade to b" are
+            // SET_GRADE writes: no grade words, and no leading write verb.
+            { re: /^(?!(?:add|set|change|put|update|make|mark)\b)(?!.*\b(?:grades?|participation|academic)\b).*\bskills?\b/, w: 7 },
+          ]
+        },
+        {
+          intent: 'PRACTICE_STUCK',
+          w: 9,
+          notIfStudent: true,
+          notIfNoteCommand: true,
+          notIfCurrency: true,
+          patterns: [
+            // "who is stuck", "whos stuck in reading", "any kids stuck"
+            /\b(who|whos|which|any|anyone|anybody|students?|kids?)\b.{0,30}\bstuck\b/,
+            /\bstuck (students|kids|skills|list)\b/,
+            // "which students are struggling with fractions" - WITH a skill.
+            // Bare "who is struggling" stays with ATTENDANCE_ISSUES, which
+            // answers the at-risk question across grades and attendance.
+            /\b(who|whos|which|any|anyone|anybody|students?|kids?)\b.{0,30}\b(struggling|having (trouble|a hard time))\s+(with|on)\s+[a-z]{3,}/,
+            /\bwho (needs?|need) (help|practice|work|support) (with|on)\s+(?!(?:today|now|this|that)\b)[a-z]{3,}/,
+            /\b(what|which) skills\b.{0,30}\b(struggling|stuck|trouble|hard|weak)\b/,
+            // fading: mastered once, no evidence for 30 days
+            /\b(who|which|any)\b.{0,30}\b(fading|getting rusty|forgetting)\b/,
+          ]
+        },
+        {
+          intent: 'PRACTICE_INACTIVE',
+          w: 9,
+          notIfStudent: true,
+          notIfNoteCommand: true,
+          notIfCurrency: true,
+          patterns: [
+            // "who hasn't practised this week", "who hasn't played math dojo",
+            // "which students haven't used the dojo in 10 days". Not when an
+            // ASSIGNMENT is named - "who hasn't played the fractions
+            // assignment" is HOMEWORK_RESULTS, below.
+            /^(?!.*\b(assignment|assignments|homework|hw)\b).*\b(who|whos|which|any|anyone|anybody|students?|kids?)\b.{0,30}\b(hasn.?t|has not|haven.?t|have not|didn.?t|did not|isn.?t|is not|aren.?t|are not|not|never)\b.{0,20}\b(practi[cs]\w*|play(ed|ing)?|used|using|touched|logged (in|on)|been (on|active|practi[cs]ing|playing)|active|done any practice)\b/,
+            /\b(inactive|not active|gone quiet|no practice|zero practice|no activity)\b/,
+            // the positive form gets the same answer: who did, who didn't
+            /^(?!.*\b(assignment|assignments|homework|hw)\b).*\bwho\b.{0,10}\b(practi[cs]ed|has been practi[cs]ing|been practi[cs]ing|played (math )?dojo)\b/,
+            /\b(students|kids|class)\b.{0,30}\blast (practi[cs]|active|played)/,
+          ]
+        },
+        {
+          intent: 'HOMEWORK_RESULTS',
+          w: 9,
+          notIfNoteCommand: true,
+          notIfCurrency: true,
+          patterns: [
+            // "how did math do on the fractions dojo"
+            /\bhow did (?:[\w-]+ ){1,5}do (on|with)\b/,
+            // "who hasn't done/finished/started the fractions assignment"
+            /\bwho\b.{0,20}\b(hasn.?t|has not|haven.?t|have not|didn.?t|did not|not yet|still)\b.{0,12}\b(done|do|finished|finish|completed|complete|started|start|submitted|submit|turned in|attempted|tried)\b/,
+            // "...hasn't played the fractions assignment" (with an assignment word)
+            /\bwho\b.{0,20}\b(hasn.?t|has not|haven.?t|have not|didn.?t|did not)\b.{0,12}\bplay(ed)?\b.*\b(assignment|homework|hw)\b/,
+            // "who has finished the math dojo assignment", "who's done it"
+            /\bwho\b.{0,15}\b(has |have |is |are )?(done|finished|completed|passed)\b/,
+            /\b(has|have|did) (everyone|everybody|anyone|anybody|all|the class|the whole class)\b.{0,12}\b(done|do|finish|finished|complete|completed|start|started|play|played|submit|submitted)\b/,
+            /\bhow many\b.{0,30}\b(finished|done|completed|started)\b/,
+            // "has ari finished the dojo assignment"
+            /\b(has|have|did) (?:\w+ ){1,2}(done|finished|completed|started|played)\b.{0,40}\b(assignment|homework|hw|game|dojo)\b/,
+            /\b(results?|scores?|completion)\b.{0,10}\b(for|on|of)\b.{0,40}\b(assignment|homework|hw|game|dojo)\b/,
+            /\b(assignment|homework|hw)\b.{0,30}\b(results?|completion)\b/,
+          ]
+        },
         // STUDENT_BRIEFING — "how is Jace doing", "what does Jace need to work
         // on". One student, everything that matters: overdue work, current
         // work, grades slipping, attendance, and recent notes.
@@ -58200,6 +58322,23 @@ Students you had withdrawn stay withdrawn.`)) {
 
         case 'STUDENT_BRIEFING':
           await this.terminalStudentBriefing(entities);
+          break;
+
+        // Practice and skills - see the PRACTICE block in _matchIntent.
+        case 'STUDENT_PRACTICE':
+          await this.terminalStudentPractice(entities);
+          break;
+
+        case 'PRACTICE_STUCK':
+          await this.terminalPracticeStuck(entities);
+          break;
+
+        case 'PRACTICE_INACTIVE':
+          await this.terminalPracticeInactive(entities);
+          break;
+
+        case 'HOMEWORK_RESULTS':
+          await this.terminalHomeworkResults(entities);
           break;
 
         case 'SET_ENROLLMENT_TYPE':
@@ -60530,6 +60669,9 @@ Students you had withdrawn stay withdrawn.`)) {
         VIEW_ENROLLMENTS:    { icon: '📚', label: 'Their classes', needs: 'student', cmd: (n) => `what classes is ${s(n)} in` },
         VIEW_CONTACT:        { icon: '📇', label: 'Contact info',  needs: 'student', cmd: (n) => `contact info for ${s(n)}` },
         VIEW_HOMEWORK:       { icon: '📝', label: 'Homework',      needs: 'student', cmd: (n) => `what homework does ${s(n)} have` },
+        STUDENT_PRACTICE:    { icon: '🧩', label: 'Stuck skills',  needs: 'student', cmd: (n) => `what is ${s(n)} stuck on` },
+        PRACTICE_STUCK:      { icon: '🧩', label: 'Who is stuck',  needs: null,      cmd: () => `who is stuck` },
+        PRACTICE_INACTIVE:   { icon: '💤', label: "Who hasn't practised", needs: null, cmd: () => `who hasn't practised this week` },
         STUDENT_TENURE:      { icon: '⏳', label: 'How long here', needs: 'student', cmd: (n) => `how long has ${s(n)} been here` },
         VIEW_STUDENT_PRIVILEGES: { icon: '🎟️', label: 'Privileges', needs: 'student', cmd: (n) => `what privileges does ${s(n)} have` },
         ADD_NOTE:            { icon: '🗒️', label: 'Save as a note', needs: 'student', cmd: (n, _c, raw) => `note for ${f(n)}: ${raw}` },
@@ -61049,6 +61191,33 @@ Students you had withdrawn stay withdrawn.`)) {
           'what assignments are pending for my students',
           'is there any homework due soon',
           'show me all overdue homework'
+        ],
+        // Practice and skills. Names are the invented ones used above.
+        STUDENT_PRACTICE: [
+          'what is ari stuck on',
+          'where is clementine struggling',
+          'what does orion need help with in maths',
+          'how is rory doing in math practice',
+          'what has jordan mastered this month',
+          'when did ari last practise'
+        ],
+        PRACTICE_STUCK: [
+          'who is stuck',
+          'who is stuck in reading',
+          'which students are struggling with fractions',
+          'any kids stuck on long division'
+        ],
+        PRACTICE_INACTIVE: [
+          "who hasn't practised this week",
+          "who hasn't played math dojo this week",
+          "which students haven't practiced in 10 days",
+          "who's inactive"
+        ],
+        HOMEWORK_RESULTS: [
+          'how did math do on the fractions dojo',
+          "who hasn't finished the multiplication game",
+          'who has finished the math dojo assignment',
+          'has everyone finished the fractions game'
         ]
       };
     }
@@ -67124,8 +67293,21 @@ Students you had withdrawn stay withdrawn.`)) {
 
         let homework = hwRes.data || [];
         if (classMatch) homework = homework.filter(h => !h.class_id || h.class_id === classMatch.id);
-        const overdueHw = homework.filter(h => h.status === 'overdue');
-        const openHw = homework.filter(h => h.status !== 'overdue');
+        // Overdue is COMPUTED: due date passed and still open. The 'overdue'
+        // status is never written, so filtering on it reported a child with
+        // three late game assignments as having nothing late at all.
+        const isLateHw = (h) => !!(h.due_date && String(h.due_date).slice(0, 10) < today);
+        const overdueHw = homework.filter(isLateHw);
+        const openHw = homework.filter(h => !isLateHw(h));
+
+        // Practice, in one line: last active and what they are stuck on. Its
+        // own try, so a progress read that fails never costs the rest of the
+        // answer.
+        let practice = null;
+        try {
+          practice = this._rivenPracticeLine(
+            await this._rivenStudentProgress(student, null, { classIds: enrollments.map(e => e.class_id), skills: false }));
+        } catch (e) { console.warn('Riven: practice line unavailable:', e); }
 
         let attendance = attRes.data || [];
         if (classMatch) attendance = attendance.filter(a => a.class_id === classMatch.id);
@@ -67178,6 +67360,12 @@ Students you had withdrawn stay withdrawn.`)) {
             <span style="font-size:12px;">${bits.join(' · ')} in the last 30 days</span></div>`);
         }
 
+        // Stuck, or quiet for a week, belongs with the worries; otherwise the
+        // same line sits with the standing further down.
+        const practiceHtml = practice
+          ? `<div style="margin-bottom:10px;">🎯 <b>Practice</b><br><span style="font-size:12px;">${practice.html}</span></div>` : '';
+        if (practice && practice.worrying) sections.push(practiceHtml);
+
         if (concernNotes.length) {
           sections.push(`<div style="margin-bottom:10px;">🗒️ <b>Flagged in notes</b><br>${this._renderNoteCards(concernNotes, 3)}</div>`);
         }
@@ -67200,6 +67388,8 @@ Students you had withdrawn stay withdrawn.`)) {
             <span style="font-size:12px;">${this._briefingExpand(lines, 4, 'classes')}</span></div>`);
         }
 
+        if (practice && !practice.worrying) sections.push(practiceHtml);
+
         const otherNotes = notes.filter(n => !concernNotes.includes(n));
         if (otherNotes.length) {
           sections.push(`<div style="margin-bottom:10px;">📝 <b>Recent notes</b><br>${this._renderNoteCards(otherNotes, 3)}</div>`);
@@ -67219,13 +67409,755 @@ Students you had withdrawn stay withdrawn.`)) {
 
         this._showRivenMessage(
           `<div style="margin-bottom:8px;">${headline}</div>${sections.join('')}` +
-          `<div style="margin-top:6px;font-size:12px;color:#97a2b0;">Ask for "${esc(first)}'s grades", "${esc(first)}'s attendance", or "notes for ${esc(first)}" to go deeper.</div>`,
+          `<div style="margin-top:6px;font-size:12px;color:#97a2b0;">Ask for "${esc(first)}'s grades", "${esc(first)}'s attendance", "what is ${esc(first)} stuck on", or "notes for ${esc(first)}" to go deeper.</div>`,
           true);
 
       } catch (err) {
         console.error('Student briefing failed:', err);
         this.terminalPrintError('I could not pull that together: ' + (err.message || err));
       }
+    }
+
+    // ══ PRACTICE AND SKILLS ════════════════════════════════════════════════
+    //
+    // Where students are in their skills, read from three RPCs:
+    //
+    //   rt_teacher_progress_overview  every student in the caller's classes,
+    //                                 one row each (last active, this week's
+    //                                 sessions, mastered/stuck/fading counts,
+    //                                 their stuck skills, overdue homework)
+    //   rt_class_progress             one class, every skill row per student
+    //                                 (state, mastery, practices, last
+    //                                 evidence, mastered_at, flag)
+    //   rt_class_homework             one class, each game/skill assignment
+    //                                 with every student's status and score
+    //
+    // The words in every answer mean exactly one thing, and the same thing
+    // everywhere, because a teacher acts on them:
+    //
+    //   last active  the latest practice evidence, not the last login
+    //   stuck        not mastered, practised 4+ times, still under 60
+    //   fading       mastered, but no evidence for 30 days
+    //   overdue      due date passed and not completed or excused. The
+    //                'overdue' status is never written, so it is COMPUTED -
+    //                a filter on status = 'overdue' finds nothing, which is
+    //                how the homework answer used to report no overdue work.
+    //
+    // All reads. Nothing here writes.
+
+    // Which stored subject(s) a sentence points at. Teachers say "maths",
+    // "English", "art", "PE"; skill_progress stores Math, Reading, Creative,
+    // Physical. The game names are here too, because "who hasn't played Math
+    // Dojo" is a question about Math practice - that is what the Dojo records.
+    // Longest phrases first within a subject, so "social studies" is not read
+    // as "social" and "math dojo" keeps its game.
+    _rivenPracticeSubject(text) {
+      const t = ' ' + String(text || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+      const TABLE = [
+        [['Math'], 'Math', ['math dojo', 'mathspire', 'mathematics', 'maths', 'math', 'arithmetic', 'algebra', 'geometry', 'dojo']],
+        [['Reading', 'Language'], 'English', ['english lyceum', 'lyceum', 'language arts', 'english', 'reading', 'language', 'ela', 'phonics', 'spelling', 'grammar', 'writing', 'literacy']],
+        [['Science'], 'Science', ['science lab', 'science']],
+        [['Social'], 'Social Studies', ['social studies', 'social', 'history', 'geography', 'civics']],
+        [['Creative'], 'Art', ['art studio', 'creative', 'arts', 'art', 'drawing']],
+        [['LifeSkills'], 'Life Skills', ['life skills', 'lifeskills']],
+        [['Bible'], 'Bible', ['bible study', 'bible', 'scripture']],
+        [['Programming'], 'Programming', ['terminal quest', 'computer science', 'programming', 'coding']],
+        [['Robotics'], 'Robotics', ['robotics']],
+        [['Physical'], 'PE', ['physical education', 'training log', 'pe', 'gym', 'fitness']],
+      ];
+      // A GAME is named when the matched phrase is one of these, and the
+      // answer says so: Math Dojo practice is counted as Math skill evidence.
+      const GAMES = { 'math dojo': 'Math Dojo', 'dojo': 'Math Dojo', 'mathspire': 'Mathspire',
+        'english lyceum': 'English Lyceum', 'lyceum': 'English Lyceum', 'science lab': 'Science Lab',
+        'art studio': 'Art Studio', 'bible study': 'Bible Study', 'terminal quest': 'Terminal Quest',
+        'training log': 'the PE Training Log' };
+      for (const [stored, label, words] of TABLE) {
+        for (const w of words) {
+          if (t.includes(' ' + w + ' ')) return { stored, label, word: w, game: GAMES[w] || null };
+        }
+      }
+      return null;
+    }
+
+    // Does a stored subject belong to the subject asked about? Case-blind,
+    // and "no subject asked" lets everything through.
+    _rivenSubjectIs(subj, stored) {
+      if (!subj) return true;
+      const s = String(stored || '').toLowerCase();
+      return subj.stored.some(x => x.toLowerCase() === s);
+    }
+
+    // How far back "who hasn't practised" looks. "this week" is the last 7
+    // days rather than since Monday: on a Monday morning "since Monday" would
+    // name the whole school.
+    _rivenPracticeWindow(normalized, fallback = 7) {
+      const t = String(normalized || '');
+      const m = t.match(/\b(\d{1,3})\s+(day|days|week|weeks|month|months)\b/);
+      if (m) {
+        const n = parseInt(m[1], 10);
+        const days = /^week/.test(m[2]) ? n * 7 : /^month/.test(m[2]) ? n * 30 : n;
+        return { days: Math.min(Math.max(days, 1), 365) };
+      }
+      if (/\btoday\b/.test(t)) return { days: 1 };
+      if (/\bmonth\b/.test(t)) return { days: 30 };
+      if (/\bfortnight\b/.test(t)) return { days: 14 };
+      if (/\bweek\b/.test(t)) return { days: 7 };
+      return { days: fallback };
+    }
+
+    // "3 days ago". Days are counted from now, which is what "last active"
+    // means to someone reading it; a timestamp of null is said, not hidden.
+    _rivenAgo(ts) {
+      if (!ts) return null;
+      const d = Math.floor((Date.now() - new Date(ts).getTime()) / 86400000);
+      if (!isFinite(d)) return null;
+      if (d <= 0) return 'today';
+      if (d === 1) return 'yesterday';
+      if (d < 60) return `${d} days ago`;
+      return `${Math.round(d / 30)} months ago`;
+    }
+
+    _rivenPersonName(row) {
+      const n = `${row?.first_name || ''} ${row?.last_name || ''}`.trim();
+      if (n) return n;
+      const s = (this._terminalAllStudents || []).find(x => x.id === (row?.id || row?.student_id));
+      return s?.full_name || 'A student';
+    }
+
+    // The RPCs, each cached for a minute. A teacher asking "who is stuck" and
+    // then "who hasn't practised" should not pay for the same read twice, and
+    // a minute is short enough that nothing goes stale in front of them.
+    async _rivenProgressOverview(days = 7) {
+      const key = String(days);
+      const c = this._rivenOverviewCache;
+      if (c && c.key === key && Date.now() - c.at < 60000) return c.data;
+      const data = await this._pickupRpc('rt_teacher_progress_overview', { p_days: days });
+      this._rivenOverviewCache = { key, at: Date.now(), data };
+      return data;
+    }
+
+    async _rivenClassProgress(classId, subject = null) {
+      this._rivenClassProgressCache = this._rivenClassProgressCache || {};
+      const key = classId + '|' + (subject || '');
+      const c = this._rivenClassProgressCache[key];
+      if (c && Date.now() - c.at < 60000) return c.data;
+      const data = await this._pickupRpc('rt_class_progress', { p_class_id: classId, p_subject: subject });
+      this._rivenClassProgressCache[key] = { at: Date.now(), data };
+      return data;
+    }
+
+    // Which classes a practice question is about.
+    //
+    // A class named in the sentence scopes it; otherwise it is the asker's own
+    // classes. Two exceptions, both about a class matched out of words that
+    // were really a SUBJECT or a GAME:
+    //
+    //   "who hasn't played math dojo"  - "math" also names a class called Math.
+    //                                    The game was meant, not the class.
+    //   "who is stuck in math" asked by the Robotics teacher - the word found
+    //                                    somebody else's Math class. Scoping to
+    //                                    it would ask for a class they cannot
+    //                                    read; they meant the subject.
+    //
+    // Saying "class" ("my math class") always keeps the class.
+    _rivenPracticeScope(entities, subj) {
+      const cm = entities && entities.classMatch;
+      const mine = this._rivenMyClassRows();
+      if (!cm) return { named: false, classes: mine };
+      const rows = (cm.ambiguous ? (cm.candidates || []) : [this._rivenResolveClassRow(cm) || cm]).filter(Boolean);
+      const mineIds = new Set(mine.map(c => c.id));
+      const own = rows.filter(r => mineIds.has(r.id));
+      const norm = entities.normalized || '';
+      if (subj && !/\bclass(es)?\b/.test(norm)) {
+        const subjWords = new Set(subj.word.split(' '));
+        const fromSubjectWords = (cm.consumed || []).every(w => subjWords.has(w));
+        if (fromSubjectWords && (subj.game || !own.length)) return { named: false, classes: mine };
+      }
+      return { named: true, classes: own.length ? own : rows };
+    }
+
+    // Read rt_class_progress for several classes at once and fold the result
+    // into one row per student. `last` is their latest evidence - in the
+    // subject asked about, when one was, because "who hasn't practised Math"
+    // is not answered by somebody's Bible practice yesterday.
+    async _rivenPracticeFromClasses(classes, subj) {
+      const list = (classes || []).slice(0, 12);
+      const single = subj && subj.stored.length === 1 ? subj.stored[0] : null;
+      const results = await Promise.allSettled(list.map(c => this._rivenClassProgress(c.id, single)));
+      const people = new Map();
+      const skills = [];
+      let failed = 0, lastError = null;
+      results.forEach((r, i) => {
+        if (r.status !== 'fulfilled' || !r.value) { failed++; lastError = r.reason || lastError; return; }
+        const cls = { id: list[i].id, name: list[i].name };
+        const data = r.value;
+        for (const s of (data.students || [])) {
+          const p = people.get(s.id) || { id: s.id, name: this._rivenPersonName(s), row: s, last: null, classes: [] };
+          if (!p.classes.some(c => c.id === cls.id)) p.classes.push(cls);
+          people.set(s.id, p);
+        }
+        for (const k of (data.skills || [])) {
+          if (!this._rivenSubjectIs(subj, k.subject)) continue;
+          skills.push(k);
+        }
+      });
+      // A skill row appears once per class the student shares with the asker;
+      // keep one copy of each so nothing is counted twice.
+      const seen = new Set();
+      const unique = skills.filter(k => {
+        const key = k.student_id + '|' + k.subject + '|' + k.skill;
+        if (seen.has(key)) return false;
+        seen.add(key); return true;
+      });
+      for (const p of people.values()) {
+        if (subj) {
+          let best = null;
+          for (const k of unique) if (k.student_id === p.id && k.last && (!best || k.last > best)) best = k.last;
+          p.last = best;
+        } else {
+          p.last = p.row.last_active || null;
+        }
+      }
+      return { people: [...people.values()], skills: unique, failed, tried: list.length, lastError };
+    }
+
+    // A button to the class progress screen, when that screen exists. It is
+    // being built alongside this, so it is offered only if it is there - a
+    // button that throws is worse than no button.
+    _rivenProgressButtons(classes) {
+      if (typeof this.showClassProgress !== 'function') return '';
+      const list = (classes || []).filter(c => c && c.id).slice(0, 3);
+      if (!list.length) return '';
+      return '<div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">' + list.map(c => {
+        const id = String(c.id).replace(/[^A-Za-z0-9_-]/g, '');
+        return `<button onclick="app.showClassProgress('${id}')" style="padding: 4px 12px; border-radius: 6px; border: 1px solid #2f6b6d; background: transparent; color: #2f6b6d; cursor: pointer; font-size: 12px;">📈 ${this.escapeHtml(c.name || 'Class')} progress</button>`;
+      }).join('') + '</div>';
+    }
+
+    // The classes a list of students mostly sits in, busiest first, so an
+    // answer that spans several classes offers the progress screens that
+    // matter rather than the first three alphabetically.
+    _rivenBusiestClasses(people) {
+      const count = new Map();
+      for (const p of people || []) for (const c of (p.classes || [])) {
+        const e = count.get(c.id) || { id: c.id, name: c.name, n: 0 };
+        e.n++; count.set(c.id, e);
+      }
+      return [...count.values()].sort((a, b) => b.n - a.n);
+    }
+
+    // " in Math", " in Robotics and Chess" - the scope, said in the answer, so
+    // a short list is never mistaken for the whole school.
+    _rivenScopeLabel(scope, subj) {
+      const bits = [];
+      if (subj) bits.push(subj.label);
+      if (scope.named) {
+        const names = [...new Set(scope.classes.map(c => c.name).filter(Boolean))];
+        if (names.length) bits.push(names.length > 2 ? `${names.length} classes` : names.join(' and '));
+      }
+      return bits.length ? ' in ' + this.escapeHtml(bits.join(', ')) : '';
+    }
+
+    // The skill a sentence names, if any: "struggling with long division in
+    // math" -> "long division". A subject on its own ("struggling with math")
+    // is a subject, not a skill.
+    _rivenSkillPhrase(normalized) {
+      const m = String(normalized || '').match(/\b(?:struggling|stuck|having (?:trouble|a hard time)|help|practice|work|support|weak)\s+(?:with|on)\s+(.+)$/);
+      if (!m) return null;
+      let phrase = m[1]
+        .replace(/\b(?:in|this|last|for|right now|today|lately|at the moment|these days)\b.*$/, '')
+        .replace(/^(?:the|their|his|her)\s+/, '')
+        .replace(/[?.!,]+/g, ' ').trim();
+      if (!phrase) return null;
+      const subj = this._rivenPracticeSubject(phrase);
+      if (subj && phrase.replace(/\s+/g, ' ') === subj.word) return null;
+      const STOP = new Set(['the', 'and', 'with', 'their', 'some', 'skill', 'skills', 'stuff', 'things', 'anything', 'everything']);
+      const tokens = phrase.split(/\s+/).filter(w => w.length >= 3 && !STOP.has(w));
+      return tokens.length ? { text: phrase, tokens } : null;
+    }
+
+    // Does a skill name match the phrase? Every word asked for must start a
+    // word of the skill, plurals folded: "fractions" finds "Adding Fractions
+    // with Unlike Denominators", "long division" finds "Long Division".
+    _rivenSkillMatches(skillName, phrase) {
+      if (!phrase) return true;
+      const stem = (w) => (w.length > 4 && w.endsWith('s')) ? w.slice(0, -1) : w;
+      const words = String(skillName || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map(stem);
+      return phrase.tokens.every(t => { const s = stem(t); return words.some(w => w.startsWith(s)); });
+    }
+
+    // One student's progress: their overview row (cheap, cached, and the same
+    // numbers the briefing uses) and, when it can be read, their full skill
+    // list from one of their classes. The class read is what knows WHICH
+    // skills were mastered when; the overview only has counts.
+    //
+    // `classIds` may be passed by a caller that already knows the student's
+    // classes; otherwise they are looked up. The asker's own classes are
+    // tried first, since those are the ones they can certainly read.
+    async _rivenStudentProgress(student, subj, { classIds = null, skills = true } = {}) {
+      let row = null;
+      try {
+        const ov = await this._rivenProgressOverview(7);
+        row = (ov?.students || []).find(s => s.id === student.id) || null;
+      } catch (_) { /* overview unavailable: fall through to the class read */ }
+      if (!skills && row) return { row, skills: null, classRow: null };
+
+      let ids = classIds;
+      if (!ids) {
+        const { data } = await this.auth.supabase.from('class_enrollments')
+          .select('class_id').eq('student_id', student.id).eq('status', 'active');
+        ids = (data || []).map(e => e.class_id);
+      }
+      const mine = new Set(this._rivenMyClassRows().map(c => c.id));
+      const ordered = [...new Set(ids)].sort((a, b) => (mine.has(b) ? 1 : 0) - (mine.has(a) ? 1 : 0)).slice(0, 3);
+      const single = subj && subj.stored.length === 1 ? subj.stored[0] : null;
+      for (const cid of ordered) {
+        try {
+          const data = await this._rivenClassProgress(cid, single);
+          const srow = (data?.students || []).find(s => s.id === student.id);
+          if (!srow) continue;
+          const classRow = (this._terminalAllClasses || []).find(c => c.id === cid) || data.class || { id: cid };
+          const list = (data.skills || []).filter(k => k.student_id === student.id && this._rivenSubjectIs(subj, k.subject));
+          return { row: row || srow, skills: list, classRow };
+        } catch (_) { /* not readable by this asker: try the next class */ }
+      }
+      return row ? { row, skills: null, classRow: null } : null;
+    }
+
+    // One line about a student's practice, for the "how is X doing" briefing.
+    // Returns { html, worrying } or null when there is nothing on record.
+    _rivenPracticeLine(prog) {
+      if (!prog || !prog.row) return null;
+      const r = prog.row;
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      const stuck = prog.skills
+        ? prog.skills.filter(k => k.flag === 'stuck').map(k => ({ skill: k.skill, mastery: k.mastery, practices: k.practices }))
+        : (r.stuck_skills || []);
+      const fading = prog.skills ? prog.skills.filter(k => k.flag === 'fading').length : (r.fading || 0);
+      const ago = this._rivenAgo(r.last_active);
+      const quiet = !r.last_active || (Date.now() - new Date(r.last_active).getTime()) > 7 * 86400000;
+      const bits = [ago ? `last active ${ago}` : 'no practice on record'];
+      if (stuck.length) {
+        const top = stuck.slice().sort((a, b) => (a.mastery || 0) - (b.mastery || 0)).slice(0, 2)
+          .map(k => `${esc(k.skill)} (${Math.round(k.mastery || 0)}%, ${k.practices || 0} tries)`);
+        bits.push(`stuck on ${top.join(', ')}${stuck.length > 2 ? ` +${stuck.length - 2} more` : ''}`);
+      } else if (r.mastered) {
+        bits.push(`${r.mastered} mastered, nothing stuck`);
+      }
+      if (fading) bits.push(`${fading} fading`);
+      return { html: bits.join(' · '), worrying: quiet || stuck.length > 0 };
+    }
+
+    // "what is Ari stuck on (in maths)", "where is Clementine struggling",
+    // "how is Noah doing in his practice", "what has Rosalind mastered this
+    // month". One student, from their skill rows.
+    async terminalStudentPractice(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student?.id) {
+        this.terminalPrintError('Which student? Try "what is Clementine stuck on".');
+        return;
+      }
+      const norm = entities.normalized || '';
+      const subj = this._rivenPracticeSubject(norm);
+      const mode = /\bmaster/.test(norm) ? 'mastered'
+        : /\b(stuck|struggl\w*|trouble|hard time|weak\w*|need|needs)\b/.test(norm) ? 'stuck' : 'summary';
+      const first = (student.full_name || '').split(' ')[0] || 'them';
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      const inSubj = subj ? ` in ${esc(subj.label)}` : '';
+      this.terminalPrint(`Reading ${first}'s skills…`, '#6aa9ff');
+      try {
+        const prog = await this._rivenStudentProgress(student, subj);
+        if (!prog) {
+          this._showRivenMessage(`I can't see any practice for <b>${esc(student.full_name)}</b> — they may not be in a class you can read, or they haven't practised in a game yet.`, true);
+          return;
+        }
+        const r = prog.row;
+        const skills = prog.skills;   // null when only the overview could be read
+        const pct = (v) => `${Math.round(Number(v) || 0)}%`;
+        const ago = this._rivenAgo(r.last_active);
+        const parts = [];
+
+        // The stuck list, worst first. From the skill rows when we have them
+        // (so a subject filter is exact), else the overview's own list.
+        let stuck = skills ? skills.filter(k => k.flag === 'stuck')
+          : (r.stuck_skills || []).filter(k => this._rivenSubjectIs(subj, k.subject));
+        const phrase = this._rivenSkillPhrase(norm);
+        if (phrase && !subj) stuck = stuck.filter(k => this._rivenSkillMatches(k.skill, phrase));
+        stuck = stuck.slice().sort((a, b) => (a.mastery || 0) - (b.mastery || 0));
+        const stuckLines = stuck.map(k => `• <b>${esc(k.skill)}</b>${subj ? '' : ` <span style="color:#6b5236;">(${esc(k.subject)})</span>`} — ${pct(k.mastery)} after ${k.practices || 0} practices`);
+        const fading = skills ? skills.filter(k => k.flag === 'fading') : [];
+        const fadingLines = fading.map(k => `• ${esc(k.skill)} — mastered, last practised ${esc(this._rivenAgo(k.last) || 'a long time ago')}`);
+
+        const activity = () => {
+          const sess = r.sessions_7d || 0;
+          if (!sess) return `Last active ${esc(ago || 'never')} · no practice in the last 7 days`;
+          const q = r.questions_7d || 0, c = r.correct_7d || 0;
+          const acc = q ? ` (${Math.round(100 * c / q)}% right)` : '';
+          return `Last active ${esc(ago)} · last 7 days: ${sess} session${sess === 1 ? '' : 's'}, ${q} question${q === 1 ? '' : 's'}${acc}, ${r.minutes_7d || 0} min`;
+        };
+        // Counts for the subject when the skill rows let us count them, the
+        // overview's all-subject counts otherwise - and then say so.
+        const counts = () => {
+          if (skills) {
+            const m = skills.filter(k => k.state === 'mastered').length;
+            const m30 = skills.filter(k => k.mastered_at && Date.now() - new Date(k.mastered_at).getTime() <= 30 * 86400000).length;
+            return `${m} mastered${inSubj} (${m30} in the last 30 days) · ${stuck.length} stuck · ${fading.length} fading`;
+          }
+          return `${r.mastered || 0} mastered (${r.mastered_30d || 0} in the last 30 days) · ${r.stuck || 0} stuck · ${r.fading || 0} fading${subj ? ' — all subjects' : ''}`;
+        };
+
+        if (mode === 'mastered') {
+          const win = this._rivenPracticeWindow(norm, 30);
+          const since = Date.now() - win.days * 86400000;
+          if (!skills) {
+            parts.push(`<b>${esc(student.full_name)}</b> has mastered <b>${r.mastered_30d || 0}</b> skill${r.mastered_30d === 1 ? '' : 's'} in the last 30 days (${r.mastered || 0} in all). I can't read the skill list itself from here, so I can't name them.`);
+          } else {
+            const recent = skills.filter(k => k.mastered_at && new Date(k.mastered_at).getTime() >= since)
+              .sort((a, b) => String(b.mastered_at).localeCompare(String(a.mastered_at)));
+            const total = skills.filter(k => k.state === 'mastered').length;
+            if (!recent.length) {
+              parts.push(`<b>${esc(student.full_name)}</b> hasn't mastered anything new${inSubj} in the last ${win.days} days. ${total} skill${total === 1 ? '' : 's'} mastered${inSubj} in all.`);
+            } else {
+              const lines = recent.map(k => `• <b>${esc(k.skill)}</b>${subj ? '' : ` <span style="color:#6b5236;">(${esc(k.subject)})</span>`} — ${new Date(k.mastered_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`);
+              parts.push(`<b>${esc(student.full_name)}</b> mastered <b>${recent.length}</b> skill${recent.length === 1 ? '' : 's'}${inSubj} in the last ${win.days} days (${total} in all):<br><span style="font-size:12px;">${this._briefingExpand(lines, 6, 'skills')}</span>`);
+            }
+          }
+          parts.push(`<div style="font-size:12px;color:#6b5236;margin-top:4px;">${activity()}</div>`);
+        } else if (mode === 'stuck') {
+          if (stuck.length) {
+            parts.push(`<b>${esc(student.full_name)}</b> is stuck on <b>${stuck.length}</b> skill${stuck.length === 1 ? '' : 's'}${inSubj}${phrase && !subj ? ` matching “${esc(phrase.text)}”` : ''}:<br><span style="font-size:12px;">${this._briefingExpand(stuckLines, 5, 'skills')}</span>`);
+          } else {
+            parts.push(`Nothing stuck for <b>${esc(student.full_name)}</b>${inSubj}${phrase && !subj ? ` on “${esc(phrase.text)}”` : ''} — no skill practised 4+ times and still under 60%.`);
+            // Not stuck is not the same as fine: show what they are working
+            // on and lowest, so "nothing stuck" is not the whole answer.
+            if (skills) {
+              const working = skills.filter(k => k.state !== 'mastered' && (k.practices || 0) > 0)
+                .sort((a, b) => (a.mastery || 0) - (b.mastery || 0)).slice(0, 3);
+              if (working.length) {
+                parts.push(`<div style="font-size:12px;margin-top:4px;">Lowest skills in progress: ${working.map(k => `${esc(k.skill)} ${pct(k.mastery)} (${k.practices} practice${k.practices === 1 ? '' : 's'})`).join(' · ')}</div>`);
+              }
+            }
+          }
+          if (fadingLines.length) parts.push(`<div style="margin-top:6px;">🕸️ <b>${fading.length} fading</b> (mastered, no practice for 30+ days):<br><span style="font-size:12px;">${this._briefingExpand(fadingLines, 3, 'skills')}</span></div>`);
+          parts.push(`<div style="font-size:12px;color:#6b5236;margin-top:4px;">${activity()}</div>`);
+        } else {
+          parts.push(`<b>${esc(student.full_name)}</b> — practice${inSubj}:`);
+          parts.push(`<div style="font-size:12px;margin-top:4px;">${activity()}<br>${counts()}</div>`);
+          if (stuckLines.length) parts.push(`<div style="margin-top:6px;">🧩 <b>Stuck</b>:<br><span style="font-size:12px;">${this._briefingExpand(stuckLines, 4, 'skills')}</span></div>`);
+          if (fadingLines.length) parts.push(`<div style="margin-top:6px;">🕸️ <b>Fading</b>:<br><span style="font-size:12px;">${this._briefingExpand(fadingLines, 3, 'skills')}</span></div>`);
+        }
+
+        parts.push(this._rivenProgressButtons(prog.classRow ? [prog.classRow] : []));
+        parts.push(`<div style="margin-top:6px;font-size:12px;color:#97a2b0;">Ask "how is ${esc(first)} doing" for grades and missing work.</div>`);
+        this._showRivenMessage(parts.join(''), true);
+      } catch (err) {
+        console.error('Student practice failed:', err);
+        this.terminalPrintError('I could not read their practice: ' + (err.message || err));
+      }
+    }
+
+    // "who is stuck (in maths / in Robotics)", "which students are struggling
+    // with fractions", "who is fading".
+    async terminalPracticeStuck(entities) {
+      const norm = entities.normalized || '';
+      const phrase = this._rivenSkillPhrase(norm);
+      const subj = this._rivenPracticeSubject(phrase ? norm.replace(phrase.text, ' ') : norm);
+      const scope = this._rivenPracticeScope(entities, subj);
+      const wantFading = /\b(fading|rusty|forgetting)\b/.test(norm);
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      const where = this._rivenScopeLabel(scope, subj);
+      if (!scope.classes.length && scope.named === false && this.userInfo?.profile?.user_type !== 'admin') {
+        this._showRivenMessage(`You don't have any classes for me to look through.`, true);
+        return;
+      }
+      this.terminalPrint(wantFading ? 'Looking for fading skills…' : 'Looking for stuck skills…', '#6aa9ff');
+      try {
+        // per student: [{skill, subject, mastery, practices}]
+        let people = [];
+        if (scope.named) {
+          const got = await this._rivenPracticeFromClasses(scope.classes, subj);
+          if (!got.people.length && got.failed) throw (got.lastError || new Error('class progress unavailable'));
+          const want = wantFading ? 'fading' : 'stuck';
+          people = got.people.map(p => ({ ...p, list: got.skills.filter(k => k.student_id === p.id && k.flag === want) }));
+        } else {
+          const ov = await this._rivenProgressOverview(7);
+          people = (ov?.students || []).map(s => ({
+            id: s.id, name: this._rivenPersonName(s), row: s, classes: s.classes || [],
+            list: wantFading ? [] : (s.stuck_skills || []).filter(k => this._rivenSubjectIs(subj, k.subject)),
+            fadingCount: s.fading || 0,
+          }));
+        }
+        if (phrase) people.forEach(p => { p.list = p.list.filter(k => this._rivenSkillMatches(k.skill, phrase)); });
+        const about = phrase ? ` on “${esc(phrase.text)}”` : '';
+
+        // Fading across the asker's classes: the overview only carries the
+        // count, so name the students and send them to the class screen.
+        if (wantFading && !scope.named) {
+          const fad = people.filter(p => p.fadingCount > 0).sort((a, b) => b.fadingCount - a.fadingCount);
+          if (!fad.length) { this._showRivenMessage(`No fading skills${where} — nobody has a mastered skill gone 30 days without practice.`, true); return; }
+          const lines = fad.map(p => `• <b>${esc(p.name)}</b> — ${p.fadingCount} fading`);
+          this._showRivenMessage(`<b>${fad.length}</b> student${fad.length === 1 ? ' has' : 's have'} fading skills (mastered, no practice for 30+ days):<br><span style="font-size:12px;">${this._briefingExpand(lines, 8, 'students')}</span>` +
+            this._rivenProgressButtons(this._rivenBusiestClasses(fad)), true);
+          return;
+        }
+
+        const hit = people.filter(p => p.list.length).sort((a, b) => b.list.length - a.list.length);
+        const noun = wantFading ? 'fading' : 'stuck';
+        if (!hit.length) {
+          const rule = wantFading ? 'a mastered skill with no practice for 30 days' : 'a skill practised 4+ times and still under 60%';
+          this._showRivenMessage(`Nobody is ${noun}${about}${where} — that would be ${rule}. Checked ${people.length} student${people.length === 1 ? '' : 's'}.`, true);
+          return;
+        }
+        const lines = hit.map(p => {
+          const top = p.list.slice().sort((a, b) => (a.mastery || 0) - (b.mastery || 0)).slice(0, 2)
+            .map(k => `${esc(k.skill)} ${Math.round(k.mastery || 0)}% after ${k.practices || 0}`);
+          return `• <b>${esc(p.name)}</b> — ${top.join('; ')}${p.list.length > 2 ? ` <span style="color:#6b5236;">+${p.list.length - 2} more</span>` : ''}`;
+        });
+        // Which skills keep coming up - the thing a teacher re-teaches.
+        const bySkill = new Map();
+        hit.forEach(p => p.list.forEach(k => bySkill.set(k.skill, (bySkill.get(k.skill) || 0) + 1)));
+        const common = [...bySkill.entries()].filter(([, n]) => n > 1).sort((a, b) => b[1] - a[1]).slice(0, 3);
+        const commonLine = common.length
+          ? `<div style="font-size:12px;margin-top:6px;">Most common: ${common.map(([s, n]) => `${esc(s)} (${n})`).join(' · ')}</div>` : '';
+        this._showRivenMessage(
+          `<b>${hit.length}</b> of ${people.length} student${people.length === 1 ? '' : 's'} ${hit.length === 1 ? 'is' : 'are'} ${noun}${about}${where}:<br>` +
+          `<span style="font-size:12px;">${this._briefingExpand(lines, 8, 'students')}</span>${commonLine}` +
+          `<div style="font-size:11px;color:#6b5236;margin-top:4px;">${wantFading ? 'Fading = mastered, no practice for 30 days.' : 'Stuck = not mastered, practised 4+ times, still under 60%. Numbers are mastery after that many practices.'}</div>` +
+          this._rivenProgressButtons(scope.named ? scope.classes : this._rivenBusiestClasses(hit)), true);
+      } catch (err) {
+        console.error('Practice stuck failed:', err);
+        this.terminalPrintError('I could not read practice data: ' + (err.message || err));
+      }
+    }
+
+    // "who hasn't practised this week", "who hasn't played Math Dojo in 10
+    // days", "who's inactive in Robotics".
+    async terminalPracticeInactive(entities) {
+      const norm = entities.normalized || '';
+      const win = this._rivenPracticeWindow(norm, 7);
+      const subj = this._rivenPracticeSubject(norm);
+      const scope = this._rivenPracticeScope(entities, subj);
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      const where = this._rivenScopeLabel(scope, subj);
+      this.terminalPrint('Checking who has been practising…', '#6aa9ff');
+      try {
+        let people;
+        // A subject or a named class needs the per-class read: the overview
+        // has one last-active date across every subject.
+        if (scope.named || subj) {
+          const got = await this._rivenPracticeFromClasses(scope.classes, subj);
+          if (!got.people.length && got.failed) throw (got.lastError || new Error('class progress unavailable'));
+          people = got.people;
+        } else {
+          const ov = await this._rivenProgressOverview(win.days);
+          people = (ov?.students || []).map(s => ({ id: s.id, name: this._rivenPersonName(s), row: s, last: s.last_active || null, classes: s.classes || [] }));
+        }
+        if (!people.length) {
+          this._showRivenMessage(`I don't have any students to check${where}.`, true);
+          return;
+        }
+        const since = Date.now() - win.days * 86400000;
+        const t = (p) => (p.last ? new Date(p.last).getTime() : 0);
+        // Never practised first, then longest-quiet first.
+        const quiet = people.filter(p => !p.last || t(p) < since).sort((a, b) => t(a) - t(b));
+        const span = win.days === 1 ? 'today' : `in the last ${win.days} days`;
+        const gameNote = subj?.game ? `<div style="font-size:11px;color:#6b5236;margin-top:4px;">${esc(subj.game)} is counted as ${esc(subj.label)} skill practice — that is what it records.</div>` : '';
+        if (!quiet.length) {
+          this._showRivenMessage(`Everyone${where} has practised ${span} — all ${people.length} student${people.length === 1 ? '' : 's'}. 🎉${gameNote}`, true);
+          return;
+        }
+        const lines = quiet.map(p => {
+          const ago = this._rivenAgo(p.last);
+          return `• <b>${esc(p.name)}</b> — ${ago ? `last practised ${esc(ago)}` : 'no practice on record'}`;
+        });
+        this._showRivenMessage(
+          `<b>${quiet.length}</b> of ${people.length} student${people.length === 1 ? '' : 's'}${where} ${quiet.length === 1 ? "hasn't" : "haven't"} practised ${span}:<br>` +
+          `<span style="font-size:12px;">${this._briefingExpand(lines, 8, 'students')}</span>${gameNote}` +
+          this._rivenProgressButtons(scope.named ? scope.classes : this._rivenBusiestClasses(quiet)), true);
+      } catch (err) {
+        console.error('Practice inactive failed:', err);
+        this.terminalPrintError('I could not read practice data: ' + (err.message || err));
+      }
+    }
+
+    // "how did Math do on the fractions dojo", "who hasn't finished the
+    // multiplication game", "who has finished the Math Dojo assignment",
+    // "who hasn't done their homework". Game and skill assignments only -
+    // that is what rt_class_homework holds.
+    async terminalHomeworkResults(entities) {
+      const norm = entities.normalized || '';
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      const student = entities.student && !entities.student.fromContext ? this._rivenResolvedStudent(entities) : null;
+      const scope = this._rivenPracticeScope(entities, null);
+      if (!scope.classes.length) {
+        this._showRivenMessage(`You don't have any classes for me to look through. Name one — e.g. "how did Math do on the fractions dojo".`, true);
+        return;
+      }
+      const notDone = /\b(hasn.?t|has not|haven.?t|have not|didn.?t|did not|not yet|still|left)\b/.test(norm);
+      const doneOnly = !notDone && /\b(who|how many)\b.{0,15}\b(has |have |is |are )?(done|finished|completed|passed)\b/.test(norm);
+      this.terminalPrint('Checking assignment results…', '#6aa9ff');
+      try {
+        const list = scope.classes.slice(0, 15);
+        const res = await Promise.allSettled(list.map(c => this._pickupRpc('rt_class_homework', { p_class_id: c.id })));
+        const items = [];
+        let failed = 0, lastError = null;
+        res.forEach((r, i) => {
+          if (r.status !== 'fulfilled') { failed++; lastError = r.reason; return; }
+          (r.value || []).forEach(it => items.push({ ...it, _class: list[i] }));
+        });
+        if (!items.length && failed) throw (lastError || new Error('homework unavailable'));
+        if (!items.length) {
+          this._showRivenMessage(`No game or skill assignments${this._rivenScopeLabel(scope, null)} yet.`, true);
+          return;
+        }
+
+        // What assignment is it about? Whatever words are left once the
+        // question's own scaffolding, the class name and the student's name are
+        // taken out, matched against title, game and skill. Nothing left means
+        // "all of them" ("who hasn't done their homework").
+        const STOP = new Set(('who whos has have hasnt havent hasn not did didnt done do does doing finished finish completed ' +
+          'complete started start submitted submit turned turn played play tried attempted the a an their his her my our ' +
+          'this that it its on of for with how what which show class classes assignment assignments homework hw game games ' +
+          'results result scores score completion is are was were yet still everyone everybody anyone anybody all whole many ' +
+          'been and or to in so far left kids students today week passed').split(' '));
+        const drop = new Set([...(entities.classMatch?.consumed || [])]);
+        if (student) String(student.full_name || '').toLowerCase().split(/\s+/).forEach(w => drop.add(w));
+        const tokens = norm.replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/)
+          .filter(w => w.length >= 3 && !STOP.has(w) && !drop.has(w));
+        const stem = (w) => (w.length > 4 && w.endsWith('s')) ? w.slice(0, -1) : w;
+        const itemWords = (it) => `${it.title || ''} ${(it.game_id || '').replace(/[-_]/g, ' ')} ${it.skill_name || ''}`
+          .toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).map(stem);
+        let picked;
+        if (tokens.length) {
+          const scored = items.map(it => {
+            const words = itemWords(it);
+            return { it, n: tokens.filter(t => words.some(w => w.startsWith(stem(t)))).length };
+          }).filter(x => x.n > 0);
+          const best = Math.max(0, ...scored.map(x => x.n));
+          picked = scored.filter(x => x.n === best).map(x => x.it);
+          if (!picked.length) {
+            const recent = items.slice().sort((a, b) => String(b.due_date || '').localeCompare(String(a.due_date || ''))).slice(0, 5);
+            this._showRivenMessage(`I couldn't find a game or skill assignment matching “${esc(tokens.join(' '))}”${this._rivenScopeLabel(scope, null)}. Recent ones: ${recent.map(it => `<b>${esc(it.title || it.skill_name || it.game_id)}</b>`).join(', ')}.`, true);
+            return;
+          }
+        } else {
+          // No title: the ones still open - overdue first, then soonest due.
+          picked = items.filter(it => (it.completed || 0) < (it.assigned || 0))
+            .sort((a, b) => ((b.overdue || 0) > 0) - ((a.overdue || 0) > 0) || String(a.due_date || '9').localeCompare(String(b.due_date || '9')));
+          if (!picked.length) {
+            this._showRivenMessage(`Everything is finished${this._rivenScopeLabel(scope, null)} — every game and skill assignment is complete. 🎉`, true);
+            return;
+          }
+        }
+
+        const today = this._isoDaysAgo(0);
+        const blocks = picked.slice(0, tokens.length ? 3 : 5).map(it => this._rivenHomeworkBlock(it, { today, student, notDone, doneOnly, brief: !tokens.length }));
+        const more = picked.length > blocks.length ? `<div style="font-size:12px;color:#6b5236;margin-top:4px;">…and ${picked.length - blocks.length} more.</div>` : '';
+        const classes = [...new Map(picked.slice(0, 3).map(it => [it._class.id, it._class])).values()];
+        this._showRivenMessage(blocks.join('<div style="height:10px;"></div>') + more + this._rivenProgressButtons(classes), true);
+      } catch (err) {
+        console.error('Homework results failed:', err);
+        this.terminalPrintError('I could not read assignment results: ' + (err.message || err));
+      }
+    }
+
+    // One assignment's results. The counts come from the student rows rather
+    // than the RPC's totals, so the line and the list under it can never
+    // disagree; excused students are left out of both.
+    _rivenHomeworkBlock(it, { today, student = null, notDone = false, doneOnly = false, brief = false } = {}) {
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      const title = it.title || it.skill_name || it.game_id || 'Assignment';
+      const typeLabel = it.type === 'skill_mastery' ? 'skill mastery' : (it.type || 'assignment');
+      const due = it.due_date ? String(it.due_date).slice(0, 10) : null;
+      const dueStr = due ? new Date(due + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
+      const pastDue = !!(due && due < today);
+      const rows = (it.students || []).filter(s => s.status !== 'excused');
+      const isDone = (s) => s.status === 'completed' || !!s.completed_at;
+      const score = (s) => (s.best_score ?? s.final_score);
+      const done = rows.filter(isDone);
+      const started = rows.filter(s => !isDone(s) && (s.status === 'in_progress' || (s.attempts || 0) > 0 || (s.play_seconds || 0) > 0));
+      const notStarted = rows.filter(s => !isDone(s) && !started.includes(s));
+      const late = rows.filter(s => !isDone(s) && (s.overdue === true || (s.overdue == null && pastDue)));
+      const scored = done.map(score).filter(v => v != null);
+      const avg = scored.length ? Math.round(scored.reduce((a, b) => a + Number(b), 0) / scored.length) : null;
+      const name = (s) => esc(`${s.first_name || ''} ${s.last_name || ''}`.trim() || this._rivenPersonName({ id: s.student_id }));
+      const mins = (s) => (s.play_seconds ? `${Math.round(s.play_seconds / 60)} min` : '');
+      const progress = (s) => {
+        if (isDone(s)) return `finished${score(s) != null ? ` — ${Math.round(score(s))}%` : ''}`;
+        const bits = [started.includes(s) ? 'started' : 'not started'];
+        if (score(s) != null) bits.push(`best ${Math.round(score(s))}%`);
+        if (mins(s)) bits.push(mins(s));
+        if (late.includes(s)) bits.push('<span style="color:#b03a2e;">overdue</span>');
+        return bits.join(', ');
+      };
+
+      const head = `<b>${esc(title)}</b> <span style="font-size:12px;color:#6b5236;">${esc(it._class?.name || it.subject || '')} · ${esc(typeLabel)}${dueStr ? ` · due ${esc(dueStr)}` : ''}${pastDue ? ' (past)' : ''}</span>`;
+      // A student asked about: their row, and nothing else.
+      if (student) {
+        const s = rows.find(x => x.student_id === student.id);
+        return s ? `${head}<br>${esc(student.full_name)}: ${progress(s)}` : `${head}<br>${esc(student.full_name)} wasn't given this one.`;
+      }
+      const tally = `${done.length} of ${rows.length} finished · ${started.length} started · ${notStarted.length} not started` +
+        `${late.length ? ` · <b style="color:#b03a2e;">${late.length} overdue</b>` : ''}${avg != null ? ` · average ${avg}%` : ''}`;
+      const out = [`${head}<br><span style="font-size:12px;">${tally}</span>`];
+      const open = rows.filter(s => !isDone(s)).sort((a, b) => (late.includes(b) - late.includes(a)) || (started.includes(b) - started.includes(a)));
+      if (doneOnly) {
+        const lines = done.slice().sort((a, b) => (score(b) || 0) - (score(a) || 0)).map(s => `• ${name(s)} — ${progress(s)}`);
+        out.push(lines.length ? `<span style="font-size:12px;">${this._briefingExpand(lines, 8, 'students')}</span>` : '<span style="font-size:12px;">Nobody has finished it yet.</span>');
+      } else if (notDone || brief) {
+        if (open.length) {
+          const lines = open.map(s => `• ${name(s)} — ${progress(s)}`);
+          out.push(`<span style="font-size:12px;">${this._briefingExpand(lines, brief ? 4 : 8, 'students')}</span>`);
+        }
+      } else {
+        // "how did they do": who isn't done, and the lowest finished scores.
+        if (open.length) out.push(`<span style="font-size:12px;">Not finished: ${open.slice(0, 8).map(s => name(s) + (late.includes(s) ? ' (overdue)' : '')).join(', ')}${open.length > 8 ? ` +${open.length - 8} more` : ''}</span>`);
+        const low = done.filter(s => score(s) != null).sort((a, b) => score(a) - score(b)).slice(0, 3);
+        if (low.length && done.length > 1) out.push(`<span style="font-size:12px;">Lowest scores: ${low.map(s => `${name(s)} ${Math.round(score(s))}%`).join(', ')}</span>`);
+      }
+      return out.join('<br>');
+    }
+
+    // The practice lines for the proactive briefing: who has gone quiet, who
+    // is stuck, and game/skill work that is overdue. Each line appears only
+    // when it has something in it, and none of them lists everyone - the
+    // briefing points, the questions ("who is stuck") answer.
+    _rivenBriefingPractice(ov, { classIds = null } = {}) {
+      const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+      let students = (ov && ov.students) || [];
+      if (classIds) students = students.filter(s => (s.classes || []).some(c => classIds.has(c.id)));
+      const out = [];
+      const names = (list, n = 4) => list.slice(0, n).map(s => esc(this._rivenPersonName(s))).join(', ') + (list.length > n ? ` +${list.length - n} more` : '');
+
+      const weekAgo = Date.now() - 7 * 86400000;
+      const quiet = students.filter(s => !s.last_active || new Date(s.last_active).getTime() < weekAgo)
+        .sort((a, b) => (a.last_active ? new Date(a.last_active).getTime() : 0) - (b.last_active ? new Date(b.last_active).getTime() : 0));
+      if (quiet.length) {
+        out.push(`💤 <b>${quiet.length} student${quiet.length === 1 ? " hasn't" : "s haven't"} practised in 7 days</b>: <span style="font-size: 12px;">${names(quiet)}</span>`);
+      }
+
+      const stuck = students.filter(s => (s.stuck_skills || []).length || s.stuck > 0);
+      if (stuck.length) {
+        const bySkill = new Map();
+        stuck.forEach(s => (s.stuck_skills || []).forEach(k => bySkill.set(k.skill, (bySkill.get(k.skill) || 0) + 1)));
+        const top = [...bySkill.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
+        out.push(`🧩 <b>${stuck.length} student${stuck.length === 1 ? ' is' : 's are'} stuck</b>${top.length ? ` — most often on <span style="font-size: 12px;">${top.map(([k, n]) => `${esc(k)} (${n})`).join(', ')}</span>` : ''}. Say "who is stuck" for the list.`);
+      }
+
+      // Overdue game/skill assignments, grouped by assignment rather than by
+      // student: one batch assigned to twelve children is one thing to chase.
+      const byTitle = new Map();
+      students.forEach(s => (s.homework_overdue || []).forEach(h => {
+        const key = `${h.title || ''}|${h.type || ''}`;
+        const e = byTitle.get(key) || { title: h.title || 'Assignment', type: h.type, n: 0 };
+        e.n++; byTitle.set(key, e);
+      }));
+      if (byTitle.size) {
+        const top = [...byTitle.values()].sort((a, b) => b.n - a.n);
+        const shown = top.slice(0, 3).map(e => `${esc(e.title)} — ${e.n} student${e.n === 1 ? '' : 's'}`);
+        out.push(`⏰ <b>Overdue game/skill work</b>: <span style="font-size: 12px;">${shown.join(' · ')}${top.length > 3 ? ` +${top.length - 3} more` : ''}</span>`);
+      }
+      return out.map(s => `<div>${s}</div>`);
     }
 
     async terminalBriefing({ auto = false, school = false } = {}) {
@@ -67367,6 +68299,14 @@ Students you had withdrawn stay withdrawn.`)) {
            <button onclick="app._rivenNoteMissing(${i})" style="margin-left: 6px; padding: 2px 10px; border-radius: 6px; border: 1px solid #2f6b6d; background: transparent; color: #2f6b6d; cursor: pointer; font-size: 11px;">📝 Note it</button>`);
         sections.push(`<div>⚠️ <b>Students with multiple missing assignments</b>:<br><span style="font-size: 12px;">${this._briefingExpand(lines, 6, 'students')}</span></div>`);
       }
+
+      // 5b. Practice: who has gone quiet for a week, who is stuck, and game or
+      // skill assignments that are overdue. Only lines with something in them;
+      // see _rivenBriefingPractice. A failed read leaves the rest standing.
+      try {
+        const ov = await this._rivenProgressOverview(7);
+        sections.push(...this._rivenBriefingPractice(ov, { classIds: school ? null : new Set(classIds) }));
+      } catch (e) { console.warn('Riven briefing: practice unavailable:', e); }
 
       // 6. Attendance not yet taken for today's scheduled classes
       const takenToday = new Set((sessRes.data || []).map(s => s.class_id));
@@ -69074,33 +70014,42 @@ Students you had withdrawn stay withdrawn.`)) {
       const classMatch = entities.classMatch ? (entities.classMatch.candidates?.[0] || null) : null;
       const norm = entities.normalized || '';
       const wantOverdue = /\b(overdue|late|missing|past due)\b/.test(norm);
-      const wantUpcoming = !wantOverdue;
       this.terminalPrint('Checking homework assignments…', '#6aa9ff');
       try {
         const sb = this.auth.supabase;
+        const today = this._isoDaysAgo(0);
+        // OVERDUE IS COMPUTED, NOT READ. Nothing ever writes status 'overdue',
+        // so this used to filter on it and answer "no overdue homework" for a
+        // class with a week-late game assignment. Overdue = due date passed and
+        // not completed or excused.
+        const isOverdue = (hw) => !!(hw.due_date && String(hw.due_date).slice(0, 10) < today
+          && hw.status !== 'completed' && hw.status !== 'excused');
         let q = sb.from('homework_assignments')
-          .select('id, title, description, subject, skill_name, assignment_type, due_date, status, student_id, class_id')
+          .select('id, title, description, subject, skill_name, assignment_type, due_date, status, student_id, class_id, best_score, final_score, completed_at, play_seconds')
           .order('due_date', { ascending: true })
-          .limit(50);
+          .limit(150);
 
+        // One student or one class: everything, finished work included, so
+        // the answer can say how it went. Everyone you can see: only the open
+        // work, or a school's worth of finished rows buries the late ones.
         if (student) {
           q = q.eq('student_id', student.id);
         } else if (classMatch) {
           q = q.eq('class_id', classMatch.id);
-        } else {
-          // All students the teacher can see — just show pending
-          q = q.in('status', ['assigned', 'in_progress', 'overdue']);
-        }
-
-        if (wantOverdue) {
-          q = q.eq('status', 'overdue');
         } else {
           q = q.in('status', ['assigned', 'in_progress', 'overdue']);
         }
 
         const { data, error } = await q;
         if (error) { this.terminalPrintError('Could not load homework: ' + error.message); return; }
-        const rows = data || [];
+        const all = data || [];
+        const overdueRows = all.filter(isOverdue);
+        const openRows = all.filter(hw => !isOverdue(hw) && hw.status !== 'completed' && hw.status !== 'excused');
+        // Finished in the last two weeks, newest first - the results.
+        const fortnight = this._isoDaysAgo(14);
+        const doneRows = all.filter(hw => hw.status === 'completed' && String(hw.completed_at || hw.due_date || '').slice(0, 10) >= fortnight)
+          .sort((a, b) => String(b.completed_at || '').localeCompare(String(a.completed_at || '')));
+        const rows = wantOverdue ? overdueRows : [...overdueRows, ...openRows, ...doneRows];
 
         // Build student name lookup from cache
         const studentCache = {};
@@ -69117,16 +70066,28 @@ Students you had withdrawn stay withdrawn.`)) {
         const typeLabel = { skill_practice: 'Practice', game: 'Game', skill_mastery: 'Mastery' };
 
         const whoTitle = student ? student.full_name : classMatch ? classMatch.name : null;
-        let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${rows.length} homework assignment${rows.length === 1 ? '' : 's'}${whoTitle ? ' for <b>' + this.escapeHtml(whoTitle) + '</b>' : ''}</div>`;
+        // The tally says what kind of list this is before the list does.
+        const tally = wantOverdue ? '' : [
+          overdueRows.length ? `${overdueRows.length} overdue` : '',
+          openRows.length ? `${openRows.length} open` : '',
+          doneRows.length ? `${doneRows.length} finished in the last 2 weeks` : '',
+        ].filter(Boolean).join(' · ');
+        let html = `<div style="font-weight: 600; margin-bottom: 8px;">📚 ${rows.length} ${wantOverdue ? 'overdue ' : ''}homework assignment${rows.length === 1 ? '' : 's'}${whoTitle ? ' for <b>' + this.escapeHtml(whoTitle) + '</b>' : ''}${tally ? `<div style="font-weight: 400; font-size: 12px; color: var(--muted);">${tally}</div>` : ''}</div>`;
 
         rows.slice(0, 10).forEach(hw => {
           const studentName = studentCache[hw.student_id] || '';
           const dueStr = hw.due_date ? new Date(hw.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-          const isPast = hw.due_date && new Date(hw.due_date) < new Date();
+          const late = isOverdue(hw);
+          const done = hw.status === 'completed';
           const dueBadge = dueStr
-            ? `<span style="color: ${isPast ? '#e74c3c' : '#f39c12'}; font-size: 11px;">Due ${this.escapeHtml(dueStr)}</span>`
+            ? `<span style="color: ${late ? '#e74c3c' : '#f39c12'}; font-size: 11px;">Due ${this.escapeHtml(dueStr)}</span>`
             : '';
-          const stBadge = `<span style="color: ${hw.status === 'overdue' ? '#e74c3c' : hw.status === 'completed' ? '#8bffb0' : '#6aa9ff'}; font-size: 11px;">${statusLabel[hw.status] || hw.status}</span>`;
+          // Status from the computed overdue, and a finished row says its score.
+          const score = hw.best_score ?? hw.final_score;
+          const stText = late ? statusLabel.overdue
+            : done ? `Done${score != null ? ` · ${Math.round(score)}%` : ''}`
+            : (statusLabel[hw.status === 'overdue' ? 'in_progress' : hw.status] || hw.status);
+          const stBadge = `<span style="color: ${late ? '#e74c3c' : done ? '#8bffb0' : '#6aa9ff'}; font-size: 11px;">${this.escapeHtml(stText)}</span>`;
           const typeBadge = hw.assignment_type ? `<span style="color: var(--muted); font-size: 11px;">${typeLabel[hw.assignment_type] || hw.assignment_type}</span>` : '';
           const sub = (hw.subject || hw.skill_name) ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${[hw.subject, hw.skill_name].filter(Boolean).join(' · ')}</div>` : '';
           const showStudent = !student && studentName;
