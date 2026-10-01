@@ -3339,8 +3339,22 @@
               break;
             case 'GAME_SESSION_COMPLETE':
               await this.handleGameSessionComplete(event.data);
+              this._noteHomeworkSession(event.data, 'legacy');
+              break;
+            // Every assignable game sends this at the end of a session/run. It
+            // is what counts a session toward a game assignment.
+            case 'GAME_SESSION_SUMMARY':
+              this._noteHomeworkSession(event.data, 'summary');
+              break;
+            // The subject games and Math Dojo ask for the student's stored
+            // progress so their estimates start from it, not from zero. Only the
+            // student site used to answer; homework launched from here got none.
+            case 'DOGO_REQUEST_SKILL_DATA':
+              await this.sendSkillDataForDojo(event.source, event.data.subject || 'Math');
               break;
           }
+          // Dojo-family sessions count toward a game assignment too.
+          if (event.data.type === 'DOGO_SESSION_COMPLETE') this._noteHomeworkSession(event.data, 'legacy');
         });
       }
 
@@ -3350,7 +3364,7 @@
         if (!source || typeof source.postMessage !== 'function') return;
         const progress = {};
         try {
-          const userId = this.userInfo?.user?.id;
+          const userId = this._progressStudentId();
           if (userId && this.userInfo?.profile?.user_type === 'student') {
             const { data, error } = await this.supabaseQuery(() =>
               this.auth.supabase
@@ -3389,20 +3403,169 @@
             await this.upsertSkillProgress(
               bu.skill, subject,
               Math.round(bu.p_mastered * 100), bu.derivedState || 'in_progress',
-              bu.p_mastered, bu.last_evidence_at
+              bu.p_mastered, bu.last_evidence_at, 'game'
             );
             covered.add(bu.skill);
           }
           for (const sk of skills) {
             if (!sk || !sk.name || covered.has(sk.name)) continue;
             const score = Math.max(0, Math.min(100, Math.round(sk.score || 0)));
-            await this.upsertSkillProgress(sk.name, subject, score, score >= 80 ? 'activated' : 'in_progress');
+            await this.upsertSkillProgress(sk.name, subject, score, score >= 80 ? 'activated' : 'in_progress', null, null, 'game');
           }
           console.log(`Saved ${covered.size} BKT updates and ${skills.length} skill scores from ${gameId}`);
           this.showNotification(`${gameId === 'mathspire' ? 'Mathspire' : 'Game'} session saved: ${covered.size + skills.length} skills updated.`, 'success');
         } catch (e) {
           console.error('Error handling game session:', e);
         }
+      }
+
+      // Same answer the student site gives (SKILL_DATA_FOR_DOGO, a map keyed by
+      // skill name), plus the stored probability so a game can seed from it.
+      async sendSkillDataForDojo(source, subject) {
+        if (!source || typeof source.postMessage !== 'function') return;
+        const skills = {};
+        const userId = this._progressStudentId();
+        if (userId && this.userInfo?.profile?.user_type === 'student') {
+          try {
+            const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('skill_progress')
+              .select('skill_name, state, mastery_score, p_mastered, last_evidence_at, practice_count, last_practiced')
+              .eq('user_id', userId)
+              .eq('subject', subject));
+            if (error) throw error;
+            for (const r of data || []) {
+              skills[r.skill_name] = {
+                state: r.state, mastery_score: r.mastery_score || 0,
+                p_mastered: typeof r.p_mastered === 'number' ? r.p_mastered : undefined,
+                last_evidence_at: r.last_evidence_at || undefined,
+                practice_count: r.practice_count || 0, last_practiced: r.last_practiced || undefined
+              };
+            }
+          } catch (e) {
+            console.error('Failed to load skill data for Dojo:', e);
+          }
+        }
+        source.postMessage({ type: 'SKILL_DATA_FOR_DOGO', subject, skills, owner: userId }, window.location.origin);
+      }
+
+      // ---- game assignments: the portal keeps the time and reports sessions ----
+      //
+      // A game assignment is "score at least N% with M minutes of play". Nothing
+      // used to complete one: the games were launched with ?homework= but the
+      // only page that could close the loop ignored what they sent.
+      //
+      // Time is measured HERE, not taken from the game: seconds count only
+      // while the game is open in this window and the tab is visible, and are
+      // banked every minute (so closing the tab loses at most a minute). Each
+      // session's score goes to rt_homework_record_session, which keeps the
+      // best score, adds up the time, and completes the assignment when both
+      // the teacher's minimum score and minutes are met.
+      _startHomeworkTracking(hw) {
+        this._stopHomeworkTracking(false);
+        this._activeHomework = {
+          id: hw.id, gameId: hw.game_id, title: hw.title,
+          minScore: hw.min_score ?? 70, minMinutes: hw.min_play_time ?? 10,
+          best: hw.best_score ?? null, played: hw.play_seconds || 0,
+          pending: 0, sinceFlush: 0, sawSummary: false, status: hw.status
+        };
+        this._renderHomeworkProgress();
+        this._homeworkTimer = setInterval(() => {
+          const a = this._activeHomework;
+          if (!a) return;
+          if (!document.getElementById('modal-game-player')) {
+            this._stopHomeworkTracking(true);   // closed: bank what's left
+            return;
+          }
+          if (document.visibilityState !== 'visible') return;
+          a.pending++;
+          a.sinceFlush++;
+          if (a.sinceFlush >= 60) this._flushHomework(null);
+          this._renderHomeworkProgress();
+        }, 1000);
+      }
+
+      _stopHomeworkTracking(flush) {
+        clearInterval(this._homeworkTimer);
+        this._homeworkTimer = null;
+        if (flush && this._activeHomework?.pending > 0) this._flushHomework(null);
+        if (!flush) this._activeHomework = null;
+        else setTimeout(() => {
+          if (!this._homeworkTimer) this._activeHomework = null;
+        }, 5000);
+      }
+
+      // A session finished inside the assignment's game. GAME_SESSION_SUMMARY
+      // is the agreed message; older games send GAME_SESSION_COMPLETE or
+      // DOGO_SESSION_COMPLETE, which are used only if no summary arrives, so
+      // a game sending both is not counted twice.
+      _noteHomeworkSession(data, kind) {
+        const a = this._activeHomework;
+        if (!a || !data) return;
+        if (data.homeworkId && data.homeworkId !== a.id) return;   // another assignment's game
+        const score = this._sessionScore(data);
+        if (kind === 'summary') {
+          a.sawSummary = true;
+          this._flushHomework(score);
+          return;
+        }
+        setTimeout(() => {
+          if (this._activeHomework === a && !a.sawSummary) this._flushHomework(score);
+        }, 2000);
+      }
+
+      // 0-100, or null when the message carries nothing to score.
+      _sessionScore(data) {
+        const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
+        if (typeof data.score === 'number' && isFinite(data.score)) return clamp(data.score);
+        if (typeof data.correct === 'number' && typeof data.total === 'number' && data.total > 0) {
+          return clamp(100 * data.correct / data.total);
+        }
+        const sp = Array.isArray(data.skillProgress) ? data.skillProgress : [];
+        const total = sp.reduce((n, x) => n + (x.total || 0), 0);
+        if (total > 0) return clamp(100 * sp.reduce((n, x) => n + (x.correct || 0), 0) / total);
+        return null;
+      }
+
+      async _flushHomework(score) {
+        const a = this._activeHomework;
+        if (!a || a.status === 'completed') return;
+        const seconds = a.pending;
+        if (score === null && seconds <= 0) return;
+        a.pending = 0;
+        a.sinceFlush = 0;
+        try {
+          const r = await this._pickupRpc('rt_homework_record_session', {
+            p_homework_id: a.id, p_score: score, p_seconds: seconds, p_source: a.gameId || null
+          });
+          if (!r || r.success === false) throw new Error((r && r.error) || 'refused');
+          a.best = r.best_score ?? a.best;
+          a.played = r.play_seconds ?? (a.played + seconds);
+          const wasDone = a.status === 'completed';
+          a.status = r.status || a.status;
+          this._renderHomeworkProgress();
+          if (a.status === 'completed' && !wasDone) {
+            this.showNotification(`🎮 Assignment complete! ${a.title || 'Game'}: best ${a.best}% in ${Math.round(a.played / 60)} minutes.`, 'success', 8000);
+          }
+        } catch (e) {
+          // Put the time back so the next flush carries it.
+          a.pending += seconds;
+          console.error('Could not record the game session for the assignment:', e);
+        }
+      }
+
+      _renderHomeworkProgress() {
+        const el = document.getElementById('homework-progress');
+        const a = this._activeHomework;
+        if (!el || !a) return;
+        const secs = a.played + a.pending;
+        const mmss = (t) => `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
+        const needSecs = a.minMinutes * 60;
+        const scoreOk = a.best !== null && a.best >= a.minScore;
+        const timeOk = secs >= needSecs;
+        el.innerHTML = a.status === 'completed'
+          ? `<strong style="color: var(--success);">✓ Complete</strong> — best ${a.best}% · ${mmss(Math.min(secs, 359999))} played`
+          : `<span style="color: ${scoreOk ? 'var(--success)' : 'var(--text)'};">Best score: <strong>${a.best === null ? '—' : a.best + '%'}</strong> of ${a.minScore}%</span>
+             · <span style="color: ${timeOk ? 'var(--success)' : 'var(--text)'};">Played <strong>${mmss(secs)}</strong> of ${mmss(needSecs)}</span>`;
       }
 
       // Handle real-time skill progress updates from Math Dojo / English Lyceum
@@ -3415,7 +3578,7 @@
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
         try {
-          await this.upsertSkillProgress(skill, subject, masteryScore, skillState);
+          await this.upsertSkillProgress(skill, subject, masteryScore, skillState, null, null, 'practice');
         } catch (err) {
           console.error('Failed to save skill progress:', err);
         }
@@ -3444,7 +3607,7 @@
             await this.upsertSkillProgress(
               bu.skill, subject,
               masteryScore, bu.derivedState,
-              bu.p_mastered, bu.last_evidence_at
+              bu.p_mastered, bu.last_evidence_at, 'practice'
             );
             bktSkillNames.add(bu.skill);
           }
@@ -3454,14 +3617,14 @@
           // but keep the path for safety / future generators without tags.
           for (const sp of skillProgress) {
             if (bktSkillNames.has(sp.skill)) continue;
-            await this.upsertSkillProgress(sp.skill, subject, sp.masteryScore, sp.skillState);
+            await this.upsertSkillProgress(sp.skill, subject, sp.masteryScore, sp.skillState, null, null, 'practice');
           }
 
           this.showNotification(`${subject === 'Reading' ? 'English' : subject} practice complete! ${skillProgress.length} skills updated.`, 'success');
 
           // Record session for weekly activity tracking
           try {
-            const userId = this.userInfo?.user?.id || this.userInfo?.profile?.id;
+            const userId = this._progressStudentId();
             const totalCorrect = skillProgress.reduce((sum, sp) => sum + (sp.correct || 0), 0);
             const totalQuestions = skillProgress.reduce((sum, sp) => sum + (sp.total || 0), 0);
             const skillDetails = skillProgress.map(sp => ({
@@ -3497,8 +3660,10 @@
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
         try {
-          // Lesson completion = 100% mastery
-          await this.upsertSkillProgress(skill, subject, 100, 'mastered');
+          // A finished lesson (its practice passed) is the games' own test of
+          // mastery, so it counts - at 85, not 100, and labelled as a lesson so
+          // a teacher can tell it from sustained practice.
+          await this.upsertSkillProgress(skill, subject, 85, 'mastered', null, null, 'lesson');
           this.showNotification(`Lesson complete! ${skill} mastered!`, 'success');
         } catch (err) {
           console.error('Failed to save lesson completion:', err);
@@ -3513,7 +3678,7 @@
         if (this.userInfo?.profile?.user_type !== 'student') return;
 
         try {
-          await this.upsertSkillProgress(skill, 'Math', progress.masteryScore, progress.skillState);
+          await this.upsertSkillProgress(skill, 'Math', progress.masteryScore, progress.skillState, null, null, 'skill_tree');
         } catch (err) {
           console.error('Failed to save skill tree update:', err);
         }
@@ -3540,7 +3705,7 @@
         if (!completedSubSkills) return;
 
         if (this.userInfo?.profile?.user_type !== 'student') return;
-        const userId = this.userInfo?.user?.id;
+        const userId = this._progressStudentId();
         if (!userId) return;
 
         // Throttle: debounce writes so rapid sub-skill completions batch into
@@ -3572,7 +3737,7 @@
       // on load). Read from user_profiles.dojo_subskill_progress and send
       // back; the Dojo merges with localStorage on receive.
       async sendDogoSubSkillProgress(source) {
-        const userId = this.userInfo?.user?.id;
+        const userId = this._progressStudentId();
         if (!userId) return;
         try {
           const { data, error } = await this.auth.supabase
@@ -3596,70 +3761,107 @@
         }
       }
 
+      // Math Dojo sends this after a belt test: every skill that is not locked,
+      // each with the state the belt test left it in. It used to be written as
+      // mastered/100 regardless - so a belt test marked every in-progress and
+      // merely-available skill as mastered, and reset its mastered date.
+      //
+      // Now: a skill sent as mastered is saved as mastered (source belt_test;
+      // the database keeps the FIRST mastered date). Anything else is only
+      // inserted for a skill the student has no row for yet, so a backfill can
+      // never overwrite or downgrade real progress.
       async handleBackfillSkills(data) {
         const { subject, skills } = data;
-        if (!subject || !skills || skills.length === 0) return;
-
-        console.log(`🔄 Backfilling ${skills.length} prerequisite skills to Supabase for ${subject}`);
-
-        const userId = this.userInfo?.user?.id;
+        if (!subject || !Array.isArray(skills) || skills.length === 0) return;
+        if (this.userInfo?.profile?.user_type !== 'student') return;
+        const userId = this._progressStudentId();
         if (!userId) return;
 
-        try {
-          const now = new Date().toISOString();
-          const rows = skills.map(s => ({
-            user_id: userId,
-            subject: subject,
-            skill_name: s.skillName,
-            state: 'mastered',
-            mastery_score: 100,
-            last_practiced: now,
-            practice_count: 1,
-            mastered_at: now,
-            updated_at: now
-          }));
-
-          const { error } = await this.auth.supabase
-            .from('skill_progress')
-            .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
-
-          if (error) {
-            console.error('Failed to backfill skills to database:', error);
+        const now = new Date().toISOString();
+        const clampScore = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+        const isMastered = (st) => st === 'mastered' || st === 'activated';
+        const mastered = [], other = [];
+        for (const s of skills) {
+          if (!s || !s.skillName) continue;
+          const row = {
+            user_id: userId, subject, skill_name: s.skillName, source: 'belt_test', updated_at: now
+          };
+          if (isMastered(s.state)) {
+            mastered.push({ ...row, state: 'mastered', mastery_score: Math.max(80, clampScore(s.mastery_score ?? 100)), last_practiced: now });
           } else {
-            console.log(`✅ Backfilled ${skills.length} skills to database`);
+            const st = ['available', 'in_progress', 'locked'].includes(s.state) ? s.state : 'available';
+            other.push({ ...row, state: st, mastery_score: clampScore(s.mastery_score) });
+          }
+        }
+
+        try {
+          if (mastered.length) {
+            const { error } = await this.auth.supabase
+              .from('skill_progress')
+              .upsert(mastered, { onConflict: 'user_id,subject,skill_name' });
+            if (error) throw error;
+          }
+          if (other.length) {
+            // ignoreDuplicates = ON CONFLICT DO NOTHING: new rows only.
+            const { error } = await this.auth.supabase
+              .from('skill_progress')
+              .upsert(other, { onConflict: 'user_id,subject,skill_name', ignoreDuplicates: true });
+            if (error) throw error;
           }
         } catch (e) {
-          console.error('Error backfilling skills:', e);
+          console.error('Failed to record belt test skills:', e);
         }
+      }
+
+      // The id progress is filed under: the student's PROFILE id. The login id
+      // (userInfo.user.id) differs for roster-created students, and rows written
+      // under it were refused by the database and silently lost. (The database
+      // now maps either id, but every read here must use this one to match.)
+      _progressStudentId() {
+        return this.userInfo?.profile?.id || null;
       }
 
       // Upsert skill progress to database.
       // Phase 2: extra optional params carry the Bayesian (BKT) per-skill
       // probability and the evidence timestamp. Older callers passing 4 args
-      // still work unchanged — p_mastered just doesn't get written then.
-      async upsertSkillProgress(skillName, subject, masteryScore, state, pMastered = null, lastEvidenceAt = null) {
-        const userId = this.userInfo?.user?.id;
-        if (!userId) return;
+      // still work unchanged - p_mastered just doesn't get written then.
+      //
+      // `source` says where the evidence came from (practice, game, lesson,
+      // skill_tree...) and is shown to teachers in the skill history.
+      //
+      // MASTERED HAS TO BE EARNED. Games send 'activated'/'mastered' on thin
+      // evidence (the subject games' threshold was 60% on two questions), and
+      // this used to save any of those as mastered. Now a claim of mastery is
+      // kept only when the evidence supports it - a BKT probability of 0.85+,
+      // or a score of 80+ when there is no probability - and is otherwise saved
+      // as in progress. mastered_at is the database's job: it keeps the first.
+      async upsertSkillProgress(skillName, subject, masteryScore, state, pMastered = null, lastEvidenceAt = null, source = 'dojo') {
+        const userId = this._progressStudentId();
+        if (!userId || !skillName) return;
 
-        // Map state names
+        const score = Math.max(0, Math.min(100, Math.round(Number(masteryScore) || 0)));
+        const hasP = pMastered !== null && typeof pMastered === 'number' && isFinite(pMastered);
+        const claimsMastery = state === 'mastered' || state === 'activated';
+        const earned = hasP ? pMastered >= 0.85 : score >= 80;
         let dbState = state;
-        if (state === 'activated') dbState = 'mastered'; // Map activated to mastered
+        if (claimsMastery) dbState = earned ? 'mastered' : 'in_progress';
+        if (!['locked', 'available', 'in_progress', 'mastered'].includes(dbState)) dbState = 'in_progress';
 
+        const now = new Date().toISOString();
         const row = {
           user_id: userId,
           subject: subject,
           skill_name: skillName,
           state: dbState,
-          mastery_score: masteryScore,
-          practice_count: this.auth.supabase.rpc ? undefined : 1, // Increment handled separately
-          last_practiced: new Date().toISOString(),
-          mastered_at: dbState === 'mastered' ? new Date().toISOString() : null,
-          updated_at: new Date().toISOString()
+          mastery_score: score,
+          last_practiced: now,
+          source,
+          updated_at: now
         };
-        if (pMastered !== null && typeof pMastered === 'number') {
+        if (hasP) {
           row.p_mastered = Math.max(0, Math.min(1, pMastered));
-          row.last_evidence_at = lastEvidenceAt || new Date().toISOString();
-          // Fresh real response — clear any decay backlog so the next
+          row.last_evidence_at = lastEvidenceAt || now;
+          // Fresh real response - clear any decay backlog so the next
           // cron run doesn't re-decay this row until 30 days from now.
           row.decay_steps_applied = 0;
         }
@@ -3678,8 +3880,9 @@
         // Increment practice count separately
         await this.incrementPracticeCount(userId, subject, skillName);
 
-        // Check if this progress completes any skill mastery homework assignments
-        await this.checkSkillMasteryHomework(skillName, subject, masteryScore);
+        // The database completes skill-mastery assignments itself now; this
+        // only tells the student when one just did.
+        await this.checkSkillMasteryHomework(skillName, subject, score);
       }
 
       // Increment practice count for a skill
@@ -3916,52 +4119,35 @@
       }
 
       // Check if any in-progress skill mastery homework should be auto-completed
+      // A skill-mastery assignment is completed by the database the moment the
+      // skill reaches its target, from whichever page or game got it there, and
+      // a student's own update can no longer mark one complete. So this no
+      // longer writes anything: it notices an assignment that has just closed
+      // and says so, once.
       async checkSkillMasteryHomework(skillName, subject, masteryScore) {
         if (this.userInfo?.profile?.user_type !== 'student') return;
-
-        const userId = this.userInfo.profile.id;
+        const userId = this._progressStudentId();
+        if (!userId) return;
         try {
-          // Find any active skill mastery homework for this skill
-          const { data: activeHomework, error } = await this.supabaseQuery(() =>
+          const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+          const { data, error } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('homework_assignments')
-              .select('id, target_mastery_score, status')
+              .select('id, title, target_mastery_score, final_score')
               .eq('student_id', userId)
               .eq('assignment_type', 'skill_mastery')
               .eq('skill_name', skillName)
-              .eq('subject', subject)
-              .in('status', ['assigned', 'in_progress'])
+              .eq('status', 'completed')
+              .gte('completed_at', since)
           );
-
-          if (error || !activeHomework || activeHomework.length === 0) return;
-
-          // Check each matching homework
-          for (const hw of activeHomework) {
-            const target = hw.target_mastery_score || 80;
-            if (masteryScore >= target) {
-              // Student met the target — mark homework as completed
-              const { error: updateError } = await this.supabaseQuery(() =>
-                this.auth.supabase
-                  .from('homework_assignments')
-                  .update({
-                    status: 'completed',
-                    completed_at: new Date().toISOString(),
-                    final_score: masteryScore
-                  })
-                  .eq('id', hw.id)
-              );
-
-              if (!updateError) {
-                console.log(`✅ Skill mastery homework auto-completed: ${skillName} (${masteryScore}% >= ${target}%)`);
-                this.showNotification(
-                  `🎯 Assignment Complete! You reached ${masteryScore}% mastery in ${skillName}!`,
-                  'success',
-                  5000
-                );
-              } else {
-                console.error('Error auto-completing homework:', updateError);
-              }
-            }
+          if (error || !data) return;
+          this._announcedHomework = this._announcedHomework || new Set();
+          for (const hw of data) {
+            if (this._announcedHomework.has(hw.id)) continue;
+            this._announcedHomework.add(hw.id);
+            this.showNotification(
+              `🎯 Assignment complete! You reached ${hw.final_score ?? masteryScore}% in ${skillName}.`,
+              'success', 6000);
           }
         } catch (err) {
           console.error('Error checking skill mastery homework completion:', err);
@@ -4440,7 +4626,11 @@
           iframe.contentWindow.postMessage({
             type: 'TESTING_CENTER_AUTH',
             payload: {
-              userId: this.userInfo.user.id,
+              // The PROFILE id: submissions are filed and read by it, and the
+              // login id differs for roster-created students (their tests were
+              // refused). Teachers' own tests accept either id.
+              userId: this.userInfo.profile.id || this.userInfo.user.id,
+              authUserId: this.userInfo.user.id,
               userType: this.userInfo.profile.user_type,
               accessToken: session.access_token,
               refreshToken: session.refresh_token,
@@ -22152,10 +22342,15 @@ Students you had withdrawn stay withdrawn.`)) {
                 <select id="skill-subject" required onchange="app.loadSkillsForSubject()">
                   <option value="">Choose a subject...</option>
                   <option value="Math">Math</option>
-                  <option value="Reading">Reading</option>
+                  <option value="Reading">English (Reading &amp; Language)</option>
                   <option value="Science">Science</option>
+                  <option value="Social">Social Studies</option>
+                  <option value="Creative">Art</option>
+                  <option value="LifeSkills">Life Skills</option>
+                  <option value="Bible">Bible</option>
                   <option value="Programming">Programming</option>
-                  <option value="Art">Art</option>
+                  <option value="Robotics">Robotics</option>
+                  <option value="Physical">PE</option>
                 </select>
               </div>
 
@@ -22886,11 +23081,16 @@ Students you had withdrawn stay withdrawn.`)) {
           };
         }
 
-        // Create homework assignment for each student
+        // Create homework assignment for each student. batch_id ties the rows
+        // of one assignment together for the class results view.
+        const batchId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID()
+          : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+              const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });
         const assignments = studentIds.map(studentId => ({
           teacher_id: teacherId,
           student_id: studentId,
           class_id: classId,
+          batch_id: batchId,
           ...homeworkData,
           due_date: dueDate,
           status: 'assigned',
@@ -24128,20 +24328,24 @@ Students you had withdrawn stay withdrawn.`)) {
             // /portal/, so use a root-relative path. Normalize the known
             // hyphenated id whose file is actually underscore-named.
             const gameFile = hw.game_id === 'wasteland-adventure' ? 'wasteland_adventure' : hw.game_id;
-            const gameUrl = `/games/${gameFile}.html?homework=${homeworkId}&subject=${encodeURIComponent(hw.subject || 'Math')}`;
+            // userId: the game keys any local progress by the student, so two
+            // students on one Chromebook never see or save each other's.
+            const gameUrl = `/games/${gameFile}.html?homework=${homeworkId}&subject=${encodeURIComponent(hw.subject || 'Math')}&userId=${encodeURIComponent(this._progressStudentId() || '')}`;
 
             // Open game in modal or new window
             this.showModal('game-player', `🎮 ${hw.title}`, `
               <div style="text-align: center; padding: 20px;">
-                <p style="margin-bottom: 20px;">
-                  <strong>Goal:</strong> Score at least ${hw.min_score || 70}% with ${hw.min_play_time || 10} minutes of play time
+                <p style="margin-bottom: 8px;">
+                  <strong>Goal:</strong> Score at least ${hw.min_score ?? 70}% with ${hw.min_play_time ?? 10} minutes of play time
                 </p>
+                <p id="homework-progress" style="margin-bottom: 14px; font-size: 14px;"></p>
                 <iframe src="${gameUrl}" style="width: 100%; height: 500px; border: 2px solid var(--border); border-radius: 8px;"></iframe>
                 <button class="btn btn-secondary" style="margin-top: 15px;" onclick="app.closeModal('game-player')">
                   Close Game
                 </button>
               </div>
             `, true);
+            this._startHomeworkTracking(hw);
 
           } else if (hw.assignment_type === 'skill_mastery') {
             // Fetch current skill progress and prerequisite status
@@ -26819,7 +27023,46 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
-      loadSkillsForSubject() {
+      // Curriculum subjects whose skills a game saves under this subject. The
+      // English and Art games save as Reading and Creative; the curriculum
+      // files their skills under two names each.
+      _curriculumSubjectsFor(subject) {
+        return ({ Reading: ['Reading', 'Language'], Creative: ['Creative', 'Art'] })[subject] || [subject];
+      }
+
+      async loadSkillsForSubject() {
+        const subject = document.getElementById('skill-subject').value;
+        const skillSelect = document.getElementById('skill-name');
+        if (!subject || !skillSelect) return this._loadSkillsForSubjectLegacy();
+        skillSelect.innerHTML = '<option value="">Loading skills...</option>';
+        try {
+          this._curriculumSkillCache = this._curriculumSkillCache || {};
+          let names = this._curriculumSkillCache[subject];
+          if (!names) {
+            const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('curriculum_nodes')
+              .select('id, legacy_name, legacy_subject')
+              .in('legacy_subject', this._curriculumSubjectsFor(subject))
+              .not('legacy_name', 'is', null)
+              .order('id'));
+            if (error) throw error;
+            const seen = new Set();
+            names = (data || []).map(r => r.legacy_name).filter(n => n && !seen.has(n) && seen.add(n));
+            this._curriculumSkillCache[subject] = names;
+          }
+          if (document.getElementById('skill-subject')?.value !== subject) return;   // changed while loading
+          if (!names.length) return this._loadSkillsForSubjectLegacy();
+          skillSelect.innerHTML = '<option value="">Choose a skill...</option>' +
+            names.map(n => `<option value="${this.escapeHtml(n)}">${this.escapeHtml(n)}</option>`).join('');
+        } catch (e) {
+          console.warn('Curriculum skills unavailable, using the built-in list:', e);
+          this._loadSkillsForSubjectLegacy();
+        }
+      }
+
+      // The old hand-kept list: only a fallback now, for when the curriculum
+      // cannot be read.
+      _loadSkillsForSubjectLegacy() {
         const subject = document.getElementById('skill-subject').value;
         const skillSelect = document.getElementById('skill-name');
 
