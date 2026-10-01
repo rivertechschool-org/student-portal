@@ -7,6 +7,8 @@
     <link rel="icon" href="/favicon.ico?v=2">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- GAME_SESSION_SUMMARY reporter: homework progress for the portal -->
+    <script src="../shared/game-session.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Roboto+Slab:wght@400;700&family=Orbitron:wght@700&display=swap" rel="stylesheet">
     <style>
         html, body {
@@ -201,6 +203,26 @@
         let enemies = [], turrets = [], projectiles = [], bombs = [], explosions = [];
         let decorations = []; // For cosmetic elements
         let gameOver = false;
+
+        // --- GAME_SESSION_SUMMARY (shared/game-session.js) ---
+        // The learning in this game is the time puzzle that has to be solved
+        // before each weapon is placed, so the session score is puzzle
+        // accuracy: puzzles answered right / puzzle answers submitted, 0-100.
+        // Survival time is not the score - it rewards tower placement, not
+        // telling the time. Null when no puzzle was attempted in the run.
+        // One session = one run, resetGame() to game over (or Restart from pause).
+        let puzzleAttempts = 0, puzzleCorrect = 0;
+        let runActive = false;   // false on the start screen, so no empty report on first Start
+        const sessionSummary = window.GameSessionReporter.create('clockwork-defense', { subject: 'Math' });
+        function reportRunSummary() {
+            if (!runActive) return;
+            runActive = false;
+            sessionSummary.report({
+                score: puzzleAttempts ? (puzzleCorrect / puzzleAttempts) * 100 : null,
+                correct: puzzleCorrect,
+                total: puzzleAttempts
+            });
+        }
         let mouse = { x: 0, y: 0 };
         let placingWeaponConfig = null;
         let spawnTimer = 0;
@@ -431,8 +453,11 @@
         function handleExplosions(delta) { for (let i = explosions.length - 1; i >= 0; i--) { const exp = explosions[i]; exp.update(delta); if (exp.life <= 0) { explosions.splice(i, 1); } else { exp.draw(); } } }
         function pauseGame() { if (gameState !== 'playing') return; gameState = 'paused'; pauseModal.classList.remove('hidden'); }
         function resumeGame() { if (gameState !== 'paused') return; gameState = 'playing'; pauseModal.classList.add('hidden'); lastTime = performance.now(); }
-        function endGame() { gameOver = true; gameState = 'gameover'; finalTimeSurvivedDisplay.textContent = Math.floor(totalGameTime); gameOverModal.classList.remove('hidden'); }
-        function resetGame() { gold = 100; totalGameTime = 0; towerHealth = TOWER_HEALTH_MAX; enemies = []; turrets = []; projectiles = []; bombs = []; explosions = []; gameOver = false; placingWeaponConfig = null; spawnTimer = 0; goldDisplay.textContent = gold; gameOverModal.classList.add('hidden'); pauseModal.classList.add('hidden'); definePath(); lastTime = performance.now(); }
+        function endGame() { gameOver = true; gameState = 'gameover'; reportRunSummary(); finalTimeSurvivedDisplay.textContent = Math.floor(totalGameTime); gameOverModal.classList.remove('hidden'); }
+        // A reset starts a new run; restarting from the pause menu abandons the
+        // old one, which still counts as a session (report() is a no-op if the
+        // run already ended at game over).
+        function resetGame() { reportRunSummary(); puzzleAttempts = 0; puzzleCorrect = 0; sessionSummary.begin(); runActive = true; gold = 100; totalGameTime = 0; towerHealth = TOWER_HEALTH_MAX; enemies = []; turrets = []; projectiles = []; bombs = []; explosions = []; gameOver = false; placingWeaponConfig = null; spawnTimer = 0; goldDisplay.textContent = gold; gameOverModal.classList.add('hidden'); pauseModal.classList.add('hidden'); definePath(); lastTime = performance.now(); }
 
         // --- MAIN GAME LOOP ---
         let lastTime = 0;
@@ -481,7 +506,7 @@
         buildBtn.addEventListener('click', () => { if (gameState !== 'playing') return; openBuildPuzzle(); });
         restartBtn.addEventListener('click', () => { gameState = 'playing'; resetGame(); });
         cancelPuzzleBtn.addEventListener('click', () => puzzleModal.classList.add('hidden'));
-        confirmPuzzleBtn.addEventListener('click', () => { let success = false; let solvedHour, solvedMinute; if (activePuzzleType === 'digital-to-analog') { let targetHour = puzzleTargetTime.hour; if (targetHour === 12) targetHour = 0; const targetTotalMinutes = targetHour * 60 + puzzleTargetTime.minute; const userTotalMinutes = puzzleTimeInMinutes % 720; let diff = Math.abs(targetTotalMinutes - userTotalMinutes); if (diff > 360) diff = 720 - diff; if (diff <= 5) { success = true; solvedMinute = Math.round(userTotalMinutes % 60); solvedHour = Math.floor(userTotalMinutes / 60); if (solvedHour === 0) solvedHour = 12; } } else { const rawInput = digitalTimeInput.value.replace(':', '').trim(); if (/^\d{3,4}$/.test(rawInput)) { const paddedInput = rawInput.padStart(4, '0'); const userHour = parseInt(paddedInput.slice(0, 2)); const userMinute = parseInt(paddedInput.slice(2, 4)); if (userHour === puzzleTargetTime.hour && userMinute === puzzleTargetTime.minute) { success = true; solvedHour = userHour; solvedMinute = userMinute; } } } if (success) { const minuteAngle = (solvedMinute / 60) * Math.PI * 2; const hourWithFraction = solvedHour % 12 + solvedMinute / 60; const hourAngle = (hourWithFraction / 12) * Math.PI * 2; placingWeaponConfig = { hour: solvedHour, minute: solvedMinute, hourAngle: hourAngle, minuteAngle: minuteAngle, duration: solvedHour + solvedMinute / 60 }; puzzleModal.classList.add('hidden'); canvas.classList.add('placing-weapon'); } else { puzzleErrorMessage.textContent = 'Incorrect. Try again.'; } });
+        confirmPuzzleBtn.addEventListener('click', () => { let success = false; let solvedHour, solvedMinute; if (activePuzzleType === 'digital-to-analog') { let targetHour = puzzleTargetTime.hour; if (targetHour === 12) targetHour = 0; const targetTotalMinutes = targetHour * 60 + puzzleTargetTime.minute; const userTotalMinutes = puzzleTimeInMinutes % 720; let diff = Math.abs(targetTotalMinutes - userTotalMinutes); if (diff > 360) diff = 720 - diff; if (diff <= 5) { success = true; solvedMinute = Math.round(userTotalMinutes % 60); solvedHour = Math.floor(userTotalMinutes / 60); if (solvedHour === 0) solvedHour = 12; } } else { const rawInput = digitalTimeInput.value.replace(':', '').trim(); if (/^\d{3,4}$/.test(rawInput)) { const paddedInput = rawInput.padStart(4, '0'); const userHour = parseInt(paddedInput.slice(0, 2)); const userMinute = parseInt(paddedInput.slice(2, 4)); if (userHour === puzzleTargetTime.hour && userMinute === puzzleTargetTime.minute) { success = true; solvedHour = userHour; solvedMinute = userMinute; } } } puzzleAttempts++; if (success) { puzzleCorrect++; const minuteAngle = (solvedMinute / 60) * Math.PI * 2; const hourWithFraction = solvedHour % 12 + solvedMinute / 60; const hourAngle = (hourWithFraction / 12) * Math.PI * 2; placingWeaponConfig = { hour: solvedHour, minute: solvedMinute, hourAngle: hourAngle, minuteAngle: minuteAngle, duration: solvedHour + solvedMinute / 60 }; puzzleModal.classList.add('hidden'); canvas.classList.add('placing-weapon'); } else { puzzleErrorMessage.textContent = 'Incorrect. Try again.'; } });
         puzzleCanvas.addEventListener('pointerdown', (e) => { if (activePuzzleType !== 'digital-to-analog') return; isDraggingTime = true; const pos = getCanvasMousePos(e, puzzleCanvas); const dx = pos.x - puzzleCanvas.width / 2; const dy = pos.y - puzzleCanvas.height / 2; lastDragAngle = Math.atan2(dx, -dy); e.target.setPointerCapture(e.pointerId); });
         window.addEventListener('pointermove', (e) => { if (isDraggingTime) handleTimeDrag(e); if (placingWeaponConfig) mouse = getCanvasMousePos(e); });
         window.addEventListener('pointerup', (e) => { if(isDraggingTime) { isDraggingTime = false; try { e.target.releasePointerCapture(e.pointerId); } catch(err) {} } });
