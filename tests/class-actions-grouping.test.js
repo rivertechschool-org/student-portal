@@ -90,12 +90,14 @@ const KEPT = [
   ['Resources', "app.openDriveFolder('class_resources',"],
   ['Class Notes', 'app.showClassNotes('],
   ['Award RTC', 'app.showClassRTCAward('],
+  ['Progress', 'app.showClassProgress('],
 ];
 for (const [label, call] of KEPT) ok(`${label} still in the grid`, grid.includes(call));
 
-// Nine tiles for a teacher, not thirteen.
+// Nine tiles for a teacher after the regrouping, plus 📈 Progress (2026-10-01):
+// a class-level screen of its own, not something done inside another tile.
 const teacherTiles = (teacherTilesSlice.match(/<button class="btn btn-(primary|secondary)"/g) || []).length;
-check(`the teacher grid is down from thirteen tiles to nine`, teacherTiles, 9);
+check(`the teacher grid is the regrouped nine plus Progress`, teacherTiles, 10);
 
 // ---- the moves did not break the people who never had these ------------
 console.log('\n== students and parents are unaffected ==\n');
