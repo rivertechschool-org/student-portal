@@ -35,6 +35,29 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-01 — Jordan's Claude
+**Student progress is now trustworthy, and teachers can see it.** An audit found progress
+records that could not be relied on: roster-created students' practice was silently lost,
+"mastered" was written without evidence (belt-test backfill, skill-tree clicks, Recall
+Trials, a rule that raised mastery even on wrong answers), one student's Math Dojo
+progress could land in another's account on a shared Chromebook, and game assignments
+never completed. All fixed, mostly in the backend repo (see its migrations dated today)
+plus the games, the student site and the portal.
+- **Teachers:** 📈 Progress on every class — students table (last active, this week's
+  practice, mastered / stuck / overdue), a skills grid, and 🎮 Assignments with per-student
+  results for game and skill-mastery work. Student Hub shows every subject, how each skill
+  was reached and its history. Roster has last active + a Student Hub button.
+- **Riven** answers "what is X stuck on in maths", "who hasn't practised this week",
+  "who hasn't finished the Mathletics assignment", and the briefing lists inactive / stuck
+  students and overdue game work. RIVEN_BUILD 2026-10-01·a.
+- **Games** all send one session summary (`shared/game-session.js`); the portal times
+  assignment play itself. Math Dojo and other games keep local progress per student.
+- Berean Hall was failing to load on main (missing semicolon); fixed.
+**Needs:** nothing to apply. Harnesses to re-run after changes here:
+`debug-tools/progress-journeys.py`, `debug-tools/class-progress-journeys.py`,
+`debug-tools/riven-practice-journey.py` (Python Playwright), plus `tests/progress-*.test.js`,
+`tests/class-progress.test.js`, `tests/riven-practice.test.js`.
+
 ## 2026-09-30 — Jordan's Claude
 **The emergency roll call now asks only for children who attend that day.** It used to
 read the "attends Monday..Friday" checkboxes on student profiles, and every active
