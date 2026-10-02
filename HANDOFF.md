@@ -35,6 +35,23 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-02 — Jordan's Claude
+**Students (and parents) can see how they're doing and what to do next.** The student
+site's Home now shows **Do this next** (overdue work, due soon, assigned practice, stuck
+and fading skills, each with one button), My classes with current grades ("No grades yet"
+instead of 0.0), practice this week vs last for every subject, skills, attendance this
+quarter and a plain-words "How it works". The portal home has the same Do this next card;
+parents get a **Skills & practice** section per child. Fixed along the way: due-soon labels
+hidden on unsubmitted work, game assignments' minutes goal missing from the list, finished
+practice vanishing (now "Finished recently"), GPA/strikes cards using the wrong student id,
+email opt-out silencing in-app notices, students never seeing "Submitted late", and one skill
+vocabulary everywhere (Locked / Ready to start / In progress / Mastered). The dead root
+Grades tab is gone. Portal links: `/portal/?go=assignment&class=&id=`, `?go=homework&id=`,
+`?go=grades&class=`. The daily due-soon reminder now covers game/skill assignments and shows
+times in school time.
+**Needs:** nothing. Journeys: `debug-tools/student-home-journey.py`,
+`debug-tools/student-portal-journey.py`.
+
 ## 2026-10-01 — Jordan's Claude
 **Student progress is now trustworthy, and teachers can see it.** An audit found progress
 records that could not be relied on: roster-created students' practice was silently lost,
