@@ -24484,7 +24484,10 @@ Students you had withdrawn stay withdrawn.`)) {
             .from('homework_assignments')
             .select('*, classes(name, subject)')
             .eq('student_id', userId)
-            .in('status', ['assigned', 'in_progress'])
+            // 'overdue' too: it is still work to do, and rt_student_overview
+            // counts it as open. Leaving it out made late practice vanish from
+            // the one list that tells a student to do it.
+            .in('status', ['assigned', 'in_progress', 'overdue'])
             .order('due_date', { ascending: true }));
 
           if (error) throw error;
@@ -24495,7 +24498,132 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
-      renderGameHomework(homework) {
+      // Practice finished in the last 30 days, newest first. A completed
+      // assignment used to just disappear from Home, so a student who had
+      // done it could not see that it had counted, or what they scored.
+      async loadFinishedHomework() {
+        try {
+          const since = new Date(Date.now() - 30 * 86400000).toISOString();
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('homework_assignments')
+            .select('*, classes(name, subject)')
+            .eq('student_id', this.userInfo.profile.id)
+            .eq('status', 'completed')
+            .gte('completed_at', since)
+            .order('completed_at', { ascending: false })
+            .limit(10));
+          if (error) throw error;
+          return data || [];
+        } catch (error) {
+          console.error('Error loading finished homework:', error);
+          return [];
+        }
+      }
+
+      // Display names for the game ids a practice assignment can carry.
+      _homeworkGameName(gameId) {
+        const gameNames = {
+          'mathspire': 'Mathspire',
+          'mathletics': 'Mathletics',
+          'math-dojo': 'Math Dojo',
+          'english-lyceum': 'English Lyceum',
+          'science-lab': 'Science Lab',
+          'social-studies': 'Chronicle Hall',
+          'art-studio': 'Art Studio',
+          'life-skills': 'Life Compass',
+          'bible-study': 'Berean Hall',
+          'practice-pilot': 'Practice Pilot',
+          'clockwork-defense': 'Clockwork Defense',
+          'dimension-shift': 'Dimension Shift',
+          'wasteland-adventure': 'Wasteland Adventure'
+        };
+        return gameNames[gameId] || gameId || 'the game';
+      }
+
+      // Subjects as the database stores them -> the words a student or a
+      // parent uses. (_progressSubjectLabel is the teacher-facing version and
+      // names the game too, e.g. "Art (Art Studio)".)
+      _friendlySubject(subject) {
+        const NAMES = {
+          Math: 'Math', Reading: 'English', Language: 'English', English: 'English',
+          Science: 'Science', Social: 'Social Studies', Creative: 'Art', Art: 'Art',
+          LifeSkills: 'Life Skills', Bible: 'Bible', Programming: 'Programming',
+          Technology: 'Programming', Robotics: 'Robotics', Physical: 'PE'
+        };
+        if (!subject) return '';
+        return NAMES[subject] || String(subject);
+      }
+
+      // The full goal of a practice assignment AND how far along it is, in
+      // one line. The list used to say "Score 70%+" and nothing else: the
+      // play-time half of the goal was invisible until the game was open,
+      // and so was any progress already made.
+      //
+      // Takes either a homework_assignments row (target_mastery_score) or an
+      // rt_student_overview practice row (target, current_mastery).
+      //   game:  "Best 55% of 70% · 6 of 10 minutes"
+      //   skill: "Fractions: now 45% of 80%"
+      _practiceGoalText(hw, currentMastery) {
+        if (!hw) return '';
+        const isGame = (hw.assignment_type || hw.type) === 'game';
+        if (isGame) {
+          const min = hw.min_score ?? 70;
+          const mins = hw.min_play_time ?? 10;
+          const played = Math.floor((Number(hw.play_seconds) || 0) / 60);
+          const best = hw.best_score;
+          const score = (best === null || best === undefined)
+            ? `No score yet (goal ${min}%)`
+            : `Best ${best}% of ${min}%${best >= min ? ' ✓' : ''}`;
+          const time = `${Math.min(played, mins)} of ${mins} minutes${played >= mins ? ' ✓' : ''}`;
+          return `${score} · ${time}`;
+        }
+        const target = hw.target ?? hw.target_mastery_score ?? 80;
+        const cur = currentMastery ?? hw.current_mastery;
+        const skill = hw.skill_name || 'This skill';
+        if (cur === null || cur === undefined) return `${skill}: not started (goal ${target}%)`;
+        return `${skill}: now ${cur}% of ${target}%${cur >= target ? ' ✓' : ''}`;
+      }
+
+      // One "Finished recently" line: what it was and how it went.
+      _finishedPracticeText(hw) {
+        const isGame = (hw.assignment_type || hw.type) === 'game';
+        const parts = [];
+        if (hw.final_score !== null && hw.final_score !== undefined) {
+          parts.push(isGame ? `Scored ${hw.final_score}%` : `Reached ${hw.final_score}%`);
+        }
+        const mins = Math.round((Number(hw.play_seconds) || 0) / 60);
+        if (mins > 0) parts.push(`${mins} min played`);
+        if (hw.completed_at) {
+          const d = new Date(hw.completed_at);
+          if (!isNaN(d)) parts.push(`finished ${d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}`);
+        }
+        return parts.join(' · ');
+      }
+
+      renderGameHomework(homework, finished = [], overview = null) {
+        finished = finished || [];
+        // Current mastery for skill items comes from rt_student_overview,
+        // which matches skills across subject spellings (Reading/Language,
+        // Creative/Art) the way a plain query here could not.
+        const mastery = {};
+        (overview?.practice || []).forEach(p => { mastery[p.id] = p.current_mastery; });
+
+        const finishedHtml = finished.length === 0 ? '' : `
+          <div class="card" style="margin-top: 10px;">
+            <h4 style="margin: 0 0 8px 0;">✅ Finished recently</h4>
+            <div class="list">
+              ${finished.map(hw => `
+                <div class="list-item" style="border-left: 4px solid var(--accent-2); padding-left: 16px;">
+                  <div class="list-item-content">
+                    <div class="list-item-title">${(hw.assignment_type || hw.type) === 'game' ? '🎮' : '🎯'} ${this.escapeHtml(hw.title || '')}</div>
+                    <div class="list-item-meta">${this.escapeHtml(this._finishedPracticeText(hw))}</div>
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          </div>
+        `;
+
         if (!homework || homework.length === 0) {
           return `
             <div class="card" style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);">
@@ -24506,20 +24634,22 @@ Students you had withdrawn stay withdrawn.`)) {
                 <p style="opacity: 0.9;">Check back later for games and skill challenges.</p>
               </div>
             </div>
+            ${finishedHtml}
           `;
         }
 
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-
         const homeworkItems = homework.map(hw => {
-          const dueDate = new Date(hw.due_date);
-          const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
+          const dueDate = hw.due_date ? new Date(hw.due_date) : null;
+          // Calendar days (see _calendarDaysUntil): due tonight is DUE TODAY.
+          // No due date means no urgency, rather than "OVERDUE since 1970".
+          const daysUntilDue = dueDate ? this._calendarDaysUntil(dueDate) : null;
 
           let urgencyColor = 'var(--accent)';
-          let urgencyText = `${daysUntilDue} days`;
+          let urgencyText = daysUntilDue === null ? 'no due date' : `${daysUntilDue} days`;
 
-          if (daysUntilDue <= 0) {
+          if (daysUntilDue === null) {
+            // keep the defaults
+          } else if (daysUntilDue <= 0 || hw.status === 'overdue') {
             urgencyColor = 'var(--danger)';
             urgencyText = daysUntilDue === 0 ? 'DUE TODAY' : 'OVERDUE';
           } else if (daysUntilDue === 1) {
@@ -24533,41 +24663,31 @@ Students you had withdrawn stay withdrawn.`)) {
           const icon = isGame ? '🎮' : '🎯';
           const typeLabel = isGame ? 'Game Practice' : 'Skill Mastery';
 
-          const gameNames = {
-            'mathspire': 'Mathspire',
-            'mathletics': 'Mathletics',
-            'math-dojo': 'Math Dojo',
-            'english-lyceum': 'English Lyceum',
-            'science-lab': 'Science Lab',
-            'social-studies': 'Chronicle Hall',
-            'art-studio': 'Art Studio',
-            'life-skills': 'Life Compass',
-            'bible-study': 'Berean Hall',
-            'practice-pilot': 'Practice Pilot',
-            'clockwork-defense': 'Clockwork Defense',
-            'dimension-shift': 'Dimension Shift',
-            'wasteland-adventure': 'Wasteland Adventure'
-          };
-
+          // What to do, then - on its own line - the whole goal and how far
+          // along it is ("Best 55% of 70% · 6 of 10 minutes").
           const subtitle = isGame
-            ? `Play ${gameNames[hw.game_id] || hw.game_id} • Score ${hw.min_score || 70}%+`
-            : `Master ${hw.skill_name} • ${hw.target_mastery_score || 80}% mastery`;
+            ? `Play ${this.escapeHtml(this._homeworkGameName(hw.game_id))}`
+            : `Master ${this.escapeHtml(hw.skill_name || '')}`;
+          const progress = this._practiceGoalText(hw, mastery[hw.id]);
 
           return `
             <div class="list-item" style="border-left: 4px solid ${urgencyColor}; padding-left: 16px;">
               <div class="list-item-content">
-                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px; flex-wrap: wrap;">
                   <span style="font-size: 20px;">${icon}</span>
-                  <div class="list-item-title" style="font-weight: 600;">${hw.title}</div>
+                  <div class="list-item-title" style="font-weight: 600;">${this.escapeHtml(hw.title || '')}</div>
                   <span style="background: ${isGame ? 'var(--accent)' : '#d4af37'}; color: ${isGame ? 'white' : 'black'}; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">
                     ${typeLabel}
                   </span>
                 </div>
                 <div class="list-item-meta">
-                  ${hw.classes?.name ? `<span style="color: var(--accent);">${hw.classes.name}</span> • ` : ''}
-                  ${subtitle} •
-                  Due: ${dueDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                  ${hw.classes?.name ? `<span style="color: var(--accent);">${this.escapeHtml(hw.classes.name)}</span> • ` : ''}
+                  ${subtitle}
+                  ${dueDate ? `• Due: ${dueDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : ''}
                   <span style="color: ${urgencyColor}; font-weight: 600; margin-left: 10px;">(${urgencyText})</span>
+                </div>
+                <div class="list-item-meta homework-progress-line" style="margin-top: 4px; font-weight: 600;">
+                  ${this.escapeHtml(progress)}
                 </div>
               </div>
               <button class="btn btn-primary small" onclick="app.launchHomeworkAssignment('${hw.id}')">
@@ -24589,6 +24709,7 @@ Students you had withdrawn stay withdrawn.`)) {
               ${homeworkItems}
             </div>
           </div>
+          ${finishedHtml}
         `;
       }
 
