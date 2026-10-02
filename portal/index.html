@@ -20363,7 +20363,10 @@
               <h3 style="margin-bottom: 10px;">📊 Grades for ${this.escapeHtml(studentName)}</h3>
               <p style="color: var(--muted); margin-bottom: 15px;">
                 ${this.escapeHtml(classData?.name || 'Class')} •
-                ${enrollment && enrollment.class_grade != null ? `Overall: ${enrollment.class_grade}%` : 'No overall grade'}
+                ${/* "Overall: 0%" read as failing for a student with nothing
+                      graded yet; the grade only means something with work under it. */''}
+                ${enrollment && enrollment.class_grade != null && (submissions || []).some(g => g.status === 'graded' || g.points_earned != null || g.grade)
+                  ? `Overall: ${enrollment.class_grade}%` : 'No grades yet'}
               </p>
 
               <div class="list" style="max-height: 60vh; overflow-y: auto;">
@@ -22377,10 +22380,15 @@ Students you had withdrawn stay withdrawn.`)) {
                     statusColor = 'var(--danger)';
                   }
 
+                  // Parents see "Submitted late" as students do: the same rule
+                  // (_submittedLate), so the two views cannot disagree.
+                  const lateChip = (isGraded || isSubmitted) && this._submittedLate(submission, assignment)
+                    ? ' ' + this._lateBadge() : '';
+
                   return `
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
                       <span style="font-weight: 500;">${child.first_name}</span>
-                      <span style="color: ${statusColor}; font-size: 13px;">${statusText}</span>
+                      <span style="color: ${statusColor}; font-size: 13px;">${statusText}${lateChip}</span>
                     </div>
                   `;
                 }).join('');
@@ -74576,6 +74584,15 @@ Students you had withdrawn stay withdrawn.`)) {
           const isOverridden = enrollment.class_grade_override || false;
           const notes = enrollment.teacher_notes || '';
 
+          // Nothing graded yet: the system grade is "0.0" (an F) only because
+          // there is nothing to average, and "Use This" would save that F as
+          // the final grade. Show "No grades yet" instead, blank the boxes
+          // (still typeable), and hide "Use This". A grade a teacher set, or a
+          // participation grade, still shows.
+          const noAcademicWork = !academicOverride
+            && (enrollment.assignment_count === 0 || enrollment.academic_grade == null);
+          const noGradeYet = noAcademicWork && !isOverridden && !participationGrade;
+
           // Build tooltip showing calculation details
           const dist = enrollment.grade_distribution || {};
           const distText = Object.entries(dist).map(([k, v]) => `${k}: ${v}`).join(', ') || 'No data';
@@ -74602,8 +74619,8 @@ Students you had withdrawn stay withdrawn.`)) {
                       class="academic-grade-input"
                       data-enrollment-id="${enrollment.id}"
                       data-field="academic_grade"
-                      value="${academicGrade}"
-                      placeholder="0-100"
+                      value="${noAcademicWork ? '' : academicGrade}"
+                      placeholder="${noAcademicWork ? '—' : '0-100'}"
                       min="0"
                       max="100"
                       step="0.1"
@@ -74619,8 +74636,8 @@ Students you had withdrawn stay withdrawn.`)) {
                       ${['', 'A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'C-', 'D+', 'D', 'D-', 'F'].map(l => `<option value="${l}" ${(academicOverride && l === academicLetter) ? 'selected' : ''}>${l || 'A–F'}</option>`).join('')}
                     </select>
                   </div>
-                  <span class="academic-grade-letter" style="font-weight: 700; font-size: 13px; color: var(--accent);">${academicLetter}</span>
-                  <small class="academic-status" style="color: var(--muted-color); font-size: 10px;">${academicOverride ? 'TEACHER SET' : 'SYSTEM (avg)'}</small>
+                  <span class="academic-grade-letter" style="font-weight: 700; font-size: 13px; color: var(--accent);">${noAcademicWork ? '—' : academicLetter}</span>
+                  <small class="academic-status" style="color: var(--muted-color); font-size: 10px;">${academicOverride ? 'TEACHER SET' : noAcademicWork ? 'NO GRADED WORK YET' : 'SYSTEM (avg)'}</small>
                   <button type="button" class="academic-reset-btn" onclick="teacherGrades.clearAcademicOverride('${enrollment.id}')" title="Revert to the system-calculated academic grade"
                     style="display: ${academicOverride ? 'inline-block' : 'none'}; padding: 1px 6px; font-size: 10px; background: rgba(106, 169, 255, 0.15); border: 1px solid rgba(106, 169, 255, 0.4); border-radius: 4px; color: var(--accent); cursor: pointer;">↺ system</button>
                 </div>
@@ -74645,10 +74662,10 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div style="position: relative; display: inline-block;">
                   <div title="${tooltipText}"
                        style="display: inline-block; padding: 6px 10px; background: rgba(180, 150, 255, 0.1); border-radius: 6px; color: #b496ff; font-weight: 600; font-size: 14px; cursor: help;">
-                    ${suggestedGrade} (${suggestedLetter})
+                    ${noGradeYet ? 'No grades yet' : `${suggestedGrade} (${suggestedLetter})`}
                   </div>
-                  <button onclick="teacherGrades.useSuggestedGrade('${enrollment.id}', ${suggestedGrade})"
-                    style="display: block; margin: 4px auto 0; padding: 2px 8px; font-size: 10px; background: rgba(180, 150, 255, 0.2); border: 1px solid rgba(180, 150, 255, 0.4); border-radius: 4px; color: #b496ff; cursor: pointer;"
+                  <button onclick="teacherGrades.useSuggestedGrade('${enrollment.id}', ${noGradeYet ? 'null' : suggestedGrade})"
+                    style="display: ${noGradeYet ? 'none' : 'block'}; margin: 4px auto 0; padding: 2px 8px; font-size: 10px; background: rgba(180, 150, 255, 0.2); border: 1px solid rgba(180, 150, 255, 0.4); border-radius: 4px; color: #b496ff; cursor: pointer;"
                     title="Click to use this suggested grade as the final grade">
                     Use This
                   </button>
@@ -74662,17 +74679,17 @@ Students you had withdrawn stay withdrawn.`)) {
                     class="final-grade-input"
                     data-enrollment-id="${enrollment.id}"
                     data-field="class_grade"
-                    value="${classGrade}"
-                    placeholder="0-100"
+                    value="${noGradeYet ? '' : classGrade}"
+                    placeholder="${noGradeYet ? '—' : '0-100'}"
                     min="0"
                     max="100"
                     step="0.1"
                     onchange="teacherGrades.handleClassGradeChange('${enrollment.id}', this.value)"
                     style="width: 80px; padding: 8px; text-align: center; background: ${isOverridden ? 'rgba(255, 159, 67, 0.15)' : 'rgba(255, 211, 106, 0.1)'}; border: 2px solid ${isOverridden ? 'rgba(255, 159, 67, 0.5)' : 'rgba(255, 211, 106, 0.3)'}; border-radius: 6px; color: var(--warning); font-weight: 700; font-size: 18px;"
                   >
-                  <span class="final-grade-letter" style="font-weight: 700; font-size: 14px; color: var(--warning);">${finalLetter}</span>
+                  <span class="final-grade-letter" style="font-weight: 700; font-size: 14px; color: var(--warning);">${noGradeYet ? '—' : finalLetter}</span>
                 </div>
-                <br><small style="color: var(--muted-color); font-size: 10px;" class="override-status">${isOverridden ? 'TEACHER SET' : 'USING SUGGESTED'}</small>
+                <br><small style="color: var(--muted-color); font-size: 10px;" class="override-status">${isOverridden ? 'TEACHER SET' : noGradeYet ? 'NO GRADED WORK YET' : 'USING SUGGESTED'}</small>
               </td>
               <td style="padding: 12px;">
                 <textarea
@@ -74714,6 +74731,8 @@ Students you had withdrawn stay withdrawn.`)) {
       }
 
       useSuggestedGrade(enrollmentId, suggestedGrade) {
+        // No suggestion (nothing graded yet): never save an F made of nothing.
+        if (suggestedGrade === null || suggestedGrade === undefined || suggestedGrade === '' || isNaN(parseFloat(suggestedGrade))) return;
         // Set the final grade input to the suggested value
         const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
         if (row) {
