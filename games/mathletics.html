@@ -354,6 +354,20 @@
             color: #0b0f14;
         }
         
+        /* The one progress measure: facts mastered in the current range. */
+        .mx-range { margin-top: 15px; }
+        .mx-range .mx-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+        .mx-range .mx-big { font-size: 1.15rem; font-weight: 700; }
+        .mx-range .progress-bar { position: relative; height: 18px; margin: 8px 0 4px; }
+        .mx-mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: rgba(255,255,255,0.55); }
+        .mx-marks { position: relative; height: 18px; font-size: 0.75rem; color: var(--muted, #9aa4b2); }
+        .mx-marks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+        .mx-next { margin-top: 6px; font-size: 0.95rem; }
+        .mx-explain { margin-top: 12px; font-size: 0.9rem; line-height: 1.5; }
+        .mx-explain summary { cursor: pointer; font-weight: 600; }
+        .mx-explain ul { margin: 8px 0 0 18px; padding: 0; }
+        .mx-live { margin: 8px 0 4px; font-size: 0.95rem; }
+        .mx-pop { color: var(--success); font-weight: 700; }
         .heatmap-fast {
             background: var(--success);
             color: #0b0f14;
@@ -481,8 +495,8 @@
                             <div class="stat-label">Current Range</div>
                         </div>
                         <div class="stat">
-                            <div class="stat-value" id="mastery-level">Bronze</div>
-                            <div class="stat-label">Mastery Level</div>
+                            <div class="stat-value" id="mastery-level">—</div>
+                            <div class="stat-label">Medal</div>
                         </div>
                         <div class="stat">
                             <div class="stat-value" id="facts-mastered">0</div>
@@ -493,6 +507,8 @@
                             <div class="stat-label">Avg Speed (sec)</div>
                         </div>
                     </div>
+                    <div id="range-progress" class="mx-range"></div>
+                    <div id="range-explain"></div>
                 </div>
                 
                 <button class="btn btn-secondary" onclick="showDetailedProgress()" style="margin-top: 15px;">
@@ -602,6 +618,8 @@
                     </div>
                 </div>
                 
+                <div id="facts-live" class="mx-live"></div>
+                <div style="font-size: 0.8rem; color: var(--muted, #9aa4b2); margin-top: 6px;">This session</div>
                 <div class="progress-bar">
                     <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
                 </div>
@@ -837,6 +855,14 @@
                 document.getElementById('time-limit').value = this.studentData.time_limit || 240;
             }
             
+            // mathletics_progress is keyed by the LOGIN id (its foreign key is
+            // auth.users and its policy compares auth.uid()). The profile id
+            // differs for roster-created students, and saving under it failed,
+            // so their progress never stuck.
+            _progressUserId() {
+                return this.currentUser?.user?.id || this.currentUser?.profile?.id;
+            }
+
             async loadStudentData() {
                 if (!this.supabase || !this.currentUser?.profile?.id) {
                     console.log('Loading demo student data');
@@ -847,7 +873,7 @@
                     const { data, error } = await this.supabase
                         .from('mathletics_progress')
                         .select('*')
-                        .eq('user_id', this.currentUser.profile.id)
+                        .eq('user_id', this._progressUserId())
                         .single();
                     
                     if (data && !error) {
@@ -869,7 +895,7 @@
                 
                 try {
                     const dataToSave = {
-                        user_id: this.currentUser.profile.id,
+                        user_id: this._progressUserId(),
                         ...this.studentData,
                         updated_at: new Date().toISOString()
                     };
@@ -888,12 +914,11 @@
             updateProgressOverview() {
                 document.getElementById('current-range').textContent = 
                     `${this.studentData.current_range.min}-${this.studentData.current_range.max}`;
-                document.getElementById('mastery-level').textContent = this.studentData.mastery_level;
-                const masteredCount = this.countMasteredFacts();
-                this.studentData.facts_mastered = masteredCount;
-                const { min, max } = this.studentData.current_range;
-                const rangeTotal = (max - min + 1) * (max - min + 1);
-                document.getElementById('facts-mastered').textContent = `${masteredCount} / ${rangeTotal}`;
+                const rp = this.rangeProgress();
+                document.getElementById('mastery-level').textContent = rp.medal === 'Getting started' ? '—' : rp.medal;
+                this.studentData.facts_mastered = rp.mastered;
+                document.getElementById('facts-mastered').textContent = `${rp.mastered} / ${rp.total}`;
+                this.renderRangeProgress();
                 document.getElementById('avg-speed').textContent = 
                     this.studentData.avg_speed ? `${this.studentData.avg_speed.toFixed(1)}s` : '--';
             }
@@ -1078,8 +1103,14 @@
                         }));
                 }
                 
-                // Combine and shuffle problems
-                const allProblems = [...baseProblems, ...spacedProblems];
+                // Facts not yet mastered come up three times as often, so the
+                // time goes where the bar can still move.
+                const weighted = [];
+                for (const bp of baseProblems) {
+                    weighted.push(bp);
+                    if (this.factState(this._factKey(bp.a, bp.b)) !== 'mastered') weighted.push(bp, bp);
+                }
+                const allProblems = [...weighted, ...spacedProblems];
                 
                 // Randomly select target number of problems
                 for (let i = 0; i < targetProblems && i < allProblems.length * 3; i++) {
@@ -1175,6 +1206,15 @@
                 // Phase 2 BKT — every problem in Mathletics tests Multiplication.
                 this.applyBkt('Multiplication', isCorrect);
 
+                // Progress: only the first try at each problem counts.
+                const idx = this.currentSession.currentProblemIndex;
+                this.currentSession.triedIndex = this.currentSession.triedIndex || new Set();
+                if (!this.currentSession.triedIndex.has(idx)) {
+                    this.currentSession.triedIndex.add(idx);
+                    const justMastered = this.recordFirstAttempt(currentProblem.a, currentProblem.b, isCorrect, timeSpent);
+                    this.renderLiveFacts(justMastered ? this._factKey(currentProblem.a, currentProblem.b) : null);
+                }
+
                 if (isCorrect) {
                     this.currentSession.correctStreak++;
                     this.currentSession.isProcessingAnswer = true; // Lock submissions
@@ -1232,6 +1272,10 @@
                     // The answers given still count toward homework, so summarise
                     // them (score = accuracy over the questions answered).
                     this.reportSessionSummary();
+                    // Facts mastered before quitting are kept: they were already
+                    // earned, and a medal or a new range may have come with them.
+                    this.applyMilestones();
+                    this.saveStudentData();
                     this.showMainMenu();
                 }
             }
@@ -1443,98 +1487,191 @@
                 this.evaluateMultiSessionMastery();
             }
             
+            // Progress is facts mastered now (see "progress: facts mastered"
+            // below), not a confidence score across sessions.
             evaluateMultiSessionMastery() {
-                const sessions = this.studentData.recent_sessions;
-                if (sessions.length < 2) {
-                    // Need at least 2 sessions to evaluate consistency
-                    return;
+                this.applyMilestones();
+            }
+
+            // ---- progress: facts mastered in the current range ----------------
+            //
+            // The old progress bar showed a hidden "confidence" score that only
+            // rose when a whole session met strict accuracy AND speed targets
+            // several sessions running (Silver: 95% at 4s a fact; Gold: 97% at
+            // 3s, three sessions out of four), fell when one did not, and was not
+            // looked at until a second session. For most students it sat near
+            // zero whatever they did. Answers were only recorded when a session
+            // ended normally, so quitting from Pause threw them away too.
+            //
+            // Now there is one measure a student can see and act on:
+            //   a FACT (7×8 and 8×7 are one fact) is MASTERED when its last two
+            //   first-try answers were right and quick (under speedGoal()).
+            //   The bar is facts mastered out of the facts in the range.
+            //   Bronze at 50%, Silver at 75%, Gold at 90% - and Gold unlocks the
+            //   next range.
+            // Every quick right answer can move it, during the session, not
+            // after. Only a FIRST try counts: the game keeps you on a problem
+            // until it is right, and getting it right on the third go is not
+            // knowing it.
+
+            // Seconds a quick answer must beat. Bigger numbers get longer.
+            speedGoal() {
+                const max = this.studentData.current_range.max;
+                return max <= 10 ? 3 : max <= 12 ? 4 : 5;
+            }
+
+            _factKey(a, b) { return a <= b ? `${a}x${b}` : `${b}x${a}`; }
+
+            _facts() {
+                if (!this.studentData.mastery_progress || typeof this.studentData.mastery_progress !== 'object') {
+                    this.studentData.mastery_progress = {};
                 }
-                
-                // Define mastery criteria (more reasonable than before)
-                const masteryLevels = {
-                    bronze: {
-                        completionRate: 0.75,  // 75% completion
-                        avgSpeed: 6.0,         // 6 seconds average
-                        accuracy: 0.92,        // 92% accuracy
-                        sessionsRequired: 2    // Must meet in 2/last 3 sessions
-                    },
-                    silver: {
-                        completionRate: 0.80,  // 80% completion  
-                        avgSpeed: 4.0,         // 4 seconds average
-                        accuracy: 0.95,        // 95% accuracy
-                        sessionsRequired: 2    // Must meet in 2/last 3 sessions
-                    },
-                    gold: {
-                        completionRate: 0.85,  // 85% completion
-                        avgSpeed: 3.0,         // 3 seconds average
-                        accuracy: 0.97,        // 97% accuracy
-                        sessionsRequired: 3    // Must meet in 3/last 4 sessions (more consistency)
-                    }
-                };
-                
-                // Evaluate each mastery level
-                Object.keys(masteryLevels).forEach(level => {
-                    const criteria = masteryLevels[level];
-                    const recentSessions = sessions.slice(-Math.max(criteria.sessionsRequired + 1, 4));
-                    
-                    const qualifyingSessions = recentSessions.filter(session =>
-                        session.completionRate >= criteria.completionRate &&
-                        session.avgSpeed <= criteria.avgSpeed &&
-                        session.accuracy >= criteria.accuracy
-                    );
-                    
-                    const meetsRequirement = qualifyingSessions.length >= criteria.sessionsRequired;
-                    
-                    // Update confidence score
-                    if (meetsRequirement) {
-                        this.studentData.mastery_confidence[level] = Math.min(100, 
-                            this.studentData.mastery_confidence[level] + 20);
-                    } else {
-                        this.studentData.mastery_confidence[level] = Math.max(0,
-                            this.studentData.mastery_confidence[level] - 5);
-                    }
-                });
-                
-                // Determine current mastery level based on confidence
-                let newMasteryLevel = this.studentData.mastery_level;
-                let shouldAdvanceRange = false;
-                
-                if (this.studentData.mastery_confidence.gold >= 80 && this.studentData.mastery_level !== 'Gold') {
-                    newMasteryLevel = 'Gold';
-                    this.studentData.mastery_level = 'Gold';
-                    shouldAdvanceRange = true;
-                } else if (this.studentData.mastery_confidence.silver >= 60 && 
-                          ['Bronze', 'None'].includes(this.studentData.mastery_level)) {
-                    newMasteryLevel = 'Silver';
-                    this.studentData.mastery_level = 'Silver';
-                } else if (this.studentData.mastery_confidence.bronze >= 40 && 
-                          this.studentData.mastery_level === 'None') {
-                    newMasteryLevel = 'Bronze';
-                    this.studentData.mastery_level = 'Bronze';
+                const mp = this.studentData.mastery_progress;
+                if (!mp.facts) {
+                    mp.facts = {};
+                    this._seedFactsFromHistory(mp.facts);
                 }
-                
-                // Advance range if achieved gold mastery with high confidence
-                if (shouldAdvanceRange && this.studentData.mastery_confidence.gold >= 80) {
-                    const currentMax = this.studentData.current_range.max;
-                    if (currentMax < 20) {
-                        this.studentData.current_range = {
-                            min: this.studentData.current_range.min,
-                            max: currentMax + 1
-                        };
-                        this.studentData.mastery_level = 'Bronze';
-                        this.studentData.time_limit = Math.min(360, this.studentData.time_limit + 30);
-                        
-                        // Reset confidence and sessions for new range
-                        this.studentData.mastery_confidence = { bronze: 0, silver: 0, gold: 0 };
-                        this.studentData.recent_sessions = [];
-                    }
+                return mp.facts;
+            }
+
+            // Students who played before this change keep credit for what their
+            // history already shows: a fact whose last two recorded answers were
+            // quick starts mastered; one with any history starts "getting there".
+            _seedFactsFromHistory(facts) {
+                const goal = this.speedGoal();
+                const hist = this.studentData.problem_history || {};
+                for (const [k, h] of Object.entries(hist)) {
+                    const m = /^(\d+)x(\d+)$/.exec(k);
+                    if (!m || !h || !Array.isArray(h.times) || !h.times.length) continue;
+                    const key = this._factKey(+m[1], +m[2]);
+                    const r = h.times.slice(-2).map(t => (t <= goal ? 1 : 0));
+                    const prev = facts[key]?.r || [];
+                    facts[key] = { r: prev.concat(r).slice(-4) };
                 }
-                
-                // Update facts mastered count (facts in current range with avg time < 2s)
-                this.studentData.facts_mastered = this.countMasteredFacts();
+            }
+
+            factsInRange() {
+                const { min, max } = this.studentData.current_range;
+                const keys = [];
+                for (let a = min; a <= max; a++) for (let b = a; b <= max; b++) keys.push(`${a}x${b}`);
+                return keys;
+            }
+
+            factState(key) {
+                const r = this._facts()[key]?.r || [];
+                if (r.length >= 2 && r[r.length - 1] === 1 && r[r.length - 2] === 1) return 'mastered';
+                return r.length ? 'learning' : 'new';
+            }
+
+            rangeProgress() {
+                const keys = this.factsInRange();
+                const mastered = keys.filter(k => this.factState(k) === 'mastered').length;
+                const learning = keys.filter(k => this.factState(k) === 'learning');
+                const pct = keys.length ? Math.round(100 * mastered / keys.length) : 0;
+                return { mastered, total: keys.length, pct, learning, medal: this.medalFor(pct) };
+            }
+
+            medalFor(pct) {
+                return pct >= 90 ? 'Gold' : pct >= 75 ? 'Silver' : pct >= 50 ? 'Bronze' : 'Getting started';
+            }
+
+            // A first try at one problem. Returns true when it just became mastered.
+            recordFirstAttempt(a, b, correct, seconds) {
+                const facts = this._facts();
+                const key = this._factKey(a, b);
+                const before = this.factState(key);
+                const quick = correct && seconds <= this.speedGoal();
+                const f = facts[key] || { r: [] };
+                f.r = (f.r || []).concat(quick ? 1 : 0).slice(-4);
+                facts[key] = f;
+                const now = this.factState(key);
+                if (now === 'mastered' && before !== 'mastered') {
+                    (this.currentSession.newlyMastered = this.currentSession.newlyMastered || []).push(key);
+                    return true;
+                }
+                return false;
+            }
+
+            // The bar, the medal milestones and what to do next.
+            rangeProgressHTML() {
+                const p = this.rangeProgress();
+                const { min, max } = this.studentData.current_range;
+                const next = p.pct < 50 ? ['Bronze', 50] : p.pct < 75 ? ['Silver', 75] : p.pct < 90 ? ['Gold', 90] : null;
+                const need = next ? Math.max(0, Math.ceil(next[1] / 100 * p.total) - p.mastered) : 0;
+                const medalTxt = p.medal === 'Getting started' ? 'Getting started' : `${p.medal} medal`;
+                return `
+                    <div class="mx-head">
+                        <span class="mx-big">${p.mastered} of ${p.total} facts mastered</span>
+                        <span>Range ${min}–${max} · <strong>${medalTxt}</strong></span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${p.pct}%"></div>
+                        <div class="mx-mark" style="left: 50%"></div>
+                        <div class="mx-mark" style="left: 75%"></div>
+                        <div class="mx-mark" style="left: 90%"></div>
+                    </div>
+                    <div class="mx-marks">
+                        <span style="left: 50%">🥉 50%</span><span style="left: 75%">🥈 75%</span><span style="left: 90%">🥇 90%</span>
+                    </div>
+                    <div class="mx-next">${next
+                        ? `Master <strong>${need} more fact${need === 1 ? '' : 's'}</strong> for ${next[0]}${next[0] === 'Gold' ? ' and the next range' : ''}.`
+                        : (max < 20 ? 'Gold! Finish a session to unlock the next range.' : 'Gold on the top range - every fact mastered. 🏆')}
+                        ${p.learning.length ? `<br><span style="color: var(--muted, #9aa4b2);">Practise next: ${p.learning.slice(0, 6).map(k => k.replace('x', ' × ')).join(', ')}</span>` : ''}
+                    </div>`;
+            }
+
+            explanationHTML() {
+                const goal = this.speedGoal();
+                return `
+                    <details class="mx-explain">
+                        <summary>How progress works</summary>
+                        <ul>
+                            <li>A <strong>fact</strong> is one times-table pair. 7 × 8 and 8 × 7 are the same fact.</li>
+                            <li>A fact is <strong>mastered</strong> when you get it right on the <strong>first try</strong>, in under <strong>${goal} seconds</strong>, <strong>twice in a row</strong>.</li>
+                            <li>A slow or wrong first try means you need two quick ones again.</li>
+                            <li>The bar fills as you master facts in your range: <strong>🥉 Bronze at 50%</strong>, <strong>🥈 Silver at 75%</strong>, <strong>🥇 Gold at 90%</strong>.</li>
+                            <li>Reach Gold and finish the session to <strong>unlock the next range</strong> (one bigger number).</li>
+                            <li>The game gives you the facts you haven't mastered more often, so every session counts.</li>
+                        </ul>
+                    </details>`;
+            }
+
+            renderRangeProgress() {
+                const el = document.getElementById('range-progress');
+                if (el) el.innerHTML = this.rangeProgressHTML();
+                const ex = document.getElementById('range-explain');
+                if (ex && !ex.innerHTML) ex.innerHTML = this.explanationHTML();
+            }
+
+            renderLiveFacts(pop) {
+                const el = document.getElementById('facts-live');
+                if (!el) return;
+                const p = this.rangeProgress();
+                el.innerHTML = `Facts mastered: <strong>${p.mastered} / ${p.total}</strong> (${p.pct}%) · ${p.medal}` +
+                    (pop ? ` <span class="mx-pop">+1 ⭐ ${pop.replace('x', ' × ')} mastered!</span>` : '');
+            }
+
+            // The medal follows the facts; Gold unlocks the next range. Run when a
+            // session ends, however it ends.
+            applyMilestones() {
+                const p = this.rangeProgress();
+                this.studentData.mastery_level = p.medal;
+                this.lastUnlock = null;
+                if (p.medal === 'Gold' && this.studentData.current_range.max < 20) {
+                    const from = { ...this.studentData.current_range };
+                    this.studentData.current_range = { min: from.min, max: from.max + 1 };
+                    this.studentData.time_limit = Math.min(360, (this.studentData.time_limit || 300) + 30);
+                    this.lastUnlock = { from, to: { ...this.studentData.current_range } };
+                    this.studentData.mastery_level = this.rangeProgress().medal;
+                }
+                this.studentData.facts_mastered = this.rangeProgress().mastered;
             }
 
             countMasteredFacts() {
+                return this.rangeProgress().mastered;
+            }
+
+            _oldCountMasteredFacts() {
                 const { min, max } = this.studentData.current_range;
                 const history = this.studentData.problem_history || {};
                 let count = 0;
@@ -1575,7 +1712,7 @@
                     </div>
                     <div class="stat">
                         <div class="stat-value mastery-${this.studentData.mastery_level.toLowerCase()}">${this.studentData.mastery_level}</div>
-                        <div class="stat-label">Current Mastery</div>
+                        <div class="stat-label">${this.lastUnlock ? `Medal in your new range (${this.lastUnlock.to.min}–${this.lastUnlock.to.max})` : 'Medal'}</div>
                     </div>
                 `;
                 
@@ -1590,45 +1727,17 @@
             }
             
             generateMasteryProgressHTML() {
-                const confidence = this.studentData.mastery_confidence || { bronze: 0, silver: 0, gold: 0 };
-                const sessions = this.studentData.recent_sessions || [];
-                
-                let progressHTML = `
+                const got = (this.currentSession.newlyMastered || []);
+                const unlock = this.lastUnlock;
+                return `
                     <div class="alert alert-info">
-                        <strong>Current Range:</strong> ${this.studentData.current_range.min}-${this.studentData.current_range.max}<br>
-                        <strong>Mastery Level:</strong> <span class="mastery-indicator mastery-${this.studentData.mastery_level.toLowerCase()}">${this.studentData.mastery_level}</span><br>
-                `;
-                
-                // Show progress towards next level
-                const currentLevel = this.studentData.mastery_level.toLowerCase();
-                const nextLevel = currentLevel === 'bronze' ? 'silver' : 
-                                currentLevel === 'silver' ? 'gold' : null;
-                
-                if (nextLevel) {
-                    const nextConfidence = confidence[nextLevel];
-                    const requirement = nextLevel === 'silver' ? 60 : 80;
-                    
-                    progressHTML += `
-                        <strong>Progress to ${nextLevel.charAt(0).toUpperCase() + nextLevel.slice(1)}:</strong> 
-                        <div class="progress-bar" style="margin: 5px 0;">
-                            <div class="progress-fill" style="width: ${nextConfidence}%"></div>
-                        </div>
-                        ${nextConfidence}% / ${requirement}% confidence
-                    `;
-                }
-                
-                if (sessions.length >= 2) {
-                    const recent = sessions.slice(-3);
-                    const trend = this.calculatePerformanceTrend(recent);
-                    
-                    progressHTML += `<br><strong>Recent Performance:</strong> ${trend}`;
-                }
-                
-                progressHTML += `</div>`;
-                
-                return progressHTML;
+                        ${unlock ? `<div style="font-size: 1.15rem; margin-bottom: 8px;">🏆 <strong>Gold!</strong> Range ${unlock.from.min}–${unlock.from.max} is done. Your new range is <strong>${unlock.to.min}–${unlock.to.max}</strong>.</div>` : ''}
+                        <div style="margin-bottom: 6px;">This session you mastered <strong>${got.length} new fact${got.length === 1 ? '' : 's'}</strong>${got.length ? ': ' + got.slice(0, 10).map(k => k.replace('x', ' × ')).join(', ') + (got.length > 10 ? '…' : '') : ''}.</div>
+                        <div class="mx-range">${this.rangeProgressHTML()}</div>
+                        ${this.explanationHTML()}
+                    </div>`;
             }
-            
+
             calculatePerformanceTrend(sessions) {
                 if (sessions.length < 2) return 'Not enough data';
                 
@@ -1730,7 +1839,15 @@
                         const key = `${a}x${b}`;
                         const history = this.studentData.problem_history[key];
                         
-                        if (history && history.times.length > 0) {
+                        const { min: rMin, max: rMax } = this.studentData.current_range;
+                        const inRange = a >= rMin && a <= rMax && b >= rMin && b <= rMax;
+
+                        // Inside the range: the same three states as the bar.
+                        if (inRange) {
+                            const st = this.factState(this._factKey(a, b));
+                            cell.classList.add(st === 'mastered' ? 'heatmap-fast' : st === 'learning' ? 'heatmap-medium' : 'heatmap-unknown');
+                            cell.title = `${a} × ${b}: ${st === 'mastered' ? 'mastered' : st === 'learning' ? 'getting there - two quick first tries in a row to master' : 'not tried yet'}`;
+                        } else if (history && history.times.length > 0) {
                             const avgTime = history.times.reduce((sum, t) => sum + t, 0) / history.times.length;
                             
                             if (avgTime < 2) {
@@ -1772,30 +1889,8 @@
                         }).length;
                     
                     masteryDiv.innerHTML = `
-                        <div style="margin: 15px 0;">
-                            <h4>Mastery Confidence</h4>
-                            <div style="margin: 10px 0;">
-                                <span class="mastery-indicator mastery-gold">Gold</span>
-                                <div class="progress-bar" style="margin: 5px 0; height: 12px;">
-                                    <div class="progress-fill" style="width: ${confidence.gold}%"></div>
-                                </div>
-                                ${confidence.gold}% (need 80% to advance)
-                            </div>
-                            <div style="margin: 10px 0;">
-                                <span class="mastery-indicator mastery-silver">Silver</span>
-                                <div class="progress-bar" style="margin: 5px 0; height: 12px;">
-                                    <div class="progress-fill" style="width: ${confidence.silver}%"></div>
-                                </div>
-                                ${confidence.silver}% (need 60% to advance)
-                            </div>
-                            <div style="margin: 10px 0;">
-                                <span class="mastery-indicator mastery-bronze">Bronze</span>
-                                <div class="progress-bar" style="margin: 5px 0; height: 12px;">
-                                    <div class="progress-fill" style="width: ${confidence.bronze}%"></div>
-                                </div>
-                                ${confidence.bronze}% (need 40% to advance)
-                            </div>
-                        </div>
+                        <div class="mx-range" style="margin: 15px 0;">${this.rangeProgressHTML()}</div>
+                        ${this.explanationHTML()}
                         <div style="margin: 15px 0;">
                             <h4>Fact Mastery</h4>
                             <div style="margin: 10px 0;">
