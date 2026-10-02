@@ -22134,6 +22134,8 @@ Students you had withdrawn stay withdrawn.`)) {
                       </div>
                       <div style="text-align: right;">
                         ${statusBadge}
+                        ${/* Late was computed for staff only; the student never saw it. */''}
+                        ${this._submittedLate(submission, assignment) ? `<div style="margin-top: 6px;">${this._lateBadge()}</div>` : ''}
                         <button class="btn btn-primary small" onclick="app.submitAssignment('${assignment.id}')" style="margin-top: 10px;">
                           ${isGraded || isExcused ? '👁️ View Grade' : (isSubmitted ? '👁️ View Submission' : '👁️ View Assignment')}
                         </button>
@@ -24316,6 +24318,42 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
+      // Whole calendar days from today to `due`, in local time: 0 = today,
+      // 1 = tomorrow, -1 = yesterday. Midnight-to-midnight, so 8am and 11pm
+      // tomorrow are both "1".
+      _calendarDaysUntil(due, now = new Date()) {
+        const d = new Date(due);
+        if (isNaN(d)) return null;
+        const a = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const b = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+        // round, not floor: a daylight-saving change makes one "day" 23 or 25h.
+        return Math.round((b - a) / 86400000);
+      }
+
+      // Has the student handed this in? The same rule the database uses for
+      // "missing" (assignment_gradebook): any submission whose status is not
+      // 'not_submitted'. Excused counts as dealt with.
+      _isHandedInStatus(status) {
+        return !!status && status !== 'not_submitted';
+      }
+
+      // Was this submission handed in after the due date? Derived, exactly as
+      // the staff side derives it (_rtSubmissions): submitted_at against
+      // due_date. There is no is_late column. Not-submitted and excused rows
+      // are never "late".
+      _submittedLate(submission, assignment) {
+        if (!submission || !assignment?.due_date || !submission.submitted_at) return false;
+        if (['not_submitted', 'excused'].includes(submission.status)) return false;
+        const due = new Date(assignment.due_date), at = new Date(submission.submitted_at);
+        if (isNaN(due) || isNaN(at)) return false;
+        return at > due;
+      }
+
+      // The small "Submitted late" chip shown on a student's own views.
+      _lateBadge() {
+        return '<span class="late-badge" style="background: var(--warning); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">Submitted late</span>';
+      }
+
       renderUpcomingAssignments(assignments) {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -24337,15 +24375,23 @@ Students you had withdrawn stay withdrawn.`)) {
       
         const assignmentItems = assignments.map(assignment => {
           const dueDate = new Date(assignment.due_date);
-          const daysUntilDue = Math.ceil((dueDate - today) / (1000 * 60 * 60 * 24));
-          
+          // Calendar days, not 24-hour blocks: work due at 11:59pm tonight is
+          // due TODAY. The old ceil((due - midnight) / 1 day) called it
+          // "Due tomorrow" for anything not due at exactly midnight.
+          const daysUntilDue = this._calendarDaysUntil(dueDate);
+
           let urgencyColor = 'var(--accent)'; // Default blue
           let urgencyText = `${daysUntilDue} days`;
           let urgencyIcon = '📅';
-          
-          // If not submitted, always use grey regardless of urgency
-          if (assignment.submission_status === 'not_submitted') {
-            urgencyColor = '#6b7280'; // Grey color
+
+          // Handed-in work reads as done; work still to do carries the
+          // urgency. This used to be the other way round - anything NOT
+          // submitted was forced grey and skipped "DUE TODAY", so exactly the
+          // work a student still had to do was the work that looked calm.
+          if (this._isHandedInStatus(assignment.submission_status)) {
+            urgencyColor = 'var(--accent-2)';
+            urgencyText = 'Handed in';
+            urgencyIcon = '✅';
           } else if (daysUntilDue === 0) {
             urgencyColor = 'var(--danger)';
             urgencyText = 'DUE TODAY';
@@ -24372,9 +24418,9 @@ Students you had withdrawn stay withdrawn.`)) {
           
           return `
             <div class="list-item" style="
-              border-left: 4px solid ${urgencyColor}; 
+              border-left: 4px solid ${urgencyColor};
               padding-left: 16px;
-              background: ${daysUntilDue === 0 ? 'rgba(255, 106, 106, 0.05)' : 'transparent'};
+              background: ${daysUntilDue === 0 && !this._isHandedInStatus(assignment.submission_status) ? 'rgba(255, 106, 106, 0.05)' : 'transparent'};
               cursor: pointer;
             " onclick="app.submitAssignment('${assignment.id}')">
               <div class="list-item-content">
@@ -25482,8 +25528,9 @@ Students you had withdrawn stay withdrawn.`)) {
                 ` : ''}
                 
                 <p style="color: var(--muted); font-size: 14px;">
-                  <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()} • 
+                  <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()} •
                   <strong>Graded:</strong> ${new Date(existingSubmission.graded_at).toLocaleDateString()}
+                  ${this._submittedLate(existingSubmission, assignment) ? ' • ' + this._lateBadge() : ''}
                 </p>
               </div>
           
@@ -25503,6 +25550,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div class="card" style="background: rgba(106, 169, 255, 0.1); border: 2px solid var(--accent); padding: 20px; margin: 15px 0;">
                   <h4 style="color: var(--accent); margin-bottom: 10px;">✓ Submitted - Awaiting Grade</h4>
                   <p style="color: var(--muted);">Your teacher will review and grade your submission soon.</p>
+                  ${this._submittedLate(existingSubmission, assignment) ? `<p style="margin-top: 8px;">${this._lateBadge()} <span style="color: var(--muted); font-size: 13px;">It arrived after the due date.</span></p>` : ''}
                 </div>
           
                 ${existingSubmission.content || existingSubmission.file_url ? `
@@ -29459,6 +29507,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div class="list-item-meta">
                       Due: ${new Date(assignment.due_date).toLocaleDateString()}
                       ${isExcused ? ' • <span style="color: var(--warning);">Excused from this assignment</span>' : ''}
+                      ${this._submittedLate(submission, assignment) ? ' • ' + this._lateBadge() : ''}
                     </div>
                   </div>
                   <div style="text-align: right;">
