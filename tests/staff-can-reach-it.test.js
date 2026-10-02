@@ -52,9 +52,12 @@ function routerCases() {
     .map(c => c.replace(/case\s+'/, '').replace(/'$/, '')));
 }
 
+// There used to be two copies of the list (arrival and back/forward). They
+// are one now - _routableSections() - which both routes call; returned as a
+// one-element array so the checks below read the same either way.
 function validSectionLists() {
-  return (html.match(/const validSections = \[[^\]]*\]/g) || [])
-    .map(l => (l.match(/'([a-z0-9-]+)'/g) || []).map(s => s.replace(/'/g, '')));
+  const m = html.match(/_routableSections\(\) \{\s*return (\[[^\]]*\]);/);
+  return m ? [(m[1].match(/'([a-z0-9-]+)'/g) || []).map(s => s.replace(/'/g, ''))] : [];
 }
 
 (async () => {
@@ -105,7 +108,10 @@ function validSectionLists() {
 
   {
     const lists = validSectionLists();
-    check('both copies of validSections agree', lists.length >= 2 && lists[0].join() === lists[1].join(), true);
+    check('one list of sections, used by both the arrival and back/forward routes',
+          lists.length === 1 && (html.match(/const validSections = this\._routableSections\(\);/g) || []).length === 2
+            && !/const validSections = \[/.test(html), true);
+    ok('  and Staff Duties is on it (it landed on Home from the student site)', (lists[0] || []).includes('staff-duties'));
     ok('  and now accept the three that were silently rejected',
        ['admin-bell-schedule', 'admin-activities', 'admin-facilities']
          .every(s => lists[0].includes(s)));

@@ -340,8 +340,10 @@ const route = html.slice(html.indexOf("          case 'teacher-terminal':"), htm
 ok('the section route sends the page home first', /this\.showSection\('home'\)/.test(route));
 ok('  then opens the widget over it', /this\.renderTeacherTerminal\(\)/.test(route));
 ok('  and stops there', /return;/.test(route));
+// One list of routable sections now (_routableSections), called by both routes.
 ok('#teacher-terminal is still a valid hash',
-  (html.match(/'teacher-terminal', 'irl-purchases'/g) || []).length === 2);
+  /_routableSections\(\) \{\s*return \[[^\]]*'teacher-terminal'/.test(html)
+    && (html.match(/const validSections = this\._routableSections\(\);/g) || []).length === 2);
 // Riven has no nav entry at all now. It is the circle, in both apps - from the
 // main app you reach it by going to the Portal, where it is already waiting.
 const destOf = (app) => PortalUI.navDestinations('teacher', app).map(i => i.label);
