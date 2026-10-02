@@ -4473,3 +4473,29 @@ player can let go to type without stopping.
 
 `debug-tools/pilot-touch-journeys.mjs` replays all of it on an emulated iPad
 plus a desktop mouse run: 15 checks, all pass; the old code fails 6.
+
+## 2026-10-02 — Math Dojo: wrong choices that gave the answer away; Mathletics feedback
+
+**Math Dojo.** "Order from shortest to longest: ruler, paperclip, book" offered
+-1, 2 and 1 beside the one choice that was a list of objects. A generator that
+returns a word answer and no options got its wrong choices from
+`generateDistractors(0)`. It now gets same-shape ones from
+`sameShapeDistractors`: other orders for a list, swapped or sign-flipped
+coordinates for a point, and nudged numbers for anything else. Two related
+things were fixed in the same option tidy-up in `generateQuestion`:
+
+- a wrong choice with the same value as the answer ("4 2/2" for 5) is dropped,
+  because picking it was a correct answer marked wrong;
+- two wrong choices with the same value (2/8 and 1/4) are dropped too.
+
+Both are skipped when the question is about form (simplest form, rounding,
+converting), where 4/12 beside 1/3 is the lesson.
+
+`node debug-tools/dojo-distractor-sweep.js` (RUNS=300 for a deep pass) checks
+every generator's multiple-choice board for all of this. Run it after touching
+a generator.
+
+**Mathletics.** The green/red feedback had not gone; it had been pushed below
+the bottom of the window by the progress lines added above it. It now sits
+under the problem, and the answer box itself flashes green or red (with a
+shake when wrong), so the result is where the student is already looking.

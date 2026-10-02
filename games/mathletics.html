@@ -219,13 +219,13 @@
         
         .game-area {
             text-align: center;
-            padding: 40px 20px;
+            padding: 16px 20px 24px;
         }
         
         .problem {
             font-size: 3rem;
             font-weight: 700;
-            margin: 30px 0;
+            margin: 14px 0 6px;
             color: var(--accent);
         }
         
@@ -239,7 +239,31 @@
             color: var(--text);
             width: 200px;
             margin: 0 auto;
+            transition: border-color .15s, box-shadow .15s, background-color .15s;
         }
+        /* The answer box itself says right or wrong. The "Correct!" line under
+           the buttons had dropped below the bottom of the game window on a
+           laptop once the progress lines were added above it, so students
+           stopped seeing any feedback at all. */
+        .answer-input.flash-correct {
+            border-color: var(--success);
+            background-color: rgba(57, 255, 136, 0.15);
+            box-shadow: 0 0 0 5px rgba(57, 255, 136, 0.35);
+        }
+        .answer-input.flash-incorrect {
+            border-color: var(--danger);
+            background-color: rgba(255, 106, 106, 0.15);
+            box-shadow: 0 0 0 5px rgba(255, 106, 106, 0.35);
+            animation: shake .3s;
+        }
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-6px); }
+            75% { transform: translateX(6px); }
+        }
+        /* Right under the problem, with its height kept, so a message
+           appearing never moves the box the student is typing in. */
+        #feedback { min-height: 1.6em; margin: 4px 0 10px; font-size: 1.2rem; font-weight: 600; }
         
         .timer {
             position: fixed;
@@ -627,12 +651,12 @@
             
             <div class="game-area">
                 <div class="problem" id="current-problem">3 × 4 = ?</div>
+                <div id="feedback" role="status" aria-live="polite"></div>
                 <input type="number" class="answer-input" id="answer-input" placeholder="?" autocomplete="off">
-                <div style="margin-top: 20px;">
+                <div style="margin-top: 16px;">
                     <button class="btn btn-success" onclick="submitAnswer()">Submit</button>
                     <button class="btn btn-danger" onclick="pauseGame()">Pause</button>
                 </div>
-                <div id="feedback" style="margin-top: 15px; font-size: 1.2rem;"></div>
             </div>
         </div>
         
@@ -1075,10 +1099,16 @@
                 // Show first problem
                 this.showNextProblem();
                 
-                // Focus on input
-                document.getElementById('answer-input').focus();
+                // Focus on input, with the problem, the feedback line and the
+                // box all on screen. A half-visible box is not scrolled by
+                // focus(), and on a short laptop screen it sat cut off.
+                const area = document.querySelector('#game-screen .game-area');
+                if (area && area.getBoundingClientRect().bottom > window.innerHeight) {
+                    area.scrollIntoView({ block: 'end' });
+                }
+                document.getElementById('answer-input').focus({ preventScroll: true });
             }
-            
+
             generateProblems(minRange, maxRange, targetProblems, spacedRepetition) {
                 const problems = [];
                 
@@ -1215,6 +1245,8 @@
                     this.renderLiveFacts(justMastered ? this._factKey(currentProblem.a, currentProblem.b) : null);
                 }
 
+                this.flashAnswer(isCorrect);
+
                 if (isCorrect) {
                     this.currentSession.correctStreak++;
                     this.currentSession.isProcessingAnswer = true; // Lock submissions
@@ -1238,6 +1270,17 @@
                 }
             }
             
+            // Green for right, red (and a shake) for wrong, on the box itself.
+            flashAnswer(isCorrect) {
+                const box = document.getElementById('answer-input');
+                if (!box) return;
+                box.classList.remove('flash-correct', 'flash-incorrect');
+                void box.offsetWidth;   // restart the animation on a repeat
+                box.classList.add(isCorrect ? 'flash-correct' : 'flash-incorrect');
+                clearTimeout(this._flashTimer);
+                this._flashTimer = setTimeout(() => box.classList.remove('flash-correct', 'flash-incorrect'), isCorrect ? 750 : 900);
+            }
+
             updateSessionStats() {
                 const completed = this.currentSession.responses.filter(r => r.correct).length;
                 const remaining = this.currentSession.targetProblems - completed;

@@ -5280,11 +5280,56 @@ function backfillOptions(answer, opts, seen, want = 4) {
             const v = parseFloat(m[0]);
             const nv = parseFloat((v + d).toFixed(4));
             if (nv === v) continue;
+            // Inside a fraction, keep the sign and never reach zero: "0/4"
+            // and "0/2" read as filler, and a zero denominator is no number.
+            const inFraction = s[m.index + m[0].length] === '/' || s[m.index - 1] === '/'
+                || /\/\s*$/.test(s.slice(0, m.index)) || /^\s*\//.test(s.slice(m.index + m[0].length));
+            if (inFraction && (nv === 0 || Math.sign(nv) !== Math.sign(v))) continue;
             tryPush(s.slice(0, m.index) + nv + s.slice(m.index + m[0].length));
         }
         if (opts.length >= want) break;
     }
     return opts;
+}
+
+// Wrong choices the same SHAPE as a non-number answer, for a generator that
+// supplied none. The old fallback offered generateDistractors(0) - so "Order
+// from shortest to longest: ruler, paperclip, book" showed -1, 2 and 1 beside
+// the one choice that was a list of objects, and the student could pick it
+// without reading the question. A list gets other orders of the same items
+// (reversed first, the classic slip); a point gets its coordinates swapped and
+// its signs flipped. Anything else returns nothing here and is topped up by
+// backfillOptions, which perturbs the numbers inside the answer.
+function sameShapeDistractors(answer) {
+    const s = String(answer).trim();
+    const out = [];
+    const add = v => { if (v !== s && !out.includes(v)) out.push(v); };
+
+    const point = s.match(/^\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)$/);
+    if (point) {
+        const [x, y] = [point[1], point[2]];
+        const neg = v => v.startsWith('-') ? v.slice(1) : (v === '0' ? '0' : '-' + v);
+        add(`(${y}, ${x})`);
+        add(`(${neg(x)}, ${y})`);
+        add(`(${x}, ${neg(y)})`);
+        add(`(${neg(y)}, ${neg(x)})`);
+        return out.slice(0, 3);
+    }
+
+    const items = s.split(/\s*,\s*/);
+    if (items.length >= 3 && items.every(Boolean)) {
+        add(items.slice().reverse().join(', '));
+        // Every other order, shuffled, until there are three.
+        const perms = [];
+        const permute = (rest, acc) => {
+            if (!rest.length) { perms.push(acc.join(', ')); return; }
+            rest.forEach((v, i) => permute(rest.filter((_, j) => j !== i), acc.concat(v)));
+        };
+        if (items.length <= 5) permute(items, []);
+        for (const p of shuffle(perms)) { if (out.length >= 3) break; add(p); }
+        return out.slice(0, 3);
+    }
+    return out;
 }
 
 // Wrap a hand-written option list whose distractor formulas can coincide with
@@ -10128,7 +10173,11 @@ const generators = {
                     explanation: `∛(−${cube}) = −${root} because (−${root})³ = −${cube}.` };
             }
             // fraction — cube-root of a perfect-cube fraction: (p/q)³ → ∛ → p/q.
-            const p = rand(1, 5), q = rand(2, 6);
+            // p !== q: ∛(64/64) asked "what is 1" with 4/4 the answer and
+            // 64/64 - also 1 - one of the wrong choices.
+            const p = rand(1, 5);
+            let q = rand(2, 6);
+            while (q === p) q = rand(2, 6);
             const num = p ** 3, den = q ** 3;
             return { subType: type, question: `What is ∛(${num}/${den})?`, answer: `${p}/${q}`, type: "procedural",
                 options: shuffle([`${p}/${q}`, `${p + 1}/${q}`, `${p}/${q + 1}`, `${num}/${den}`]).filter((v, i, a) => a.indexOf(v) === i),
@@ -40952,7 +41001,10 @@ function generateQuestion(tier, domain = null) {
         if (typeof q.answer === "number") {
             q.options = [q.answer, ...generateDistractors(q.answer)];
         } else {
-            q.options = [q.answer, ...generateDistractors(0, 3).map(d => `${d}`)];
+            // Same-shape wrong choices; whatever is still short is topped up
+            // below by perturbing the numbers inside the answer. Never numbers
+            // near zero, which beside "ruler, paperclip, book" gave it away.
+            q.options = [q.answer, ...sameShapeDistractors(q.answer)];
         }
     }
 
@@ -40964,14 +41016,37 @@ function generateQuestion(tier, domain = null) {
     //     arbitrary distractor correct.
     // Options are now keyed the way checkAnswer compares them, the answer is
     // guaranteed to be on the board, and thin numeric sets are topped back up.
+    //
+    // Same VALUE counts as the same choice too, unless the question is about
+    // the form itself (simplest form, rounding, converting). "4 2/2" offered
+    // for 3 1/2 + 1 1/2 = 5 is a right answer marked wrong; 2/8 beside 1/4,
+    // both wrong, tells the student neither can be it. Found by
+    // debug-tools/dojo-distractor-sweep.js.
     const optKey = v => String(v).trim().toLowerCase();
+    const aboutForm = /simplest|simplif|lowest|reduce|nearest|round|equivalent|as a (?:fraction|decimal|percent|mixed)|improper|unsimplified/i
+        .test(String(q.question || ''));
+    const valueOf = v => {
+        const m = String(v).trim().match(/^(-?\d+) (\d+)\/(\d+)$/);   // mixed number
+        if (m) return +m[1] + (m[1].startsWith('-') ? -1 : 1) * (+m[2] / +m[3]);
+        return answerValue(v);
+    };
+    const answerKey = optKey(q.answer);
+    const target = valueOf(q.answer);
     const seen = new Set();
+    const values = [];
     const opts = [];
     for (const o of q.options) {
         const k = optKey(o);
-        if (k !== "" && !seen.has(k)) { seen.add(k); opts.push(o); }
+        if (k === "" || seen.has(k)) continue;
+        const v = valueOf(o);
+        if (!aboutForm && k !== answerKey && Number.isFinite(v)) {
+            if (Number.isFinite(target) && Math.abs(v - target) < 1e-9) continue;
+            if (values.some(w => Math.abs(w - v) < 1e-9)) continue;
+        }
+        seen.add(k); opts.push(o);
+        if (Number.isFinite(v)) values.push(v);
     }
-    if (!seen.has(optKey(q.answer))) { seen.add(optKey(q.answer)); opts.push(q.answer); }
+    if (!seen.has(answerKey)) { seen.add(answerKey); opts.push(q.answer); }
     if (opts.length < 4) backfillOptions(q.answer, opts, seen, 4);
     // After the backfill, so a topped-up set is judged on what it finally holds.
     q.options = shuffle(varyBracketedOptions(q.answer, opts));
