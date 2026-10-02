@@ -29364,6 +29364,29 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
+      // A grade as a student or parent should read it. "No grades yet" when
+      // there is nothing under it, never "0.0":
+      //   gradedCount === 0          -> nothing graded, so no grade
+      //   value null / not a number  -> no grade
+      //   gradedCount unknown (null) -> 0 is the old COALESCE(NULL, 0) artefact
+      //                                 (see calculateStudentGPA), so no grade
+      // A real 0 with graded work under it is still shown as 0.0.
+      _studentGradeText(value, gradedCount = null) {
+        const n = (value === null || value === undefined || value === '') ? NaN : Number(value);
+        if (!Number.isFinite(n)) return 'No grades yet';
+        if (gradedCount === 0) return 'No grades yet';
+        if ((gradedCount === null || gradedCount === undefined) && n === 0) return 'No grades yet';
+        return n.toFixed(1);
+      }
+
+      // The big number on a grade card, or - for "No grades yet" - words at a
+      // size that fits the same box.
+      _gradeFigureHtml(text) {
+        return /^-?\d/.test(String(text))
+          ? this.escapeHtml(text)
+          : `<span style="font-size: 16px; font-weight: 600;">${this.escapeHtml(text)}</span>`;
+      }
+
       async viewGrades(classId) {
         this.showLoading('Loading grades...');
         try {
@@ -29463,11 +29486,8 @@ Students you had withdrawn stay withdrawn.`)) {
           const snapClass = quarterSnapshot?.class_grade;
           const snapNotes = quarterSnapshot?.teacher_notes;
 
-          const academicGrade = (snapAcademic ?? updatedEnrollment?.academic_grade)?.toFixed(1) || '0.0';
-          const participationGrade = (snapParticipation ?? updatedEnrollment?.participation_grade)?.toFixed(1) || 'Not Set';
-          const classGrade = (snapClass ?? updatedEnrollment?.class_grade)?.toFixed(1) || '0.0';
           const displayTeacherNotes = snapNotes ?? updatedEnrollment?.teacher_notes;
-      
+
           // Load assignments and submissions for detail view
           const { data: assignments } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
@@ -29476,20 +29496,25 @@ Students you had withdrawn stay withdrawn.`)) {
             .gte('due_date', currentQuarter.start_date)
             .lte('due_date', currentQuarter.end_date)
             .order('due_date', { ascending: false }));
-      
+
           let assignmentsHtml = '';
+          // How many pieces this quarter's grade rests on. Zero means there is
+          // no grade yet - which used to be drawn as a big "0.0", read by a
+          // student (and their parent) as failing the class.
+          let gradedCount = 0;
           if (assignments && assignments.length > 0) {
             const { data: submissions } = await this.supabaseQuery(() => this.auth.supabase
               .from('assignment_submissions')
               .select('*')
               .in('assignment_id', assignments.map(a => a.id))
               .eq('student_id', this.auth.studentRecordId()));
-      
+
             const submissionMap = {};
             submissions?.forEach(s => {
               submissionMap[s.assignment_id] = s;
             });
-      
+            gradedCount = (submissions || []).filter(s => s.status === 'graded').length;
+
             assignmentsHtml = assignments.map(assignment => {
               const submission = submissionMap[assignment.id];
               const isExcused = submission?.status === 'excused';
@@ -29529,6 +29554,16 @@ Students you had withdrawn stay withdrawn.`)) {
             }).join('');
           }
       
+          // A snapshot value the teacher entered stands on its own (they may
+          // grade in person); a recalculated one needs graded work under it.
+          // Unknown (null) count: only the 0 the old COALESCE bug wrote is
+          // treated as "no grade" - see calculateStudentGPA.
+          const academicGrade = this._studentGradeText(snapAcademic ?? updatedEnrollment?.academic_grade,
+            snapAcademic ? null : gradedCount);
+          const participationGrade = (snapParticipation ?? updatedEnrollment?.participation_grade)?.toFixed(1) || 'Not Set';
+          const classGrade = this._studentGradeText(snapClass ?? updatedEnrollment?.class_grade,
+            snapClass ? null : gradedCount);
+
           // Load categories for this class
           const { data: categories } = await this.supabaseQuery(() => this.auth.supabase
             .from('grade_categories')
@@ -29627,7 +29662,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <div style="text-align: center; padding: 20px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
                     <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Academic</div>
                     <div style="font-size: 42px; font-weight: 700; color: var(--accent); line-height: 1;">
-                      ${academicGrade}
+                      ${this._gradeFigureHtml(academicGrade)}
                     </div>
                     <div style="font-size: 11px; color: var(--muted); margin-top: 8px;">Assignment Average</div>
                   </div>
@@ -29643,12 +29678,17 @@ Students you had withdrawn stay withdrawn.`)) {
                   <div style="text-align: center; padding: 20px; background: rgba(255, 211, 106, 0.1); border-radius: 8px; border: 1px solid rgba(255, 211, 106, 0.2);">
                     <div style="font-size: 11px; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">Class Grade</div>
                     <div style="font-size: 42px; font-weight: 700; color: var(--warning); line-height: 1;">
-                      ${classGrade}
+                      ${this._gradeFigureHtml(classGrade)}
                     </div>
                     <div style="font-size: 11px; color: var(--muted); margin-top: 8px;">Overall Quarter Grade</div>
                   </div>
                 </div>
-                
+                ${gradedCount === 0 && classGrade === 'No grades yet' ? `
+                  <p class="no-grades-note" style="text-align: center; color: var(--muted); font-size: 13px; margin: 0;">
+                    Nothing has been graded in this class yet this quarter, so there is no grade to show.
+                  </p>
+                ` : ''}
+
                 ${displayTeacherNotes ? `
                   <div style="margin-top: 20px; padding: 15px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border-left: 3px solid var(--accent);">
                     <strong style="font-size: 12px; color: var(--accent);">📝 Teacher Notes:</strong>
@@ -30547,9 +30587,11 @@ Students you had withdrawn stay withdrawn.`)) {
               <div class="grid grid-2">
                 ${gradeData.map(enrollment => {
                   const classInfo = classMap[enrollment.class_id];
-                  const academicGrade = enrollment.academic_grade?.toFixed(1) || 'N/A';
+                  // A stored 0 here is "no data" (the old COALESCE(NULL, 0)),
+                  // not a failing grade - _studentGradeText says so.
+                  const academicGrade = this._studentGradeText(enrollment.academic_grade);
                   const participationGrade = enrollment.participation_grade?.toFixed(1) || 'Not Set';
-                  const classGrade = enrollment.class_grade?.toFixed(1) || 'N/A';
+                  const classGrade = this._studentGradeText(enrollment.class_grade);
                   
                   return `
                     <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
@@ -30559,7 +30601,7 @@ Students you had withdrawn stay withdrawn.`)) {
                       <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-top: 15px;">
                         <div style="text-align: center; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
                           <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">ACADEMIC</div>
-                          <div style="font-size: 28px; font-weight: 700;">${academicGrade}</div>
+                          <div style="font-size: 28px; font-weight: 700;">${this._gradeFigureHtml(academicGrade)}</div>
                         </div>
                         <div style="text-align: center; padding: 15px; background: rgba(0,0,0,0.2); border-radius: 8px;">
                           <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">PARTICIPATION</div>
@@ -30567,7 +30609,7 @@ Students you had withdrawn stay withdrawn.`)) {
                         </div>
                         <div style="text-align: center; padding: 15px; background: rgba(0,0,0,0.3); border-radius: 8px;">
                           <div style="font-size: 11px; opacity: 0.8; margin-bottom: 5px;">FINAL</div>
-                          <div style="font-size: 28px; font-weight: 700;">${classGrade}</div>
+                          <div style="font-size: 28px; font-weight: 700;">${this._gradeFigureHtml(classGrade)}</div>
                         </div>
                       </div>
                       
