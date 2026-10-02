@@ -24824,7 +24824,10 @@ Students you had withdrawn stay withdrawn.`)) {
             const progressPercent = Math.min(100, Math.round((currentMastery / (hw.target_mastery_score || 80)) * 100));
             const progressColor = currentMastery >= (hw.target_mastery_score || 80) ? '#4caf50' : '#d4af37';
 
-            this.showNotification(`Practice ${hw.skill_name} in the ${hw.subject} Skill Tree to achieve ${hw.target_mastery_score}% mastery!`, 'info', 5000);
+            // Remembered for the button below, which cannot carry a skill name
+            // safely inside an onclick attribute (quotes, apostrophes).
+            this._skillPracticeTarget = { subject: hw.subject, skill: hw.skill_name };
+            const practicePlace = this._skillPracticePlace(hw.subject);
 
             this.showModal('skill-practice', `🎯 ${hw.title}`, `
               <div style="text-align: center; padding: 20px;">
@@ -24847,11 +24850,20 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
                 ${prereqHtml}
                 <p style="color: var(--muted); font-size: 14px;">
-                  Practice this skill through games or skill tree activities. Your progress is tracked automatically.
+                  Practise it in ${this.escapeHtml(practicePlace.name)}. Your progress is tracked automatically.
                 </p>
-                <button class="btn btn-primary" style="margin-top: 15px;" onclick="app.closeModal('skill-practice')">
-                  Got it!
-                </button>
+                <!-- The modal used to say "practise it in the Skill Tree" and
+                     offer only "Got it!", leaving the student to find the
+                     practice on their own. This opens it. -->
+                <div style="display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 15px;">
+                  <button class="btn btn-primary" id="skill-practice-open"
+                          onclick="app.closeModal('skill-practice'); app.openSkillPractice(app._skillPracticeTarget?.subject, app._skillPracticeTarget?.skill)">
+                    ${practicePlace.icon} Practise in ${this.escapeHtml(practicePlace.name)}
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.closeModal('skill-practice')">
+                    Later
+                  </button>
+                </div>
               </div>
             `, true);
           }
@@ -24860,6 +24872,72 @@ Students you had withdrawn stay withdrawn.`)) {
           console.error('Error launching homework:', error);
           this.showNotification('Error loading assignment: ' + error.message, 'error');
         }
+      }
+
+      // Where a skill in this subject is practised. Math goes to Math Dojo,
+      // which can open straight onto one skill; the other Dojo-family games
+      // each own a subject (the same family _dojoFamilyLabel names). Subjects
+      // with no game of their own (Programming, Robotics) open the student's
+      // skill tree for that subject instead.
+      _skillPracticePlace(subject) {
+        const GAMES = {
+          Math: ['math-dojo', 'Math Dojo', '🥋'],
+          Reading: ['english-lyceum', 'English Lyceum', '✒️'], Language: ['english-lyceum', 'English Lyceum', '✒️'],
+          Science: ['science-lab', 'Science Lab', '🔬'],
+          Social: ['social-studies', 'Chronicle Hall', '🏛️'],
+          Creative: ['art-studio', 'Art Studio', '🎨'], Art: ['art-studio', 'Art Studio', '🎨'],
+          LifeSkills: ['life-skills', 'Life Compass', '🧭'],
+          Bible: ['bible-study', 'Berean Hall', '📖'],
+          Physical: ['training-log', 'Training Log', '🏃']
+        };
+        const g = GAMES[subject];
+        if (g) return { kind: 'game', game: g[0], name: g[1], icon: g[2] };
+        return { kind: 'tree', game: null, name: `your ${this._friendlySubject(subject) || subject || ''} skill tree`.replace(/\s+/g, ' '), icon: '🌳' };
+      }
+
+      // Open the practice for one skill. Used by the skill-mastery modal and
+      // by "Do this next" (stuck and fading skills have no assignment to
+      // launch, only a skill to go and practise).
+      //
+      // Not a homework launch: nothing is marked started and no clock runs.
+      // The games still report what is practised through the message
+      // listener, which is what moves skill_progress - and so the assignment.
+      openSkillPractice(subject, skill) {
+        const place = this._skillPracticePlace(subject);
+        // Profile id, not the auth uid: games key local progress by it.
+        const userId = this._progressStudentId() || '';
+
+        if (place.kind === 'tree') {
+          const url = `/SkillTreeViewer.html?subject=${encodeURIComponent(subject || '')}&userId=${encodeURIComponent(userId)}&userType=student`;
+          this.showModal('game-player', `🌳 ${this.escapeHtml(this._friendlySubject(subject) || 'Skill')} Skill Tree`, `
+            <div style="text-align: center; padding: 10px 0;">
+              ${skill ? `<p style="margin-bottom: 10px;">Find <strong>${this.escapeHtml(skill)}</strong> on the tree to practise it.</p>` : ''}
+              <iframe src="${url}" style="width: 100%; height: 70vh; border: 2px solid var(--border); border-radius: 8px;"></iframe>
+              <button class="btn btn-secondary" style="margin-top: 15px;" onclick="app.closeModal('game-player')">Close</button>
+            </div>
+          `, true);
+          return place;
+        }
+
+        // Math Dojo picks up a practice request left for it on load (the same
+        // hand-off the skill tree's "Practice in Dojo" uses), so it opens on
+        // the skill rather than the menu. The other games have no such entry
+        // point yet; they open on their own menu with the skill named above.
+        if (place.game === 'math-dojo' && skill) {
+          try {
+            localStorage.setItem('tree_practice_request', JSON.stringify({ skill, subject: 'Math', timestamp: Date.now() }));
+          } catch (_e) { /* storage blocked: Dojo just opens on its menu */ }
+        }
+
+        const url = `/games/${place.game}.html?subject=${encodeURIComponent(subject || '')}&userId=${encodeURIComponent(userId)}`;
+        this.showModal('game-player', `${place.icon} ${this.escapeHtml(place.name)}`, `
+          <div style="text-align: center; padding: 10px 0;">
+            ${skill ? `<p style="margin-bottom: 10px;">Practising <strong>${this.escapeHtml(skill)}</strong></p>` : ''}
+            <iframe src="${url}" style="width: 100%; height: 500px; border: 2px solid var(--border); border-radius: 8px;"></iframe>
+            <button class="btn btn-secondary" style="margin-top: 15px;" onclick="app.closeModal('game-player')">Close Game</button>
+          </div>
+        `, true);
+        return place;
       }
 
       async loadCurrentQuarterInfo() {
