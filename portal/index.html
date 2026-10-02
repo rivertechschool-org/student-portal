@@ -2806,7 +2806,11 @@
 
       async init() {
         console.log('🚀 Initializing Classes Portal...');
-        
+
+        // The query string as the person arrived with it, before anything
+        // below gets a chance to rewrite the URL (see handlePortalDeepLink).
+        this._arrivalSearch = window.location.search;
+
         this.auth = window.portalAuth;
         
         if (!this.auth) {
@@ -2903,6 +2907,12 @@
         } else {
           this.setupHomeContent();
         }
+
+        // A link from the student site (?go=assignment|homework|grades) opens
+        // its one thing on top of Home, now that the data it needs is loaded.
+        // From the query string captured on arrival: routing above may have
+        // already rewritten the URL.
+        this.handlePortalDeepLink(this._arrivalSearch);
 
         // Check if user needs password setup (teacher invited by admin)
         this.checkPasswordSetupRequired();
@@ -7774,6 +7784,294 @@
         }
       }
 
+      // ---- How am I doing, and what next (rt_student_overview) -------------
+      //
+      // One RPC answers it for a student (no argument = the signed-in one) and
+      // for a linked parent, a teacher or an admin passing a student id. The
+      // database decides who may ask; this side only draws it.
+      //
+      // Used by: the student's "Do this next" card on Home, and the parent's
+      // "Skills & practice" section in showChildDetails. Never throws - a
+      // failure returns null and each caller says "could not load" in place.
+      async loadStudentOverview(studentId = null) {
+        try {
+          const ov = await this._pickupRpc('rt_student_overview', { p_student_id: studentId || null });
+          if (!ov || ov.success === false) return null;
+          return ov;
+        } catch (e) {
+          console.warn('rt_student_overview failed:', e?.message || e);
+          return null;
+        }
+      }
+
+      // "due today", "due tomorrow", "due Thu, Oct 8", "was due Mon, Sep 28".
+      _dueText(dueAt) {
+        if (!dueAt) return '';
+        const d = new Date(dueAt);
+        if (isNaN(d)) return '';
+        const days = this._calendarDaysUntil(d);
+        const date = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        if (days === 0) return 'due today';
+        if (days === 1) return 'due tomorrow';
+        if (days < 0) return `was due ${date}`;
+        return `due ${date}`;
+      }
+
+      // How one entry of overview.next is shown and what its button does.
+      // `kind` is the RPC's: missing | due_soon | due_later | game | skill |
+      // stuck | fading. `parentWords` is the label a parent reads instead.
+      _nextItemView(item, practiceById = {}) {
+        const subj = this._friendlySubject(item.subject);
+        // The RPC builds stuck/fading details with the stored subject code
+        // ("Creative · 45% after 6 tries"); say it the way people do.
+        let detail = item.detail || '';
+        if (item.subject && detail.startsWith(item.subject + ' · ')) {
+          detail = subj + detail.slice(item.subject.length);
+        }
+        const practice = item.homework_id ? practiceById[item.homework_id] : null;
+        if (practice) detail = this._practiceGoalText(practice);
+        const V = {
+          missing:   { icon: '⚠️', color: 'var(--danger)',  button: '📝 Hand in',  parentWords: 'Overdue work' },
+          due_soon:  { icon: '⏰', color: 'var(--warning)', button: '📝 Open',     parentWords: 'Due soon' },
+          due_later: { icon: '📅', color: 'var(--accent)',  button: '📝 Open',     parentWords: 'Due this week' },
+          game:      { icon: '🎮', color: 'var(--accent)',  button: '🎮 Play',     parentWords: 'Practice game set by a teacher' },
+          skill:     { icon: '🎯', color: '#d4af37',        button: '📖 Practise', parentWords: 'Skill to master, set by a teacher' },
+          stuck:     { icon: '🧗', color: 'var(--warning)', button: '💪 Practise', parentWords: 'Finding this one hard' },
+          fading:    { icon: '🔁', color: 'var(--muted)',   button: '🔁 Review',   parentWords: 'Mastered, but not practised for a while' }
+        }[item.kind] || { icon: '•', color: 'var(--accent)', button: 'Open', parentWords: '' };
+        // Practice past its date says so, the way work does.
+        const due = item.due_at ? this._dueText(item.due_at) : '';
+        return { ...V, detail, due, overdue: item.kind === 'missing' || item.overdue === true };
+      }
+
+      // Do what a "Do this next" button says - through the same handlers the
+      // rest of Home uses, so a row here behaves exactly like its twin below.
+      doNextItem(index) {
+        const item = (this._nextItems || [])[index];
+        if (!item) return null;
+        switch (item.kind) {
+          case 'missing':
+          case 'due_soon':
+          case 'due_later':
+            if (item.assignment_id) this.submitAssignment(item.assignment_id);
+            return 'assignment';
+          case 'game':
+          case 'skill':
+            if (item.homework_id) this.launchHomeworkAssignment(item.homework_id);
+            return 'homework';
+          case 'stuck':
+          case 'fading':
+            this.openSkillPractice(item.subject, item.skill || item.title);
+            return 'skill';
+        }
+        return null;
+      }
+
+      // "In school 41 of 44 days · 2 late · 1 absent (1 excused)". Late
+      // still counts as in school; absent is the only thing that is not.
+      _attendanceSummary(att) {
+        if (!att || !Number(att.days)) return 'No attendance recorded yet this quarter.';
+        const days = Number(att.days) || 0;
+        const absent = Number(att.absent) || 0;
+        const parts = [`In school ${days - absent} of ${days} days`];
+        if (Number(att.late)) parts.push(`${att.late} late`);
+        if (absent) parts.push(`${absent} absent${Number(att.absent_excused) ? ` (${att.absent_excused} excused)` : ''}`);
+        if (Number(att.left_early)) parts.push(`${att.left_early} left early`);
+        return parts.join(' · ');
+      }
+
+      // The student's compact "Do this next" card: the first five things to
+      // do, each with one button, and attendance this quarter underneath.
+      // Missing / Coming up / Practice stay below with the full lists; this is
+      // the short answer to "what now".
+      renderStudentNextCard(ov) {
+        if (!ov) {
+          return `
+            <div class="card" style="padding: 14px 16px;">
+              <h3 style="margin: 0 0 4px 0;">✅ Do this next</h3>
+              <p style="color: var(--muted); margin: 0; font-size: 13px;">Couldn't load this right now. Your work is still listed below.</p>
+            </div>`;
+        }
+        const all = Array.isArray(ov.next) ? ov.next : [];
+        const items = all.slice(0, 5);
+        this._nextItems = items;
+        const practiceById = {};
+        (ov.practice || []).forEach(p => { practiceById[p.id] = p; });
+
+        const rows = items.map((item, i) => {
+          const v = this._nextItemView(item, practiceById);
+          return `
+            <div class="list-item next-item" data-kind="${this.escapeHtml(item.kind)}" style="border-left: 4px solid ${v.color}; padding-left: 12px; gap: 10px;">
+              <div class="list-item-content" style="min-width: 0;">
+                <div class="list-item-title" style="font-weight: 600; overflow-wrap: anywhere;">${v.icon} ${this.escapeHtml(item.title || '')}</div>
+                <div class="list-item-meta" style="overflow-wrap: anywhere;">
+                  ${this.escapeHtml(v.detail)}${v.due ? ` · <span style="color: ${v.overdue ? 'var(--danger)' : 'inherit'}; font-weight: ${v.overdue ? '600' : 'inherit'};">${this.escapeHtml(v.due)}</span>` : ''}
+                </div>
+              </div>
+              <button class="btn btn-primary small" style="flex-shrink: 0;" onclick="app.doNextItem(${i})">${v.button}</button>
+            </div>`;
+        }).join('');
+
+        const more = all.length > items.length
+          ? `<p style="color: var(--muted); font-size: 12px; margin: 8px 0 0 0;">+ ${all.length - items.length} more after these. Do these first.</p>` : '';
+        const q = ov.quarter?.name ? ` (${this.escapeHtml(ov.quarter.name)})` : '';
+
+        return `
+          <div class="card" id="student-next-card" style="padding: 14px 16px;">
+            <h3 style="margin: 0 0 10px 0;">✅ Do this next</h3>
+            ${items.length ? `<div class="list">${rows}</div>${more}` : `
+              <p style="margin: 0; color: var(--muted);">🎉 You're all caught up. Nothing overdue, due soon or waiting to practise.</p>`}
+            <div id="student-attendance-line" style="margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 13px; color: var(--muted);">
+              🗓️ Attendance this quarter${q}: ${this.escapeHtml(this._attendanceSummary(ov.attendance))}
+            </div>
+          </div>`;
+      }
+
+      // A parent's view of one child's skills and practice, from the same
+      // overview. Plain words throughout: a parent should not need to know
+      // what "mastery", "BKT" or a subject code is to read it.
+      renderChildOverviewSection(ov, child) {
+        const name = this.escapeHtml(child?.first_name || 'Your child');
+        const head = `<h4 style="margin-bottom: 10px;">🌱 Skills &amp; practice</h4>`;
+        if (!ov) {
+          return `<div id="child-overview" style="margin-bottom: 20px;">${head}
+            <p style="color: var(--muted);">Couldn't load ${name}'s skills and practice right now. Try again in a minute.</p></div>`;
+        }
+        const e = (t) => this.escapeHtml(t);
+        const sub = (title, body) => `
+          <div style="margin: 12px 0;">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">${title}</div>
+            ${body}
+          </div>`;
+        const list = (rows, empty) => rows.length
+          ? `<div class="list">${rows.join('')}</div>`
+          : `<p style="color: var(--muted); font-size: 13px; margin: 0;">${empty}</p>`;
+        const row = (title, meta, color = 'var(--accent)') => `
+          <div class="list-item" style="border-left: 3px solid ${color}; padding-left: 10px;">
+            <div class="list-item-content" style="min-width: 0;">
+              <div class="list-item-title" style="overflow-wrap: anywhere;">${title}</div>
+              ${meta ? `<div class="list-item-meta" style="overflow-wrap: anywhere;">${meta}</div>` : ''}
+            </div>
+          </div>`;
+        const date = (d) => { const x = new Date(d); return isNaN(x) ? '' : x.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); };
+        // planned_absences dates are plain dates; read them as local days so
+        // "2026-10-12" does not show as Oct 11 west of UTC.
+        const day = (s) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || '')); return m ? date(new Date(+m[1], +m[2] - 1, +m[3])) : date(s); };
+
+        const practiceById = {};
+        (ov.practice || []).forEach(p => { practiceById[p.id] = p; });
+
+        // 1. What's next
+        const next = (ov.next || []).slice(0, 5).map(item => {
+          const v = this._nextItemView(item, practiceById);
+          return row(`${v.icon} ${e(item.title || '')}`,
+            `${e(v.parentWords)}${v.detail ? ' · ' + e(v.detail) : ''}${v.due ? ' · ' + e(v.due) : ''}`, v.color);
+        });
+
+        // 2. Practice this week against last, per subject
+        const week = (ov.week || []).filter(w => Number(w.this_sessions) || Number(w.last_sessions)).map(w => {
+          const pct = Number(w.this_questions) ? Math.round(100 * Number(w.this_correct) / Number(w.this_questions)) : null;
+          const thisWk = Number(w.this_sessions)
+            ? `${w.this_sessions} session${w.this_sessions == 1 ? '' : 's'}, ${w.this_minutes} min${Number(w.this_questions) ? `, ${w.this_questions} questions (${pct}% right)` : ''}`
+            : 'none yet';
+          const lastWk = Number(w.last_sessions)
+            ? `${w.last_sessions} session${w.last_sessions == 1 ? '' : 's'}, ${w.last_minutes} min`
+            : 'none';
+          return row(e(this._friendlySubject(w.subject)), `This week: ${e(thisWk)} · Last week: ${e(lastWk)}`);
+        });
+
+        // 3. Practice a teacher has set, with how far along it is
+        const assigned = (ov.practice || []).map(p => row(
+          `${p.type === 'game' ? '🎮' : '🎯'} ${e(p.title || '')}`,
+          `${e(this._practiceGoalText(p))}${p.due_date ? ' · ' + e(this._dueText(p.due_date)) : ''}`,
+          p.overdue ? 'var(--danger)' : 'var(--accent)'));
+
+        // 4. Finished recently
+        const done = (ov.practice_done || []).map(p => row(
+          `✅ ${e(p.title || '')}`, e(this._finishedPracticeText(p)), 'var(--accent-2)'));
+
+        // 5. Skills
+        const sk = ov.skills || {};
+        const totals = (sk.by_subject || []).map(s =>
+          `${e(this._friendlySubject(s.subject))}: ${s.mastered} mastered${Number(s.working) ? `, ${s.working} being worked on` : ''}`);
+        const stuck = (sk.stuck || []).map(s => row(`🧗 ${e(s.skill)}`,
+          `${e(this._friendlySubject(s.subject))} · ${s.mastery ?? 0}% after ${s.practices} tries. A little help at home could go a long way.`, 'var(--warning)'));
+        const fading = (sk.fading || []).map(s => row(`🔁 ${e(s.skill)}`,
+          `${e(this._friendlySubject(s.subject))} · mastered, last practised ${e(date(s.last))}. Worth a quick review.`, 'var(--muted)'));
+        const recent = (sk.recent_mastered || []).map(s => row(`⭐ ${e(s.skill)}`,
+          `${e(this._friendlySubject(s.subject))} · mastered ${e(date(s.at))}`, 'var(--accent-2)'));
+
+        // 6. Attendance and planned absences
+        const att = ov.attendance || {};
+        const recentAtt = (att.recent || []).map(r => {
+          const what = { absent: 'Absent', late: 'Late', left_early: 'Left early', late_left_early: 'Late and left early' }[r.status] || r.status;
+          return `${e(day(r.date))}: ${e(what)}${r.excused ? ' (excused)' : ''}`;
+        });
+        const planned = (ov.planned_absences || []).map(p => {
+          const range = p.start === p.end ? day(p.start) : `${day(p.start)} – ${day(p.end)}`;
+          return row(`📅 ${e(range)}`, `${p.reason ? e(p.reason) + ' · ' : ''}${p.excused ? 'excused' : 'not marked excused'}`);
+        });
+        const q = ov.quarter?.name ? ` (${e(ov.quarter.name)})` : '';
+
+        return `
+          <div id="child-overview" style="margin-bottom: 20px;">
+            ${head}
+            ${sub(`What's next for ${name}`, list(next, `Nothing overdue, due soon or waiting to practise. ${name} is caught up.`))}
+            ${sub('Practice this week, compared with last week', list(week, 'No practice recorded in the last two weeks.'))}
+            ${sub('Practice set by teachers', list(assigned, 'None set right now.'))}
+            ${done.length ? sub('Finished recently', list(done, '')) : ''}
+            ${sub('Skills', `
+              ${totals.length ? `<p style="font-size: 13px; margin: 0 0 6px 0;">${totals.join(' · ')}</p>` : '<p style="color: var(--muted); font-size: 13px; margin: 0 0 6px 0;">No skills practised yet.</p>'}
+              ${Number(sk.mastered_this_quarter) ? `<p style="font-size: 13px; margin: 0 0 6px 0;">⭐ ${sk.mastered_this_quarter} new skill${sk.mastered_this_quarter == 1 ? '' : 's'} mastered this quarter.</p>` : ''}
+              ${stuck.length ? list(stuck, '') : ''}
+              ${fading.length ? `<div style="margin-top: 6px;">${list(fading, '')}</div>` : ''}
+              ${recent.length ? `<div style="margin-top: 6px;">${list(recent, '')}</div>` : ''}
+            `)}
+            ${sub(`Attendance this quarter${q}`, `
+              <p id="child-attendance-line" style="font-size: 13px; margin: 0 0 6px 0;">${e(this._attendanceSummary(att))}</p>
+              ${recentAtt.length ? `<p style="font-size: 12px; color: var(--muted); margin: 0 0 6px 0;">Recent: ${recentAtt.join(' · ')}</p>` : ''}
+              ${planned.length ? `<div style="font-size: 12px; color: var(--muted); margin: 6px 0 4px 0;">Planned absences</div>${list(planned, '')}` : ''}
+            `)}
+          </div>`;
+      }
+
+      // ---- Deep links into the portal -----------------------------------
+      //
+      // The student site's Home links straight to one thing here:
+      //   ?go=assignment&class=<class_id>&id=<assignment_id>  open it to view/submit
+      //   ?go=homework&id=<homework_id>                       launch it (starts the clock)
+      //   ?go=grades&class=<class_id>                         My Grades for that class
+      // Run once, after sign-in and the first render, from init. The params
+      // are taken off the URL first, so a refresh does not open it again.
+      //
+      // `search` is the query string as init found it on arrival. Routing can
+      // rewrite the URL before this runs - showSection('home') replaces it with
+      // the bare path - so reading location.search here would find nothing.
+      handlePortalDeepLink(search = window.location.search) {
+        let params;
+        try { params = new URLSearchParams(search || ''); } catch (_e) { return null; }
+        const go = params.get('go');
+        if (!go) return null;
+        const id = params.get('id');
+        const classId = params.get('class');
+
+        try {
+          const url = new URL(window.location.href);
+          ['go', 'id', 'class'].forEach(k => url.searchParams.delete(k));
+          window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+        } catch (_e) { /* an old browser keeps the params; harmless */ }
+
+        // Every link is a student's own thing to open. RLS decides what any
+        // id actually returns; this only refuses obvious junk.
+        const looksLikeId = (v) => typeof v === 'string' && /^[0-9a-fA-F-]{8,64}$/.test(v);
+        if (this.userInfo?.profile?.user_type !== 'student') return null;
+
+        if (go === 'assignment' && looksLikeId(id)) { this.submitAssignment(id); return 'assignment'; }
+        if (go === 'homework' && looksLikeId(id)) { this.launchHomeworkAssignment(id); return 'homework'; }
+        if (go === 'grades' && looksLikeId(classId)) { this.viewGrades(classId); return 'grades'; }
+        return null;
+      }
+
       getStudentHomeContent() {
         // Load missing assignments
         this.loadMissingAssignments().then(missingAssignments => {
@@ -7783,11 +8081,21 @@
           }
         });
 
-        // Load game/skill homework assignments
-        this.loadGameHomework().then(homework => {
+        // One call for "how am I doing and what next" (rt_student_overview).
+        // Feeds the Do-this-next card and the skill items' current mastery.
+        // Never blocks the page: if it fails, the card says so and the rest
+        // of Home is drawn from its own queries exactly as before.
+        const overviewP = this.loadStudentOverview();
+        overviewP.then(ov => {
+          const el = document.getElementById('student-next-container');
+          if (el) el.innerHTML = this.renderStudentNextCard(ov);
+        });
+
+        // Load game/skill homework assignments, and what was finished lately
+        Promise.all([this.loadGameHomework(), this.loadFinishedHomework(), overviewP]).then(([homework, finished, ov]) => {
           const homeworkContainer = document.getElementById('game-homework-container');
           if (homeworkContainer) {
-            homeworkContainer.innerHTML = this.renderGameHomework(homework);
+            homeworkContainer.innerHTML = this.renderGameHomework(homework, finished, ov);
           }
         });
 
@@ -7836,6 +8144,10 @@
         });
 
         return `
+          <!-- Do this next + attendance this quarter (rt_student_overview).
+               First, because it is the answer to "what do I do now". -->
+          <div id="student-next-container" style="margin-bottom: 20px;"></div>
+
           <!-- Quarter Info Banner -->
           <div id="quarter-info-container"></div>
 
@@ -8278,6 +8590,10 @@
 
         this.showLoading('Loading student details...');
 
+        // Skills, practice and attendance, asked for now so it loads while the
+        // assignments below do. Parents used to see grades only.
+        const overviewP = this.loadStudentOverview(childId);
+
         // Load child's assignments
         let assignmentsHTML = '<p style="color: var(--muted);">Loading assignments...</p>';
 
@@ -8368,6 +8684,7 @@
         // Get child's strikes
         const { strikes, count: strikeCount, nextDecayDate } = await this.getStudentStrikes(childId);
         const strikeColor = strikeCount === 0 ? '#43e97b' : strikeCount >= 3 ? '#f5576c' : '#ffcb6b';
+        const childOverview = await overviewP;
 
         const gpaQuartersHTML = gpaData ? quarterLabels.map((label, i) => {
           const qNum = i + 1;
@@ -8412,6 +8729,8 @@
             <h4 style="margin-bottom: 10px;">📚 Classes (${child.classes?.length || 0})</h4>
             <div class="list">${classesHTML}</div>
           </div>
+
+          ${this.renderChildOverviewSection(childOverview, child)}
 
           <div style="margin-bottom: 20px;">
             <h4 style="margin-bottom: 10px;">📝 Assignments</h4>
