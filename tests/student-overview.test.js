@@ -427,7 +427,9 @@ const atLocal = (days, hour = 12) => { const d = new Date(Date.now() + days * DA
     const arrive = init.indexOf('this._arrivalSearch = window.location.search');
     const wait = init.indexOf('while (!this.auth.initialized');
     const route = init.indexOf("this.setupHomeContent();");
-    const link = init.indexOf('this.handlePortalDeepLink(this._arrivalSearch)');
+    // The call also falls back to a link remembered before a sign-in
+    // (rtPendingLink), so match its opening rather than the whole argument.
+    const link = init.indexOf('this.handlePortalDeepLink(');
     ok('init keeps the query string from arrival, before anything can rewrite it', arrive > -1 && arrive < wait);
     ok('  and handles the link after the first render', link > route && route > -1);
     // showSection('home') rewrites the URL to the bare path: the reason above.

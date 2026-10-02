@@ -1488,6 +1488,53 @@ body.has-bg-image .alert {
 
 // Initialize shared portal system
 window.portalAuth = new PortalAuth();
+
+// ---- A portal link that has to survive a sign-in ---------------------------
+//
+// The student site and the reminders link straight to one thing in the portal
+// (/portal/?go=assignment|homework|grades&id=..&class=..). Signed out, the
+// portal sends the person to log in on the student site - which used to forget
+// where they were going, so after signing in they landed on the student site
+// and had to find it themselves. The portal now remembers the link here before
+// sending them; the student site takes it after a fresh sign-in and goes back.
+//
+// Only the three link fields are kept, and only for 30 minutes and one use, so
+// an old link can never hijack a later visit.
+window.rtPendingLink = {
+    KEY: 'rt-pending-portal-link',
+    MAX_AGE_MS: 30 * 60 * 1000,
+
+    // Just ?go=&id=&class=, or '' when there is nothing worth keeping.
+    _clean(search) {
+        try {
+            const p = new URLSearchParams(search || '');
+            if (!/^(assignment|homework|grades)$/.test(p.get('go') || '')) return '';
+            const out = new URLSearchParams();
+            ['go', 'id', 'class'].forEach(k => {
+                const v = p.get(k);
+                if (v && /^[A-Za-z0-9-]{1,64}$/.test(v)) out.set(k, v);
+            });
+            return '?' + out.toString();
+        } catch (_e) { return ''; }
+    },
+
+    remember(search) {
+        const clean = this._clean(search);
+        if (!clean) return;
+        try { localStorage.setItem(this.KEY, JSON.stringify({ search: clean, at: Date.now() })); } catch (_e) {}
+    },
+
+    // The remembered link, once: it is removed as it is read.
+    take() {
+        let raw = null;
+        try { raw = localStorage.getItem(this.KEY); localStorage.removeItem(this.KEY); } catch (_e) { return ''; }
+        try {
+            const v = JSON.parse(raw || 'null');
+            if (!v || typeof v.at !== 'number' || Date.now() - v.at > this.MAX_AGE_MS) return '';
+            return this._clean(v.search);
+        } catch (_e) { return ''; }
+    },
+};
 window.PortalUI = PortalUI;
 
 // Flash prevention — apply cached theme before DOM load
