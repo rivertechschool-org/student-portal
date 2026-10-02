@@ -70,7 +70,7 @@ for (let m = DEF.exec(src); m; m = DEF.exec(src)) {
 
 ok('the portal methods were indexed', bodies.size > 400);
 ok('  including the ones the harnesses lean on',
-  ['_extractEntities', '_fuzzyFindStudent', '_matchIntent'].every(n => bodies.has(n)));
+  ['_extractEntities', '_fuzzyFindStudent', '_matchIntent', '_rivenIsFutureAbsenceCommand', '_rivenResolveAbsenceSpans', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers', '_rivenDayCodes', '_rivenCollapseSpans', '_rivenMonthIndex'].every(n => bodies.has(n)));
 
 const CALL = /this\.(_[A-Za-z0-9_]+)\s*\(/g;
 const callsIn = (name) => {

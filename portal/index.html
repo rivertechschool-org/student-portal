@@ -52079,7 +52079,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-01·a';
+      const RIVEN_BUILD = '2026-10-01·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -56561,6 +56561,18 @@ Students you had withdrawn stay withdrawn.`)) {
       // A write must be an instruction, not a musing, a refusal, or a promise.
       const blockSpeculativeWrite = isDeliberative || isNegatedAction || isConditionalAction;
 
+      // A student + a not-here word + days that are all still to come is a
+      // planned absence, however it is worded. "set willow missing 5-8", "mark
+      // willow absent the 5th through the 8th", "put her down as away
+      // monday-thursday" used to scatter across seven intents - attendance
+      // lookups, grading (10/5 reads like a score), RTC, the student card,
+      // today's register - because each pattern list knew only some of the
+      // verbs. Decided here, before the bidding, so no list has to know them
+      // all. debug-tools/absence-command-matrix.js is the grid.
+      if (!isQuestion && !blockSpeculativeWrite && this._rivenIsFutureAbsenceCommand(normalized, entities)) {
+        return { intent: 'PLAN_ABSENCE', confidence: 0.95 };
+      }
+
       // Every intent that mutates data. Declared here (rather than beside the
       // near-tie check further down) so the bidding loop can gate on it.
       const WRITE_INTENTS = ['ADD_RTC', 'SUBTRACT_RTC', 'TRANSFER_RTC', 'GROUP_RTC', 'SET_GRADE',
@@ -56818,6 +56830,9 @@ Students you had withdrawn stay withdrawn.`)) {
           w: 5, notIfNoteCommand: true,
           patterns: [
             /\bmark\b.*\b(present|absent|late|tardy|here)\b/,
+            // "set/mark willow missing|away|out today" - the words people use
+            // for absent, with either verb.
+            /\b(mark|set|record|log|put)\b.*\b(missing|away|out|gone|absent|present|late|tardy)\b/,
             /\b(mark|record|log|enter|change|fix|update|set)\b.*\battendance\b/,
             // statement form: "jordan was late (today)" — question form
             // ("was jordan late?") is blocked below and stays a read
@@ -56828,7 +56843,7 @@ Students you had withdrawn stay withdrawn.`)) {
             /\bwalked in\b/,
             // "jordan is out/here today" — statement order, leading-verb guard
             // blocks the question form "is jordan out?" since it starts with "is"
-            /\b(is|was)\s+(out|absent|gone|here|present|back|late|tardy)\b/,
+            /\b(is|was)\s+(out|absent|gone|away|missing|here|present|back|late|tardy)\b/,
             // bare "out today" / "here today" phrasing
             /\b(out|absent|here|present|late|tardy)\s+(today|now|right now|all day|this morning|this afternoon)\b/,
             // "jordan is sick today", "excuse his absence today"
@@ -57434,7 +57449,9 @@ Students you had withdrawn stay withdrawn.`)) {
           // way of reporting an absence in the moment would quietly become a
           // plan and the day would go unmarked.
           patterns: [
-            /^(?!.*\b(today|right now|just now|this morning|this afternoon)\b)[\s\S]*\b(is|are|will be|wont be|will not be|is going to be|are going to be)\b.{0,20}\b(out|away|absent|gone|off|missing)\b/,
+            // Not "is NOT absent", and not "missing assignments/work" - those
+            // share the words and are not an absence.
+            /^(?!.*\b(today|right now|just now|this morning|this afternoon)\b)(?!.*\b(?:is|are|isnt|arent)\s+not\b)(?!.*\bmissing\s+(?:work|assignments?|homework|grades?|tests?|quizz?(?:es)?|scores?)\b)[\s\S]*\b(is|are|will be|wont be|will not be|is going to be|are going to be)\b.{0,20}\b(out|away|absent|gone|off|missing)\b/,
             /^(?!.*\b(today|right now|just now)\b)[\s\S]*\b(wont|will not|cant|cannot|can not)\b.{0,12}\b(be (in|here)|make it|attend|come in)\b/,
             /^(?!.*\b(today|right now|just now)\b)[\s\S]*\b(has|have|got)\b.{0,16}\b(appointment|dentist|doctor|orthodontist|surgery|funeral|wedding|court)\b/,
             /^(?!.*\btoday\b)[\s\S]*\b(out|away|absent|gone)\b.{0,10}\b(next|this|on)\b.{0,12}\b(mon|tues?|wed|thur?s?|fri|sat|sun)/,
@@ -63431,8 +63448,64 @@ Students you had withdrawn stay withdrawn.`)) {
     // everything else its own. That is the shape planned_absences stores, and
     // the shape a person reads back: "17-18 and 21", not "17, 18, 21".
     _rivenResolveAbsenceSpans(raw) {
-      const t = (raw || '').toLowerCase();
+      let t = (raw || '').toLowerCase();
       const span = (a, b) => ({ start: a, end: b || a });
+      const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+      // "between the 5th and the 8th" is a range, not two separate days.
+      t = t.replace(/\bbetween\s+((?:the\s+)?\S+)\s+and\s+/g, '$1 to ');
+
+      // "next week" / "all next week": Monday to Friday of next week. "the
+      // rest of the week": tomorrow to Friday.
+      {
+        const now = new Date();
+        if (/\b(?:all\s+|the\s+(?:whole|entire)\s+)?next\s+week\b/.test(t)) {
+          const mon = new Date(now); mon.setDate(now.getDate() + ((8 - now.getDay()) % 7 || 7));
+          const fri = new Date(mon); fri.setDate(mon.getDate() + 4);
+          return [span(isoOf(mon), isoOf(fri))];
+        }
+        if (/\b(?:the\s+)?rest\s+of\s+(?:the|this)\s+week\b/.test(t) && now.getDay() >= 0 && now.getDay() < 5) {
+          const tom = new Date(now); tom.setDate(now.getDate() + 1);
+          const fri = new Date(now); fri.setDate(now.getDate() + (5 - now.getDay()));
+          if (tom <= fri) return [span(isoOf(tom), isoOf(fri))];
+        }
+      }
+
+      // A range of bare day numbers, the way people jot it: "5-8", "the 5-8",
+      // "5 thru 8", "from 5 to 8", "5th-8th", "the 5th to the 8th of october",
+      // "5-8 oct". The other readers below need each end to look like a date
+      // by itself, and a bare "5" does not. Not when either side touches a
+      // slash or a colon - those are 10/5 dates and 3-4pm times.
+      {
+        const MON = '(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+        const m = t.match(new RegExp(
+          '(?<![\\/:\\d-])\\b(?:from\\s+)?(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:-|\u2013|\u2014|to|through|thru|until|till)\\s*(?:the\\s+)?(\\d{1,2})(?:st|nd|rd|th)?\\b(?![\\/:]|-\\d|\\s*(?:am|pm)\\b)(?:\\s+(?:of\\s+)?' + MON + ')?'));
+        // A month NAMED BEFORE the numbers ("oct 5-8") is the month reader's;
+        // leave it to the code below so the two cannot disagree.
+        const monthBefore = m && new RegExp(MON + '\\s*$').test(t.slice(0, m.index).trim());
+        if (m && !monthBefore) {
+          const a = +m[1], b = +m[2];
+          if (a >= 1 && a <= 31 && b >= 1 && b <= 31) {
+            const now = new Date();
+            let month, year = now.getFullYear();
+            if (m[3]) {
+              month = this._rivenMonthIndex ? this._rivenMonthIndex(m[3]) : null;
+              if (month === null || month === undefined || month < 0) {
+                month = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[3].slice(0, 3));
+              }
+              if (month < now.getMonth()) year++;              // a month already gone means next year
+            } else {
+              // No month: the first one in which the start is still to come.
+              month = now.getMonth();
+              if (a < now.getDate()) month++;
+            }
+            const start = new Date(year, month, a, 12);
+            // "30th-2nd" runs into the next month.
+            const end = new Date(year, month + (b < a ? 1 : 0), b, 12);
+            if (start.getDate() === a && end.getDate() === b) return [span(isoOf(start), isoOf(end))];
+          }
+        }
+      }
 
       // An explicit range first: "monday to wednesday", "3/17 through 3/21",
       // "the 17th to the 21st".
@@ -63465,7 +63538,10 @@ Students you had withdrawn stay withdrawn.`)) {
           let end = b.iso;
           if (end < a.iso) {
             const d = new Date(b.iso + 'T12:00:00');
-            d.setDate(d.getDate() + 7);
+            // A weekday end moves a week; a day-of-month end ("the 30th-2nd")
+            // moves a month.
+            if (/(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)/.test(r[2])) d.setDate(d.getDate() + 7);
+            else d.setMonth(d.getMonth() + 1);
             end = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
           }
           return [span(a.iso, end)];
@@ -63507,6 +63583,40 @@ Students you had withdrawn stay withdrawn.`)) {
         if (one) return [span(one.iso)];
       }
       return null;
+    }
+
+    // Is this an instruction that a student will be away on days that have not
+    // happened yet? Needs all three: one student, a not-here word, and dates
+    // that are ALL after today. Today (or no date) stays with MARK_ATTENDANCE -
+    // the register now - and a past day is not a plan.
+    _rivenIsFutureAbsenceCommand(normalized, entities) {
+      const t = String(normalized || '').toLowerCase();
+      if (!entities || !entities.student) return false;
+      if (entities.student.ambiguous) return false;
+      const AWAY = /\b(absent|absence|missing|away|gone|out|off|excused?|miss(?:es|ing)?\s+(?:school|class)|(?:wont|won't|will\s+not|cant|can't|cannot)\s+(?:be\s+(?:in|here|at\s+school)|make\s+it|come\s+in|attend)|appointment|dentist|doctor|orthodontist|surgery|vacation|holiday|family\s+trip|out\s+of\s+town)\b/;
+      if (!AWAY.test(t)) return false;
+      // Things that share the vocabulary but are not an absence.
+      if (/\brtc\b|\bpoints?\b|\bcoins?\b/.test(t)) return false;
+      if (/\bmissing\s+(?:work|assignments?|homework|grades?|tests?|quizz?(?:es)?|scores?)\b/.test(t)) return false;
+      if (/\bout\s+of\s+(?!town)\w/.test(t)) return false;                 // "8 out of 10"
+      if (/\b\d+\s+off\b|\btake\b[\s\S]{0,20}\boff\b/.test(t)) return false; // "take 5 off"
+      if (/\b(?:isnt|isn't|is\s+not|arent|aren't|not)\s+(?:going\s+to\s+be\s+)?(?:out|absent|missing|away|gone|off)\b/.test(t)) return false;
+      // Past tense is the register, not a plan: "willow was absent sept 28".
+      if (/\b(?:was|were|had\s+been|missed)\b/.test(t)) return false;
+      const raw = entities._rawInput || entities.original || normalized;
+      let spans;
+      try { spans = this._rivenResolveAbsenceSpans(raw); } catch (e) { return false; }
+      if (!spans || !spans.length) return false;
+      const n = new Date();
+      const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+      // A date written without a year resolves to the NEXT one, so "mark
+      // willow absent sept 28" said on 1 October came back as next September.
+      // Nobody plans an absence half a year out without saying the year:
+      // more than six months ahead with no year written is a past day.
+      const far = new Date(n); far.setDate(far.getDate() + 183);
+      const farIso = `${far.getFullYear()}-${String(far.getMonth() + 1).padStart(2, '0')}-${String(far.getDate()).padStart(2, '0')}`;
+      if (!/\b20\d\d\b/.test(String(raw)) && spans.some(sp => sp.start > farIso)) return false;
+      return spans.every(sp => sp.start > today);
     }
 
     // Consecutive days become one span; everything else stands alone. That is
@@ -66623,7 +66733,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const lower = entities.normalized || '';
       let status = null;
       if (/\bleft early\b/.test(lower)) status = 'left_early';
-      else if (/\b(absent|missing|missed|out|sick|ill|excused?|wasn.?t|skipped?)\b/.test(lower)) status = 'absent';
+      else if (/\b(absent|missing|missed|out|away|gone|sick|ill|excused?|wasn.?t|skipped?)\b/.test(lower)) status = 'absent';
       else if (/\b(late|tardy)\b/.test(lower)) status = 'late';
       else if (/\b(present|here|attended)\b/.test(lower)) status = 'present';
       if (!status) { this.terminalPrintError('Mark them as what — present, absent, late, or left early?'); return; }

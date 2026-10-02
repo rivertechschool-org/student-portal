@@ -49,7 +49,7 @@ function extract(name) {
 
 const methods = ['_normalizeInput','_resolvePronouns','_isFollowUpCommand',
   '_extractEntities','_parseTimeframe','_rivenPastDate','_rivenMonthIndex','_fuzzyFindStudent','_rivenIsMyStudent','_rivenOwnRank','_calculateSimilarity',
-  '_levenshteinDistance','_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
+  '_levenshteinDistance','_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent', '_rivenIsFutureAbsenceCommand', '_rivenResolveAbsenceSpans', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers', '_rivenDayCodes', '_rivenCollapseSpans','_matchSmalltalk','_isAggregateQuery','_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen','_rivenCanManageClass','_preferOwnedClasses','_isoDaysAgo',
   '_hasCommandVerb','_hasCommandSignal','_isCommonWordTypo','_commonWords','_segmentClauses','_classifyClauseShape',
   '_rivenQuantifiesClasses','_rivenFindExcluded','_rivenGroupCanon','_rivenMatchGroup','_rivenMatchGroupPair','_rivenIgnoresAttendance',
   '_rivenParseClassSpec','_rivenParseNewClassName','_rivenParseClassRosterRef',
@@ -955,8 +955,13 @@ const lr1 = app._matchIntent('blarghle flurp clementine zoop', { student: { stud
 t16(`generic student-card fallback is tagged lastResort (got ${lr1 && lr1.intent}/${lr1 && lr1.lastResort})`, !!lr1 && lr1.intent === 'VIEW_STUDENT' && lr1.lastResort === true);
 // UNKNOWN_ACTION no longer tagged lastResort — removing that flag was the
 // Phase 1 fix so "remind me to call X's parents" doesn't mis-route via semantic
-const lr2 = app._matchIntent('please excuse clementine for tomorrow', { student: { student: { full_name: 'Clementine Vasquez' } } });
+// (This used "please excuse clementine for tomorrow", which Riven now reads
+// correctly as an excused planned absence - see the check after this one - so
+// the example of an action it cannot do had to change, not the check.)
+const lr2 = app._matchIntent('please remind clementine about her library book tomorrow', { student: { student: { full_name: 'Clementine Vasquez' } } });
 t16(`UNKNOWN_ACTION is NOT tagged lastResort (got ${lr2 && lr2.intent}/${lr2 && lr2.lastResort})`, !!lr2 && lr2.intent === 'UNKNOWN_ACTION' && lr2.lastResort !== true);
+const ex1 = run('please excuse clementine for tomorrow');
+t16(`"please excuse X for tomorrow" -> PLAN_ABSENCE (got ${ex1.intent})`, ex1.intent === 'PLAN_ABSENCE');
 console.log(`round 16: ${p16} pass, ${f16} fail`);
 
 
