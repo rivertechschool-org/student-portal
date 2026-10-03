@@ -64,11 +64,16 @@ block.forEach((l, i) => { if (l.includes('class="card"')) cardStarts.push(i); })
 // here. A hard-coded 13 only ever says "somebody added a card" — which is not a
 // bug — and the next person edits the number without reading why it existed.
 //
-// A card that does nothing when tapped is the real fault, so the check is that
-// every card carries a handler. Most open a section; one opens a modal
+// All management cards carry handlers. The temporary access-test button is
+// deliberately inert at Luke's request; keep this exception tied to its id.
+// Most open a section; one opens a modal
 // (parent-link requests), which is why this counts handlers and not sections.
 const handlers = block.join('\n').match(/onclick="app\.[a-zA-Z]+\(/g) || [];
-check('every card does something when tapped', cardStarts.length, handlers.length);
+const inertTest = block.join('\n').match(/<button\b[^>]*id="admin-test-button"[^>]*>[\s\S]*?<\/button>/g) || [];
+check('exactly one temporary test button', inertTest.length, 1);
+check('test cannot submit a form', /type="button"/.test(inertTest[0] || ''), true);
+check('test has no click action', /onclick=/.test(inertTest[0] || ''), false);
+check('every management card does something when tapped', cardStarts.length - inertTest.length, handlers.length);
 
 const targets = block.join('\n').match(/showAdminSection\('[a-z-]+'\)/g) || [];
 check('  no two cards open the same section', new Set(targets).size, targets.length);
