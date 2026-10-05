@@ -232,8 +232,12 @@ function makeApp(seed, { fails = new Set(), serverRows = [] } = {}) {
 
   console.log('\n== the wiring ==\n');
 
+  // The two period pickers save directly; the Excused box goes through
+  // onExcusedChange, which also opens or closes the note row, then saves.
   ok('every control on a row saves that row',
-    (html.match(/onchange="app\.saveOneAttendance\('\$\{student\.id\}'\)"/g) || []).length === 3);
+    (html.match(/onchange="app\.saveOneAttendance\('\$\{student\.id\}'\)"/g) || []).length === 2
+    && /class="excused-checkbox"[^>]*onchange="app\.onExcusedChange\(this\)"/.test(html)
+    && /onExcusedChange\(checkbox, save = true\) \{[\s\S]{0,600}?if \(save\) \{\s*this\.saveOneAttendance\(studentId\);/.test(html));
   ok('  and the note waits for the typing to stop',
     /oninput="app\.queueOneAttendance\('\$\{student\.id\}'\)"/.test(html));
   ok('changing the status saves too',
