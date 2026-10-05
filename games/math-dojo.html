@@ -52293,6 +52293,1399 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: CS-ADVANCED ====
+// Computer Science & Game Math branch, "Advanced Computational Mathematics"
+// (plan items 86D-93D): Matrix Transformations (M-401), 3D Coordinates
+// (M-402), Dot and Cross Products (M-403), Graph Theory (M-404), Algorithmic
+// Complexity (M-405), Simulation and Modeling (M-406). All six are tier 8.
+//
+// At tier 8 students TYPE any answer AnswerInterpreter can read: numbers,
+// fractions, 2D points and vectors, radicals. 3D points, matrices, Big-O
+// classes, paths, rows of cells and words stay multiple choice, and those
+// questions say so with forceChoice rather than relying on detectType to
+// happen to call them text.
+//
+// Every answer is computed by running what the question describes - the
+// matrix product, Dijkstra, the simulation, the loop - never written down
+// beside it, so changing a number can never leave a stale answer behind.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (the draw is then retried).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  // ---- notation: (x, y) is a point, ⟨x, y⟩ a vector, [a b; c d] a matrix
+  // (row 1 is "a b"), matching the existing Matrix Operations skill.
+  const P2 = (x,y) => `(${x}, ${y})`;
+  const P3 = (x,y,z) => `(${x}, ${y}, ${z})`;
+  const V2 = (x,y) => `⟨${x}, ${y}⟩`;
+  const V3 = (x,y,z) => `⟨${x}, ${y}, ${z}⟩`;
+  const M = m => `[${m[0]} ${m[1]}; ${m[2]} ${m[3]}]`;
+  const par = v => (v < 0 ? `(${v})` : String(v));     // 3·(-2), not 3·-2
+  const r1 = v => Math.round(v*10)/10;
+  const r2 = v => Math.round(v*100)/100;
+  const nz = () => pick([-5,-4,-3,-2,-1,1,2,3,4,5]);
+
+  // Typed answers that are right but not character-identical: "0.87" for
+  // √3/2, "2√6" for √24, "63°" for 63, "sqrt(29)". parseArithmetic is the
+  // page's own safe evaluator; "2√6" needs an explicit "*" for it.
+  const readNum = s => {
+    if (typeof AnswerInterpreter === 'undefined') return null;
+    const t = AnswerInterpreter.unifyNotation(String(s))
+      .replace(/°|degrees?|deg/gi, '')
+      .replace(/(\d)\s*(?=√|sqrt)/gi, '$1*')
+      .trim();
+    return t ? AnswerInterpreter.parseArithmetic(t) : null;
+  };
+  const near = (exact, tol) => typed => { const v = readNum(typed); return v !== null && Math.abs(v - exact) <= tol; };
+  const nearTuple = (xs, tol) => typed => {
+    const parts = String(typed).replace(/[()\[\]⟨⟩<>]/g, '').split(',');
+    if (parts.length !== xs.length) return false;
+    return parts.every((p, i) => { const v = readNum(p); return v !== null && Math.abs(v - xs[i]) <= tol; });
+  };
+  // √n in simplest radical form: 24 -> "2√6", 29 -> "√29", 36 -> "6".
+  const surd = n => { let k = 1, m = n;
+    for (let f = 2; f*f <= m; f++) while (m % (f*f) === 0) { m /= f*f; k *= f; }
+    return m === 1 ? String(k) : (k === 1 ? '' : k) + '√' + m; };
+
+  // Some draws are unusable (two transformations that happen to commute, a
+  // shortest path that ties, a cell row whose distractors coincide). A
+  // sub-generator returns null for those and is drawn again - inside the SAME
+  // subType, so a fussy subType is not quietly asked less often than the rest.
+  const skillGen = subs => function(){
+    const k = pick(Object.keys(subs));
+    for (let i = 0; i < 500; i++) { const q = subs[k](); if (q) return q; }
+    throw new Error(`${k}: no usable draw in 500 tries`);
+  };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // =====================================================================
+  // M-401  Matrix Transformations  (tier 8)
+  // Builds on Matrix Operations (row x column), Trigonometric Ratios and
+  // Transformations (reflect/rotate on the plane).
+  // =====================================================================
+  const mul = (A,B) => [A[0]*B[0]+A[1]*B[2], A[0]*B[1]+A[1]*B[3], A[2]*B[0]+A[3]*B[2], A[2]*B[1]+A[3]*B[3]];
+  const app = (m,x,y) => [m[0]*x+m[1]*y, m[2]*x+m[3]*y];
+  const same = (A,B) => A.every((v,i) => v === B[i]);
+  // `near` lists the transformations a student most often confuses with this
+  // one (the other axis, the other direction of turn), used as distractors.
+  const MT_NAMED = [
+    { m:[1,0,0,-1],  name:"reflection across the x-axis",      near:[1,6,2] },
+    { m:[-1,0,0,1],  name:"reflection across the y-axis",      near:[0,6,3] },
+    { m:[0,1,1,0],   name:"reflection across the line y = x",  near:[3,4,5] },
+    { m:[0,-1,-1,0], name:"reflection across the line y = -x", near:[2,5,4] },
+    { m:[0,-1,1,0],  name:"rotation 90° counterclockwise",     near:[5,2,3] },
+    { m:[0,1,-1,0],  name:"rotation 90° clockwise",            near:[4,3,2] },
+    { m:[-1,0,0,-1], name:"rotation 180°",                     near:[0,1,4] },
+  ];
+  // Exact rotation-matrix entries. Every angle used is a multiple of 30° or
+  // 45°, so each value is one of 0, ±1/2, ±√2/2, ±√3/2, ±1.
+  const exactTrig = v => {
+    const a = Math.abs(v), s = v < 0 ? '-' : '';
+    if (a < 1e-9) return '0';
+    if (Math.abs(a - 0.5) < 1e-9) return s + '1/2';
+    if (Math.abs(a - Math.SQRT1_2) < 1e-9) return s + '√2/2';
+    if (Math.abs(a - Math.sqrt(3)/2) < 1e-9) return s + '√3/2';
+    if (Math.abs(a - 1) < 1e-9) return s + '1';
+    return null;
+  };
+  const rad = d => d * Math.PI / 180;
+
+  const MT = {
+    // Which matrix does this transformation?
+    identify(){
+      if (Math.random() < 0.3) {
+        const k = ri(2,5);
+        const ans = M([k,0,0,k]);
+        // k in every entry; x scaled but not y; k on the wrong diagonal
+        const options = opt4(ans, [M([k,k,k,k]), M([k,0,0,1]), M([0,k,k,0])]);
+        return options && { subType:"identify", forceChoice:true,
+          question:`Which matrix scales every point by a factor of ${k}, so (x, y) goes to (${k}x, ${k}y)?`,
+          answer: ans, options,
+          explanation:`Each column is where a unit arrow lands: (1, 0) goes to (${k}, 0) and (0, 1) goes to (0, ${k}). Those columns make ${ans}.` };
+      }
+      const t = pick(MT_NAMED);
+      const ans = M(t.m);
+      const options = opt4(ans, t.near.map(i => M(MT_NAMED[i].m)));
+      return options && { subType:"identify", forceChoice:true,
+        question:`Which matrix performs a ${t.name} about the origin?`,
+        answer: ans, options,
+        explanation:`Track the unit arrows. A ${t.name} sends (1, 0) to ${P2(t.m[0], t.m[2])} and (0, 1) to ${P2(t.m[1], t.m[3])}. Those are the columns, so the matrix is ${ans}.` };
+    },
+    // What does this matrix do?
+    describe(){
+      const t = pick(MT_NAMED);
+      const options = opt4(t.name, t.near.map(i => MT_NAMED[i].name));
+      const [px, py] = [ri(1,5), ri(1,5)];
+      const [qx, qy] = app(t.m, px, py);
+      return options && { subType:"describe", forceChoice:true,
+        question:`What does the matrix ${M(t.m)} do to every point?`,
+        answer: t.name, options,
+        explanation:`(1, 0) goes to ${P2(t.m[0], t.m[2])} and (0, 1) goes to ${P2(t.m[1], t.m[3])}. Test a point: ${P2(px,py)} goes to ${P2(qx,qy)}. That is a ${t.name}.` };
+    },
+    // Apply a general integer matrix to a point.
+    apply(){
+      const m = [ri(-3,4), ri(-3,4), ri(-3,4), ri(-3,4)];
+      if (m[1] === m[2] || m[0]*m[3] - m[1]*m[2] === 0) return null;   // b = c would make the row/column swap invisible
+      const x = nz(), y = nz();
+      const [a, b] = app(m, x, y);
+      const tr = app([m[0], m[2], m[1], m[3]], x, y);   // used columns as rows
+      const options = opt4(P2(a,b), [P2(tr[0], tr[1]), P2(b, a), P2(m[0]*x, m[3]*y), P2(a, -b)]);
+      return options && { subType:"apply",
+        question:`Apply the matrix ${M(m)} to the point ${P2(x,y)}. Where does the point go?`,
+        answer: P2(a,b), acceptableAnswers:[V2(a,b)], options,
+        explanation:`Row times column. x' = ${par(m[0])}·${par(x)} + ${par(m[1])}·${par(y)} = ${a}. y' = ${par(m[2])}·${par(x)} + ${par(m[3])}·${par(y)} = ${b}. The image is ${P2(a,b)}.` };
+    },
+    // Rotate or reflect a point with a standard transformation the student
+    // must turn into its matrix first.
+    standard(){
+      const t = pick(MT_NAMED);
+      const x = nz(), y = nz();
+      if (Math.abs(x) === Math.abs(y)) return null;     // keeps every distractor a different point
+      const [a, b] = app(t.m, x, y);
+      const cands = t.near.map(i => { const p = app(MT_NAMED[i].m, x, y); return P2(p[0], p[1]); });
+      const options = opt4(P2(a,b), cands.concat([P2(x, y)]));
+      return options && { subType:"standard",
+        question:`Use a matrix to apply a ${t.name} to the point ${P2(x,y)}. Where does it land?`,
+        answer: P2(a,b), acceptableAnswers:[V2(a,b)], options,
+        explanation:`A ${t.name} has matrix ${M(t.m)}. x' = ${par(t.m[0])}·${par(x)} + ${par(t.m[1])}·${par(y)} = ${a}, y' = ${par(t.m[2])}·${par(x)} + ${par(t.m[3])}·${par(y)} = ${b}. The image is ${P2(a,b)}.` };
+    },
+    // First A, then B: the single matrix is B·A, and the order matters.
+    compose(){
+      let A, B, story = "";
+      if (Math.random() < 0.6) {
+        const i = ri(0, MT_NAMED.length-1); let j = ri(0, MT_NAMED.length-1);
+        if (i === j) return null;
+        A = MT_NAMED[i].m; B = MT_NAMED[j].m;
+        story = ` (first a ${MT_NAMED[i].name}, then a ${MT_NAMED[j].name})`;
+      } else {
+        A = [ri(-2,3), ri(-2,3), ri(-2,3), ri(-2,3)];
+        B = [ri(-2,3), ri(-2,3), ri(-2,3), ri(-2,3)];
+      }
+      const BA = mul(B, A), AB = mul(A, B);
+      if (same(BA, AB)) return null;                       // order would not matter
+      if (Math.random() < 0.5) {
+        const sum = A.map((v,k) => v + B[k]), ew = A.map((v,k) => v * B[k]);
+        // AB = wrong order; A + B; entry-by-entry product
+        const options = opt4(M(BA), [M(AB), M(sum), M(ew)]);
+        return options && { subType:"compose", forceChoice:true,
+          question:`A point is transformed first by A = ${M(A)} and then by B = ${M(B)}${story}. Which single matrix does both, in that order?`,
+          answer: M(BA), options,
+          explanation:`The matrix next to the point acts first, so "A, then B" is B·A. B·A = ${M(B)}·${M(A)} = ${M(BA)}. (A·B = ${M(AB)} is the other order and is a different transformation.)` };
+      }
+      const x = nz(), y = nz();
+      const p1 = app(A, x, y), p2 = app(B, p1[0], p1[1]);
+      const wrong = app(AB, x, y);
+      const options = opt4(P2(p2[0], p2[1]), [P2(wrong[0], wrong[1]), P2(p1[0], p1[1]), P2(-p2[0], -p2[1])]);
+      return options && { subType:"compose",
+        question:`The point ${P2(x,y)} is transformed first by A = ${M(A)} and then by B = ${M(B)}${story}. Where does it end up?`,
+        answer: P2(p2[0], p2[1]), acceptableAnswers:[V2(p2[0], p2[1])], options,
+        explanation:`Apply A first: A·${P2(x,y)} = ${P2(p1[0], p1[1])}. Then B: B·${P2(p1[0], p1[1])} = ${P2(p2[0], p2[1])}. (One matrix does it too: B·A = ${M(BA)}.)` };
+    },
+    // An entry of [cos θ  -sin θ; sin θ  cos θ] for a common angle.
+    rotation_entry(){
+      const th = pick([30,45,60,90,120,135,150,180,210,225,240,270,300,315,330]);
+      const c = Math.cos(rad(th)), s = Math.sin(rad(th));
+      const pos = pick([
+        { name:"top-left",     v: c,  other: s,  f:"cos θ" },
+        { name:"top-right",    v: -s, other: -c, f:"-sin θ" },
+        { name:"bottom-left",  v: s,  other: c,  f:"sin θ" },
+        { name:"bottom-right", v: c,  other: s,  f:"cos θ" },
+      ]);
+      const ans = exactTrig(pos.v);
+      // sign flipped; sin and cos swapped; then other common values
+      const options = opt4(ans, [exactTrig(-pos.v), exactTrig(pos.other), exactTrig(-pos.other)]
+        .concat(sh(['1/2','-1/2','√3/2','-√3/2','√2/2','-√2/2','0','1','-1'])));
+      // AnswerInterpreter reads a typed "-1/2" as the number -1 (leading
+      // digits of text), so a -1 answer would accept the -1/2 slip: keep that
+      // one on the buttons.
+      return options && { subType:"rotation_entry", ...(ans === '-1' ? { forceChoice:true } : {}),
+        question:`The counterclockwise rotation matrix is [cos θ  -sin θ; sin θ  cos θ]. For θ = ${th}°, what is the ${pos.name} entry? Give the exact value.`,
+        answer: ans, acceptableAnswers:[ans.replace('√', 'sqrt')], validate: near(pos.v, 0.006), options,
+        explanation:`The ${pos.name} entry is ${pos.f}. cos ${th}° = ${exactTrig(c)} and sin ${th}° = ${exactTrig(s)}, so ${pos.f} = ${ans}.` };
+    },
+    // Rotate a point by a non-right angle and round.
+    rotate_theta(){
+      const th = pick([30,45,60,120,135,150]);
+      const x = nz(), y = nz();
+      const c = Math.cos(rad(th)), s = Math.sin(rad(th));
+      const X = x*c - y*s, Y = x*s + y*c;
+      const ans = P2(r1(X), r1(Y));
+      const cw = P2(r1(x*c + y*s), r1(-x*s + y*c));      // rotated clockwise (sign of sin)
+      const options = opt4(ans, [cw, P2(r1(Y), r1(X)), P2(r1(x*c), r1(y*c))]);
+      return options && { subType:"rotate_theta",
+        question:`Rotate the point ${P2(x,y)} by ${th}° counterclockwise about the origin using [cos θ  -sin θ; sin θ  cos θ]. Give the image to the nearest tenth.`,
+        answer: ans, validate: nearTuple([X, Y], 0.051), options,
+        explanation:`cos ${th}° = ${exactTrig(c)} ≈ ${r2(c)} and sin ${th}° = ${exactTrig(s)} ≈ ${r2(s)}. x' = x·cos θ - y·sin θ = ${x}(${exactTrig(c)}) - ${par(y)}(${exactTrig(s)}) ≈ ${r2(X)}. y' = x·sin θ + y·cos θ = ${x}(${exactTrig(s)}) + ${par(y)}(${exactTrig(c)}) ≈ ${r2(Y)}. Rounded: ${ans}.` };
+    },
+  };
+
+  _addSkill(8, "Matrix Transformations", "Matrix Transformations", 4, {
+    goalProblem: "Rotate the point (3, 1) by 90° counterclockwise using a matrix.",
+    teachingSteps: [
+      { title: "A matrix is a machine for points", explanation: "Write a point as a column and multiply, row times column, exactly as in Matrix Operations. The matrix <strong>[a b; c d]</strong> (row 1 is a b, row 2 is c d) sends (x, y) to <strong>(ax + by, cx + dy)</strong>.", visual: "[a b; c d] · (x, y) = (ax + by, cx + dy)" },
+      { title: "The columns are where the unit arrows land", explanation: "Multiply by (1, 0) and you get the first column; multiply by (0, 1) and you get the second. So to build a matrix for any transformation, ask: <strong>where does (1, 0) go, and where does (0, 1) go?</strong> Write those as the two columns.", visual: "(1, 0) → (a, c)     (0, 1) → (b, d)" },
+      { title: "Scales and reflections", explanation: "Scaling by k sends (1, 0) to (k, 0) and (0, 1) to (0, k). Reflecting across the x-axis keeps x and flips y. Across the y-axis flips x. Across the line y = x swaps the coordinates.", visual: "scale k: [k 0; 0 k]   x-axis: [1 0; 0 -1]\ny-axis: [-1 0; 0 1]   y = x: [0 1; 1 0]" },
+      { title: "Rotations", explanation: "Turning counterclockwise by θ sends (1, 0) to (cos θ, sin θ) and (0, 1) to (-sin θ, cos θ). That gives the rotation matrix. Use the trig ratios you know: cos 30° = √3/2, sin 30° = 1/2, cos 45° = sin 45° = √2/2, cos 60° = 1/2, sin 60° = √3/2.", visual: "R(θ) = [cos θ  -sin θ; sin θ  cos θ]\n90° CCW: [0 -1; 1 0]   180°: [-1 0; 0 -1]   90° CW: [0 1; -1 0]" },
+      { title: "Composing: the right-hand matrix acts first", explanation: "To do A and <em>then</em> B, multiply <strong>B·A</strong>. The matrix closest to the point acts first, just like f(g(x)) does g first. Matrix multiplication is not commutative, so A·B is usually a different transformation.", visual: "first A, then B  →  B · A · (x, y)" }
+    ],
+    finalAnswer: "(-1, 3)",
+    answerExplanation: "90° counterclockwise is [0 -1; 1 0]. x' = 0·3 + (-1)·1 = -1 and y' = 1·3 + 0·1 = 3, so (3, 1) lands on (-1, 3).",
+    example: { problem: "Reflect across the x-axis, then rotate 90° counterclockwise. What single matrix does both, and where does (2, 5) go?", steps: [
+      { text: "First A = reflection across the x-axis, then B = rotation 90° CCW", math: "A = [1 0; 0 -1], B = [0 -1; 1 0]" },
+      { text: "\"A, then B\" is B·A: row of B times column of A", math: "B·A = [0·1 + (-1)·0   0·0 + (-1)(-1); 1·1 + 0·0   1·0 + 0·(-1)] = [0 1; 1 0]" },
+      { text: "Recognise it: [0 1; 1 0] swaps the coordinates", math: "a reflection across the line y = x" },
+      { text: "Check with the point", math: "(2, 5) → reflect → (2, -5) → rotate → (5, 2), and [0 1; 1 0]·(2, 5) = (5, 2) ✓" }
+    ]},
+    keyPoints: [
+      "[a b; c d] sends (x, y) to (ax + by, cx + dy)",
+      "The columns are the images of (1, 0) and (0, 1)",
+      "Rotation by θ counterclockwise: [cos θ  -sin θ; sin θ  cos θ]",
+      "First A then B is the product B·A, and order matters"
+    ],
+    mistakes: [
+      { wrong: "Using [0 1; -1 0] for a counterclockwise quarter turn", why: "That is the clockwise one. Counterclockwise sends (1, 0) to (0, 1), so the first column must be (0, 1): [0 -1; 1 0]." },
+      { wrong: "Multiplying A·B for \"first A, then B\"", why: "The matrix next to the point acts first. First A then B is B·A." },
+      { wrong: "Reading the point against the columns: (ax + cy, bx + dy)", why: "Each ROW of the matrix times the point gives one coordinate: x' = ax + by." }
+    ],
+    guided: { problem: "Apply the matrix [2 1; -1 3] to the point (4, -2).", steps: [
+      { label: "Top row times the point", value: "x' = 2·4 + 1·(-2) = 6" },
+      { label: "Bottom row times the point", value: "y' = -1·4 + 3·(-2) = -10" },
+      { label: "Image point", value: "(6, -10)" }
+    ], answer: "(6, -10)", answerLabel: "image =",
+      interactiveSteps: [
+        { prompt: "The top row [2 1] times the point gives the new x: x' = 2·4 + 1·(-2). What is x'?", hint: "2 times 4 is 8, and 1 times -2 is -2.", answer: "6", acceptableAnswers: ["6"], formatHint: "Enter a number",
+          commonMistakes: { "10": "Use the top ROW (2, 1): 1·(-2) is -2, so 8 - 2 = 6. (10 comes from 1·(+2), or from using the column (2, -1).)" } },
+        { prompt: "The bottom row [-1 3] gives the new y: y' = -1·4 + 3·(-2). What is y'?", hint: "-1 times 4 is -4, and 3 times -2 is -6.", answer: "-10", acceptableAnswers: ["-10"], formatHint: "Enter a number",
+          commonMistakes: { "2": "3·(-2) is -6, not +6: -4 - 6 = -10.", "-2": "Check the first product: -1·4 = -4." } },
+        { prompt: "Write the image point (x', y').", hint: "Put the two results in order: x' first, then y'.", answer: "(6, -10)", acceptableAnswers: ["(6, -10)", "(6,-10)"], formatHint: "e.g., (x, y)",
+          commonMistakes: { "(-10, 6)": "x' comes first: (6, -10)." } }
+      ]
+    }
+  }, skillGen(MT));
+
+  // =====================================================================
+  // M-402  3D Coordinates  (tier 8)
+  // Builds on Screen Coordinates (axis conventions, y-down screens) and
+  // Distance and Midpoint Formulas (the same formulas with one more term).
+  // =====================================================================
+  // Integer 3D distances: a² + b² + c² = d².
+  const QUADS = [[1,2,2,3],[2,4,4,6],[2,3,6,7],[1,4,8,9],[4,4,7,9],[3,6,6,9],[2,6,9,11],[6,6,7,11],
+                 [4,8,8,12],[3,4,12,13],[2,5,14,15],[2,10,11,15],[1,12,12,17],[8,9,12,17]];
+  const sgn = () => (Math.random() < 0.5 ? -1 : 1);
+  const UP = [
+    { q:"In Unity, which axis points up?", a:"the y-axis", why:"Unity is y-up: x points right, y points up and z points forward." },
+    { q:"In Godot, which axis points up?", a:"the y-axis", why:"Godot is y-up: x right, y up, and forward is the negative z direction." },
+    { q:"In Minecraft, which coordinate tells you your height?", a:"the y-axis", why:"Minecraft's debug screen shows X, Y, Z with Y as the height." },
+    { q:"In Unreal Engine, which axis points up?", a:"the z-axis", why:"Unreal is z-up: x points forward, y right and z up." },
+    { q:"In Blender, which axis points up?", a:"the z-axis", why:"Blender is z-up, like most 3D modelling and CAD tools." },
+    { q:"In the usual math-textbook drawing of 3D axes, which axis points up?", a:"the z-axis", why:"Textbooks put x and y on the floor and stand z straight up." },
+  ];
+  const AXES = ["the x-axis", "the y-axis", "the z-axis", "the negative y-axis"];   // negative y = the screen-coordinates habit
+
+  const C3 = {
+    distance(){
+      const q = pick(QUADS);
+      const d = sh(q.slice(0,3)).map(v => v * sgn());
+      const fromOrigin = Math.random() < 0.2;
+      const A = fromOrigin ? [0,0,0] : [ri(-5,5), ri(-5,5), ri(-5,5)];
+      const B = A.map((v,i) => v + d[i]);
+      const manhattan = q[0] + q[1] + q[2];
+      const flat = r1(Math.sqrt(d[0]*d[0] + d[1]*d[1]));
+      // added the gaps; forgot the square root; dropped z (2D formula)
+      const options = opt4(q[3], [manhattan, q[3]*q[3], flat]);
+      return options && { subType:"distance",
+        question: fromOrigin ? `How far is the point ${P3(...B)} from the origin?`
+                             : `Find the distance between A${P3(...A)} and B${P3(...B)}.`,
+        answer: q[3], options,
+        explanation:`Differences: Δx = ${d[0]}, Δy = ${d[1]}, Δz = ${d[2]}. d = √(${par(d[0])}² + ${par(d[1])}² + ${par(d[2])}²) = √(${d[0]*d[0]} + ${d[1]*d[1]} + ${d[2]*d[2]}) = √${q[3]*q[3]} = ${q[3]}.` };
+    },
+    distance_exact(){
+      const d = [ri(1,6)*sgn(), ri(1,6)*sgn(), ri(1,6)*sgn()];
+      const S = d[0]*d[0] + d[1]*d[1] + d[2]*d[2];
+      if (Number.isInteger(Math.sqrt(S))) return null;           // the other subType covers whole numbers
+      const A = [ri(-6,6), ri(-6,6), ri(-6,6)], B = A.map((v,i) => v + d[i]);
+      const ans = surd(S);
+      const flat = d[0]*d[0] + d[1]*d[1];
+      // dropped z; forgot the root; added the gaps under the root
+      const options = opt4(ans, [surd(flat), String(S), '√' + (Math.abs(d[0]) + Math.abs(d[1]) + Math.abs(d[2]))]);
+      return options && { subType:"distance_exact",
+        question:`Find the exact distance between P${P3(...A)} and Q${P3(...B)}. Give it in simplest radical form (or as a decimal to the nearest hundredth).`,
+        answer: ans, acceptableAnswers:['√' + S, `sqrt(${S})`, String(r2(Math.sqrt(S)))], validate: near(Math.sqrt(S), 0.006), options,
+        explanation:`Δx = ${d[0]}, Δy = ${d[1]}, Δz = ${d[2]}. d = √(${d[0]*d[0]} + ${d[1]*d[1]} + ${d[2]*d[2]}) = √${S}${ans !== '√' + S ? ' = ' + ans : ''} ≈ ${r2(Math.sqrt(S))}.` };
+    },
+    midpoint(){
+      const A = [ri(-8,8), ri(-8,8), ri(-8,8)], B = [ri(-8,8), ri(-8,8), ri(-8,8)];
+      if (A.some((v,i) => v === B[i])) return null;
+      const mid = A.map((v,i) => (v + B[i]) / 2);
+      const half = A.map((v,i) => (B[i] - v) / 2);             // halved the difference
+      const sum = A.map((v,i) => v + B[i]);                     // forgot to halve
+      const options = opt4(P3(...mid), [P3(...half), P3(...sum), P3(mid[0], mid[2], mid[1])]);
+      return options && { subType:"midpoint", forceChoice:true,
+        question:`Find the midpoint of A${P3(...A)} and B${P3(...B)}.`,
+        answer: P3(...mid), options,
+        explanation:`Average each coordinate: x = (${A[0]} + ${par(B[0])})/2 = ${mid[0]}, y = (${A[1]} + ${par(B[1])})/2 = ${mid[1]}, z = (${A[2]} + ${par(B[2])})/2 = ${mid[2]}. Midpoint ${P3(...mid)}.` };
+    },
+    translate(){
+      const P = [ri(-6,6), ri(-6,6), ri(-6,6)], v = [nz(), nz(), nz()];
+      if (v[1] === v[2]) return null;
+      const out = P.map((c,i) => c + v[i]);
+      const sub = P.map((c,i) => c - v[i]);                                      // subtracted the offset
+      const swap = [P[0] + v[0], P[1] + v[2], P[2] + v[1]];                       // mixed up y and z
+      const flat = [P[0] + v[0], P[1] + v[1], P[2]];                              // ignored z
+      const options = opt4(P3(...out), [P3(...sub), P3(...swap), P3(...flat)]);
+      return options && { subType:"translate", forceChoice:true,
+        question:`A game object at ${P3(...P)} is moved by the offset ${V3(...v)}. Where is it now?`,
+        answer: P3(...out), options,
+        explanation:`Add the offset coordinate by coordinate: (${P[0]} + ${par(v[0])}, ${P[1]} + ${par(v[1])}, ${P[2]} + ${par(v[2])}) = ${P3(...out)}.` };
+    },
+    axis_convention(){
+      const r = Math.random();
+      if (r < 0.45) {
+        const f = pick(UP);
+        const options = opt4(f.a, AXES);
+        return options && { subType:"axis_convention", forceChoice:true, question: f.q, answer: f.a, options, explanation: f.why };
+      }
+      if (r < 0.65) {
+        const rightHanded = Math.random() < 0.5;
+        const ans = rightHanded ? "toward the viewer (out of the screen)" : "away from the viewer (into the screen)";
+        const options = opt4(ans, ["toward the viewer (out of the screen)", "away from the viewer (into the screen)", "straight up", "straight down"]);
+        return options && { subType:"axis_convention", forceChoice:true,
+          question:`In a ${rightHanded ? "right-handed" : "left-handed"} y-up system with +x pointing right and +y pointing up, which way does +z point?`,
+          answer: ans, options,
+          explanation: rightHanded
+            ? "Right hand: fingers along +x, curl toward +y, and your thumb points out of the screen at you. That is +z (Godot and OpenGL work this way)."
+            : "Left hand: fingers along +x, curl toward +y, and your thumb points into the screen. That is +z (Unity works this way)." };
+      }
+      // A computed one: read the height off a point in the stated convention.
+      const zUp = Math.random() < 0.5;
+      const vals = sh([ri(1,4), ri(5,9), ri(10,15)]);
+      const h = zUp ? vals[2] : vals[1];
+      const options = opt4(h, [vals[0], zUp ? vals[1] : vals[2], -h]);
+      return options && { subType:"axis_convention",
+        question:`A game engine is ${zUp ? "z-up" : "y-up"} and the ground is the plane where ${zUp ? "z" : "y"} = 0. A lamp sits at ${P3(...vals)}. How high above the ground is it?`,
+        answer: h, options,
+        explanation:`In a ${zUp ? "z-up" : "y-up"} world the ${zUp ? "third (z)" : "second (y)"} coordinate is the height, so the lamp is ${h} units up.` };
+    },
+    octant(){
+      const P = [nz(), nz(), nz()];
+      if (Math.random() < 0.5) {
+        const Q = P.map(v => Math.sign(v) * ri(1,9));
+        if (Q.every((v,i) => v === P[i])) return null;
+        const flips = [0,1,2].map(i => Q.map((v,k) => (k === i ? -v : v)));       // one sign wrong
+        const options = opt4(P3(...Q), flips.map(f => P3(...f)));
+        return options && { subType:"octant", forceChoice:true,
+          question:`Which point lies in the same octant as ${P3(...P)}?`,
+          answer: P3(...Q), options,
+          explanation:`Two points share an octant when every coordinate has the same sign. ${P3(...P)} has signs (${P.map(v => v > 0 ? '+' : '-').join(', ')}), and so does ${P3(...Q)}.` };
+      }
+      const plane = pick(["xy","yz","xz"]);
+      const k = { xy:2, yz:0, xz:1 }[plane];
+      const ans = P.map((v,i) => (i === k ? -v : v));
+      const others = [0,1,2].filter(i => i !== k).map(i => P.map((v,j) => (j === i ? -v : v)));
+      const options = opt4(P3(...ans), others.map(o => P3(...o)).concat([P3(...P.map(v => -v))]));
+      return options && { subType:"octant", forceChoice:true,
+        question:`The point ${P3(...P)} is reflected across the ${plane}-plane. Where does it land?`,
+        answer: P3(...ans), options,
+        explanation:`The ${plane}-plane is where ${"xyz"[k]} = 0. Reflecting across it flips only the ${"xyz"[k]}-coordinate: ${P3(...ans)}.` };
+    },
+    plane(){
+      const target = pick(["xy-plane","yz-plane","xz-plane","x-axis","y-axis","z-axis"]);
+      const zeroes = { "xy-plane":[2], "yz-plane":[0], "xz-plane":[1], "x-axis":[1,2], "y-axis":[0,2], "z-axis":[0,1] }[target];
+      const mk = zs => [0,1,2].map(i => (zs.includes(i) ? 0 : nz()));
+      const ans = mk(zeroes);
+      const wrongZeroes = target.endsWith("plane") ? [[0],[1],[2]].filter(z => z[0] !== zeroes[0]).concat([[]])
+                                                   : [[0,1],[0,2],[1,2]].filter(z => !(z[0] === zeroes[0] && z[1] === zeroes[1])).concat([[zeroes[0]]]);
+      const options = opt4(P3(...ans), wrongZeroes.map(z => P3(...mk(z))));
+      return options && { subType:"plane", forceChoice:true,
+        question:`Which point lies on the ${target}?`,
+        answer: P3(...ans), options,
+        explanation: target.endsWith("plane")
+          ? `On the ${target} the missing letter's coordinate is 0: ${"xyz"[zeroes[0]]} = 0. Only ${P3(...ans)} has that.`
+          : `On the ${target} the other two coordinates are both 0. Only ${P3(...ans)} has that.` };
+    },
+  };
+
+  _addSkill(8, "3D Coordinates", "3D Coordinates", 3, {
+    goalProblem: "How far apart are A(1, 2, 3) and B(3, 5, 9)?",
+    teachingSteps: [
+      { title: "One more axis", explanation: "A 2D point (x, y) becomes a 3D point <strong>(x, y, z)</strong>. To locate (2, 3, 4), start at the origin, move 2 along x, 3 along y, then 4 along z.", visual: "(x, y) → (x, y, z)" },
+      { title: "Which way is up depends on the program", explanation: "Screen coordinates taught you that y can point down. In 3D, engines disagree again: <strong>Unity, Godot and Minecraft are y-up</strong>; <strong>Unreal, Blender and math textbooks are z-up</strong>. Always check the convention before reading a height.", visual: "y-up: (x, height, z)     z-up: (x, y, height)" },
+      { title: "Planes, axes and octants", explanation: "The three coordinate planes split space into <strong>8 octants</strong>, one for each pattern of signs. A point on the xy-plane has z = 0; on the z-axis it has x = 0 and y = 0. Reflecting across a plane flips the one coordinate that is zero on that plane.", visual: "(+, +, +)  (-, +, +)  …  8 sign patterns" },
+      { title: "Distance: Pythagoras twice", explanation: "Find the gap in each coordinate, square them, add, and take the square root. It is the 2D distance formula with a z term added.", visual: "d = √((x₂ - x₁)² + (y₂ - y₁)² + (z₂ - z₁)²)" },
+      { title: "Midpoint and moving a point", explanation: "The midpoint averages each coordinate. Moving (translating) a point by an offset adds the offset to each coordinate.", visual: "M = ((x₁+x₂)/2, (y₁+y₂)/2, (z₁+z₂)/2)\n(x, y, z) + ⟨a, b, c⟩ = (x+a, y+b, z+c)" }
+    ],
+    finalAnswer: "7",
+    answerExplanation: "The gaps are 2, 3 and 6. d = √(4 + 9 + 36) = √49 = 7.",
+    example: { problem: "Find the distance and the midpoint of P(-1, 3, 2) and Q(3, 2, 10).", steps: [
+      { text: "Gaps in each coordinate", math: "Δx = 3 - (-1) = 4, Δy = 2 - 3 = -1, Δz = 10 - 2 = 8" },
+      { text: "Square, add, root", math: "√(16 + 1 + 64) = √81 = 9" },
+      { text: "Midpoint: average each coordinate", math: "((-1 + 3)/2, (3 + 2)/2, (2 + 10)/2) = (1, 2.5, 6)" }
+    ]},
+    keyPoints: [
+      "A 3D point is (x, y, z); check whether the world is y-up or z-up",
+      "Distance = √(Δx² + Δy² + Δz²)",
+      "Midpoint = average of each coordinate",
+      "On a coordinate plane one coordinate is 0; on an axis two are"
+    ],
+    mistakes: [
+      { wrong: "Using only x and y: √(36 + 4) for a gap of (6, 2, 3)", why: "That is the 2D formula. Every coordinate that changes adds a squared term: √(36 + 4 + 9) = 7." },
+      { wrong: "Stopping at 49", why: "49 is the squared distance. Take the square root: 7." },
+      { wrong: "Assuming y is always the height", why: "Only in y-up engines. In Unreal or Blender the height is z." }
+    ],
+    guided: { problem: "A drone flies from (2, -1, 4) to (8, 1, 7). How far does it fly?", steps: [
+      { label: "x gap", value: "8 - 2 = 6" },
+      { label: "y gap", value: "1 - (-1) = 2" },
+      { label: "z gap", value: "7 - 4 = 3" },
+      { label: "Sum of squares", value: "36 + 4 + 9 = 49" },
+      { label: "Distance", value: "√49 = 7" }
+    ], answer: "7", answerLabel: "distance =",
+      interactiveSteps: [
+        { prompt: "Find the x gap: 8 - 2.", hint: "Subtract the starting x from the ending x.", answer: "6", acceptableAnswers: ["6", "-6"], formatHint: "Enter a number", commonMistakes: { "10": "Subtract, do not add: 8 - 2 = 6." } },
+        { prompt: "Find the y gap: 1 - (-1).", hint: "Subtracting a negative is adding.", answer: "2", acceptableAnswers: ["2", "-2"], formatHint: "Enter a number", commonMistakes: { "0": "1 - (-1) = 1 + 1 = 2." } },
+        { prompt: "Find the z gap: 7 - 4.", hint: "Ending z minus starting z.", answer: "3", acceptableAnswers: ["3", "-3"], formatHint: "Enter a number" },
+        { prompt: "Square the three gaps and add them: 6² + 2² + 3².", hint: "36 + 4 + 9", answer: "49", acceptableAnswers: ["49"], formatHint: "Enter a number", commonMistakes: { "11": "Square each gap before adding: 36 + 4 + 9.", "40": "Include the z gap too: 36 + 4 + 9 = 49." } },
+        { prompt: "Take the square root of the sum to get the distance.", hint: "What number times itself is 49?", answer: "7", acceptableAnswers: ["7"], formatHint: "Enter a number", commonMistakes: { "49": "49 is the squared distance. The distance is √49." } }
+      ]
+    }
+  }, skillGen(C3));
+
+  // =====================================================================
+  // M-403  Dot and Cross Products  (tier 8)
+  // Builds on Game Vectors (components, length) and 3D Coordinates.
+  // =====================================================================
+  const dot = (a,b) => a.reduce((s,v,i) => s + v*b[i], 0);
+  const len = a => Math.sqrt(dot(a,a));
+  const cross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const Vn = a => (a.length === 2 ? V2(...a) : V3(...a));
+  const vecRand = (dim, lo, hi) => { let v; do { v = Array.from({length:dim}, () => ri(lo,hi)); } while (v.every(c => c === 0)); return v; };
+  const dotWork = (a,b) => a.map((v,i) => `${par(v)}·${par(b[i])}`).join(' + ');
+  // Vectors with whole-number lengths, so cos θ is an exact fraction.
+  const LEN2 = [[3,4],[4,3],[5,12],[12,5],[6,8],[8,6],[0,5],[5,0],[8,15],[15,8]];
+  const LEN3 = [[1,2,2],[2,1,2],[2,2,1],[2,3,6],[3,6,2],[6,2,3],[2,6,3],[4,4,7],[0,0,3],[3,0,0],[1,4,8],[8,4,1]];
+  const FACING = ["in front", "behind", "directly to the side", "cannot tell without the distance"];
+  const TURN = ["turn left (counterclockwise)", "turn right (clockwise)", "no turn: the target is straight ahead", "turn around: the target is straight behind"];
+
+  const DC = {
+    dot_value(){
+      const dim = pick([2,3]);
+      const a = vecRand(dim, -6, 6), b = vecRand(dim, -6, 6);
+      const d = dot(a,b);
+      const cands = dim === 2 ? [a[0]*b[1] + a[1]*b[0], a[0]*b[0] - a[1]*b[1]]           // crossed the pairs; sign slip
+                              : [a[0]*b[0] + a[1]*b[1], a[0]*b[1] + a[1]*b[2] + a[2]*b[0]];  // dropped z; shifted pairs
+      const options = opt4(d, cands.concat([-d, d + 2]));
+      return options && { subType:"dot_value",
+        question:`Find a · b for a = ${Vn(a)} and b = ${Vn(b)}.`,
+        answer: d, options,
+        explanation:`Multiply matching components and add: ${dotWork(a,b)} = ${d}.` };
+    },
+    angle(){
+      const dim = pick([2,3]);
+      const a = vecRand(dim, -5, 5), b = vecRand(dim, -5, 5);
+      const cr = dim === 2 ? [a[0]*b[1] - a[1]*b[0]] : cross(a,b);
+      if (cr.every(c => c === 0)) return null;                   // parallel: 0° or 180° is a different lesson
+      const d = dot(a,b), la = len(a), lb = len(b);
+      const th = Math.acos(Math.max(-1, Math.min(1, d/(la*lb)))) * 180 / Math.PI;
+      if (Math.abs((th % 1) - 0.5) < 0.05) return null;          // too close to a rounding tie
+      const ans = Math.round(th);
+      const options = opt4(ans, [180 - ans, Math.abs(90 - ans), ans + 10]);
+      return options && { subType:"angle",
+        question:`Find the angle between a = ${Vn(a)} and b = ${Vn(b)}, to the nearest degree.`,
+        answer: ans, acceptableAnswers:[ans + '°'], validate: near(th, 0.55), options,
+        explanation:`a · b = ${d}. |a| = √${dot(a,a)} ≈ ${r2(la)}, |b| = √${dot(b,b)} ≈ ${r2(lb)}. cos θ = ${d} / (${r2(la)} × ${r2(lb)}) ≈ ${r2(d/(la*lb))}, so θ ≈ ${ans}°.` };
+    },
+    cos_value(){
+      const base = pick([LEN2, LEN3]);
+      const a = pick(base).map(v => v * sgn()), b = pick(base).map(v => v * sgn());
+      const d = dot(a,b);
+      if (d === 0) return null;
+      const la = Math.round(len(a)), lb = Math.round(len(b));
+      const ans = frac(d, la*lb);
+      if (ans === "1" || ans === "-1") return null;              // parallel
+      // forgot to divide; divided by one length only; added the lengths
+      const options = opt4(ans, [String(d), frac(d, la), frac(d, la + lb), frac(-d, la*lb)]);
+      return options && { subType:"cos_value",
+        question:`For a = ${Vn(a)} and b = ${Vn(b)}, find cos θ, where θ is the angle between them. Give a fraction.`,
+        answer: ans, validate: near(d/(la*lb), 0.005), options,
+        explanation:`cos θ = (a · b) / (|a| |b|). a · b = ${dotWork(a,b)} = ${d}. |a| = ${la}, |b| = ${lb}. cos θ = ${d}/${la*lb}${frac(d, la*lb) === d + "/" + la*lb ? "" : " = " + ans}.` };
+    },
+    facing(){
+      const f = pick([[1,0],[0,1],[-1,0],[0,-1],[1,1],[2,1],[-1,2],[1,-2],[3,-1],[-2,-1]]);
+      const E = [ri(-5,5), ri(-5,5)];
+      let dv;
+      if (Math.random() < 0.25) { const m = pick([-3,-2,-1,1,2,3]); dv = [-f[1]*m, f[0]*m]; }
+      else { dv = vecRand(2, -6, 6); if (dot(f,dv) === 0) return null; }
+      const Pp = [E[0] + dv[0], E[1] + dv[1]];
+      const d = dot(f, dv);
+      const ans = d > 0 ? FACING[0] : d < 0 ? FACING[1] : FACING[2];
+      const options = opt4(ans, FACING);
+      return options && { subType:"facing", forceChoice:true,
+        question:`An enemy at ${P2(...E)} faces the direction f = ${V2(...f)}. The player is at ${P2(...Pp)}. Is the player in front of the enemy, behind it, or directly to its side?`,
+        answer: ans, options,
+        explanation:`Vector to the player: d = ${P2(...Pp)} - ${P2(...E)} = ${V2(...dv)}. f · d = ${dotWork(f,dv)} = ${d}. ${d > 0 ? "Positive means the player is in front" : d < 0 ? "Negative means the player is behind" : "Zero means d is perpendicular to f: directly to the side"}. Distance does not matter, only the sign.` };
+    },
+    perpendicular(){
+      if (Math.random() < 0.5) {
+        const a = [ri(-5,5), pick([-4,-3,-2,-1,1,2,3,4]), ri(-5,5)];
+        const dd = ri(-5,5), f = ri(-5,5);
+        const s = a[0]*dd + a[2]*f;
+        if (s % a[1] !== 0) return null;
+        const k = -s / a[1] + 0;                                    // + 0 turns -0 into 0
+        const options = opt4(k, [s / a[1] + 0, -s, k + 1]);
+        return options && { subType:"perpendicular",
+          question:`For what value of k are ${V3(...a)} and ${V3(dd, 'k', f)} perpendicular?`,
+          answer: k, options,
+          explanation:`Perpendicular means the dot product is 0: ${par(a[0])}·${par(dd)} + ${par(a[1])}k + ${par(a[2])}·${par(f)} = 0, so ${s} + ${par(a[1])}k = 0 and k = ${k}.` };
+      }
+      const a = nz(), b = nz();
+      if (Math.abs(a) === Math.abs(b)) return null;
+      const m = pick([1,2,-1,-2]);
+      const ans = V2(-b*m, a*m);
+      // swapped without the sign; negated one component; the opposite vector (parallel)
+      const options = opt4(ans, [V2(b, a), V2(a, -b), V2(-a, -b)]);
+      return options && { subType:"perpendicular", forceChoice:true,
+        question:`Which vector is perpendicular to ${V2(a,b)}?`,
+        answer: ans, options,
+        explanation:`Perpendicular vectors have dot product 0. ${V2(a,b)} · ${ans} = ${par(a)}·${par(-b*m)} + ${par(b)}·${par(a*m)} = 0. (Swap the components and negate one: ⟨x, y⟩ is perpendicular to ⟨-y, x⟩.)` };
+    },
+    cross(){
+      const a = vecRand(3, -4, 4), b = vecRand(3, -4, 4);
+      const c = cross(a,b);
+      if (c[1] === 0 || c.every(v => v === 0)) return null;
+      const work = `⟨${par(a[1])}·${par(b[2])} - ${par(a[2])}·${par(b[1])}, ${par(a[2])}·${par(b[0])} - ${par(a[0])}·${par(b[2])}, ${par(a[0])}·${par(b[1])} - ${par(a[1])}·${par(b[0])}⟩`;
+      if (Math.random() < 0.5) {
+        // b × a (order flips the sign); the middle sign slip; multiplying matching components
+        const options = opt4(V3(...c), [V3(...c.map(v => -v)), V3(c[0], -c[1], c[2]), V3(a[0]*b[0], a[1]*b[1], a[2]*b[2])]);
+        return options && { subType:"cross", forceChoice:true,
+          question:`Find a × b for a = ${V3(...a)} and b = ${V3(...b)}.`,
+          answer: V3(...c), options,
+          explanation:`a × b = ⟨a₂b₃ - a₃b₂, a₃b₁ - a₁b₃, a₁b₂ - a₂b₁⟩ = ${work} = ${V3(...c)}. Check: it is perpendicular to both, since its dot with a is ${dot(c,a)} and with b is ${dot(c,b)}.` };
+      }
+      const i = ri(0,2);
+      const options = opt4(c[i], [-c[i], [a[1]*b[2]+a[2]*b[1], a[2]*b[0]+a[0]*b[2], a[0]*b[1]+a[1]*b[0]][i], a[i]*b[i]]);
+      return options && { subType:"cross",
+        question:`For a = ${V3(...a)} and b = ${V3(...b)}, what is the ${"xyz"[i]}-component of a × b?`,
+        answer: c[i], options,
+        explanation:`a × b = ⟨a₂b₃ - a₃b₂, a₃b₁ - a₁b₃, a₁b₂ - a₂b₁⟩ = ${work} = ${V3(...c)}. The ${"xyz"[i]}-component is ${c[i]}.` };
+    },
+    turn(){
+      const h = vecRand(2, -5, 5), t = vecRand(2, -6, 6);
+      const z = h[0]*t[1] - h[1]*t[0];
+      if (z === 0) return null;
+      const work = `${par(h[0])}·${par(t[1])} - ${par(h[1])}·${par(t[0])} = ${z}`;
+      if (Math.random() < 0.6) {
+        const ans = z > 0 ? TURN[0] : TURN[1];
+        const options = opt4(ans, TURN);
+        return options && { subType:"turn", forceChoice:true,
+          question:`In math coordinates (y up), a ship heads in direction h = ${V2(...h)}. The vector from the ship to its target is t = ${V2(...t)}. Which way should it turn to face the target?`,
+          answer: ans, options,
+          explanation:`2D cross product: h × t = hx·ty - hy·tx = ${work}. ${z > 0 ? "Positive: the target is counterclockwise from the heading, so turn left" : "Negative: the target is clockwise from the heading, so turn right"}.` };
+      }
+      const options = opt4(z, [-z, h[0]*t[0] + h[1]*t[1], h[0]*t[1] + h[1]*t[0]]);   // reversed order; the dot product; added instead of subtracting
+      return options && { subType:"turn",
+        question:`A unit heads in direction h = ${V2(...h)} and the target is in direction t = ${V2(...t)}. Find the 2D cross product h × t (its z-value), which tells left from right.`,
+        answer: z, options,
+        explanation:`h × t = hx·ty - hy·tx = ${work}. ${z > 0 ? "Positive means the target is to the left (counterclockwise)" : "Negative means the target is to the right (clockwise)"}, in y-up coordinates.` };
+    },
+  };
+
+  _addSkill(8, "Dot and Cross Products", "Dot and Cross Products", 4, {
+    goalProblem: "A guard at (0, 0) faces ⟨1, 2⟩. Is a player at (4, -1) in front of the guard or behind it?",
+    teachingSteps: [
+      { title: "The dot product is one number", explanation: "Multiply matching components and add. In 2D, ⟨a, b⟩ · ⟨c, d⟩ = ac + bd. In 3D add the z term too. The answer is a single number, not a vector.", visual: "⟨2, 3⟩ · ⟨4, -1⟩ = 8 - 3 = 5" },
+      { title: "It measures the angle", explanation: "a · b = |a| |b| cos θ, where |a| is the length from Game Vectors. Divide by both lengths to get cos θ, then take the inverse cosine.", visual: "cos θ = (a · b) / (|a| |b|)" },
+      { title: "The sign is enough for facing", explanation: "If you only need <em>in front</em> or <em>behind</em>, skip the angle. Take f = the direction something faces and d = the vector to the other object. <strong>f · d &gt; 0</strong> is in front, <strong>&lt; 0</strong> is behind, <strong>= 0</strong> is exactly to the side (perpendicular).", visual: "f · d &gt; 0 front   f · d &lt; 0 behind   f · d = 0 side" },
+      { title: "The cross product is a vector (3D)", explanation: "a × b is perpendicular to both a and b. Use the pattern below; notice the middle component is a₃b₁ - a₁b₃, which is where sign slips happen. b × a points the opposite way.", visual: "a × b = ⟨a₂b₃ - a₃b₂, a₃b₁ - a₁b₃, a₁b₂ - a₂b₁⟩" },
+      { title: "In 2D the cross product tells left from right", explanation: "Treat 2D vectors as 3D with z = 0; only the z-part survives: h × t = hx·ty - hy·tx. With y pointing up, <strong>positive means t is to the left</strong> (counterclockwise) of h, negative means right. On a y-down screen the meaning flips.", visual: "h × t = hx·ty - hy·tx" }
+    ],
+    finalAnswer: "in front",
+    answerExplanation: "d = (4, -1) - (0, 0) = ⟨4, -1⟩. f · d = 1·4 + 2·(-1) = 4 - 2 = 2. Positive, so the player is in front of the guard.",
+    example: { problem: "Find the angle between a = ⟨3, 4⟩ and b = ⟨4, 3⟩, and the 2D cross product a × b.", steps: [
+      { text: "Dot product", math: "3·4 + 4·3 = 24" },
+      { text: "Lengths", math: "|a| = √(9 + 16) = 5, |b| = 5" },
+      { text: "cos θ", math: "24 / (5 × 5) = 24/25 = 0.96 → θ ≈ 16°" },
+      { text: "2D cross product", math: "3·3 - 4·4 = -7 → b is clockwise (to the right) of a" }
+    ]},
+    keyPoints: [
+      "a · b = sum of matching products; it is a number",
+      "cos θ = (a · b)/(|a| |b|); a · b = 0 means perpendicular",
+      "Sign of f · d: positive in front, negative behind",
+      "a × b is perpendicular to a and b; b × a = -(a × b)",
+      "2D: hx·ty - hy·tx positive means turn left (y up)"
+    ],
+    mistakes: [
+      { wrong: "Taking cos θ = a · b without dividing", why: "a · b also grows with the lengths. Divide by |a| |b| before taking the inverse cosine." },
+      { wrong: "Writing the middle cross-product term as a₁b₃ - a₃b₁", why: "The middle term is a₃b₁ - a₁b₃. Getting it backwards flips that component's sign." },
+      { wrong: "Thinking a far-away player behind you could still count as in front", why: "Only the sign of f · d matters. Distance changes the size, never the sign." }
+    ],
+    guided: { problem: "A guard at (0, 0) faces f = ⟨1, 2⟩. A player stands at (4, -1). In front or behind?", steps: [
+      { label: "Vector to the player", value: "d = ⟨4, -1⟩" },
+      { label: "Dot product f · d", value: "1·4 + 2·(-1) = 2" },
+      { label: "Read the sign", value: "positive, so in front" }
+    ], answer: "in front", answerLabel: "the player is",
+      interactiveSteps: [
+        { prompt: "The vector from the guard to the player is d = (4, -1) - (0, 0) = ⟨4, -1⟩. First product: the x parts, 1·4. What is it?", hint: "Multiply the x-components.", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" },
+        { prompt: "Second product: the y parts, 2·(-1). What is it?", hint: "A positive times a negative is negative.", answer: "-2", acceptableAnswers: ["-2"], formatHint: "Enter a number", commonMistakes: { "2": "2 times -1 is -2." } },
+        { prompt: "Add them to get f · d = 4 + (-2).", hint: "4 - 2", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number", commonMistakes: { "6": "Adding -2 means subtracting 2: 4 - 2 = 2." } },
+        { prompt: "f · d = 2. Is the player in front of the guard or behind?", hint: "Positive dot product means the angle is less than 90 degrees.", answer: "in front", acceptableAnswers: ["in front"], formatHint: "Pick one",
+          selectOptions: [ { value: "in front", label: "in front" }, { value: "behind", label: "behind" } ],
+          commonMistakes: { "behind": "A positive dot product means the player is within 90° of where the guard faces: in front." } }
+      ]
+    }
+  }, skillGen(DC));
+
+  // =====================================================================
+  // M-404  Graph Theory  (tier 8)
+  // Builds on Functions in Code (tracing step by step). Graphs are written as
+  // edge lists, "A–B 4" meaning an edge from A to B with weight 4: there is no
+  // graph visual, and an edge list is how a program would hold one anyway.
+  // =====================================================================
+  const LET = "ABCDEFG";
+  // A random connected graph: a random spanning tree, then `extra` more edges.
+  function randGraph(n, extra, weighted){
+    const has = new Set(), edges = [];
+    const key = (u,v) => (u < v ? u + "," + v : v + "," + u);
+    const add = (u,v) => { has.add(key(u,v)); edges.push([Math.min(u,v), Math.max(u,v)]); };
+    const order = sh([...Array(n).keys()]);
+    for (let i = 1; i < n; i++) add(order[i], order[ri(0, i-1)]);
+    for (let t = 0; t < 60 && edges.length < n - 1 + extra; t++) {
+      const u = ri(0,n-1), v = ri(0,n-1);
+      if (u !== v && !has.has(key(u,v))) add(u,v);
+    }
+    edges.sort((p,q) => p[0]-q[0] || p[1]-q[1]);
+    if (weighted) edges.forEach(e => e.push(ri(1,9)));
+    return { n, edges, has: (u,v) => has.has(key(u,v)) };
+  }
+  const edgeText = G => G.edges.map(e => LET[e[0]] + "–" + LET[e[1]] + (e.length > 2 ? " " + e[2] : "")).join(", ");
+  const degreesOf = G => { const d = Array(G.n).fill(0); G.edges.forEach(e => { d[e[0]]++; d[e[1]]++; }); return d; };
+  const adjOf = G => { const a = [...Array(G.n)].map(() => []); G.edges.forEach(e => { a[e[0]].push([e[1], e[2] || 1]); a[e[1]].push([e[0], e[2] || 1]); }); return a; };
+  const pathText = p => p.map(i => LET[i]).join("-");
+  // Dijkstra, also counting how many shortest paths reach each vertex so a
+  // question is only asked when its answer path is unique.
+  function dijkstra(G, s){
+    const adj = adjOf(G), dist = Array(G.n).fill(Infinity), done = Array(G.n).fill(false),
+          ways = Array(G.n).fill(0), prev = Array(G.n).fill(-1), order = [];
+    dist[s] = 0; ways[s] = 1;
+    for (let it = 0; it < G.n; it++) {
+      let u = -1;
+      for (let i = 0; i < G.n; i++) if (!done[i] && (u < 0 || dist[i] < dist[u])) u = i;
+      if (u < 0 || dist[u] === Infinity) break;
+      done[u] = true; order.push(u);
+      for (const [v, w] of adj[u]) {
+        if (done[v]) continue;
+        if (dist[u] + w < dist[v]) { dist[v] = dist[u] + w; ways[v] = ways[u]; prev[v] = u; }
+        else if (dist[u] + w === dist[v]) ways[v] += ways[u];
+      }
+    }
+    return { dist, ways, prev, order };
+  }
+  // Every simple path s -> t with its total weight (graphs are 5-6 vertices).
+  function allPaths(G, s, t){
+    const adj = adjOf(G), out = [];
+    const walk = (u, seen, path, w) => {
+      if (u === t) { out.push({ p: path.slice(), w }); return; }
+      for (const [v, wt] of adj[u]) if (!seen.has(v)) { seen.add(v); path.push(v); walk(v, seen, path, w + wt); path.pop(); seen.delete(v); }
+    };
+    walk(s, new Set([s]), [s], 0);
+    return out;
+  }
+  const pathWeightText = (G, p) => { const adj = adjOf(G); const ws = [];
+    for (let i = 1; i < p.length; i++) ws.push(adj[p[i-1]].find(x => x[0] === p[i])[1]);
+    return ws.join(" + "); };
+  const EULER = ["An Euler circuit", "An Euler path but no Euler circuit", "Neither an Euler path nor an Euler circuit", "Cannot tell without drawing it"];
+
+  const GT = {
+    degree(){
+      const G = randGraph(ri(5,7), ri(1,4), false);
+      const v = ri(0, G.n-1), d = degreesOf(G)[v];
+      const touching = G.edges.filter(e => e[0] === v || e[1] === v);
+      const options = opt4(d, [d + 1, d * 2, G.edges.length, d - 1]);
+      return options && { subType:"degree",
+        question:`A graph has edges ${edgeText(G)}. What is the degree of vertex ${LET[v]}?`,
+        answer: d, options,
+        explanation:`The degree is the number of edges touching ${LET[v]}: ${touching.map(e => LET[e[0]] + "–" + LET[e[1]]).join(", ")}. That is ${d}.` };
+    },
+    adjacency(){
+      const G = randGraph(ri(4,6), ri(1,3), false);
+      const adj = adjOf(G);
+      const lists = adj.map((a,i) => LET[i] + ": " + a.map(x => LET[x[0]]).sort().join(", ")).join("; ");
+      const total = adj.reduce((s,a) => s + a.length, 0), m = total / 2;
+      const options = opt4(m, [total, m + 1, G.n]);        // counted each edge twice; off by one; vertex count
+      return options && { subType:"adjacency",
+        question:`A program stores a graph as adjacency lists: ${lists}. How many edges does the graph have?`,
+        answer: m, options,
+        explanation:`The lists hold ${total} entries, but every edge appears twice (A lists B and B lists A). Edges = ${total} ÷ 2 = ${m}.` };
+    },
+    handshake(){
+      const r = Math.random();
+      if (r < 0.35) {
+        const G = randGraph(ri(5,7), ri(1,4), false);
+        const ds = sh(degreesOf(G)), S = ds.reduce((a,b) => a + b, 0), m = S / 2;
+        const options = opt4(m, [S, m + 1, ds.length]);
+        return options && { subType:"handshake",
+          question:`A graph's vertices have degrees ${ds.join(", ")}. How many edges does it have?`,
+          answer: m, options,
+          explanation:`Handshake lemma: the degrees add to twice the number of edges, because each edge has two ends. ${ds.join(" + ")} = ${S}, so edges = ${S} ÷ 2 = ${m}.` };
+      }
+      if (r < 0.6) {
+        let n = ri(5,12), k = ri(2,6);
+        if ((n * k) % 2 === 1) n++;
+        const m = n * k / 2;
+        const options = opt4(m, [n * k, n + k, m + n]);
+        return options && { subType:"handshake",
+          question:`A network has ${n} computers and every computer has exactly ${k} cables to other computers. How many cables are there?`,
+          answer: m, options,
+          explanation:`Degree sum = ${n} × ${k} = ${n*k}. Each cable is counted at both ends, so cables = ${n*k} ÷ 2 = ${m}.` };
+      }
+      if (r < 0.8) {
+        const m = ri(6, 30);
+        const options = opt4(2*m, [m, m + 2, m * m]);
+        return options && { subType:"handshake",
+          question:`A graph has ${m} edges. What is the sum of the degrees of all its vertices?`,
+          answer: 2*m, options,
+          explanation:`Each edge adds 1 to the degree of both of its ends, so the degree sum is 2 × ${m} = ${2*m}.` };
+      }
+      // A degree list that cannot exist because its sum is odd, or one taken
+      // from a real graph (so it certainly can).
+      const G = randGraph(ri(5,6), ri(1,3), false);
+      const ds = sh(degreesOf(G));
+      const bad = Math.random() < 0.5;
+      if (bad) ds[ri(0, ds.length-1)] += 1;
+      const S = ds.reduce((a,b) => a + b, 0);
+      const ans = bad ? "No: the degrees add to an odd number" : "Yes";
+      const options = opt4(ans, ["Yes", "No: the degrees add to an odd number", "No: two vertices cannot have the same degree", "Only if the graph has a cycle"]);
+      return options && { subType:"handshake", forceChoice:true,
+        question:`Could a graph have vertices with degrees ${ds.join(", ")}?`,
+        answer: ans, options,
+        explanation: bad ? `${ds.join(" + ")} = ${S}, which is odd. The degree sum is always twice the number of edges, so it must be even: no such graph exists.`
+                         : `${ds.join(" + ")} = ${S}, which is even, and this graph has them: ${edgeText(G)}.` };
+    },
+    tree(){
+      const r = Math.random();
+      if (r < 0.35) {
+        const n = ri(6, 40);
+        const options = opt4(n - 1, [n, n + 1, n * (n - 1) / 2]);   // one per vertex; off by two; every pair
+        return options && { subType:"tree",
+          question:`A tree (a connected graph with no cycles) has ${n} vertices. How many edges does it have?`,
+          answer: n - 1, options,
+          explanation:`Every tree with n vertices has n - 1 edges: ${n} - 1 = ${n-1}. Start with one vertex; each new vertex brings exactly one new edge.` };
+      }
+      if (r < 0.6) {
+        const m = ri(5, 40);
+        const options = opt4(m + 1, [m, m - 1, 2*m]);
+        return options && { subType:"tree",
+          question:`A family tree drawn as a graph (connected, no cycles) has ${m} edges. How many vertices does it have?`,
+          answer: m + 1, options,
+          explanation:`A tree has one more vertex than edges: ${m} + 1 = ${m+1}.` };
+      }
+      const V = ri(5, 15), E = V - 1 + ri(1, 8);
+      const k = E - V + 1;
+      const options = opt4(k, [E - V, V - 1, E - 1]);
+      return options && { subType:"tree",
+        question:`A connected road network has ${V} towns and ${E} roads. What is the greatest number of roads you can close while keeping every town connected?`,
+        answer: k, options,
+        explanation:`A connected network needs at least a spanning tree, which has ${V} - 1 = ${V-1} roads. You can close ${E} - ${V-1} = ${k} roads.` };
+    },
+    shortest_path(){
+      const n = ri(5,6);
+      const G = randGraph(n, ri(2,4), true);
+      const t = n - 1;
+      const { dist, ways, prev, order } = dijkstra(G, 0);
+      if (ways[t] !== 1) return null;                              // a tie: two right answers
+      const best = []; for (let v = t; v !== -1; v = prev[v]) best.unshift(v);
+      if (best.length < 3) return null;                            // a direct edge wins: nothing to compute
+      const finals = order.map(v => `${LET[v]} ${dist[v]}`).join(", ");
+      const why = `Dijkstra from A (closest unvisited vertex first) finalises ${finals}. The shortest route is ${pathText(best)}: ${pathWeightText(G, best)} = ${dist[t]}.`;
+      if (Math.random() < 0.5) {
+        const others = allPaths(G, 0, t).filter(p => p.w !== dist[t]);
+        if (others.length < 3) return null;
+        // the fewest-edges route first (the "fewer stops is shorter" trap),
+        // then the nearest misses
+        const byHops = others.slice().sort((p,q) => p.p.length - q.p.length || p.w - q.w);
+        const byWeight = others.slice().sort((p,q) => p.w - q.w);
+        const options = opt4(pathText(best), [byHops[0]].concat(byWeight).map(p => pathText(p.p)));
+        return options && { subType:"shortest_path", forceChoice:true,
+          question:`Roads with travel times: ${edgeText(G)}. Which route from A to ${LET[t]} takes the least total time?`,
+          answer: pathText(best), options, explanation: why };
+      }
+      const options = opt4(dist[t], [dist[t] + 1, dist[t] + 2, G.edges.filter(e => e[0] === 0 || e[1] === t).reduce((s,e) => s + e[2], 0)]);
+      return options && { subType:"shortest_path",
+        question:`Edges with weights: ${edgeText(G)}. What is the length of the shortest path from A to ${LET[t]}?`,
+        answer: dist[t], options, explanation: why };
+    },
+    euler(){
+      const target = pick([0, 2, 4]);
+      const G = randGraph(ri(4,6), ri(1,4), false);
+      const odd = degreesOf(G).filter(d => d % 2 === 1).length;
+      if (target === 4 ? odd < 4 : odd !== target) return null;
+      const ds = degreesOf(G);
+      const degList = ds.map((d,i) => `${LET[i]} ${d}`).join(", ");
+      const why = `Degrees: ${degList}. ${odd} vertices have odd degree. A connected graph has an Euler circuit when 0 vertices are odd, an Euler path (not a circuit) when exactly 2 are odd, and neither otherwise.`;
+      if (Math.random() < 0.35) {
+        const options = opt4(odd, [odd + 1, G.n - odd, G.edges.length]);
+        return options && { subType:"euler",
+          question:`A graph has edges ${edgeText(G)}. How many of its vertices have odd degree?`,
+          answer: odd, options, explanation: why };
+      }
+      const ans = odd === 0 ? EULER[0] : odd === 2 ? EULER[1] : EULER[2];
+      const options = opt4(ans, EULER);
+      return options && { subType:"euler", forceChoice:true,
+        question:`A connected graph has edges ${edgeText(G)}. Can you trace every edge exactly once? Which does it have?`,
+        answer: ans, options, explanation: why };
+    },
+    paths_cycles(){
+      const G = randGraph(ri(5,6), ri(2,4), false);
+      const adj = adjOf(G);
+      if (Math.random() < 0.5) {
+        // Which sequence is a path? Distractors each use one missing edge.
+        const s = 0, t = G.n - 1;
+        const paths = allPaths(G, s, t).filter(p => p.p.length >= 3);
+        if (!paths.length) return null;
+        const good = pick(paths).p;
+        const bad = [];
+        for (let tries = 0; tries < 40 && bad.length < 6; tries++) {
+          const p = good.slice();
+          const i = ri(1, p.length - 2);
+          const pool = [...Array(G.n).keys()].filter(v => !p.includes(v));
+          if (!pool.length) break;
+          p[i] = pick(pool);
+          let broken = false;
+          for (let k = 1; k < p.length; k++) if (!G.has(p[k-1], p[k])) broken = true;
+          if (broken) bad.push(pathText(p));
+        }
+        const options = opt4(pathText(good), sh(bad));
+        return options && { subType:"paths_cycles", forceChoice:true,
+          question:`A graph has edges ${edgeText(G)}. Which of these is a path from A to ${LET[t]} along edges of the graph?`,
+          answer: pathText(good), options,
+          explanation:`Check each step is an edge: ${good.slice(1).map((v,k) => LET[good[k]] + "–" + LET[v]).join(", ")} are all in the list. Each other choice uses a pair that is not an edge.` };
+      }
+      // Which sequence is a cycle?
+      let cyc = null;
+      for (const s of sh([...Array(G.n).keys()])) {
+        if (cyc) break;
+        for (const [v] of sh(adj[s])) {
+          const ps = allPaths({ n: G.n, edges: G.edges.filter(e => !((e[0] === s && e[1] === v) || (e[0] === v && e[1] === s))), has: G.has }, v, s)
+            .filter(p => p.p.length >= 3);
+          if (ps.length) { cyc = [s].concat(ps[0].p); break; }
+        }
+      }
+      if (!cyc) return null;
+      const open = cyc.slice(0, -1);                                  // never returns to the start
+      const back = [cyc[0], cyc[1], cyc[0]];                          // goes back along the same edge
+      // a closed loop u-v-w-u whose last step w–u is not an edge
+      const fakes = [];
+      for (let u = 0; u < G.n; u++) for (const [v] of adj[u]) for (const [w] of adj[v])
+        if (w !== u && !G.has(w, u)) fakes.push([u, v, w, u]);
+      const cands = [pathText(open), pathText(back)];
+      if (fakes.length) cands.push(pathText(pick(fakes)));
+      cands.push(pathText(cyc.slice(0, -1).concat([cyc[1]])));        // doubles back instead of closing
+      const options = opt4(pathText(cyc), cands);
+      return options && { subType:"paths_cycles", forceChoice:true,
+        question:`A graph has edges ${edgeText(G)}. Which of these is a cycle?`,
+        answer: pathText(cyc), options,
+        explanation:`A cycle follows edges back to where it started without reusing an edge or vertex. ${pathText(cyc)} uses ${cyc.slice(1).map((v,k) => LET[cyc[k]] + "–" + LET[v]).join(", ")} and returns to ${LET[cyc[0]]}.` };
+    },
+  };
+
+  _addSkill(8, "Graph Theory", "Graph Theory", 4, {
+    goalProblem: "Roads: A–B 4, A–C 1, C–B 2, B–D 5, C–D 8. What is the shortest distance from A to D?",
+    teachingSteps: [
+      { title: "Vertices and edges", explanation: "A <strong>graph</strong> is a set of <strong>vertices</strong> (dots: towns, players, web pages) joined by <strong>edges</strong> (lines: roads, friendships, links). We write edges as a list, like A–B, B–C. A program often stores them as <strong>adjacency lists</strong>: for each vertex, the list of its neighbours.", visual: "edges: A–B, A–C, B–C, C–D\nadjacency: A: B, C; B: A, C; C: A, B, D; D: C" },
+      { title: "Degree and the handshake lemma", explanation: "The <strong>degree</strong> of a vertex is how many edges touch it. Every edge has two ends, so <strong>the degrees always add up to twice the number of edges</strong>. That is why the degree sum is always even.", visual: "sum of degrees = 2 × edges" },
+      { title: "Paths, cycles and trees", explanation: "A <strong>path</strong> follows edges without repeating a vertex. A <strong>cycle</strong> is a path that returns to its start. A <strong>tree</strong> is connected with no cycles, and a tree with n vertices always has <strong>n - 1 edges</strong>.", visual: "path: A-B-C   cycle: A-B-C-A   tree: n vertices, n - 1 edges" },
+      { title: "Euler paths: every edge once", explanation: "Can you trace every edge exactly once? Count the vertices of odd degree in a connected graph. <strong>0 odd</strong>: an Euler circuit (start and end at the same place). <strong>2 odd</strong>: an Euler path, starting at one odd vertex and ending at the other. <strong>More</strong>: neither.", visual: "0 odd → circuit   2 odd → path   4+ odd → neither" },
+      { title: "Shortest paths with Dijkstra", explanation: "Give every vertex a best-known distance (start 0, others ∞). Repeatedly pick the <strong>unvisited vertex with the smallest distance</strong>, mark it final, and update its neighbours: new distance = its distance + edge weight, if that is smaller. A route with fewer edges is not always shorter.", visual: "pick closest unvisited → finalise → relax neighbours → repeat" }
+    ],
+    finalAnswer: "8",
+    answerExplanation: "Dijkstra: A 0. Visit A: C 1, B 4. Visit C: B improves to 1 + 2 = 3, D = 1 + 8 = 9. Visit B: D improves to 3 + 5 = 8. Shortest A-C-B-D = 8, shorter than A-B-D = 9 or A-C-D = 9.",
+    example: { problem: "Edges: A–B, A–C, B–C, B–D, C–D, D–E. How many edges, what are the degrees, and is there an Euler path?", steps: [
+      { text: "Count the edges", math: "6 edges" },
+      { text: "Degrees", math: "A 2, B 3, C 3, D 3, E 1" },
+      { text: "Handshake check", math: "2 + 3 + 3 + 3 + 1 = 12 = 2 × 6 ✓" },
+      { text: "Odd vertices", math: "B, C, D, E are odd: 4 odd vertices → no Euler path" }
+    ]},
+    keyPoints: [
+      "Degree = number of edges at a vertex; degree sum = 2 × edges",
+      "A tree with n vertices has n - 1 edges",
+      "Euler circuit: 0 odd vertices; Euler path: exactly 2",
+      "Dijkstra: always expand the closest unvisited vertex"
+    ],
+    mistakes: [
+      { wrong: "Counting adjacency-list entries as edges", why: "Each edge appears in two lists (A lists B, B lists A). Halve the total." },
+      { wrong: "Taking the route with the fewest edges as the shortest", why: "Weights matter. A-C-B-D has three edges but total 8, beating A-B-D at 9." },
+      { wrong: "Saying a graph with 4 odd vertices has an Euler path", why: "An Euler path needs exactly 0 or 2 odd vertices. Each odd vertex has to be a start or an end." }
+    ],
+    guided: { problem: "Edges with weights: A–B 4, A–C 1, C–B 2, B–D 5, C–D 8. Find the shortest distance from A to D.", steps: [
+      { label: "Visit A: distance to C", value: "C = 1" },
+      { label: "Visit C: better distance to B", value: "B = 1 + 2 = 3" },
+      { label: "Visit B: distance to D", value: "D = 3 + 5 = 8" },
+      { label: "Shortest distance", value: "8" }
+    ], answer: "8", answerLabel: "shortest distance =",
+      interactiveSteps: [
+        { prompt: "Start at A with distance 0. Its neighbours are B (weight 4) and C (weight 1). What is the best-known distance to C?", hint: "A to C directly has weight 1.", answer: "1", acceptableAnswers: ["1"], formatHint: "Enter a number" },
+        { prompt: "C is now the closest unvisited vertex, so visit it. Going A to C to B costs 1 + 2. What is the new distance to B?", hint: "Compare 1 + 2 with the old value 4 and keep the smaller.", answer: "3", acceptableAnswers: ["3"], formatHint: "Enter a number", commonMistakes: { "4": "1 + 2 = 3 is smaller than 4, so it replaces it." } },
+        { prompt: "From C, D would cost 1 + 8 = 9. Next visit B (distance 3): D through B costs 3 + 5. What is it?", hint: "Add B's distance and the B–D weight.", answer: "8", acceptableAnswers: ["8"], formatHint: "Enter a number", commonMistakes: { "9": "That is the route through C. Through B it is 3 + 5 = 8, which is smaller." } },
+        { prompt: "What is the shortest distance from A to D?", hint: "Keep the smaller of 9 (through C) and 8 (through B).", answer: "8", acceptableAnswers: ["8"], formatHint: "Enter a number", commonMistakes: { "9": "Two edges is not automatically shorter: A-C-B-D totals 8." } }
+      ]
+    }
+  }, skillGen(GT));
+
+  // =====================================================================
+  // M-405  Algorithmic Complexity  (tier 8)
+  // Builds on Functions in Code (tracing loops) and Exponential Progression
+  // (growth factors). Code is pseudocode: "for i = 1 to n" includes both ends.
+  // =====================================================================
+  const BIGO = ["O(1)", "O(log n)", "O(n)", "O(n log n)", "O(n²)", "O(n³)", "O(2ⁿ)"];
+  const BODY = ["count = count + 1", "total = total + i", "print(i)", "x = x + 2", "steps = steps + 1", "draw(i)"];
+  // `d` = the misconception distractors for each snippet, most tempting first.
+  const LOOPS = [
+    { c: b => `for i = 1 to n: ${b}`, a:"O(n)", d:["O(n²)","O(1)","O(log n)"], why:"One loop that runs n times with constant work inside: about n steps." },
+    { c: b => `for i = 1 to n: for j = 1 to n: ${b}`, a:"O(n²)", d:["O(n)","O(n log n)","O(2ⁿ)"], why:"The inner loop runs n times for each of the n outer passes: n × n steps. Counting only the outer loop gives O(n), which is wrong." },
+    { c: b => `for i = 1 to n: for j = 1 to i: ${b}`, a:"O(n²)", d:["O(n log n)","O(n)","O(log n)"], why:"The inner loop runs 1 + 2 + … + n = n(n + 1)/2 times. Dropping constants, that is O(n²)." },
+    { c: () => `i = n; while i > 1: i = i / 2`, a:"O(log n)", d:["O(n)","O(1)","O(n log n)"], why:"Halving n until it reaches 1 takes about log₂ n steps." },
+    { c: () => `i = 1; while i < n: i = i * 2`, a:"O(log n)", d:["O(2ⁿ)","O(n)","O(1)"], why:"i doubles each pass, so it passes n after about log₂ n steps. The doubling is in i, not in the work: that is not O(2ⁿ)." },
+    { c: b => `for i = 1 to n: (j = 1; while j < n: j = j * 2; ${b})`, a:"O(n log n)", d:["O(n²)","O(log n)","O(n)"], why:"n outer passes, each with a doubling inner loop of about log₂ n steps: n log n." },
+    { c: b => `for i = 1 to n: ${b}; then, after it finishes, for j = 1 to n: ${b}`, a:"O(n)", d:["O(n²)","O(n log n)","O(1)"], why:"Two loops one after the other take n + n = 2n steps, which is O(n). Only NESTED loops multiply." },
+    { c: b => `for i = 1 to 100: ${b}`, a:"O(1)", d:["O(n)","O(log n)","O(n²)"], why:"The loop always runs 100 times, however big n is. A fixed amount of work is O(1)." },
+    { c: b => `for i = 1 to n: for j = 1 to n: for k = 1 to n: ${b}`, a:"O(n³)", d:["O(n²)","O(2ⁿ)","O(n log n)"], why:"Three nested loops of n each: n × n × n steps." },
+    { c: () => `function f(n): if n == 0 return 1; return f(n - 1) + f(n - 1)`, a:"O(2ⁿ)", d:["O(n)","O(n²)","O(n log n)"], why:"Each call makes two more calls, n levels deep: 1 + 2 + 4 + … + 2ⁿ calls." },
+    { c: () => `list every possible subset of n items`, a:"O(2ⁿ)", d:["O(n²)","O(n log n)","O(n³)"], why:"Each item is either in or out, so there are 2ⁿ subsets to list." },
+    { c: () => `read the item at position k of an array`, a:"O(1)", d:["O(n)","O(log n)","O(n²)"], why:"An array jumps straight to position k. The size of the array does not matter." },
+    { c: () => `binary search for a value in a sorted list of n items`, a:"O(log n)", d:["O(n)","O(n log n)","O(1)"], why:"Each comparison halves what is left: about log₂ n comparisons." },
+    { c: () => `compare every player with every other player (n players)`, a:"O(n²)", d:["O(n)","O(n log n)","O(2ⁿ)"], why:"There are n(n - 1)/2 pairs, which is O(n²)." },
+    { c: () => `merge sort a list of n items`, a:"O(n log n)", d:["O(n²)","O(n)","O(log n)"], why:"Merge sort halves the list about log₂ n times, and each level does n work merging." },
+    { c: b => `for i = 1 to n step 2: ${b}`, a:"O(n)", d:["O(log n)","O(n²)","O(1)"], why:"Stepping by 2 runs n/2 times. Constants are dropped, so it is still O(n), not logarithmic." },
+    { c: b => `for i = 1 to n: for j = 1 to 10: ${b}`, a:"O(n)", d:["O(n²)","O(1)","O(n log n)"], why:"The inner loop is a fixed 10 passes: 10n steps, which is O(n)." },
+  ];
+  const lg = n => Math.log2(n);
+  const ceilLog2 = n => { let k = 0; while (Math.pow(2,k) < n) k++; return k; };
+
+  const AC = {
+    loop_bigO(){
+      const L = pick(LOOPS), body = pick(BODY);
+      const options = opt4(L.a, L.d);
+      return options && { subType:"loop_bigO", forceChoice:true,
+        question:`What is the Big-O running time of this code? ${L.c(body)}`,
+        answer: L.a, options, explanation: L.why };
+    },
+    compare_growth(){
+      const r = Math.random();
+      if (r < 0.4) {
+        const f = pick(["nlogn","n2","2n"]);
+        const n = f === "2n" ? pick([8,10,12,16,20]) : pick([8,16,32,64,128,256,512,1024]);
+        const v = f === "nlogn" ? n * lg(n) : f === "n2" ? n * n : Math.pow(2, n);
+        const label = { nlogn:"n·log₂(n)", n2:"n²", "2n":"2ⁿ" }[f];
+        // forgot the log factor (n); doubled n; the neighbouring class (n² for 2ⁿ, 2n·log₂ n otherwise)
+        const options = opt4(v, [n, n * 2, f === "2n" ? n * n : 2 * v]);
+        return options && { subType:"compare_growth",
+          question:`An algorithm takes ${label} steps on an input of size n. How many steps is that when n = ${n}?`,
+          answer: v, options,
+          explanation: f === "nlogn" ? `log₂(${n}) = ${lg(n)} because 2^${lg(n)} = ${n}. So n·log₂(n) = ${n} × ${lg(n)} = ${v}.`
+                     : f === "n2" ? `n² = ${n} × ${n} = ${v}.` : `2ⁿ = 2^${n} = ${v}.` };
+      }
+      if (r < 0.7) {
+        const n = ri(4, 24);
+        const fs = [ ["100n", 100*n], ["n²", n*n], ["2ⁿ", Math.pow(2,n)], ["n log₂ n", n * lg(n)] ];
+        const top = fs.slice().sort((p,q) => q[1] - p[1]);
+        if (top[0][1] === top[1][1]) return null;
+        const ans = top[0][0];
+        const options = opt4(ans, fs.map(x => x[0]));
+        return options && { subType:"compare_growth", forceChoice:true,
+          question:`At n = ${n}, which of these step counts is the largest?`,
+          answer: ans, options,
+          explanation:`At n = ${n}: 100n = ${100*n}, n² = ${n*n}, 2ⁿ = ${Math.pow(2,n)}, n log₂ n ≈ ${r1(n*lg(n))}. The largest is ${ans}.${n < 10 ? " For small n the constant 100 still wins; past n = 10, 2ⁿ overtakes everything." : ""}` };
+      }
+      const c = pick([ ["n²", "n·log₂(n)", 16, 4], ["n²", "n·log₂(n)", 256, 32], ["n²", "n·log₂(n)", 4, 2], ["2ⁿ", "n²", 8, 4], ["2ⁿ", "n²", 16, 256], ["n²", "n·log₂(n)", 1024, 102.4] ]);
+      if (!Number.isInteger(c[3])) return null;
+      const options = opt4(c[3], [c[3] * 2, c[2], c[3] + 1]);
+      return options && { subType:"compare_growth",
+        question:`At n = ${c[2]}, how many times larger is ${c[0]} than ${c[1]}?`,
+        answer: c[3], options,
+        explanation: c[0] === "n²" ? `n² ÷ (n·log₂ n) = n ÷ log₂ n = ${c[2]} ÷ ${lg(c[2])} = ${c[3]}.`
+                                   : `2ⁿ ÷ n² = ${Math.pow(2,c[2])} ÷ ${c[2]*c[2]} = ${c[3]}.` };
+    },
+    doubling(){
+      const r = Math.random();
+      if (r < 0.65) {
+        const cls = pick([ ["O(n)",1], ["O(n²)",2], ["O(n³)",3] ]);
+        const f = pick([2,3,10]), T = pick([2,3,4,5,6,8]);
+        if (cls[1] === 3 && f === 10) return null;
+        const ans = T * Math.pow(f, cls[1]);
+        const options = opt4(ans, [T * f, T * f * f, T * f * f * f, T + f].filter(x => x !== ans));
+        return options && { subType:"doubling",
+          question:`An ${cls[0]} algorithm takes ${T} seconds for n items. About how long will it take for ${f === 2 ? "twice as many" : f === 3 ? "three times as many" : "ten times as many"} items?`,
+          answer: ans, options,
+          explanation:`${cls[0]}: multiplying n by ${f} multiplies the work by ${f}${cls[1] > 1 ? "^" + cls[1] : ""} = ${Math.pow(f, cls[1])}. ${T} × ${Math.pow(f, cls[1])} = ${ans} seconds.` };
+      }
+      if (r < 0.85) {
+        const k = ri(1,4), T = pick([1,2,3,5]), n = pick([20,25,30]);
+        const ans = T * Math.pow(2,k);
+        const options = opt4(ans, [T + k, T * k * 2, T * (k + 1)].filter(x => x !== ans).concat([ans * 2]));
+        return options && { subType:"doubling",
+          question:`An O(2ⁿ) algorithm takes ${T} second${T > 1 ? "s" : ""} when n = ${n}. About how long when n = ${n + k}?`,
+          answer: ans, options,
+          explanation:`Each extra item doubles 2ⁿ. ${k} more item${k > 1 ? "s" : ""} multiplies the time by 2^${k} = ${Math.pow(2,k)}: ${T} × ${Math.pow(2,k)} = ${ans} seconds.` };
+      }
+      const S = pick([10,12,15,20]);
+      const options = opt4(2*S, [S*S, S + 1, S * 10]);
+      return options && { subType:"doubling",
+        question:`A search that is O(log n) takes about ${S} steps on n items. About how many steps on n² items?`,
+        answer: 2*S, options,
+        explanation:`log(n²) = 2 log n, so squaring the input only doubles the steps: 2 × ${S} = ${2*S}.` };
+    },
+    binary_search(){
+      // Only sizes where ⌈log₂ n⌉ and ⌊log₂ n⌋ + 1 agree, so the two common
+      // ways of counting binary-search steps give the same answer.
+      const n = pick([10,12,20,50,60,75,100,200,300,500,750,1000,1500,3000,5000,10000,40000,100000,250000,1000000]);
+      const k = ceilLog2(n);
+      if (k !== Math.floor(lg(n)) + 1) return null;
+      const options = opt4(k, [k - 1, k + 1, Math.round(n / 2)]);
+      const ask = Math.random() < 0.5
+        ? `Binary search halves a sorted list of ${n.toLocaleString("en-US")} items with each comparison. At most how many comparisons does it need?`
+        : `In a guessing game the answer is a whole number from 1 to ${n.toLocaleString("en-US")}, and each guess is told "higher" or "lower". With the best strategy, what is the most guesses you need?`;
+      return { subType:"binary_search",
+        question: ask, answer: k, options: options || undefined,
+        explanation:`Each step halves what is left. 2^${k-1} = ${Math.pow(2,k-1).toLocaleString("en-US")} is less than ${n.toLocaleString("en-US")} but 2^${k} = ${Math.pow(2,k).toLocaleString("en-US")} is at least ${n.toLocaleString("en-US")}, so ⌈log₂ ${n}⌉ = ${k} steps are enough.` };
+    },
+    faster_large_n(){
+      if (Math.random() < 0.45) {
+        if (Math.random() < 0.5) {
+          const c = pick([10,20,50,100,250,1000]);
+          const options = opt4(c, [c * c, Math.round(Math.sqrt(c)), c / 2]);
+          return options && { subType:"faster_large_n",
+            question:`Algorithm A takes ${c}n steps and algorithm B takes n² steps. For what n do they take the same number of steps?`,
+            answer: c, options,
+            explanation:`${c}n = n² → divide by n → n = ${c}. Below that B is faster; above it A wins, and keeps winning.` };
+        }
+        const c = pick([3,4,5,6,8,10]);
+        const ans = Math.pow(2,c);
+        const options = opt4(ans, [c, c * c, ans * 2]);
+        return options && { subType:"faster_large_n",
+          question:`Algorithm A takes ${c}n steps and algorithm B takes n·log₂(n) steps. For what n are they equal?`,
+          answer: ans, options,
+          explanation:`${c}n = n·log₂ n → log₂ n = ${c} → n = 2^${c} = ${ans}.` };
+      }
+      const pairs = [ ["1000n", "n²"], ["50n·log₂(n)", "2n²"], ["100n²", "n³"], ["n⁵", "2ⁿ"], ["500·log₂(n)", "n"], ["20n", "n·log₂(n)"] ];
+      const p = pick(pairs);
+      const swap = Math.random() < 0.5;
+      const A = swap ? p[1] : p[0], B = swap ? p[0] : p[1];
+      const ans = swap ? "Algorithm B" : "Algorithm A";            // p[0] always grows slower
+      const options = opt4(ans, ["Algorithm A", "Algorithm B", "They are equally fast for every n", "It depends on the computer, not the formula"]);
+      return options && { subType:"faster_large_n", forceChoice:true,
+        question:`Algorithm A takes ${A} steps and algorithm B takes ${B} steps. Which is faster for very large n?`,
+        answer: ans, options,
+        explanation:`For large n only the growth rate matters, not the constant in front. ${p[0]} grows more slowly than ${p[1]}, so ${ans} is faster once n is big enough, even if it loses for small n.` };
+    },
+    count_ops(){
+      const v = pick(["grid","triangle","doubling","step","pairs"]);
+      let code, count = 0, why;
+      if (v === "grid") {
+        const n = ri(3,15), m = ri(3,15);
+        for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) count++;
+        code = `count = 0; for i = 1 to ${n}: for j = 1 to ${m}: count = count + 1`;
+        why = `The inner line runs ${m} times for each of ${n} outer passes: ${n} × ${m} = ${count}.`;
+      } else if (v === "triangle") {
+        const n = ri(4,20);
+        for (let i = 1; i <= n; i++) for (let j = 1; j <= i; j++) count++;
+        code = `count = 0; for i = 1 to ${n}: for j = 1 to i: count = count + 1`;
+        why = `The inner loop runs 1, 2, …, ${n} times: 1 + 2 + … + ${n} = ${n}(${n} + 1)/2 = ${count}.`;
+      } else if (v === "doubling") {
+        const n = ri(10, 2000);
+        for (let i = 1; i < n; i *= 2) count++;
+        code = `count = 0; i = 1; while i < ${n}: i = i * 2; count = count + 1`;
+        why = `i goes 1, 2, 4, … and the loop stops once i reaches ${n}. That is ${count} doublings, since 2^${count - 1} = ${Math.pow(2,count-1)} is below ${n} and 2^${count} = ${Math.pow(2,count)} is not.`;
+      } else if (v === "step") {
+        const n = ri(10, 100), k = ri(2,5);
+        for (let i = 0; i < n; i += k) count++;
+        code = `count = 0; i = 0; while i < ${n}: count = count + 1; i = i + ${k}`;
+        why = `i takes the values 0, ${k}, ${2*k}, …, ${(count-1)*k}, all below ${n}: that is ${count} values.`;
+      } else {
+        const n = ri(4,20);
+        for (let i = 1; i <= n; i++) for (let j = i + 1; j <= n; j++) count++;
+        code = `count = 0; for i = 1 to ${n}: for j = i + 1 to ${n}: count = count + 1`;
+        why = `This visits each pair once: ${n}(${n} - 1)/2 = ${count}.`;
+      }
+      const options = opt4(count, [count + 1, count - 1, count * 2].filter(x => x >= 0));
+      return options && { subType:"count_ops",
+        question:`How many times does "count = count + 1" run? ${code}`,
+        answer: count, options, explanation: why };
+    },
+  };
+
+  _addSkill(8, "Algorithmic Complexity", "Algorithmic Complexity", 4, {
+    goalProblem: "An O(n²) sort takes 3 seconds on 1,000 items. About how long on 2,000 items?",
+    teachingSteps: [
+      { title: "Count steps, not seconds", explanation: "Computers differ in speed, so we measure an algorithm by <strong>how its number of steps grows</strong> as the input size n grows. Trace a loop the way you did in Functions in Code and count how many times its body runs.", visual: "for i = 1 to n: …   runs n times" },
+      { title: "Big-O keeps only the fastest-growing part", explanation: "3n² + 5n + 20 is written <strong>O(n²)</strong>: drop constants and smaller terms, because for large n they stop mattering. A loop that always runs 100 times is O(1).", visual: "3n² + 5n + 20 → O(n²)     100 → O(1)" },
+      { title: "Reading loops", explanation: "One loop over n: <strong>O(n)</strong>. Loops one after another <em>add</em>: still O(n). Nested loops <em>multiply</em>: <strong>O(n²)</strong>. A loop that halves or doubles its counter runs about log₂ n times: <strong>O(log n)</strong>.", visual: "nested n × n → O(n²)    halving → O(log n)    n × halving → O(n log n)" },
+      { title: "The growth ladder", explanation: "From slowest-growing to fastest: O(1), O(log n), O(n), O(n log n), O(n²), O(n³), O(2ⁿ). Exponential growth (from Exponential Progression) is the wall: each extra item doubles the work.", visual: "n = 16:  log₂ n = 4,  n log₂ n = 64,  n² = 256,  2ⁿ = 65,536" },
+      { title: "Scaling predictions", explanation: "Doubling n doubles O(n) work, multiplies O(n²) work by 4 and O(n³) by 8. Binary search on n items needs about ⌈log₂ n⌉ halvings. For large n, the lower class always wins, whatever its constant.", visual: "n → 2n:  O(n) ×2   O(n²) ×4   O(n³) ×8" }
+    ],
+    finalAnswer: "12",
+    answerExplanation: "Doubling n multiplies O(n²) work by 2² = 4, so 3 seconds becomes about 12 seconds.",
+    example: { problem: "Give the Big-O of: for i = 1 to n: (j = 1; while j &lt; n: j = j * 2). Then count its inner steps when n = 16.", steps: [
+      { text: "Outer loop", math: "runs n times" },
+      { text: "Inner loop: j doubles until it reaches n", math: "about log₂ n times" },
+      { text: "Nested loops multiply", math: "n × log₂ n → O(n log n)" },
+      { text: "At n = 16", math: "16 × log₂ 16 = 16 × 4 = 64 inner steps" }
+    ]},
+    keyPoints: [
+      "Big-O describes growth: drop constants and smaller terms",
+      "Sequential loops add (O(n)); nested loops multiply (O(n²))",
+      "Halving or doubling a counter gives O(log n)",
+      "O(1) &lt; O(log n) &lt; O(n) &lt; O(n log n) &lt; O(n²) &lt; O(n³) &lt; O(2ⁿ)",
+      "Binary search on n items: about ⌈log₂ n⌉ steps"
+    ],
+    mistakes: [
+      { wrong: "Calling nested loops O(n) because \"there is one loop inside another\"", why: "The inner loop runs fully for every outer pass: n × n = n² steps." },
+      { wrong: "Calling two loops in a row O(n²)", why: "One after the other is n + n = 2n, which is O(n). Only nesting multiplies." },
+      { wrong: "Thinking 1000n is slower than n² for large n", why: "The constant does not change the growth. Past n = 1000, n² is bigger and keeps pulling away." }
+    ],
+    guided: { problem: "An O(n²) sort takes 3 seconds on 1,000 items. About how long on 2,000 items?", steps: [
+      { label: "How many times bigger is n?", value: "2000 ÷ 1000 = 2" },
+      { label: "O(n²): square that factor", value: "2² = 4" },
+      { label: "New time", value: "3 × 4 = 12" }
+    ], answer: "12", answerLabel: "seconds ≈",
+      interactiveSteps: [
+        { prompt: "How many times bigger is the new input? 2000 ÷ 1000 = ?", hint: "Divide the new size by the old size.", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number" },
+        { prompt: "For O(n²), the work grows by that factor squared. What is 2²?", hint: "2 × 2", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number", commonMistakes: { "2": "That would be O(n). For n² the factor is squared: 2² = 4." } },
+        { prompt: "Multiply the old time by 4: 3 × 4 = ? seconds.", hint: "Old time × growth factor", answer: "12", acceptableAnswers: ["12"], formatHint: "Enter a number", commonMistakes: { "6": "6 seconds is what an O(n) algorithm would take. O(n²) quadruples: 12." } },
+        { prompt: "Which Big-O class grows faster for large n: O(n²) or O(n log n)?", hint: "Compare n with log n.", answer: "O(n^2)", acceptableAnswers: ["O(n^2)"], formatHint: "Pick one",
+          selectOptions: [ { value: "O(n^2)", label: "O(n²)" }, { value: "O(n log n)", label: "O(n log n)" } ],
+          commonMistakes: { "O(n log n)": "log n grows much more slowly than n, so n log n is far below n² for large n." } }
+      ]
+    }
+  }, skillGen(AC));
+
+  // =====================================================================
+  // M-406  Simulation and Modeling  (tier 8)
+  // Builds on Randomness in Code, Velocity in Games and Spreadsheet Formulas.
+  // Every rule states its order of operations and rounding, because a
+  // simulation's answer depends on both.
+  // =====================================================================
+  const ON = "■", OFF = "□";
+  const rowText = r => r.map(c => (c ? ON : OFF)).join("");
+  const RULES = [
+    { text:`a cell becomes ${ON} if exactly one of its two neighbours is ${ON}, otherwise ${OFF}`, f:(l,c,r) => l ^ r },
+    { text:`a cell becomes ${ON} if it or either neighbour is ${ON}, otherwise ${OFF}`, f:(l,c,r) => l | c | r },
+    { text:`a cell becomes ${ON} if at least two of the three cells (itself and its two neighbours) are ${ON}, otherwise ${OFF}`, f:(l,c,r) => (l + c + r >= 2 ? 1 : 0) },
+  ];
+  const stepRow = (row, f, wrap) => row.map((c,i) => {
+    const n = row.length;
+    const l = i > 0 ? row[i-1] : (wrap ? row[n-1] : 0), r = i < n - 1 ? row[i+1] : (wrap ? row[0] : 0);
+    return f(l, c, r);
+  });
+  const runRow = (row, f, k, wrap) => { let r = row; for (let i = 0; i < k; i++) r = stepRow(r, f, wrap); return r; };
+
+  const SM = {
+    population(){
+      const P0 = ri(10,40) * 10, b = pick([5,10,20]), k = ri(2,4);
+      const pctDeath = Math.random() < 0.4;
+      const D = pctDeath ? pick([5,10]) : ri(3,30);
+      let P = P0; const log = [];
+      for (let s = 1; s <= k; s++) {
+        const births = Math.floor(P * b / 100), deaths = pctDeath ? Math.floor(P * D / 100) : D;
+        const next = P + births - deaths;
+        log.push(`step ${s}: ${P} + ${births} - ${deaths} = ${next}`);
+        P = next;
+      }
+      // one step short; one step long; never removing anyone
+      const short = (() => { let p = P0; for (let s = 1; s < k; s++) p = p + Math.floor(p*b/100) - (pctDeath ? Math.floor(p*D/100) : D); return p; })();
+      const options = opt4(P, [short, P + Math.floor(P*b/100) - (pctDeath ? Math.floor(P*D/100) : D), P0 + k * Math.floor(P0*b/100)]);
+      return options && { subType:"population",
+        question:`A simulated herd starts with ${P0} animals. Each step, births = ${b}% of the herd (rounded down) and ${pctDeath ? `deaths = ${D}% of the herd (rounded down), both from the size at the start of the step` : `${D} animals leave`}. How many animals are there after ${k} steps?`,
+        answer: P, options, explanation: log.join("; ") + "." };
+    },
+    bank(){
+      const B0 = ri(4,40) * 50, r = pick([1,2,3,5]), D = ri(2,20) * 10, k = ri(2,4);
+      let B = B0; const log = [];
+      for (let s = 1; s <= k; s++) {
+        const i = Math.round(B * r / 100), next = B + i + D;
+        log.push(`month ${s}: ${B} + ${i} interest + ${D} = ${next}`);
+        B = next;
+      }
+      const simple = B0 + k * (Math.round(B0 * r / 100) + D);    // interest only on the starting balance
+      const noInt = B0 + k * D;                                   // forgot the interest
+      const options = opt4(B, [simple, noInt, B - D]);
+      return options && { subType:"bank",
+        question:`A savings account starts at $${B0}. Each month: add ${r}% interest (rounded to the nearest dollar), then deposit $${D}. What is the balance after ${k} months, in dollars?`,
+        answer: B, acceptableAnswers:["$" + B], options, explanation: log.join("; ") + "." };
+    },
+    particle(){
+      if (Math.random() < 0.5) {
+        const y0 = ri(0,20), v0 = ri(8,20), gv = pick([1,2,3]), k = ri(2,5);
+        let y = y0, v = v0; const log = [];
+        for (let s = 1; s <= k; s++) { v -= gv; y += v; log.push(`step ${s}: v = ${v}, y = ${y}`); }
+        let y2 = y0, v2 = v0; for (let s = 1; s <= k; s++) { y2 += v2; v2 -= gv; }   // position first, then velocity
+        const options = opt4(y, [y2, y0 + k * v0, y0 + v0 - gv * k]);
+        return options && { subType:"particle",
+          question:`A ball starts at height y = ${y0} with upward velocity v = ${v0}. Each frame: first v = v - ${gv}, then y = y + v. What is y after ${k} frames?`,
+          answer: y, options, explanation: log.join("; ") + "." };
+      }
+      const W = pick([10,12,20]), vx = pick([2,3,4,5,6,7]) * sgn(), x0 = ri(0, W), k = ri(3,6);
+      if (Math.abs(vx) >= W) return null;
+      let x = x0, v = vx; const log = [];
+      for (let s = 1; s <= k; s++) {
+        x += v; let note = "";
+        if (x > W) { x = 2*W - x; v = -v; note = " (bounced off the right wall)"; }
+        else if (x < 0) { x = -x; v = -v; note = " (bounced off the left wall)"; }
+        log.push(`step ${s}: x = ${x}${note}`);
+      }
+      const straight = x0 + k * vx;                                // ignored the walls
+      const options = opt4(x, [straight, W - x, Math.abs(straight) % W]);
+      return options && { subType:"particle",
+        question:`A particle moves along a track from x = 0 to x = ${W}. It starts at x = ${x0} with velocity ${vx} per step. Each step x = x + v; if it passes a wall it bounces back the extra distance and v reverses. Where is it after ${k} steps?`,
+        answer: x, options, explanation: log.join("; ") + "." };
+    },
+    automaton(){
+      const n = ri(8,10), rule = pick(RULES), k = ri(1,2);
+      const row = Array.from({length:n}, () => (Math.random() < 0.4 ? 1 : 0));
+      if (!row.some(c => c)) return null;
+      const out = runRow(row, rule.f, k, false);
+      const story = `A row of cells is ${rowText(row)}. Every step, all cells update at once: ${rule.text}. Cells past the ends count as ${OFF}.`;
+      const steps = []; let cur = row; for (let i = 1; i <= k; i++) { cur = stepRow(cur, rule.f, false); steps.push(`after step ${i}: ${rowText(cur)}`); }
+      if (Math.random() < 0.35) {
+        const alive = out.reduce((a,b) => a + b, 0);
+        const options = opt4(alive, [row.reduce((a,b) => a + b, 0), runRow(row, rule.f, k, true).reduce((a,b) => a + b, 0), alive + 1]);
+        return options && { subType:"automaton",
+          question:`${story} How many cells are ${ON} after ${k} step${k > 1 ? "s" : ""}?`,
+          answer: alive, options, explanation: `Build each new row from the whole old row: ${steps.join("; ")}. That leaves ${alive} ${ON} cells.` };
+      }
+      const cands = [
+        rowText(runRow(row, rule.f, k, true)),                  // wrapped the ends around
+        rowText(runRow(row, rule.f, k + 1, false)),             // one step too many
+        rowText(k > 1 ? runRow(row, rule.f, k - 1, false) : row), // one step too few
+        rowText(runRow(row, (l,c,r) => l ^ c ^ r, k, false)),   // counted the cell itself
+        rowText(out.map((c,i) => (i === 0 ? 1 - c : c))),        // edge cell slip
+      ];
+      const options = opt4(rowText(out), cands);
+      return options && { subType:"automaton", forceChoice:true,
+        question:`${story} What is the row after ${k} step${k > 1 ? "s" : ""}?`,
+        answer: rowText(out), options, explanation: `Build each new row from the whole old row: ${steps.join("; ")}.` };
+    },
+    steady_state(){
+      const p = pick([0.1, 0.2, 0.25, 0.5]), S = pick([400,800,1200,1600,2000,2400]);
+      const c = Math.round(S * p);
+      // Confirm the fixed point by running it, rather than trusting algebra.
+      let x = ri(0, 2) * 400; for (let i = 0; i < 400; i++) x = (1 - p) * x + c;
+      if (Math.abs(x - S) > 0.5) return null;
+      const pct = Math.round(p * 100);
+      const ctx = pick([
+        { s:`A lake is stocked with fish. Each year ${pct}% of the fish are caught, then ${c} new fish are added.`, u:"fish" },
+        { s:`A patient's medicine level: each hour ${pct}% of the medicine leaves the body, then a ${c} mg dose is added.`, u:"mg" },
+        { s:`A game server: each minute ${pct}% of the players log off, then ${c} new players join.`, u:"players" },
+      ]);
+      if (Math.random() < 0.55) {
+        const options = opt4(S, [c, c * (1 + p), S * 2, Math.round(c / (1 - p))]);
+        return options && { subType:"steady_state",
+          question:`${ctx.s} Measured right after the additions, what level does this approach in the long run?`,
+          answer: S, options,
+          explanation:`At the steady level the amount lost equals the amount added: ${pct}% of L = ${c}, so L = ${c} ÷ ${p} = ${S} ${ctx.u}. (Check: ${S} - ${Math.round(S*p)} + ${c} = ${S}.)` };
+      }
+      const start = pick([S / 2, S * 2, S, 0]);
+      const ans = start < S ? `It rises and levels off near ${S}` : start > S ? `It falls and levels off near ${S}` : `It stays at ${S}`;
+      const options = opt4(ans, [`It rises and levels off near ${S}`, `It falls and levels off near ${S}`, `It stays at ${S}`, `It keeps growing without limit`]);
+      return options && { subType:"steady_state", forceChoice:true,
+        question:`${ctx.s} It starts at ${start} ${ctx.u}. What happens over time?`,
+        answer: ans, options,
+        explanation:`The level where loss equals addition is ${c} ÷ ${p} = ${S}. Below it, the ${c} added beats the ${pct}% lost, so the level rises; above it the loss wins and it falls. ${start === S ? "It starts exactly there, so it never moves." : "Either way it closes in on " + S + "."}` };
+    },
+    spreadsheet(){
+      if (Math.random() < 0.6) {
+        const s = ri(1,6), m = pick([2,2,3]), c = ri(-5,5), k = m === 3 ? ri(4,5) : ri(4,6);
+        if (c === 0) return null;
+        const vals = [s]; for (let i = 1; i < k; i++) vals.push(vals[i-1] * m + c);
+        const ans = vals[k-1];
+        const formula = `=A1*${m}${c < 0 ? c : "+" + c}`;
+        const options = opt4(ans, [vals[k-2], vals[k-2] * m, s * Math.pow(m, k-1)]);
+        return options && { subType:"spreadsheet",
+          question:`In a spreadsheet, A1 = ${s} and A2 contains ${formula}. A2 is filled down. What value is in A${k}?`,
+          answer: ans, options,
+          explanation:`Filled down, each cell uses the cell above. ${vals.map((v,i) => `A${i+1} = ${v}`).join(", ")}.` };
+      }
+      const s = ri(0, 50), gr = ri(2, 15), k = ri(5, 12);
+      const ans = s + (k - 1) * gr;
+      // treated $B$1 as relative (B2, B3... are empty, so only one addition); k additions; k - 2
+      const options = opt4(ans, [s + gr, s + k * gr, s + (k - 2) * gr]);
+      return options && { subType:"spreadsheet",
+        question:`B1 holds the growth per turn, ${gr}. A1 = ${s} and A2 contains =A1+$B$1, filled down. What value is in A${k}?`,
+        answer: ans, options,
+        explanation:`$B$1 is absolute, so every row adds the same ${gr}. A${k} is ${k - 1} additions after A1: ${s} + ${k - 1} × ${gr} = ${ans}.` };
+    },
+    random_walk(){
+      const p = pick([0.2, 0.25, 0.4, 0.5, 0.6, 0.75, 0.8]), a = ri(1,4), b = ri(1,4), k = pick([20,40,100]);
+      const ans = Math.round(k * (p * a - (1 - p) * b));
+      const perStep = r2(p * a - (1 - p) * b);
+      const options = opt4(ans, [k * (a - b), Math.round(k * p * a), Math.round(k * (p * a + (1 - p) * b))]);
+      return options && { subType:"random_walk",
+        question:`Each step a game piece runs: if random() < ${p} then x = x + ${a}, otherwise x = x - ${b}. It starts at x = 0. What is the expected value of x after ${k} steps?`,
+        answer: ans, options,
+        explanation:`random() < ${p} happens with probability ${p}. Expected change per step = ${p} × ${a} - ${r2(1 - p)} × ${b} = ${perStep}. After ${k} steps: ${k} × ${perStep} = ${ans}.` };
+    },
+  };
+
+  _addSkill(8, "Simulation and Modeling", "Simulation and Modeling", 4, {
+    goalProblem: "A herd of 200 animals: each step births are 10% of the herd (rounded down), then 15 animals leave. How many after 3 steps?",
+    teachingSteps: [
+      { title: "A simulation is a state and a rule", explanation: "The <strong>state</strong> is everything you track (a population, a balance, a position and velocity). The <strong>rule</strong> says how to get the next state from the current one. Apply the rule once per step, exactly like a loop in Functions in Code.", visual: "state₀ → rule → state₁ → rule → state₂ → …" },
+      { title: "Order and rounding matter", explanation: "\"Update velocity, then position\" gives a different answer from the reverse order, and rounding each step differs from rounding at the end. Do exactly what the rule says, in the order it says. A table with one row per step keeps you honest, just like filling a formula down a spreadsheet.", visual: "step | state\n0    | 200\n1    | 200 + 20 - 15 = 205" },
+      { title: "Motion: velocity and position", explanation: "From Velocity in Games: each frame, change the velocity (gravity pulls it down), then add the velocity to the position. Walls reverse the velocity.", visual: "v = v - g, then y = y + v" },
+      { title: "Cells: everyone updates at once", explanation: "In a cellular automaton each cell's next value depends on its neighbours <em>now</em>. Work out the whole next row from the old row before changing anything.", visual: "□■□ → middle cell has neighbours □ and □" },
+      { title: "Predicting the long run", explanation: "If each step keeps a fraction and adds a fixed amount, the state settles where loss equals gain: <strong>p × L = added</strong>, so L = added ÷ p. With randomness, the <strong>expected</strong> change per step is the probability-weighted average, from Randomness in Code.", visual: "lose 20%, add 300 → L = 300 ÷ 0.2 = 1500" }
+    ],
+    finalAnswer: "216",
+    answerExplanation: "Step 1: 200 + 20 - 15 = 205. Step 2: 10% of 205 is 20.5, rounded down to 20, so 205 + 20 - 15 = 210. Step 3: 10% of 210 is 21, so 210 + 21 - 15 = 216.",
+    example: { problem: "A ball starts at y = 0 with velocity 10. Each frame: v = v - 3, then y = y + v. Track 4 frames.", steps: [
+      { text: "Frame 1", math: "v = 7, y = 0 + 7 = 7" },
+      { text: "Frame 2", math: "v = 4, y = 7 + 4 = 11" },
+      { text: "Frame 3", math: "v = 1, y = 11 + 1 = 12" },
+      { text: "Frame 4", math: "v = -2, y = 12 - 2 = 10 (falling now)" }
+    ]},
+    keyPoints: [
+      "Write the state after every step in a table",
+      "Follow the rule's order and rounding exactly",
+      "Cellular automata: compute the whole new row from the old one",
+      "Steady state of \"lose p, add c\" is c ÷ p",
+      "Expected change per step = sum of probability × change"
+    ],
+    mistakes: [
+      { wrong: "Updating position before velocity when the rule says velocity first", why: "The order changes every later step. Follow the rule as written." },
+      { wrong: "Changing cells one at a time, left to right", why: "Every cell must use the OLD row. Build the new row separately." },
+      { wrong: "Computing the percentage of the starting value every step", why: "Each step uses the current state, so 10% of 205 is 20, not 10% of 200." }
+    ],
+    guided: { problem: "A herd starts at 300. Each step: births are 10% of the herd (rounded down), then 20 animals leave. How many after 2 steps?", steps: [
+      { label: "Step 1 births", value: "10% of 300 = 30" },
+      { label: "After step 1", value: "300 + 30 - 20 = 310" },
+      { label: "Step 2 births", value: "10% of 310 = 31" },
+      { label: "After step 2", value: "310 + 31 - 20 = 321" }
+    ], answer: "321", answerLabel: "herd after 2 steps =",
+      interactiveSteps: [
+        { prompt: "Step 1: births are 10% of 300. How many births?", hint: "10% means divide by 10.", answer: "30", acceptableAnswers: ["30"], formatHint: "Enter a number" },
+        { prompt: "After step 1: 300 + 30 - 20 = ?", hint: "Add the births, then remove the 20 that leave.", answer: "310", acceptableAnswers: ["310"], formatHint: "Enter a number", commonMistakes: { "330": "Do not forget the 20 animals that leave." } },
+        { prompt: "Step 2: births are 10% of the NEW herd, 310. How many births?", hint: "310 ÷ 10 = 31.", answer: "31", acceptableAnswers: ["31"], formatHint: "Enter a number", commonMistakes: { "30": "Use the current herd, 310, not the starting 300." } },
+        { prompt: "After step 2: 310 + 31 - 20 = ?", hint: "Same rule, new numbers.", answer: "321", acceptableAnswers: ["321"], formatHint: "Enter a number", commonMistakes: { "320": "Births in step 2 are 31, not 30." } }
+      ]
+    }
+  }, skillGen(SM));
+})();
 // ==== END GRADUATION PLAN CONTENT: CS-ADVANCED ====
 </script>
 </body>
