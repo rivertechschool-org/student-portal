@@ -68605,6 +68605,1624 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: CS-COMPUTATIONAL ====
+// Computer Science & Game Math branch, domain 8D Computational Mathematics:
+//   66D Binary Numbers                      -> M-384 Binary Numbers
+//   67D Boolean Logic                       -> M-385 Boolean Logic
+//   68D Computer Coordinate Systems         -> M-386 Screen Coordinates
+//   69D Variables & Functions in Computing  -> M-387 Functions in Code
+//   71D Randomness & Probability            -> M-388 Randomness in Code
+//   72D Computational Estimation            -> M-389 Computational Estimation
+// All six are tier 6. (70D Modulo Arithmetic is the existing M-210 skill.)
+//
+// Conventions every lesson and question here keeps to:
+//   * Code is JavaScript-style pseudocode (let, =, +=, ===, &&, ||, !,
+//     Math.floor, Math.random, % for remainder). Each lesson says so.
+//   * Answers come from running the logic the question prints. Expressions
+//     are small trees that are both printed (show) and evaluated (run), and
+//     loops are run as real JavaScript loops of the same shape, so the code
+//     on screen and the graded answer cannot drift apart.
+//   * Question, option and explanation strings are plain text: the arcade
+//     renders them as textContent and the practice phase as innerHTML, so
+//     they hold no markup, every "<" is followed by a space or "=" (it can
+//     never open a tag), and && / || always have spaces round them.
+//   * Tier 6 students TYPE answers whenever AnswerInterpreter can grade them
+//     (see shouldTypeAnswer). Binary answers grade as numbers, so 1011 typed
+//     for 1011 passes and the decimal 11 does not. A hex answer with a letter
+//     is classed as text and stays multiple choice. A hex answer is never
+//     written "0x47": AnswerInterpreter reads that as algebra (0 times x47)
+//     and would accept 0x46 for it - the 0x prefix is accepted by validate()
+//     instead. Choose-the-code, estimate and true/false questions are
+//     multiple choice by design.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (copied from GROUP E).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+  const pt = (x,y) => "(" + x + ", " + y + ")";
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- formatting ----
+  // 1234567 -> "1,234,567". Not toLocaleString: its separator follows the
+  // browser's locale, and a student in another locale would see 1.234.567.
+  const fmt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const SUP = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹","-":"⁻"};
+  const sup = n => String(n).split("").map(c => SUP[c]).join("");
+  const ord = n => n + ((n % 100 >= 11 && n % 100 <= 13) ? "th" : ({1:"st",2:"nd",3:"rd"}[n % 10] || "th"));
+  // One significant figure, without float dust: 100800 -> 100000, 0.0042 -> 0.004.
+  const sig1 = v => Number(Number(v).toPrecision(1));
+  // "a 500-page book" but "an 800-page book" / "an 80 × 40 box".
+  const art = n => (/^8/.test(String(n)) || n === 11 || n === 18) ? "an" : "a";
+  const fmtNum = v => v >= 1 ? fmt(Math.round(v)) : String(v);
+
+  // ---- tiny expression trees: one structure is both printed and evaluated ----
+  const V = name => ({ t: "v", name });
+  const N = k => ({ t: "n", k });
+  const OP = (op, l, r) => ({ t: "b", op, l, r });
+  const XOR = (l, r) => ({ t: "b", op: "!==", l, r, xor: true });
+  const NOT = e => ({ t: "not", e });
+  const FLOOR_DIV = (l, r) => ({ t: "fdiv", l, r });
+  const FN = (name, params, body) => ({ name, params, body });
+  const CALL = (fn, args) => ({ t: "call", fn, args });
+  const PREC = { "||": 4, "&&": 5, "===": 9, "!==": 9, "<": 10, "<=": 10, ">": 10, ">=": 10,
+                 "+": 12, "-": 12, "*": 13, "/": 13, "%": 13 };
+  const LOGIC = { "&&": true, "||": true };
+  function show(e) {
+    switch (e.t) {
+      case "v": return e.name;
+      case "n": return String(e.k);
+      case "not": return e.e.t === "b" ? "!(" + show(e.e) + ")" : "!" + show(e.e);
+      case "fdiv": return "Math.floor(" + show(e.l) + " / " + show(e.r) + ")";
+      case "call": return e.fn.name + "(" + e.args.map(show).join(", ") + ")";
+      case "b": {
+        const side = (c, right) => {
+          if (c.t !== "b") return show(c);
+          const pc = PREC[c.op], pp = PREC[e.op];
+          // Brackets where precedence needs them, and also round mixed && / ||
+          // and round an XOR inside anything: students should not need to know
+          // that && binds tighter than || to read the question.
+          const need = pc < pp || (right && pc === pp) || c.xor ||
+                       (LOGIC[c.op] && LOGIC[e.op] && c.op !== e.op);
+          return need ? "(" + show(c) + ")" : show(c);
+        };
+        return side(e.l, false) + " " + e.op + " " + side(e.r, true);
+      }
+    }
+    throw new Error("show: bad node");
+  }
+  // Evaluated with JavaScript's own operators, so && and || short-circuit and
+  // === compares exactly the way the printed code would.
+  function run(e, env) {
+    switch (e.t) {
+      case "v": if (!(e.name in env)) throw new Error("unbound " + e.name); return env[e.name];
+      case "n": return e.k;
+      case "not": return !run(e.e, env);
+      case "fdiv": return Math.floor(run(e.l, env) / run(e.r, env));
+      case "call": {
+        const local = {};
+        e.fn.params.forEach((p, i) => { local[p] = run(e.args[i], env); });
+        return run(e.fn.body, local);
+      }
+      case "b": {
+        const L = () => run(e.l, env), R = () => run(e.r, env);
+        switch (e.op) {
+          case "&&": return L() && R();
+          case "||": return L() || R();
+          case "===": return L() === R();
+          case "!==": return L() !== R();
+          case "<": return L() < R();
+          case "<=": return L() <= R();
+          case ">": return L() > R();
+          case ">=": return L() >= R();
+          case "+": return L() + R();
+          case "-": return L() - R();
+          case "*": return L() * R();
+          case "/": return L() / R();
+          case "%": return L() % R();
+        }
+      }
+    }
+    throw new Error("run: bad node");
+  }
+  // Inside-out working for an explanation: every operator node, innermost
+  // first, with its value under env.
+  function trace(e, env) {
+    const out = [];
+    const walk = n => {
+      if (n.t === "b") { walk(n.l); walk(n.r); }
+      else if (n.t === "not") walk(n.e);
+      else return;
+      const s = show(n) + " is " + run(n, env);
+      if (!out.includes(s)) out.push(s);
+    };
+    walk(e);
+    return out.join("; ");
+  }
+  const hasXor = e => e.t === "b" ? (!!e.xor || hasXor(e.l) || hasXor(e.r)) : e.t === "not" ? hasXor(e.e) : false;
+  const varsIn = e => e.t === "v" ? [e.name] : e.t === "not" ? varsIn(e.e)
+                    : e.t === "b" ? varsIn(e.l).concat(varsIn(e.r)) : [];
+
+  // ---- statements for code tracing: printed and executed from one object ----
+  //   { kind: "let" | "set", name, e }  or  { kind: "op", name, op: "+"|"-"|"*", e }
+  const stmtSrc = s => s.kind === "let" ? `let ${s.name} = ${show(s.e)};`
+                     : s.kind === "set" ? `${s.name} = ${show(s.e)};`
+                     : `${s.name} ${s.op}= ${show(s.e)};`;
+  function exec(stmts, env) {
+    for (const s of stmts) {
+      // The whole right side is worked out first, exactly as JavaScript does:
+      // x *= 2 + 1 multiplies by 3.
+      const v = run(s.e, env);
+      if (s.kind === "op") env[s.name] = s.op === "+" ? env[s.name] + v : s.op === "-" ? env[s.name] - v : env[s.name] * v;
+      else env[s.name] = v;
+    }
+    return env;
+  }
+
+  // =====================================================================
+  // M-384  Binary Numbers  (tier 6, plan item 66D)
+  // Prereqs: Place Value (M-007), Exponents (M-070).
+  // Mastery: converts between binary, decimal and hexadecimal and counts
+  // what n bits can represent.
+  // =====================================================================
+  const toBin = n => n.toString(2);
+  const toHex = n => n.toString(16).toUpperCase();
+  const strip0 = s => s.replace(/^0+(?=.)/, "");
+  const revBits = s => strip0(s.split("").reverse().join(""));
+  // Typed binary: AnswerInterpreter already takes "01011" for 1011. This also
+  // takes a 0b prefix and nibble spacing ("0011 1010"), compared as binary
+  // VALUES - a decimal typed by mistake is not binary digits and fails.
+  const binOk = n => typed => {
+    const t = String(typed).replace(/[\s_]/g, "").replace(/^0b/i, "");
+    return /^[01]+$/.test(t) && parseInt(t, 2) === n;
+  };
+  // Typed hex (only all-digit hex reaches a typed box): takes the 0x prefix.
+  const hexOk = n => typed => {
+    const t = String(typed).replace(/\s/g, "").replace(/^0x/i, "");
+    return /^[0-9a-f]+$/i.test(t) && parseInt(t, 16) === n;
+  };
+  // 45 -> "32 + 8 + 4 + 1": the place values holding a 1.
+  const placeSum = n => { const parts = [];
+    for (let p = Math.pow(2, toBin(n).length - 1); p >= 1; p /= 2) if (Math.floor(n / p) % 2) parts.push(p);
+    return parts.join(" + "); };
+
+  _addSkill(6, "Binary Numbers", "Binary Numbers", 3, {
+    goalProblem: "What is the binary number 101101 in decimal?",
+    teachingSteps: [
+      { title: "Place value in base 2",
+        explanation: "You already know decimal place value: each place is worth <strong>10 times</strong> the place to its right (1, 10, 100, ...). Binary is the same idea with <strong>2</strong>: the places are worth 1, 2, 4, 8, 16, 32, ... — the powers of 2, starting with 2⁰ = 1 on the right. Each binary digit is a <strong>bit</strong>, and it is either 0 or 1.",
+        visual: "place: 32 &nbsp;16 &nbsp;8 &nbsp;4 &nbsp;2 &nbsp;1<br>power: 2⁵ &nbsp;2⁴ &nbsp;2³ &nbsp;2² &nbsp;2¹ &nbsp;2⁰" },
+      { title: "Binary to decimal: add the places that hold a 1",
+        explanation: "Write the place values under the bits, starting from the <strong>right</strong>, and add up the places with a 1. A 0 contributes nothing.",
+        visual: "bits: &nbsp;1 &nbsp;0 &nbsp;1 &nbsp;1 &nbsp;0 &nbsp;1<br>32 + 8 + 4 + 1 = 45" },
+      { title: "Decimal to binary: take out the biggest powers of 2",
+        explanation: "To write 45 in binary, find the largest power of 2 that fits (32) and subtract it. Repeat with what is left: 13 takes an 8, 5 takes a 4, 1 takes a 1. Put a 1 in every place you used and a 0 everywhere else.",
+        visual: "45 − 32 = 13 → 13 − 8 = 5 → 5 − 4 = 1 → 1 − 1 = 0<br>32 16 8 4 2 1 → 1 0 1 1 0 1" },
+      { title: "Hexadecimal: one digit for every 4 bits",
+        explanation: "Base 16 uses the digits 0–9 and then A = 10, B = 11, C = 12, D = 13, E = 14, F = 15. Its places are 1, 16, 256, ... Four bits make exactly one hex digit (0000 to 1111 is 0 to 15), so split a binary number into groups of four from the right. Code marks hex with a <code>0x</code> prefix.",
+        visual: "0x2F = 2 × 16 + 15 = 47<br>1011 0110 → B 6 → 0xB6" },
+      { title: "How much n bits can hold",
+        explanation: "Each extra bit <strong>doubles</strong> the number of patterns, so n bits give <strong>2ⁿ</strong> different values. Counting starts at 0, so the largest unsigned (never negative) value is <strong>2ⁿ − 1</strong>. A <strong>byte</strong> is 8 bits: 256 values, 0 to 255. In this lesson 1 KB = 1024 bytes = 2¹⁰ bytes.",
+        visual: "8 bits: 2⁸ = 256 values, largest 255<br>1 byte = 8 bits &nbsp; 1 KB = 1024 bytes" },
+      { title: "Adding in binary",
+        explanation: "Add column by column from the right, just as in decimal — but there is no digit 2. 1 + 1 = 10 (two): write 0, carry 1. 1 + 1 + 1 = 11 (three): write 1, carry 1.",
+        visual: "&nbsp;&nbsp;1011 (11)<br>+ 0110 (6)<br>= 10001 (17)" }
+    ],
+    finalAnswer: "45",
+    answerExplanation: "101101 has 1s in the 32, 8, 4 and 1 places: 32 + 8 + 4 + 1 = 45.",
+    example: { problem: "Write 0x3C in binary and in decimal.", steps: [
+      { text: "Split the hex digits", math: "3 and C, where C = 12" },
+      { text: "Each hex digit is 4 bits", math: "3 → 0011, C → 1100" },
+      { text: "Join the groups", math: "0011 1100 = 111100 in binary" },
+      { text: "Decimal from the hex places", math: "3 × 16 + 12 = 60" }
+    ]},
+    keyPoints: [
+      "Binary places are powers of 2: 1, 2, 4, 8, ... starting on the RIGHT",
+      "Binary to decimal: add the places that hold a 1",
+      "Hex digits run 0–9 then A–F (10–15); one hex digit = 4 bits",
+      "n bits hold 2ⁿ values; the largest unsigned value is 2ⁿ − 1",
+      "In binary, 1 + 1 = 10: write 0 and carry 1"
+    ],
+    mistakes: [
+      { wrong: "Reading the place values from the left (1, 2, 4, ... left to right)", why: "The 1s place is on the RIGHT, as in decimal. Read backwards, 110 would be 3 instead of 6." },
+      { wrong: "8 bits can store numbers up to 256", why: "8 bits make 256 patterns, but one of them is 0, so the largest is 255 = 2⁸ − 1." },
+      { wrong: "0x2F = 2 × 10 + 15 = 35", why: "Hex places are worth 16, not 10: 0x2F = 2 × 16 + 15 = 47." },
+      { wrong: "Writing a 2 in a binary sum", why: "Binary has only 0 and 1. 1 + 1 = 10: write 0 and carry 1 to the next place." }
+    ],
+    guided: {
+      problem: "Write the decimal number 13 in binary, then say how many values 4 bits can hold.",
+      steps: [
+        { label: "Largest power of 2 that fits in 13", value: "8" },
+        { label: "What is left: 13 − 8", value: "5 = 4 + 1" },
+        { label: "Places 8, 4, 2, 1 get", value: "1101" },
+        { label: "Values 4 bits can hold", value: "16" }
+      ],
+      answer: "1101", answerLabel: "13 in binary =",
+      interactiveSteps: [
+        { prompt: "What is the largest power of 2 that is not more than 13?",
+          hint: "The powers of 2 are 1, 2, 4, 8, 16, ...", answer: "8", acceptableAnswers: ["8"], formatHint: "Enter a number" },
+        { prompt: "13 − 8 leaves 5. Which power of 2 is the largest one that fits in 5?",
+          hint: "5 = 4 + 1", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" },
+        { prompt: "So 13 = 8 + 4 + 1. Put a 1 in the 8, 4 and 1 places and a 0 in the 2 place. What is 13 in binary?",
+          hint: "The places from the left are 8, 4, 2, 1", answer: "1101", acceptableAnswers: ["1101", "01101", "00001101"], formatHint: "Binary digits, e.g. 1010" },
+        { prompt: "How many different values can 4 bits hold?",
+          hint: "Each bit doubles the count: 2 × 2 × 2 × 2", answer: "16", acceptableAnswers: ["16"], formatHint: "Enter a number" }
+      ]
+    }
+  }, function(){
+    const mode = pick(["bin_to_dec", "dec_to_bin", "hex_to_dec", "dec_to_hex", "bin_hex",
+                       "place_value", "bit_count", "bin_add", "bytes"]);
+
+    if (mode === "bin_to_dec") {
+      const n = ri(9, 255), b = toBin(n);
+      return { subType: mode,
+        question: `What is the binary number ${b} in decimal?`,
+        answer: String(n),
+        // bits read in reverse (1s place on the left); every place doubled
+        // (places started at 2); leftmost bit given one place too many; near misses
+        options: opt4(String(n), [parseInt(revBits(b), 2), 2 * n, n + Math.pow(2, b.length - 1), n + 1, n - 1, n + 2]),
+        explanation: `The place values from the right are 1, 2, 4, 8, 16, ... Add the places that hold a 1: ${placeSum(n)} = ${n}.` };
+    }
+
+    if (mode === "dec_to_bin") {
+      const n = ri(9, 255), b = toBin(n);
+      // b always starts with 1, so its first 0 (if any) is never at index 0
+      const dropZero = b.indexOf("0") > 0 ? b.replace("0", "") : toBin(n + 4);
+      return { subType: mode,
+        question: `Write the decimal number ${n} in binary.`,
+        answer: b, validate: binOk(n),
+        // bits written in reverse; a 0 place left out; neighbouring values
+        options: opt4(b, [revBits(b), dropZero, toBin(n + 1), toBin(n - 1), toBin(n + 2)]),
+        explanation: `Take out the largest powers of 2: ${n} = ${placeSum(n)}. Put a 1 in each of those places and a 0 in the others: ${b}.` };
+    }
+
+    if (mode === "hex_to_dec") {
+      const n = Math.random() < 0.7 ? ri(26, 255) : ri(256, 4095), h = toHex(n);
+      const digits = h.split("").map(c => parseInt(c, 16));
+      const asTens = digits.reduce((s, d) => s * 10 + d, 0);   // places taken as 1, 10, 100
+      const terms = digits.map((d, i) => `${d} × ${Math.pow(16, digits.length - 1 - i)}`).join(" + ");
+      const letters = [...new Set(h.replace(/[0-9]/g, "").split(""))].filter(Boolean)
+        .map(c => `${c} = ${parseInt(c, 16)}`).join(", ");
+      return { subType: mode,
+        question: `What is the hexadecimal number 0x${h} in decimal?`,
+        answer: String(n),
+        // places read as powers of 10; digits read in reverse; one 16 too many or few
+        options: opt4(String(n), [asTens, parseInt(h.split("").reverse().join(""), 16), n + 16, n - 16, n + 1]),
+        explanation: `Hex places are 1, 16, 256, ...${letters ? " and " + letters : ""}. 0x${h} = ${terms} = ${n}.` };
+    }
+
+    if (mode === "dec_to_hex") {
+      const n = ri(26, 255), h = toHex(n), q16 = Math.floor(n / 16), r16 = n % 16;
+      return { subType: mode,
+        question: `Write the decimal number ${n} in hexadecimal (digits 0-9 and A-F; the 0x prefix is optional).`,
+        answer: h, validate: hexOk(n),
+        // remainder written as a decimal number ("215" for 2 remainder 15);
+        // digits in reverse; neighbours
+        options: opt4(h, [String(q16) + String(r16), strip0(h.split("").reverse().join("")), toHex(n + 1), toHex(n - 1), toHex(n + 16)]),
+        explanation: `${n} ÷ 16 = ${q16} remainder ${r16}. The 16s digit is ${toHex(q16)} and the 1s digit is ${toHex(r16)}${r16 >= 10 ? ` (${r16} is written ${toHex(r16)})` : ""}, so ${n} = 0x${h}.` };
+    }
+
+    if (mode === "bin_hex") {
+      const n = ri(17, 255), hi = Math.floor(n / 16), lo = n % 16, h = toHex(n);
+      const b8 = toBin(n).padStart(8, "0"), grouped = b8.slice(0, 4) + " " + b8.slice(4);
+      if (Math.random() < 0.5) {
+        return { subType: "bin_to_hex",
+          question: `Convert the binary number ${grouped} to hexadecimal.`,
+          answer: h, validate: hexOk(n),
+          // the two groups swapped; each group written as a decimal number; neighbours
+          options: opt4(h, [strip0(toHex(lo) + toHex(hi)), String(hi) + String(lo), toHex(n + 1), toHex(n - 1), toHex(n ^ 16)]),
+          explanation: `Each group of 4 bits is one hex digit: ${b8.slice(0, 4)} = ${hi} → ${toHex(hi)} and ${b8.slice(4)} = ${lo} → ${toHex(lo)}. So ${grouped} = 0x${h}.` };
+      }
+      return { subType: "hex_to_bin",
+        question: `Convert the hexadecimal number 0x${h} to binary.`,
+        answer: toBin(n), validate: binOk(n),
+        // groups swapped; bits reversed; one bit wrong
+        options: opt4(toBin(n), [strip0(b8.slice(4) + b8.slice(0, 4)), revBits(b8), toBin(n ^ 1), toBin(n ^ 2), toBin(n ^ 16)]),
+        explanation: `Write each hex digit as 4 bits: ${toHex(hi)} → ${b8.slice(0, 4)} and ${toHex(lo)} → ${b8.slice(4)}. Together that is ${grouped}${b8[0] === "0" ? `, which is ${toBin(n)} without the leading zeros` : ""}.` };
+    }
+
+    if (mode === "place_value") {
+      if (Math.random() < 0.5) {
+        const k = ri(3, 10), ans = Math.pow(2, k - 1);
+        return { subType: "place_value",
+          question: `In a binary number, what is the place value of the ${ord(k)} digit from the right?`,
+          answer: String(ans),
+          // one place too far either way; 2 times the position instead of a
+          // power of 2; the decimal place value
+          options: opt4(String(ans), [2 * ans, ans / 2, 2 * k, Math.pow(10, k - 1)]),
+          explanation: `The places from the right are 2⁰ = 1, 2¹ = 2, 2² = 4, ... so the ${ord(k)} place is 2${sup(k - 1)} = ${ans}.` };
+      }
+      const d = ri(4, 10), big = Math.random() < 0.5;
+      const ans = big ? Math.pow(2, d) - 1 : Math.pow(2, d - 1);
+      return { subType: "digit_range",
+        question: `A binary number has ${d} digits and starts with 1. What is the ${big ? "largest" : "smallest"} value it can have?`,
+        answer: String(ans),
+        // 2^d (one place too many); 2^(d-1) - 1 (one place too few); the other end
+        options: opt4(String(ans), big
+          ? [Math.pow(2, d), Math.pow(2, d - 1), Math.pow(2, d - 1) - 1, Math.pow(2, d) - 2]
+          : [Math.pow(2, d), Math.pow(2, d - 1) - 1, Math.pow(2, d) - 1, Math.pow(2, d - 2)]),
+        explanation: big
+          ? `The largest is all 1s: ${"1".repeat(d)} = 2${sup(d)} − 1 = ${ans}.`
+          : `The smallest is 1 followed by ${d - 1} zeros: ${"1" + "0".repeat(d - 1)} = 2${sup(d - 1)} = ${ans}.` };
+    }
+
+    if (mode === "bit_count") {
+      const kind = pick(["bits_values", "bits_max", "bits_needed"]);
+      if (kind === "bits_needed") {
+        const v = ri(5, 2000);
+        let bits = 0; while (Math.pow(2, bits) < v) bits++;
+        return { subType: kind,
+          question: `What is the fewest bits that can give each of ${v} items its own different code?`,
+          answer: String(bits),
+          // one bit short or over; divided by 8 as if counting bytes
+          options: opt4(String(bits), [bits + 1, bits - 1, bits + 2, Math.ceil(v / 8)]),
+          explanation: `${bits - 1} bits give 2${sup(bits - 1)} = ${Math.pow(2, bits - 1)} codes, which is not enough for ${v}. ${bits} bits give 2${sup(bits)} = ${Math.pow(2, bits)}, which is. So ${bits} bits.` };
+      }
+      const n = pick([3, 4, 5, 6, 7, 8, 10, 12, 16, 24, 32]), p = Math.pow(2, n);
+      if (kind === "bits_values") {
+        return { subType: kind,
+          question: `How many different values can ${n} bits represent?`,
+          answer: String(p),
+          // forgot that 0 is a value too; 2 times n; n squared; one bit short
+          options: opt4(String(p), [p - 1, 2 * n, n * n, p / 2, 2 * p]),
+          explanation: `Each bit doubles the number of patterns: 2 × 2 × ... (${n} times) = 2${sup(n)} = ${fmt(p)}.` };
+      }
+      return { subType: kind,
+        question: `What is the largest unsigned (never negative) integer that fits in ${n} bits?`,
+        answer: String(p - 1),
+        // the count of values instead of the largest; one bit short; off by one
+        options: opt4(String(p - 1), [p, p / 2 - 1, p - 2, p / 2]),
+        explanation: `${n} bits hold 2${sup(n)} = ${fmt(p)} values. Counting starts at 0, so they run from 0 to 2${sup(n)} − 1 = ${fmt(p - 1)}.` };
+    }
+
+    if (mode === "bin_add") {
+      let a, b;
+      do { a = ri(5, 63); b = ri(5, 63); } while ((a & b) === 0);   // at least one carry
+      const ba = toBin(a), bb = toBin(b), s = a + b, bs = toBin(s);
+      // "1 + 1 = 2": column sums written down with no carrying
+      const w = Math.max(ba.length, bb.length), pa = ba.padStart(w, "0"), pb = bb.padStart(w, "0");
+      const decimalCols = strip0(pa.split("").map((c, i) => String(+c + +pb[i])).join(""));
+      return { subType: mode,
+        question: `Add the binary numbers ${ba} + ${bb}. Give the sum in binary.`,
+        answer: bs, validate: binOk(s),
+        // every carry dropped (that is XOR); 1 + 1 written as 2; neighbours
+        options: opt4(bs, [toBin(a ^ b), decimalCols, toBin(s + 1), toBin(s - 1), toBin(a | b)]),
+        explanation: `Add column by column from the right; 1 + 1 = 10, so write 0 and carry 1. Check in decimal: ${ba} = ${a} and ${bb} = ${b}; ${a} + ${b} = ${s}, which is ${bs} in binary.` };
+    }
+
+    // bytes, bits and kilobytes
+    const kind = pick(["bits_in_bytes", "bytes_in_kb", "kb_in_mb", "bytes_for_bits", "bits_in_kb"]);
+    if (kind === "bits_in_bytes") {
+      const n = ri(3, 40);
+      return { subType: "bytes",
+        question: `How many bits are in ${n} bytes? (1 byte = 8 bits)`,
+        answer: String(8 * n),
+        // 10 per byte; 4 per byte (a nibble); 16 per byte; one byte extra
+        options: opt4(String(8 * n), [10 * n, 4 * n, 16 * n, 8 * n + 8]),
+        explanation: `Each byte is 8 bits: ${n} × 8 = ${8 * n} bits.` };
+    }
+    if (kind === "bytes_for_bits") {
+      const bytes = ri(2, 64), bits = 8 * bytes;
+      return { subType: "bytes",
+        question: `How many bytes does it take to store ${bits} bits? (1 byte = 8 bits)`,
+        answer: String(bytes),
+        // multiplied instead of divided; divided by 4 or 10
+        options: opt4(String(bytes), [bits * 8, bits / 4, Math.round(bits / 10), bytes + 1]),
+        explanation: `Every 8 bits make one byte: ${bits} ÷ 8 = ${bytes} bytes.` };
+    }
+    if (kind === "bits_in_kb") {
+      const n = ri(1, 8);
+      return { subType: "bytes",
+        question: `How many bits are in ${n} KB? Use 1 KB = 1024 bytes and 1 byte = 8 bits.`,
+        answer: String(8192 * n),
+        // stopped at bytes; 1000 instead of 1024; 10 bits per byte
+        options: opt4(String(8192 * n), [1024 * n, 8000 * n, 10240 * n, 8192 * (n + 1)]),
+        explanation: `${n} KB = ${n} × 1024 = ${fmt(1024 * n)} bytes, and × 8 bits = ${fmt(8192 * n)} bits.` };
+    }
+    const n = kind === "kb_in_mb" ? ri(2, 16) : ri(2, 64);
+    const big = kind === "kb_in_mb" ? "MB" : "KB", small = kind === "kb_in_mb" ? "KB" : "bytes";
+    return { subType: "bytes",
+      question: `How many ${small} are in ${n} ${big}? Use 1 ${big} = 1024 ${small}.`,
+      answer: String(1024 * n),
+      // the metric 1000; times 8 as if converting to bits; one unit extra
+      options: opt4(String(1024 * n), [1000 * n, 8 * 1024 * n, 1024 * (n + 1), 100 * n]),
+      explanation: `Each ${big} is 1024 ${small}: ${n} × 1024 = ${fmt(1024 * n)} ${small}.` };
+  });
+
+  // =====================================================================
+  // M-385  Boolean Logic  (tier 6, plan item 67D)
+  // Prereq: Inequalities (M-118).
+  // Mastery: evaluates AND, OR, NOT and XOR expressions, builds truth tables
+  // and simplifies conditions.
+  // =====================================================================
+  const isLeaf = n => n.t === "v" || (n.t === "not" && n.e.t === "v");
+  const leafVar = n => n.t === "v" ? n.name : n.e.name;
+  // A random condition over the given true/false variables, three leaves deep.
+  function randLogic(names) {
+    const leaf = () => { const v = V(pick(names)); return Math.random() < 0.3 ? NOT(v) : v; };
+    const join = (l, r) => { const op = pick(["&&", "||", "&&", "||", "xor"]); return op === "xor" ? XOR(l, r) : OP(op, l, r); };
+    let e = join(leaf(), leaf());
+    e = Math.random() < 0.5 ? join(e, leaf()) : join(leaf(), e);
+    if (Math.random() < 0.2) e = NOT(e);
+    return e;
+  }
+  // Rejects degenerate draws: one variable only, or the same variable twice in
+  // one chain of the same operator ("a && !a", "!a && !b && !b"), which makes
+  // part of the expression constant or redundant and the question a trick.
+  function okLogic(e) {
+    if (new Set(varsIn(e)).size < 2) return false;
+    const opOf = n => n.t === "b" ? (n.xor ? "xor" : n.op) : null;
+    // the leaves of the maximal same-operator chain rooted at n
+    const chain = (n, op) => opOf(n) === op ? chain(n.l, op).concat(chain(n.r, op)) : [n];
+    let ok = true;
+    const walk = n => {
+      if (n.t === "b") {
+        const vars = chain(n, opOf(n)).filter(isLeaf).map(leafVar);
+        if (new Set(vars).size !== vars.length) ok = false;
+        walk(n.l); walk(n.r);
+      } else if (n.t === "not") walk(n.e);
+    };
+    walk(e);
+    return ok;
+  }
+  const XOR_NOTE = " (For true/false values, !== is XOR: true when exactly one side is true.)";
+  const rowEnv = (names, m) => { const env = {}; names.forEach((nm, i) => { env[nm] = !!(m & (1 << (names.length - 1 - i))); }); return env; };
+  const rowLabel = (names, env) => names.map(nm => `${nm} = ${env[nm]}`).join(", ");
+
+  _addSkill(6, "Boolean Logic", "Boolean Logic", 3, {
+    goalProblem: "Let x = 5 and y = 1. Is <code>x &gt; 3 &amp;&amp; y &lt; 2</code> true or false?",
+    teachingSteps: [
+      { title: "Conditions are true or false",
+        explanation: "From inequalities you know that x &gt; 3 is a statement that is either <strong>true</strong> or <strong>false</strong> once x has a value. Code calls true and false <strong>booleans</strong>. All code here is written in JavaScript style: <code>===</code> means \"equals\", <code>!==</code> means \"does not equal\".",
+        visual: "x = 5: &nbsp; x &gt; 3 → true &nbsp; x &lt;= 4 → false &nbsp; x === 5 → true" },
+      { title: "AND, OR, NOT",
+        explanation: "<code>a &amp;&amp; b</code> (AND) is true only when <em>both</em> sides are true. <code>a || b</code> (OR) is true when <em>at least one</em> side is true. <code>!a</code> (NOT) flips true and false.",
+        visual: "true &amp;&amp; false → false<br>true || false → true<br>!true → false" },
+      { title: "XOR: exactly one",
+        explanation: "<strong>Exclusive or</strong> is true when exactly one side is true — not both. For true/false values JavaScript writes it as <code>a !== b</code>: the two sides differ.",
+        visual: "true !== false → true<br>true !== true → false" },
+      { title: "Truth tables",
+        explanation: "A truth table lists <em>every</em> combination of inputs and the result for each. 2 variables give 4 rows, 3 give 8 — 2ⁿ rows, the same count as n bits.",
+        visual: "a &nbsp; b &nbsp;| a &amp;&amp; b | a || b<br>T &nbsp; T &nbsp;| T | T<br>T &nbsp; F &nbsp;| F | T<br>F &nbsp; T &nbsp;| F | T<br>F &nbsp; F &nbsp;| F | F" },
+      { title: "Inside out, and De Morgan's laws",
+        explanation: "Evaluate the innermost brackets first. To <strong>negate</strong> a compound condition, negate each part <em>and</em> swap &amp;&amp; with ||: <code>!(a &amp;&amp; b)</code> is <code>!a || !b</code>, and <code>!(a || b)</code> is <code>!a &amp;&amp; !b</code>. The opposite of &gt; is &lt;= (the boundary value switches sides).",
+        visual: "!(x &gt; 3 &amp;&amp; y &lt; 2) &nbsp;=&nbsp; x &lt;= 3 || y &gt;= 2" },
+      { title: "Short-circuiting",
+        explanation: "JavaScript stops as soon as the answer is certain. In <code>a &amp;&amp; b</code>, a false a settles it, so b is never evaluated. In <code>a || b</code>, a true a settles it. That matters when b is a function call: it may never run.",
+        visual: "false &amp;&amp; check() → check() never runs<br>true || check() → check() never runs" }
+    ],
+    finalAnswer: "true",
+    answerExplanation: "x &gt; 3 is 5 &gt; 3, true. y &lt; 2 is 1 &lt; 2, true. true &amp;&amp; true is true.",
+    example: { problem: "Let a = true, b = false, c = false. Evaluate <code>(a || b) &amp;&amp; !c</code>.", steps: [
+      { text: "Inner brackets first", math: "a || b → true || false → true" },
+      { text: "Then the NOT", math: "!c → !false → true" },
+      { text: "Then the AND", math: "true &amp;&amp; true → true" }
+    ]},
+    keyPoints: [
+      "&amp;&amp; needs both sides true; || needs at least one",
+      "! flips a value; for booleans a !== b is XOR (exactly one true)",
+      "n variables give 2ⁿ truth-table rows",
+      "De Morgan: !(a &amp;&amp; b) = !a || !b and !(a || b) = !a &amp;&amp; !b",
+      "&amp;&amp; and || stop early once the answer is certain (short-circuit)"
+    ],
+    mistakes: [
+      { wrong: "!(x &gt; 3 &amp;&amp; y &lt; 2) becomes x &lt;= 3 &amp;&amp; y &gt;= 2", why: "Negating also swaps &amp;&amp; for ||. The correct form is x &lt;= 3 || y &gt;= 2." },
+      { wrong: "The opposite of x &gt; 3 is x &lt; 3", why: "x = 3 makes x &gt; 3 false, so it belongs to the opposite. The opposite is x &lt;= 3." },
+      { wrong: "true || false is false because one side is false", why: "|| needs only one true side. It is false only when both sides are false." }
+    ],
+    guided: {
+      problem: "Let x = 7 and y = 4. Evaluate <code>!(x &lt; 5) &amp;&amp; (y === 4 || y &gt; 10)</code>.",
+      steps: [
+        { label: "x &lt; 5", value: "false" },
+        { label: "!(x &lt; 5)", value: "true" },
+        { label: "y === 4 || y &gt; 10", value: "true" },
+        { label: "true &amp;&amp; true", value: "true" }
+      ],
+      answer: "true", answerLabel: "Value =",
+      interactiveSteps: [
+        { prompt: "x = 7. Is <code>x &lt; 5</code> true or false?",
+          hint: "Is 7 less than 5?", answer: "false", acceptableAnswers: ["false"], formatHint: "true or false" },
+        { prompt: "Apply the NOT: what is <code>!(x &lt; 5)</code>?",
+          hint: "! flips the value you just found", answer: "true", acceptableAnswers: ["true"], formatHint: "true or false" },
+        { prompt: "y = 4. What is <code>y === 4 || y &gt; 10</code>?",
+          hint: "|| needs only one true side", answer: "true", acceptableAnswers: ["true"], formatHint: "true or false" },
+        { prompt: "Both sides of the <code>&amp;&amp;</code> are true. What is the whole expression?",
+          hint: "&& is true when both sides are true", answer: "true", acceptableAnswers: ["true"], formatHint: "true or false" }
+      ]
+    }
+  }, function(){
+    const mode = pick(["evaluate", "compare", "truth_count", "truth_row", "demorgan", "short_circuit"]);
+
+    if (mode === "evaluate") {
+      let e; do { e = randLogic(["a", "b", "c"]); } while (!okLogic(e));
+      const env = { a: pick([true, false]), b: pick([true, false]), c: pick([true, false]) };
+      const used = [...new Set(varsIn(e))].sort();
+      const ans = String(run(e, env));
+      return { subType: mode,
+        question: `Let ${rowLabel(used, env)}. What is the value of ${show(e)}?${hasXor(e) ? XOR_NOTE : ""}`,
+        answer: ans, options: sh(["true", "false"]),
+        explanation: `Work from the inside out: ${trace(e, env)}. So the value is ${ans}.` };
+    }
+
+    if (mode === "compare") {
+      const x = ri(0, 12), y = ri(0, 12);
+      const cmp = () => {
+        const nm = pick(["x", "y"]);
+        if (Math.random() < 0.2) return OP("===", OP("%", V(nm), N(2)), N(pick([0, 1])));   // even / odd test
+        return OP(pick(["<", "<=", ">", ">=", "===", "!=="]), V(nm), N(ri(1, 11)));
+      };
+      let e;
+      do {
+        e = OP(pick(["&&", "||"]), cmp(), cmp());
+        const r = Math.random();
+        if (r < 0.3) e = NOT(e);
+        else if (r < 0.55) e = OP(pick(["&&", "||"]), e, cmp());
+      } while (e.t === "b" && show(e.l) === show(e.r));
+      const ans = String(run(e, { x, y }));
+      return { subType: mode,
+        question: `let x = ${x}, y = ${y}; What is the value of ${show(e)}?`,
+        answer: ans, options: sh(["true", "false"]),
+        explanation: `With x = ${x} and y = ${y}: ${trace(e, { x, y })}. So the value is ${ans}.` };
+    }
+
+    if (mode === "truth_count") {
+      const names = Math.random() < 0.5 ? ["a", "b"] : ["a", "b", "c"];
+      let e; do { e = randLogic(names); } while (!okLogic(e) || new Set(varsIn(e)).size !== names.length);
+      const rows = Math.pow(2, names.length), trueRows = [];
+      for (let m = 0; m < rows; m++) { const env = rowEnv(names, m); if (run(e, env)) trueRows.push(rowLabel(names, env)); }
+      const k = trueRows.length;
+      return { subType: mode,
+        question: `A truth table for ${show(e)} lists every combination of ${names.join(", ")}. How many of its ${rows} rows make the expression true?${hasXor(e) ? XOR_NOTE : ""}`,
+        answer: String(k),
+        // counted the false rows; off by one either way; every row
+        options: opt4(String(k), [rows - k, k + 1, k - 1, k + 2, rows, 0].filter(v => v >= 0)),
+        explanation: `${names.length} variables give 2${sup(names.length)} = ${rows} rows. Checking each, the true ones are: ${k ? trueRows.join("; ") : "none"}. That is ${k}.` };
+    }
+
+    if (mode === "truth_row") {
+      const names = ["a", "b", "c"];
+      let e, rowsT, rowsF;
+      do {
+        do { e = randLogic(names); } while (!okLogic(e) || new Set(varsIn(e)).size !== 3);
+        rowsT = []; rowsF = [];
+        for (let m = 0; m < 8; m++) { const env = rowEnv(names, m); (run(e, env) ? rowsT : rowsF).push(env); }
+      } while (!rowsT.length || !rowsF.length);
+      // Ask for the rarer outcome: the other side then has at least 4 rows, so
+      // three wrong choices always exist and exactly one choice is right.
+      const wantTrue = rowsT.length <= rowsF.length;
+      const right = pick(wantTrue ? rowsT : rowsF), wrong = sh(wantTrue ? rowsF : rowsT).slice(0, 3);
+      const ans = rowLabel(names, right);
+      return { subType: mode, forceChoice: true,
+        question: `Which values make ${show(e)} ${wantTrue ? "true" : "false"}?${hasXor(e) ? XOR_NOTE : ""}`,
+        answer: ans, options: sh([ans, ...wrong.map(env => rowLabel(names, env))]),
+        explanation: `With ${ans}: ${trace(e, right)}. Each of the other choices makes it ${wantTrue ? "false" : "true"}.` };
+    }
+
+    if (mode === "demorgan") {
+      // Every choice is a tree too, and is compared with the original over a
+      // grid of inputs, so the right choice is equivalent and every wrong one
+      // differs somewhere - checked, not assumed.
+      const numeric = Math.random() < 0.6;
+      let orig, right, wrongs, grid, why;
+      const swap = { "&&": "||", "||": "&&" };
+      if (!numeric) {
+        const [p, q] = pick([["a", "b"], ["isReady", "hasKey"], ["isAlive", "hasShield"], ["online", "paid"]]);
+        const P = V(p), Q = V(q), inner = pick(["&&", "||"]), other = swap[inner];
+        orig = NOT(OP(inner, P, Q));
+        right = OP(other, NOT(P), NOT(Q));
+        wrongs = [OP(inner, NOT(P), NOT(Q)),   // negated the parts but kept the connective
+                  OP(other, P, Q),             // swapped the connective but dropped the negation
+                  OP(other, NOT(P), Q),        // negated only one part
+                  OP(inner, P, NOT(Q))];
+        grid = [0, 1, 2, 3].map(m => ({ [p]: !!(m & 2), [q]: !!(m & 1) }));
+        why = `Negate each part and swap ${inner} for ${other}: ${show(orig)} = ${show(right)}.`;
+      } else {
+        const A = ri(2, 9), B = ri(2, 9);
+        const flip = { ">": "<=", ">=": "<", "<": ">=", "<=": ">", "===": "!==", "!==": "===" };
+        const mirror = { ">": "<", ">=": "<=", "<": ">", "<=": ">=", "===": "!==", "!==": "===" };  // reverses direction, keeps strictness
+        const o1 = pick([">", ">=", "<", "<="]), o2 = pick([">", "<", "<=", ">=", "==="]);
+        const inner = pick(["&&", "||"]), other = swap[inner];
+        const cx = op => OP(op, V("x"), N(A)), cy = op => OP(op, V("y"), N(B));
+        orig = NOT(OP(inner, cx(o1), cy(o2)));
+        right = OP(other, cx(flip[o1]), cy(flip[o2]));
+        wrongs = [OP(inner, cx(flip[o1]), cy(flip[o2])),    // flipped the comparisons, kept the connective
+                  OP(other, cx(mirror[o1]), cy(mirror[o2])), // turned > into < : the boundary value is lost
+                  OP(other, cx(o1), cy(o2)),                 // swapped the connective only
+                  OP(inner, cx(mirror[o1]), cy(flip[o2]))];
+        grid = [];
+        for (let x = A - 2; x <= A + 2; x++) for (let y = B - 2; y <= B + 2; y++) grid.push({ x, y });
+        const opp = o1 === o2 ? `the opposite of ${o1} is ${flip[o1]}` : `the opposite of ${o1} is ${flip[o1]}, of ${o2} is ${flip[o2]}`;
+        why = `Negate each comparison (${opp}) and swap ${inner} for ${other}: ${show(right)}.`;
+      }
+      const same = (e1, e2) => grid.every(env => run(e1, env) === run(e2, env));
+      const ans = show(right);
+      const bad = wrongs.filter(w => !same(orig, w)).map(show);
+      // same(orig, right) always holds by De Morgan; the guard keeps a future
+      // edit to the tables above from shipping a question with no right answer.
+      const options = same(orig, right) ? opt4(ans, bad) : undefined;
+      return { subType: mode, forceChoice: true,
+        question: `Which expression means the same as ${show(orig)}?`,
+        answer: ans, options,
+        explanation: why };
+    }
+
+    // short_circuit: run a real counting function through JavaScript's own
+    // && and ||, so the count is what the language does.
+    const T = ri(2, 8), count = pick([2, 2, 3]), op = pick(["&&", "||"]);
+    const args = Array.from({ length: count }, () => ri(0, 10));
+    let calls = 0;
+    const check = n => { calls++; return n > T; };
+    if (op === "&&") { if (count === 2) check(args[0]) && check(args[1]); else check(args[0]) && check(args[1]) && check(args[2]); }
+    else { if (count === 2) check(args[0]) || check(args[1]); else check(args[0]) || check(args[1]) || check(args[2]); }
+    const ran = args.slice(0, calls).map(a => `check(${a}) returns ${a > T}`).join(", ");
+    const stopped = calls < count
+      ? ` The ${op === "&&" ? "false" : "true"} result settles the whole ${op}, so the rest is skipped.`
+      : ` No call settled it early, so every check ran.`;
+    return { subType: "short_circuit",
+      question: `let calls = 0; function check(n) { calls++; return n > ${T}; } let result = ${args.map(a => `check(${a})`).join(` ${op} `)}; What is calls afterward?`,
+      answer: String(calls),
+      // assumed every call runs; and the other counts
+      options: opt4(String(calls), [count, 1, 2, 3, 0]),
+      explanation: `${ran}.${stopped} calls = ${calls}.` };
+  });
+
+  // =====================================================================
+  // M-386  Screen Coordinates  (tier 6, plan item 68D)
+  // Prereqs: Coordinate Plane (M-068), Transformations (M-089).
+  // Mastery: pixel coordinates with y pointing down, origins, offsets and
+  // converting to and from math coordinates.
+  // =====================================================================
+  const SCREENS = [[320, 240], [640, 480], [800, 600], [1024, 768], [1280, 720], [1920, 1080]];
+  // A multiple of 10 in [a, b]: keeps the pixel arithmetic about the idea,
+  // not about long subtraction.
+  const r10 = (a, b) => 10 * ri(Math.ceil(a / 10), Math.floor(b / 10));
+
+  _addSkill(6, "Screen Coordinates", "Screen Coordinates", 3, {
+    goalProblem: "An 800 × 600 game window. A point is at math coordinates (200, 150), with the origin at the bottom-left and y up. Where is it on the screen, where the origin is the top-left and y points down?",
+    teachingSteps: [
+      { title: "Screens start at the top-left",
+        explanation: "On the coordinate plane, y grows <strong>upward</strong>. On a screen, pixel (0, 0) is the <strong>top-left</strong> corner, x grows to the right and y grows <strong>downward</strong> — screens are drawn row by row from the top. Code here is JavaScript style.",
+        visual: "(0, 0) ──→ x<br>&nbsp;│<br>&nbsp;↓ y" },
+      { title: "Up means y gets smaller",
+        explanation: "On screen, moving <strong>up</strong> subtracts from y and moving <strong>down</strong> adds to y. Left and right work as usual.",
+        visual: "at (100, 300), move up 50 → (100, 250)" },
+      { title: "Converting math ↔ screen",
+        explanation: "Flipping y is a reflection over a horizontal line followed by a translation (the transformations you know): <strong>screen y = H − math y</strong>, where H is the height. The same formula converts back, and x does not change.",
+        visual: "H = 600: math (200, 150) → screen (200, 600 − 150) = (200, 450)" },
+      { title: "Centering",
+        explanation: "Objects are usually drawn from their <strong>top-left corner</strong>. To center something of width w in a space of width W, put its left edge at <strong>(W − w) / 2</strong> — half of the leftover space goes on each side. Height works the same way.",
+        visual: "W = 800, w = 100 → x = (800 − 100) / 2 = 350" },
+      { title: "Offsets from a parent",
+        explanation: "A button inside a panel is placed relative to the panel's top-left corner. Its screen position is the <strong>panel position + the offset</strong>: add x to x and y to y. Subtract to go the other way.",
+        visual: "panel (300, 200) + offset (20, 40) → (320, 240)" },
+      { title: "Which tile is a pixel in?",
+        explanation: "With square tiles of size T, numbered from 0: <code>column = Math.floor(x / T)</code> and <code>row = Math.floor(y / T)</code>. Floor, not round: with T = 32, tile 1 covers pixels 32 to 63, so pixel 60 is still in tile 1.",
+        visual: "T = 32, pixel (70, 100) → (Math.floor(70 / 32), Math.floor(100 / 32)) = (2, 3)" }
+    ],
+    finalAnswer: "(200, 450)",
+    answerExplanation: "x stays 200. Screen y counts down from the top: 600 − 150 = 450.",
+    example: { problem: "A 640 × 480 canvas. Center a 200 × 100 box and give its top-left corner.", steps: [
+      { text: "Leftover width, halved", math: "(640 − 200) / 2 = 220" },
+      { text: "Leftover height, halved", math: "(480 − 100) / 2 = 190" },
+      { text: "Top-left corner", math: "(220, 190)" }
+    ]},
+    keyPoints: [
+      "Screen origin is the top-left; y grows downward",
+      "Up subtracts from y, down adds to y",
+      "math ↔ screen: y becomes H − y, x stays the same",
+      "Center: left edge at (W − w) / 2",
+      "Child on screen = parent position + offset",
+      "Tile = (Math.floor(x / T), Math.floor(y / T))"
+    ],
+    mistakes: [
+      { wrong: "Moving a sprite up by adding to y", why: "On screen y grows downward, so moving up subtracts from y." },
+      { wrong: "Centering with x = W / 2", why: "That puts the object's LEFT EDGE at the center, so it hangs off to the right. Use (W − w) / 2." },
+      { wrong: "Using Math.round to find the tile", why: "With 32-pixel tiles, pixel 60 is in tile 1 (pixels 32 to 63), but Math.round(60 / 32) gives 2. Use Math.floor." }
+    ],
+    guided: {
+      problem: "A 1280 × 720 window. A sprite is at math coordinates (400, 100). Find its screen position, then move it up 30 pixels.",
+      steps: [
+        { label: "Screen x", value: "400" },
+        { label: "Screen y = 720 − 100", value: "620" },
+        { label: "Screen position", value: "(400, 620)" },
+        { label: "After moving up 30", value: "(400, 590)" }
+      ],
+      answer: "(400, 590)", answerLabel: "New screen position =",
+      interactiveSteps: [
+        { prompt: "x does not change between math and screen coordinates. What is the screen x?",
+          hint: "It is the same as the math x", answer: "400", acceptableAnswers: ["400"], formatHint: "Enter a number" },
+        { prompt: "Screen y = H − math y = 720 − 100. What is the screen y?",
+          hint: "Subtract 100 from the height 720", answer: "620", acceptableAnswers: ["620"], formatHint: "Enter a number" },
+        { prompt: "Write the screen position as (x, y).",
+          hint: "Use the two values you just found", answer: "(400, 620)", acceptableAnswers: ["(400, 620)"], formatHint: "e.g., (3, 5)" },
+        { prompt: "The sprite moves up 30 pixels on the screen. Where is it now?",
+          hint: "Up on a screen means y gets smaller", answer: "(400, 590)", acceptableAnswers: ["(400, 590)"], formatHint: "e.g., (3, 5)" }
+      ]
+    }
+  }, function(){
+    const [W, H] = pick(SCREENS);
+    const mode = pick(["math_to_screen", "screen_to_math", "center", "parent_offset", "move", "grid_cell", "edges"]);
+
+    if (mode === "math_to_screen" || mode === "screen_to_math") {
+      let x, y;
+      do { x = r10(10, W - 10); y = r10(10, H - 10); } while (2 * y === H || 2 * x === W || x === H - y);
+      const ans = pt(x, H - y);
+      return { subType: mode,
+        question: mode === "math_to_screen"
+          ? `A game window is ${W} × ${H} pixels. A point has math coordinates ${pt(x, y)}: origin at the bottom-left, y up. What are its screen coordinates (origin at the top-left, y down)?`
+          : `A game window is ${W} × ${H} pixels. A pixel is at screen coordinates ${pt(x, y)}: origin at the top-left, y down. What are its math coordinates (origin at the bottom-left, y up)?`,
+        answer: ans,
+        // y left alone; the wrong axis flipped; both flipped; flipped with the
+        // subtraction the wrong way round; x and y swapped
+        options: opt4(ans, [pt(x, y), pt(W - x, y), pt(W - x, H - y), pt(x, y - H), pt(H - y, x)]),
+        explanation: `x is measured from the same edge in both systems, so it stays ${x}. y is measured from the opposite edge, so the new y = ${H} − ${y} = ${H - y}. Answer: ${ans}.` };
+    }
+
+    if (mode === "center") {
+      // W, H, w and h are all multiples of 10, so the leftover is even and the
+      // centred edge lands on a whole pixel.
+      const w = r10(20, W / 2), h = r10(20, H / 2), cx = (W - w) / 2, cy = (H - h) / 2;
+      if (Math.random() < 0.5) {
+        return { subType: "center_x",
+          question: `A window is ${W} pixels wide. A sprite ${w} pixels wide is drawn with its x at its left edge. What x centers it horizontally?`,
+          answer: String(cx),
+          // left edge put at the middle; leftover not halved; half-width added
+          // instead of subtracted; a whole width subtracted
+          options: opt4(String(cx), [W / 2, W - w, W / 2 + w / 2, W / 2 - w]),
+          explanation: `The leftover space is ${W} − ${w} = ${W - w}. Half goes on each side, so x = ${W - w} / 2 = ${cx}.` };
+      }
+      const ans = pt(cx, cy);
+      return { subType: "center_box",
+        question: `A window is ${W} × ${H} pixels. ${art(w) === "an" ? "An" : "A"} ${w} × ${h} box is drawn from its top-left corner. What top-left corner centers the box in the window?`,
+        answer: ans,
+        // corner at the middle of the window; leftover not halved; x and y
+        // swapped; only x centred
+        options: opt4(ans, [pt(W / 2, H / 2), pt(W - w, H - h), pt(cy, cx), pt(cx, H / 2), pt(W / 2 - w, H / 2 - h)]),
+        explanation: `x = (${W} − ${w}) / 2 = ${cx} and y = (${H} − ${h}) / 2 = ${cy}, so the corner is ${ans}.` };
+    }
+
+    if (mode === "parent_offset") {
+      let px, py, ox, oy;
+      do { px = r10(20, W / 2); py = r10(20, H / 2); ox = r10(10, 200); oy = r10(10, 200); } while (px === py || ox === oy);
+      if (Math.random() < 0.6) {
+        const ans = pt(px + ox, py + oy);
+        return { subType: "child_to_screen",
+          question: `A panel's top-left corner is at screen position ${pt(px, py)}. A button inside it is placed at ${pt(ox, oy)}, measured from the panel's top-left corner. Where is the button on the screen?`,
+          answer: ans,
+          // the offset on its own; y treated as up; offset x and y swapped; subtracted
+          options: opt4(ans, [pt(ox, oy), pt(px + ox, py - oy), pt(px + oy, py + ox), pt(px - ox, py - oy)]),
+          explanation: `Add the offset to the panel's position: x = ${px} + ${ox} = ${px + ox}, y = ${py} + ${oy} = ${py + oy}.` };
+      }
+      const sx = px + ox, sy = py + oy, ans = pt(ox, oy);
+      return { subType: "screen_to_child",
+        question: `A panel's top-left corner is at screen position ${pt(px, py)}. The mouse clicks at screen position ${pt(sx, sy)}. Where is the click, measured from the panel's top-left corner?`,
+        answer: ans,
+        // added instead of subtracted; subtracted the wrong way round; left in
+        // screen coordinates; x and y swapped
+        options: opt4(ans, [pt(sx + px, sy + py), pt(px - sx, py - sy), pt(sx, sy), pt(oy, ox)]),
+        explanation: `Subtract the panel's position: x = ${sx} − ${px} = ${ox}, y = ${sy} − ${py} = ${oy}.` };
+    }
+
+    if (mode === "move") {
+      const x = r10(100, W - 100), y = r10(100, H - 100);
+      if (Math.random() < 0.4) {
+        const v = ri(2, 8), up = Math.random() < 0.6;
+        // keep the sprite on screen: at most y - 10 pixels up, H - y - 10 down
+        const f = Math.max(2, Math.min(ri(5, 20), Math.floor(((up ? y : H - y) - 10) / v))), d = v * f;
+        const ans = pt(x, up ? y - d : y + d);
+        return { subType: "move_frames",
+          question: `A sprite is at screen position ${pt(x, y)}. Each frame it moves ${v} pixels ${up ? "up" : "down"}. Where is it after ${f} frames?`,
+          answer: ans,
+          // direction flipped (y-up habit); moved along x; one frame only; added v and f
+          options: opt4(ans, [pt(x, up ? y + d : y - d), pt(up ? x - d : x + d, y), pt(x, up ? y - v : y + v), pt(x, up ? y - v - f : y + v + f)]),
+          explanation: `${f} frames × ${v} pixels = ${d} pixels ${up ? "up" : "down"}. On screen ${up ? "up subtracts from" : "down adds to"} y: ${y} ${up ? "−" : "+"} ${d} = ${up ? y - d : y + d}. x stays ${x}.` };
+      }
+      const up = Math.random() < 0.5, d = r10(10, 90), right = Math.random() < 0.5, s = r10(10, 90);
+      const dy = up ? -d : d, dx = right ? s : -s, ans = pt(x + dx, y + dy);
+      return { subType: "move",
+        question: `A sprite is at screen position ${pt(x, y)}. It moves ${d} pixels ${up ? "up" : "down"} and ${s} pixels ${right ? "right" : "left"}. Where is it now?`,
+        answer: ans,
+        // y moved the math way; x the wrong way; both wrong; the two moves swapped between axes
+        options: opt4(ans, [pt(x + dx, y - dy), pt(x - dx, y + dy), pt(x - dx, y - dy), pt(x + dy, y + dx)]),
+        explanation: `On screen, up subtracts from y and down adds to y; right adds to x and left subtracts. x = ${x} ${dx > 0 ? "+" : "−"} ${s} = ${x + dx}, y = ${y} ${dy > 0 ? "+" : "−"} ${d} = ${y + dy}.` };
+    }
+
+    if (mode === "grid_cell") {
+      const T = pick([16, 20, 25, 32, 40, 48, 64]);
+      if (Math.random() < 0.7) {
+        let px, py;
+        do { px = ri(T + 1, W - 1); py = ri(T + 1, H - 1); }
+        while (px % T === 0 || py % T === 0 || Math.floor(px / T) === Math.floor(py / T));
+        const c = Math.floor(px / T), r = Math.floor(py / T), ans = pt(c, r);
+        return { subType: "pixel_to_tile",
+          question: `A tile map uses ${T} × ${T} pixel tiles. Columns and rows are numbered from 0, starting at the top-left. Which tile (column, row) contains the pixel ${pt(px, py)}?`,
+          answer: ans,
+          // rounded instead of floored; counted from 1; column and row swapped; off by one
+          options: opt4(ans, [pt(Math.round(px / T), Math.round(py / T)), pt(c + 1, r + 1), pt(r, c), pt(c, r + 1), pt(c + 1, r)]),
+          explanation: `column = Math.floor(${px} / ${T}) = Math.floor(${(px / T).toFixed(2)}) = ${c}; row = Math.floor(${py} / ${T}) = Math.floor(${(py / T).toFixed(2)}) = ${r}. Tile ${ans}.` };
+      }
+      let c, r; do { c = ri(1, 15); r = ri(1, 10); } while (c === r);
+      const ans = pt(c * T, r * T);
+      return { subType: "tile_to_pixel",
+        question: `A tile map uses ${T} × ${T} pixel tiles, numbered from 0 at the top-left. What pixel is the top-left corner of tile (column ${c}, row ${r})?`,
+        answer: ans,
+        // counted tiles from 1; x and y swapped; bottom-right corner instead
+        options: opt4(ans, [pt((c - 1) * T, (r - 1) * T), pt(r * T, c * T), pt((c + 1) * T, (r + 1) * T), pt(c * T, (r + 1) * T)]),
+        explanation: `Tile ${c} starts ${c} whole tiles from the left: x = ${c} × ${T} = ${c * T}. Row ${r} starts ${r} tiles down: y = ${r} × ${T} = ${r * T}.` };
+    }
+
+    // edges of a box drawn from its top-left corner
+    let x, y, w, h;
+    do { x = r10(20, W / 2); y = r10(20, H / 2); w = r10(20, 200); h = r10(20, 200); } while (w === h || x === y);
+    if (Math.random() < 0.5) {
+      const ans = y + h;
+      return { subType: "bottom_edge",
+        question: `A box is drawn with its top-left corner at ${pt(x, y)}, width ${w} and height ${h}. What is the y-coordinate of its bottom edge?`,
+        answer: String(ans),
+        // height subtracted (y-up habit); width used; height alone; half the height
+        options: opt4(String(ans), [y - h, y + w, h, y + h / 2, x + h]),
+        explanation: `y grows downward, so the bottom edge is the height below the top: ${y} + ${h} = ${ans}.` };
+    }
+    const ans = pt(x + w, y + h);
+    return { subType: "corner",
+      question: `A box is drawn with its top-left corner at ${pt(x, y)}, width ${w} and height ${h}. What are the screen coordinates of its bottom-right corner?`,
+      answer: ans,
+      // height subtracted (y-up habit); width subtracted; width and height
+      // swapped; the size on its own
+      options: opt4(ans, [pt(x + w, y - h), pt(x - w, y + h), pt(x + h, y + w), pt(w, h)]),
+      explanation: `Right is +x and down is +y: (${x} + ${w}, ${y} + ${h}) = ${ans}.` };
+  });
+
+  // =====================================================================
+  // M-387  Functions in Code  (tier 6, plan item 69D)
+  // Prereqs: Function Notation and Evaluation (M-230), Order of Operations (M-069).
+  // Mastery: traces variables, functions, loops and integer division the way
+  // a program evaluates them.
+  // =====================================================================
+  // Line-by-line working for an explanation: "a = 4; b = 12; ..."
+  function traceStmts(stmts) {
+    const env = {}, out = [];
+    for (const s of stmts) { exec([s], env); out.push(`${s.name} = ${env[s.name]}`); }
+    return out.join(", then ");
+  }
+  const subst = (src, env) => src.replace(/\b[a-z]\b/g, m => (m in env ? String(env[m]) : m));
+
+  _addSkill(6, "Functions in Code", "Functions in Code", 3, {
+    goalProblem: "<code>let a = 4; let b = a * 3; a = b - a;</code> What is a now?",
+    teachingSteps: [
+      { title: "Variables are labelled boxes",
+        explanation: "Code here is JavaScript style. <code>let a = 4;</code> makes a box named a holding 4. <code>a = b - a;</code> works out the right side with the <strong>current</strong> values, then replaces what was in a. In code, = means \"store\", not \"is equal\" (that is ===).",
+        visual: "let a = 4; → a is 4<br>let b = a * 3; → b is 12<br>a = b - a; → a is 12 − 4 = 8" },
+      { title: "Trace line by line",
+        explanation: "Keep a table of every variable and update it after each line. Order of operations still applies inside each expression. Once a line runs, the old value is gone.",
+        visual: "line | a | b<br>1 &nbsp;| 4 | –<br>2 &nbsp;| 4 | 12<br>3 &nbsp;| 8 | 12" },
+      { title: "Functions are f(x) in code",
+        explanation: "<code>function f(x) { return 2 * x + 3; }</code> is the function f(x) = 2x + 3. Calling f(5) puts 5 in for x and hands back the returned value, 13. For f(g(2)), work inside out: g(2) first, then f of that result.",
+        visual: "g(x) = x + 1, f(x) = 2x → f(g(2)) = f(3) = 6" },
+      { title: "Shortcuts: +=, -=, *=",
+        explanation: "<code>x += 3</code> means x = x + 3. The whole right side is worked out first: <code>x *= 2 + 1</code> means x = x * (2 + 1), which multiplies by 3.",
+        visual: "x = 5; x += 3 → 8; x *= 2 → 16" },
+      { title: "Integer division and remainder",
+        explanation: "Dividing in JavaScript gives a decimal: 7 / 2 is 3.5. For the whole-number quotient use <code>Math.floor(7 / 2)</code>, which is 3. The remainder is <code>7 % 2</code>, which is 1.",
+        visual: "135 minutes: Math.floor(135 / 60) = 2 hours, 135 % 60 = 15 minutes" },
+      { title: "Loops repeat a block",
+        explanation: "<code>for (let i = 1; i &lt;= 4; i++) { total += i; }</code> runs with i = 1, 2, 3, 4 — four times. With <code>i &lt; 4</code> it would stop after 3. Counting the iterations exactly is the skill: off-by-one is the most common loop bug.",
+        visual: "i: 1, 2, 3, 4 → total: 1, 3, 6, 10" }
+    ],
+    finalAnswer: "8",
+    answerExplanation: "a starts at 4, b becomes 4 × 3 = 12, then a = 12 − 4 = 8.",
+    example: { problem: "<code>function f(x) { return x * x - 1; } function g(x) { return x + 2; }</code> What is f(g(3))?", steps: [
+      { text: "Inside first: g(3)", math: "3 + 2 = 5" },
+      { text: "Then f(5)", math: "5 × 5 − 1 = 24" }
+    ]},
+    keyPoints: [
+      "= stores a value; the right side uses the current values",
+      "Trace every variable after every line",
+      "A function call substitutes the argument for the parameter; nested calls work inside out",
+      "x += 3 means x = x + 3; the right side is worked out first",
+      "Math.floor(a / b) is the whole quotient, a % b the remainder",
+      "Count loop iterations exactly: check the start, the end test and the step"
+    ],
+    mistakes: [
+      { wrong: "Using a's old value after a = b - a has run", why: "Once a line runs the old value is gone. Every later line uses the new value." },
+      { wrong: "for (let i = 0; i &lt; 5; i++) runs 4 times", why: "i takes 0, 1, 2, 3, 4 — five values. Count from the start up to, but not including, the end." },
+      { wrong: "Math.floor(17 / 5) is 3.4", why: "17 / 5 is 3.4 and Math.floor drops the decimal part, giving 3. The remainder 17 % 5 is 2." }
+    ],
+    guided: {
+      problem: "<code>let x = 10; x -= 4; x *= 3; let y = x % 5;</code> What is y?",
+      steps: [
+        { label: "After x -= 4", value: "6" },
+        { label: "After x *= 3", value: "18" },
+        { label: "y = 18 % 5", value: "3" }
+      ],
+      answer: "3", answerLabel: "y =",
+      interactiveSteps: [
+        { prompt: "x starts at 10. After <code>x -= 4</code>, what is x?",
+          hint: "x -= 4 means x = x - 4", answer: "6", acceptableAnswers: ["6"], formatHint: "Enter a number" },
+        { prompt: "After <code>x *= 3</code>, what is x?",
+          hint: "x *= 3 means x = x * 3, using the current x", answer: "18", acceptableAnswers: ["18"], formatHint: "Enter a number" },
+        { prompt: "<code>let y = x % 5;</code> What is the remainder when 18 is divided by 5?",
+          hint: "18 = 5 × 3 + ?", answer: "3", acceptableAnswers: ["3"], formatHint: "Enter a number" }
+      ]
+    }
+  }, function(){
+    const mode = pick(["trace", "call", "nested", "loop", "intdiv", "compound"]);
+
+    if (mode === "trace") {
+      let stmts, env;
+      do {
+        stmts = [{ kind: "let", name: "a", e: N(ri(2, 9)) },
+                 { kind: "let", name: "b", e: pick([OP("*", V("a"), N(ri(2, 4))), OP("+", V("a"), N(ri(2, 9)))]) }];
+        const nSet = ri(2, 3);
+        for (let i = 0; i < nSet; i++) {
+          const t = pick(["a", "b"]), o = t === "a" ? "b" : "a";
+          stmts.push({ kind: "set", name: t, e: pick([
+            OP("-", V(o), V(t)), OP("+", V(t), V(o)), OP("*", V(t), N(ri(2, 3))),
+            OP("-", V(o), N(ri(1, 5))), OP("+", OP("*", V(o), N(2)), N(ri(1, 4)))]) });
+        }
+        env = exec(stmts, {});
+      } while (Math.abs(env.a) > 300 || Math.abs(env.b) > 300);
+      // Mostly ask for the variable the last line changed, so the question
+      // needs the whole trace rather than one early line.
+      const last = stmts[stmts.length - 1].name;
+      const ask = Math.random() < 0.75 ? last : (last === "a" ? "b" : "a"), ans = env[ask];
+      // misconception: later lines read the ORIGINAL values, as if the
+      // reassignments never took effect
+      const start = exec(stmts.slice(0, 2), {}), stale = Object.assign({}, start);
+      for (const s of stmts.slice(2)) stale[s.name] = run(s.e, start);
+      return { subType: "trace",
+        question: `${stmts.map(stmtSrc).join(" ")} After this code runs, what is ${ask}?`,
+        answer: String(ans),
+        // stale values; the other variable; the last line skipped; near misses
+        options: opt4(String(ans), [stale[ask], env[ask === "a" ? "b" : "a"], exec(stmts.slice(0, -1), {})[ask], ans + 1, ans - 1, ans + 2]),
+        explanation: `Line by line: ${traceStmts(stmts)}. So ${ask} = ${ans}.` };
+    }
+
+    if (mode === "call") {
+      const m = ri(2, 6), c = ri(1, 9);
+      if (Math.random() < 0.6) {
+        const body = pick([
+          OP("+", OP("*", N(m), V("x")), N(c)),
+          OP("-", OP("*", V("x"), V("x")), N(c)),
+          OP("*", OP("+", V("x"), N(c)), N(m)),
+          OP("-", OP("*", N(m), OP("+", V("x"), N(c))), V("x")),
+          OP("+", FLOOR_DIV(V("x"), N(2)), N(c))]);
+        const fn = FN(pick(["f", "score", "calc", "damage"]), ["x"], body), x = ri(2, 9);
+        const ans = run(CALL(fn, [N(x)]), {});
+        return { subType: "call",
+          question: `function ${fn.name}(x) { return ${show(body)}; } What is ${fn.name}(${x})?`,
+          answer: String(ans),
+          // called with a neighbouring argument; the constant dropped; doubled
+          options: opt4(String(ans), [run(CALL(fn, [N(x + 1)]), {}), run(CALL(fn, [N(x - 1)]), {}), ans - c, ans + m, 2 * ans]),
+          explanation: `Put ${x} in for x: ${subst(show(body), { x })} = ${ans}.` };
+      }
+      const two = pick([
+        FN("area", ["w", "h"], OP("*", V("w"), V("h"))),
+        FN("perimeter", ["w", "h"], OP("*", N(2), OP("+", V("w"), V("h")))),
+        FN("average", ["a", "b"], OP("/", OP("+", V("a"), V("b")), N(2))),
+        FN("change", ["paid", "cost"], OP("-", V("paid"), V("cost")))]);
+      let p1, p2;
+      do { p1 = ri(3, 20); p2 = ri(2, 15); } while (p1 === p2 || (two.name === "average" && (p1 + p2) % 2) || (two.name === "change" && p1 <= p2));
+      const ans = run(CALL(two, [N(p1), N(p2)]), {});
+      const swapped = run(CALL(two, [N(p2), N(p1)]), {});
+      const env = {}; env[two.params[0]] = p1; env[two.params[1]] = p2;
+      return { subType: "call_two",
+        question: `function ${two.name}(${two.params.join(", ")}) { return ${show(two.body)}; } What is ${two.name}(${p1}, ${p2})?`,
+        answer: String(ans),
+        // arguments matched to the wrong parameters; neighbours; doubled
+        options: opt4(String(ans), [swapped, ans + 1, ans - 1, 2 * ans, ans + 2]),
+        explanation: `Arguments match parameters in order: ${two.params[0]} = ${p1}, ${two.params[1]} = ${p2}. ${show(two.body).replace(/\b(paid|cost|[a-z])\b/g, t => (t in env ? String(env[t]) : t))} = ${ans}.` };
+    }
+
+    if (mode === "nested") {
+      const f = FN("f", ["x"], pick([OP("+", OP("*", N(ri(2, 4)), V("x")), N(ri(1, 6))), OP("-", OP("*", V("x"), V("x")), N(ri(1, 5))), OP("-", V("x"), N(ri(1, 6)))]));
+      const gg = FN("g", ["x"], pick([OP("+", V("x"), N(ri(1, 6))), OP("*", N(ri(2, 4)), V("x")), OP("-", OP("*", N(2), V("x")), N(1))]));
+      const n = ri(1, 6), order = pick(["fg", "gf", "ff"]);
+      const outer = order === "gf" ? gg : f, innerFn = order === "fg" ? gg : f;
+      const inner = run(CALL(innerFn, [N(n)]), {}), ans = run(CALL(outer, [CALL(innerFn, [N(n)])]), {});
+      const other = order === "fg" ? run(CALL(f, [N(n)]), {}) : run(CALL(gg, [N(n)]), {});
+      const reversed = order === "ff" ? run(CALL(gg, [CALL(f, [N(n)])]), {}) : run(CALL(innerFn, [CALL(outer, [N(n)])]), {});
+      const call = `${outer.name}(${innerFn.name}(${n}))`;
+      return { subType: "nested",
+        question: `function f(x) { return ${show(f.body)}; } function g(x) { return ${show(gg.body)}; } What is ${call}?`,
+        answer: String(ans),
+        // the functions applied in the other order; inner result only; the two results added
+        options: opt4(String(ans), [reversed, inner, inner + other, run(CALL(outer, [N(n)]), {}), ans + 1]),
+        explanation: `Inside first: ${innerFn.name}(${n}) = ${inner}. Then ${outer.name}(${inner}) = ${subst(show(outer.body), { x: inner })} = ${ans}.` };
+    }
+
+    if (mode === "loop") {
+      const kind = ri(0, 5);
+      if (kind === 0) {
+        const n = ri(4, 12); let total = 0;
+        for (let i = 1; i <= n; i++) { total += i; }
+        return { subType: "loop_total",
+          question: `let total = 0; for (let i = 1; i <= ${n}; i++) { total += i; } What is total after the loop?`,
+          answer: String(total),
+          // stopped one early (< instead of <=); one extra; n itself; n squared
+          options: opt4(String(total), [total - n, total + n + 1, n, n * n]),
+          explanation: `i takes 1, 2, ..., ${n}, so total = ${Array.from({ length: n }, (_, i) => i + 1).join(" + ")} = ${total}.` };
+      }
+      if (kind === 1) {
+        const s = ri(0, 5), k = ri(2, 5), e = s + ri(10, 30), le = Math.random() < 0.5;
+        const seen = [];
+        for (let i = s; le ? i <= e : i < e; i += k) { seen.push(i); }
+        const count = seen.length;
+        return { subType: "loop_count",
+          question: `let count = 0; for (let i = ${s}; i ${le ? "<=" : "<"} ${e}; i += ${k}) { count++; } What is count after the loop?`,
+          answer: String(count),
+          // off by one either way; the span divided by the step, ignoring where it starts
+          options: opt4(String(count), [count + 1, count - 1, Math.floor(e / k), e - s, count + 2]),
+          explanation: `i takes ${seen.join(", ")} — ${count} values, so the body runs ${count} times.` };
+      }
+      if (kind === 2) {
+        const n = ri(3, 10), x0 = pick([1, 1, 3, 5]); let x = x0;
+        for (let i = 0; i < n; i++) { x *= 2; }
+        return { subType: "loop_total",
+          question: `let x = ${x0}; for (let i = 0; i < ${n}; i++) { x *= 2; } What is x after the loop?`,
+          answer: String(x),
+          // one doubling too many or few; added 2 each time
+          options: opt4(String(x), [2 * x, x / 2, x0 + 2 * n, x0 * 2 * n, x + 1]),
+          explanation: `The loop runs ${n} times (i = 0 to ${n - 1}) and doubles x each time: ${x0} × 2${sup(n)} = ${x}.` };
+      }
+      if (kind === 3) {
+        const n = ri(4, 15), k = ri(2, 9), t0 = ri(0, 20); let total = t0;
+        for (let i = 0; i < n; i++) { total += k; }
+        return { subType: "loop_total",
+          question: `let total = ${t0}; for (let i = 0; i < ${n}; i++) { total += ${k}; } What is total after the loop?`,
+          answer: String(total),
+          // one iteration too many or few; forgot the starting value
+          options: opt4(String(total), [total + k, total - k, n * k === total ? total + 2 * k : n * k, total + 1]),
+          explanation: `i takes 0 to ${n - 1}, which is ${n} iterations, each adding ${k}: ${t0} + ${n} × ${k} = ${total}.` };
+      }
+      if (kind === 4) {
+        const N0 = ri(10, 30), k = ri(2, 5), seen = [];
+        for (let i = N0; i > 0; i -= k) { seen.push(i); }
+        const count = seen.length;
+        return { subType: "loop_count",
+          question: `let count = 0; for (let i = ${N0}; i > 0; i -= ${k}) { count++; } What is count after the loop?`,
+          answer: String(count),
+          // off by one either way; plain division
+          options: opt4(String(count), [count + 1, count - 1, Math.floor(N0 / k) === count ? count + 2 : Math.floor(N0 / k), N0 - k]),
+          explanation: `i takes ${seen.join(", ")} and then ${seen[seen.length - 1] - k}, which fails i > 0. That is ${count} iterations.` };
+      }
+      const s = ri(0, 6), k = ri(3, 7), e = s + ri(12, 40);
+      let i = s;
+      while (i < e) { i += k; }
+      return { subType: "loop_final",
+        question: `let i = ${s}; while (i < ${e}) { i += ${k}; } What is i when the loop stops?`,
+        answer: String(i),
+        // the last value inside the loop; the limit itself; one more step
+        options: opt4(String(i), [i - k, e, i + k, e + 1]),
+        explanation: `i goes ${s}${(() => { let t = s, out = ""; while (t < e) { t += k; out += ", " + t; } return out; })()}. ${i} is the first value that is not below ${e}, so the loop stops with i = ${i}.` };
+    }
+
+    if (mode === "intdiv") {
+      const kind = ri(0, 2);
+      if (kind < 2) {
+        let a, b; do { a = ri(20, 199); b = ri(3, 12); } while (a % b === 0);
+        const q = Math.floor(a / b), r = a % b, dec = Math.round((a / b) * 100) / 100;
+        if (kind === 0) {
+          return { subType: "floor_div",
+            question: `What is the value of Math.floor(${a} / ${b})?`,
+            answer: String(q),
+            // ordinary division (no floor); rounded up; the remainder instead
+            options: opt4(String(q), [dec, Math.round(a / b) === q ? q + 1 : Math.round(a / b), r, q - 1]),
+            explanation: `${a} / ${b} = ${(a / b).toFixed(3)}..., and Math.floor drops the decimal part: ${q}. (Check: ${b} × ${q} = ${b * q}, with ${r} left over.)` };
+        }
+        return { subType: "remainder",
+          question: `What is the value of ${a} % ${b}?`,
+          answer: String(r),
+          // the quotient instead; counted up to the next multiple; off by one
+          options: opt4(String(r), [q, b - r, r + 1, r - 1].filter(v => v >= 0)),
+          explanation: `${a} = ${b} × ${q} + ${r}, so the remainder ${a} % ${b} is ${r}.` };
+      }
+      const sc = pick([
+        { v: "totalMinutes", d: 60, big: "hours", small: "minutes", lo: 61, hi: 600 },
+        { v: "totalSeconds", d: 60, big: "minutes", small: "seconds", lo: 61, hi: 900 },
+        { v: "cents", d: 100, big: "dollars", small: "leftover", lo: 101, hi: 2000 },
+        { v: "eggs", d: 12, big: "cartons", small: "extra", lo: 25, hi: 200 }]);
+      let total; do { total = ri(sc.lo, sc.hi); } while (total % sc.d === 0);
+      const stmts = [{ kind: "let", name: sc.v, e: N(total) },
+                     { kind: "let", name: sc.big, e: FLOOR_DIV(V(sc.v), N(sc.d)) },
+                     { kind: "let", name: sc.small, e: OP("%", V(sc.v), N(sc.d)) }];
+      const env = exec(stmts, {}), askBig = Math.random() < 0.5, ask = askBig ? sc.big : sc.small, ans = env[ask];
+      return { subType: "divmod_units",
+        question: `${stmts.map(stmtSrc).join(" ")} What is ${ask}?`,
+        answer: String(ans),
+        // the other variable; plain division; counted up to the next whole group
+        options: opt4(String(ans), [askBig ? env[sc.small] : env[sc.big], Math.round(total / sc.d * 100) / 100, askBig ? ans + 1 : sc.d - ans, ans - 1]),
+        explanation: `${total} = ${sc.d} × ${env[sc.big]} + ${env[sc.small]}. Math.floor(${total} / ${sc.d}) = ${env[sc.big]} and ${total} % ${sc.d} = ${env[sc.small]}, so ${ask} = ${ans}.` };
+    }
+
+    // compound assignment
+    const x0 = ri(2, 12);
+    const pool = [
+      () => ({ kind: "op", name: "x", op: "+", e: N(ri(2, 9)) }),
+      () => ({ kind: "op", name: "x", op: "-", e: N(ri(1, 5)) }),
+      () => ({ kind: "op", name: "x", op: "*", e: N(ri(2, 3)) }),
+      () => ({ kind: "op", name: "x", op: "*", e: OP("+", N(1), N(ri(1, 2))) }),
+      () => ({ kind: "set", name: "x", e: OP("+", OP("*", V("x"), N(2)), N(1)) }),
+      () => ({ kind: "set", name: "x", e: OP("+", V("x"), V("x")) })];
+    const stmts = [{ kind: "let", name: "x", e: N(x0) }];
+    for (let i = 0; i < 3; i++) stmts.push(pick(pool)());
+    const ans = exec(stmts, {}).x;
+    // misreading x *= 1 + k as x * 1 + k (right side not worked out first)
+    const misread = stmts.map(s => (s.kind === "op" && s.op === "*" && s.e.t === "b")
+      ? { kind: "set", name: "x", e: OP("+", OP("*", V("x"), s.e.l), s.e.r) } : s);
+    const mis = exec(misread, {}).x;
+    return { subType: "compound",
+      question: `${stmts.map(stmtSrc).join(" ")} What is x now?`,
+      answer: String(ans),
+      // right side misread; first or last update skipped; near miss
+      options: opt4(String(ans), [mis, exec([stmts[0]].concat(stmts.slice(2)), {}).x, exec(stmts.slice(0, -1), {}).x, ans + 1, ans - 1]),
+      explanation: `Line by line: ${traceStmts(stmts)}. So x = ${ans}.` };
+  });
+
+  // =====================================================================
+  // M-388  Randomness in Code  (tier 6, plan item 71D)
+  // Prereqs: Simple Probability (M-063), Functions in Code (M-387).
+  // Mastery: turns random() into ranges and integers and finds the
+  // probability of each outcome.
+  // =====================================================================
+  const rollCode = m => `function roll() { return Math.floor(Math.random() * ${m}) + 1; }`;
+  const waysTo = (m, s) => { let w = 0; for (let i = 1; i <= m; i++) for (let j = 1; j <= m; j++) if (i + j === s) w++; return w; };
+  const pairsTo = (m, s) => { const out = []; for (let i = 1; i <= m; i++) { const j = s - i; if (j >= 1 && j <= m) out.push(pt(i, j)); } return out.join(" "); };
+
+  _addSkill(6, "Randomness in Code", "Randomness in Code", 3, {
+    goalProblem: "<code>let r = Math.floor(Math.random() * 6) + 1;</code> What values can r take, and what is the probability that r is 4?",
+    teachingSteps: [
+      { title: "Math.random() is a decimal in [0, 1)",
+        explanation: "Code here is JavaScript style. <code>Math.random()</code> returns a decimal that can be 0 but is <strong>always less than 1</strong>, with every part of that range equally likely.",
+        visual: "0 ≤ Math.random() &lt; 1" },
+      { title: "Stretch, then floor",
+        explanation: "Multiplying by n stretches the range to [0, n). <code>Math.floor</code> then gives one of the integers 0, 1, ..., n − 1 — exactly <strong>n</strong> of them, each equally likely. n itself is impossible, because Math.random() never reaches 1.",
+        visual: "Math.floor(Math.random() * 6) → 0, 1, 2, 3, 4, 5" },
+      { title: "Shift with + k",
+        explanation: "Adding k shifts every value: <code>Math.floor(Math.random() * n) + k</code> gives k up to k + n − 1. For an integer from a to b inclusive, use n = <strong>b − a + 1</strong> (the number of values) and k = a.",
+        visual: "5 to 10: n = 10 − 5 + 1 = 6 → Math.floor(Math.random() * 6) + 5" },
+      { title: "The probability of each outcome",
+        explanation: "With n equally likely values, each has probability <strong>1/n</strong> — favorable over total, as in simple probability. Over many runs you expect about <strong>runs × probability</strong> of each, though real results wobble around that.",
+        visual: "a die: P(4) = 1/6; 600 rolls → about 100 fours" },
+      { title: "Not every trick is fair",
+        explanation: "Adding two dice gives totals 2 to 12, but they are <strong>not</strong> equally likely: of the 36 equally likely pairs, 6 make 7 and only 1 makes 2. <code>Math.round(Math.random() * n)</code> is also unfair: its two end values are half as likely. Floor-of-a-stretch is the fair one.",
+        visual: "two dice: P(7) = 6/36 = 1/6, P(2) = 1/36<br>Math.floor(Math.random() * 11) + 2: every total 1/11" }
+    ],
+    finalAnswer: "1 to 6, and P(r is 4) = 1/6",
+    answerExplanation: "Math.floor(Math.random() * 6) is 0 to 5; adding 1 gives 1 to 6. Six equally likely values, so each has probability 1/6.",
+    example: { problem: "Write code that picks a random integer from 3 to 8, and give the chance of each value.", steps: [
+      { text: "Count the values", math: "8 − 3 + 1 = 6" },
+      { text: "Stretch by the count, shift by the start", math: "Math.floor(Math.random() * 6) + 3" },
+      { text: "Each value is equally likely", math: "1/6" }
+    ]},
+    keyPoints: [
+      "Math.random() is from 0 up to, but never including, 1",
+      "Math.floor(Math.random() * n) + k gives n values: k to k + n − 1",
+      "For a to b inclusive: n = b − a + 1 and k = a",
+      "Each of n equally likely values has probability 1/n; expect about runs ÷ n of each",
+      "Sums of dice and Math.round are not uniform"
+    ],
+    mistakes: [
+      { wrong: "Math.floor(Math.random() * 6) + 1 can give 7", why: "Math.random() * 6 is always below 6, so the floor is at most 5, and 5 + 1 = 6." },
+      { wrong: "Using * 10 to get 5 to 10", why: "Math.floor(Math.random() * 10) + 5 gives 5 to 14. Multiply by the number of values, 10 − 5 + 1 = 6." },
+      { wrong: "Two dice make every total from 2 to 12 equally likely", why: "Of the 36 equally likely pairs, 7 comes from 6 of them and 2 from only 1." }
+    ],
+    guided: {
+      problem: "<code>let r = Math.floor(Math.random() * 8) + 3;</code> runs 400 times. How many times would you expect r to be 5?",
+      steps: [
+        { label: "Smallest value of r", value: "3" },
+        { label: "Largest value of r", value: "10" },
+        { label: "Number of different values", value: "8" },
+        { label: "Expected count of 5s", value: "50" }
+      ],
+      answer: "50", answerLabel: "Expected number of 5s =",
+      interactiveSteps: [
+        { prompt: "Math.floor(Math.random() * 8) is at least 0. What is the smallest value r can be?",
+          hint: "0 + 3", answer: "3", acceptableAnswers: ["3"], formatHint: "Enter a number" },
+        { prompt: "Math.floor(Math.random() * 8) is at most 7. What is the largest value r can be?",
+          hint: "7 + 3", answer: "10", acceptableAnswers: ["10"], formatHint: "Enter a number" },
+        { prompt: "What is the probability that r is 5?",
+          hint: "There are 8 equally likely values from 3 to 10", answer: "1/8", acceptableAnswers: ["1/8", "0.125"], formatHint: "e.g., 1/6" },
+        { prompt: "Over 400 runs, about how many times would you expect r to be 5?",
+          hint: "400 × 1/8", answer: "50", acceptableAnswers: ["50"], formatHint: "Enter a number" }
+      ]
+    }
+  }, function(){
+    const mode = pick(["range_end", "count_values", "choose_expr", "find_nk", "prob", "expected", "dice_sum", "uniform_vs_sum"]);
+    const n = ri(3, 20), k = ri(0, 15), lo = k, hi = n + k - 1;
+    const code = `let r = Math.floor(Math.random() * ${n})${k ? " + " + k : ""};`;
+    const rangeWhy = `Math.random() is at least 0 and always below 1, so Math.random() * ${n} is from 0 up to (not including) ${n}, and Math.floor gives 0 to ${n - 1}.${k ? ` Adding ${k} gives ${lo} to ${hi}.` : ""}`;
+
+    if (mode === "range_end") {
+      const big = Math.random() < 0.6, ans = big ? hi : lo;
+      return { subType: "range_end",
+        question: `${code} What is the ${big ? "largest" : "smallest"} value r can be?`,
+        answer: String(ans),
+        // big: assumed Math.random() can reach 1; forgot the shift; one over
+        // small: started the range at 1; forgot the shift; one under
+        options: opt4(String(ans), big ? [n + k, n - 1, n + k + 1, n] : [k + 1, k === 0 ? n : 0, k + n, k + 2]),
+        explanation: rangeWhy };
+    }
+
+    if (mode === "count_values") {
+      return { subType: "count_values",
+        question: `${code} How many different values can r take?`,
+        answer: String(n),
+        // forgot 0 or counted one extra; added the shift in
+        options: opt4(String(n), [n - 1, n + 1, n + k === n ? n + 2 : n + k, hi === n ? n - 2 : hi]),
+        explanation: `${rangeWhy} That is ${n} different values.` };
+    }
+
+    if (mode === "choose_expr") {
+      const a = ri(2, 20), cnt = ri(4, 15), b = a + cnt - 1;
+      const ans = `Math.floor(Math.random() * ${cnt}) + ${a}`;
+      return { subType: "choose_expr", forceChoice: true,
+        question: `Which line gives a random integer from ${a} to ${b} inclusive, with every value equally likely?`,
+        answer: ans,
+        options: opt4(ans, [
+          `Math.floor(Math.random() * ${cnt - 1}) + ${a}`,   // one value short: never reaches b
+          `Math.floor(Math.random() * ${b}) + ${a}`,         // stretched by b, not by the count
+          `Math.floor(Math.random() * ${cnt}) + ${a - 1}`,   // shifted one too low
+          `Math.round(Math.random() * ${cnt - 1}) + ${a}`]), // right range, but the ends are half as likely
+        explanation: `There are ${b} − ${a} + 1 = ${cnt} values. Math.floor(Math.random() * ${cnt}) gives 0 to ${cnt - 1}, and adding ${a} gives ${a} to ${b}. (Math.round would give ${a} and ${b} only half the chance of the others.)` };
+    }
+
+    if (mode === "find_nk") {
+      const a = ri(2, 30), cnt = ri(3, 20), b = a + cnt - 1, askN = Math.random() < 0.6;
+      return { subType: "find_nk",
+        question: `To get a random integer from ${a} to ${b} inclusive with Math.floor(Math.random() * N) + K, what number should ${askN ? "N" : "K"} be?`,
+        answer: String(askN ? cnt : a),
+        // N: forgot the +1; used the top value; one extra.  K: one low; the top value; zero
+        options: opt4(String(askN ? cnt : a), askN ? [b - a, b, cnt + 1, b + 1] : [a - 1, b, 0, a + 1]),
+        explanation: `K is the smallest value, ${a}. N is how many values there are: ${b} − ${a} + 1 = ${cnt}. So Math.floor(Math.random() * ${cnt}) + ${a}.` };
+    }
+
+    if (mode === "prob") {
+      const kind = pick(["equal", "atLeast", "below", "threshold"]);
+      if (kind === "threshold") {
+        const p = 5 * ri(1, 19), dec = p / 100;
+        return { subType: "prob",
+          question: `if (Math.random() < ${dec}) { dropCoin(); } What is the probability that dropCoin() runs?`,
+          answer: String(dec), acceptableAnswers: [frac(p, 100), p + "%"],
+          // the complement; the percent written as a whole number; a coin
+          // flip; a decimal place slipped (the last two only matter when the
+          // first ones coincide with the answer, e.g. at 0.5)
+          options: opt4(String(dec), [String(Math.round((1 - dec) * 100) / 100), String(p), "0.5", String(dec / 10),
+                                      String(Math.round((dec + 0.1) * 100) / 100), "0.25"]),
+          explanation: `Math.random() is spread evenly over 0 to 1, and the part below ${dec} is ${dec} of that range. So the probability is ${dec} (${frac(p, 100)}, or ${p}%).` };
+      }
+      const v = ri(lo + 1, hi - 1);
+      const fav = kind === "equal" ? 1 : kind === "atLeast" ? hi - v + 1 : v - lo;
+      const ans = frac(fav, n);
+      const ask = kind === "equal" ? `r is exactly ${v}` : kind === "atLeast" ? `r is ${v} or more` : `r is less than ${v}`;
+      const listed = kind === "equal" ? `only ${v}` : kind === "atLeast" ? `${v} to ${hi}` : `${lo} to ${v - 1}`;
+      return { subType: "prob",
+        question: `${code} What is the probability that ${ask}?`,
+        answer: ans,
+        // counted one value too few or too many; the complement; one extra possible value
+        options: opt4(ans, [frac(fav + 1, n), frac(Math.max(fav - 1, 1), n + 1), frac(n - fav, n), frac(fav, n + 1), frac(fav, n - 1)]),
+        explanation: `r is one of ${n} equally likely values, ${lo} to ${hi}. The favorable ones are ${listed}: ${fav} of them. P = ${fav}/${n}${frac(fav, n) !== fav + "/" + n ? " = " + ans : ""}.` };
+    }
+
+    if (mode === "expected") {
+      if (Math.random() < 0.4) {
+        const p = 5 * ri(1, 10), frames = 20 * ri(5, 50), ans = frames * p / 100;
+        return { subType: "expected",
+          question: `if (Math.random() < ${p / 100}) { spawnEnemy(); } runs once every frame. About how many enemies spawn in ${frames} frames?`,
+          answer: String(ans),
+          // the frames without a spawn; the percent as a count; half
+          options: opt4(String(ans), [frames - ans, p, ans / 2, 2 * ans]),
+          explanation: `Each frame spawns with probability ${p / 100}, so expect ${frames} × ${p / 100} = ${ans}.` };
+      }
+      const runs = n * ri(5, 50), v = ri(lo, hi), ans = runs / n;
+      return { subType: "expected",
+        question: `This line runs ${runs} times: ${code} About how many times would you expect r to be ${v}?`,
+        answer: String(ans),
+        // the runs that are NOT v; doubled; halved; counted one extra value
+        options: opt4(String(ans), [runs - ans, 2 * ans, Math.round(runs / (n + 1)), Math.round(ans / 2), ans + n]),
+        explanation: `r has ${n} equally likely values, so each comes up with probability 1/${n}. Expect ${runs} × 1/${n} = ${ans}.` };
+    }
+
+    if (mode === "dice_sum") {
+      const m = pick([4, 6, 6, 8]), sq = m * m;
+      if (Math.random() < 0.3) {
+        return { subType: "dice_sum",
+          question: `${rollCode(m)} let total = roll() + roll(); Which total is the most likely?`,
+          answer: String(m + 1),
+          // the biggest total; the middle of 1 to m; the smallest total
+          options: opt4(String(m + 1), [2 * m, m, 2, m + 2]),
+          explanation: `There are ${sq} equally likely pairs. A total of ${m + 1} can be made ${m} ways (${pairsTo(m, m + 1)}), more than any other total.` };
+      }
+      const s = ri(2, 2 * m), w = waysTo(m, s), ans = frac(w, sq);
+      return { subType: "dice_sum",
+        question: `${rollCode(m)} let total = roll() + roll(); What is the probability that total is ${s}?`,
+        answer: ans,
+        // treated the 2m - 1 totals as equally likely; a single roll; a pair miscounted
+        options: opt4(ans, [frac(1, 2 * m - 1), frac(1, m), frac(w + 1, sq), frac(Math.max(w - 1, 1), sq + 1), frac(w, 2 * m)]),
+        explanation: `Each roll is 1 to ${m}, so there are ${m} × ${m} = ${sq} equally likely (first, second) pairs. ${w} of them total ${s}: ${pairsTo(m, s)}. P = ${w}/${sq}${ans !== w + "/" + sq ? " = " + ans : ""}.` };
+    }
+
+    // uniform_vs_sum: the same range, two very different distributions
+    const s = ri(2, 12), useA = Math.random() < 0.5, w = waysTo(6, s);
+    const pA = frac(1, 11), pB = frac(w, 36), ans = useA ? pA : pB;
+    return { subType: "uniform_vs_sum",
+      question: `Code A: let t = Math.floor(Math.random() * 11) + 2; Code B: let t = roll() + roll(); where roll() returns Math.floor(Math.random() * 6) + 1. Both give totals from 2 to 12. What is the probability that code ${useA ? "A" : "B"} gives t = ${s}?`,
+      answer: ans,
+      // the other code's probability; 12 values instead of 11; one die's 1/6
+      options: opt4(ans, [useA ? pB : pA, frac(1, 12), frac(1, 6), frac(w + 1, 36), frac(1, 36)]),
+      explanation: useA
+        ? `Code A stretches Math.random() over 11 values (2 to 12), all equally likely: 1/11 each.`
+        : `Code B has 36 equally likely pairs of rolls, and ${w} of them total ${s}: ${pairsTo(6, s)}. P = ${w}/36${pB !== w + "/36" ? " = " + pB : ""}.` };
+  });
+
+  // =====================================================================
+  // M-389  Computational Estimation  (tier 6, plan item 72D)
+  // Prereqs: Estimation and Reasonableness (M-319), Exponents (M-070).
+  // Mastery: approximates efficiently - orders of magnitude, powers of two,
+  // iterations and storage sizes.
+  // Estimates are multiple choice with options a factor of 10 or more apart,
+  // so exactly one is "closest"; anything with one exact answer (seconds in a
+  // day, loop counts) is typed.
+  // =====================================================================
+  const sci = (c, e) => (c === 1 ? "" : c + " × ") + "10" + sup(e);
+  // Seconds as a person would say them, to one significant figure.
+  const human = secs => {
+    const say = (v, unit) => { const r = sig1(v); return `about ${fmtNum(r)} ${unit}${r === 1 ? "" : "s"}`; };
+    if (secs < 1) return say(secs * 1000, "millisecond");
+    if (secs < 60) return say(secs, "second");
+    if (secs < 3600) return say(secs / 60, "minute");
+    if (secs < 86400) return say(secs / 3600, "hour");
+    if (secs < 86400 * 365) return say(secs / 86400, "day");
+    return say(secs / (86400 * 365), "year");
+  };
+
+  _addSkill(6, "Computational Estimation", "Computational Estimation", 3, {
+    goalProblem: "Using 2¹⁰ ≈ 10³, about how big is 2³⁰?",
+    teachingSteps: [
+      { title: "Estimate first, then check",
+        explanation: "From Estimation and Reasonableness: round to friendly numbers, get a ballpark, and judge whether an exact answer makes sense. In computing we often only need the <strong>order of magnitude</strong> — which power of ten. Round each number to one significant figure, then multiply.",
+        visual: "4,800 × 31,000 ≈ 5,000 × 30,000 = 150,000,000 = 1.5 × 10⁸" },
+      { title: "2¹⁰ ≈ 10³",
+        explanation: "2¹⁰ = 1,024, very close to 1,000. So every 10 powers of 2 are about 3 powers of 10: 2²⁰ ≈ 10⁶ (a million), 2³⁰ ≈ 10⁹ (a billion), 2⁴⁰ ≈ 10¹². Leftover powers multiply in: 2³³ = 2³ × 2³⁰ ≈ 8 × 10⁹.",
+        visual: "2¹⁰ = 1,024 ≈ 10³<br>2³⁰ = (2¹⁰)³ ≈ (10³)³ = 10⁹" },
+      { title: "Counting loop iterations",
+        explanation: "Nested loops multiply: an outer loop of n around an inner loop of m runs the inside n × m times. A loop that <strong>doubles</strong> i reaches N in about log₂ N steps — passing a million takes only about 20 doublings. Code here is JavaScript style.",
+        visual: "i &lt; 1000 around j &lt; 1000 → 10⁶ runs<br>i = 1, 2, 4, ... while i &lt; 10⁶ → 20 steps" },
+      { title: "Storage sizes",
+        explanation: "1 byte = 8 bits. For estimates use 1 KB ≈ 10³ bytes, 1 MB ≈ 10⁶ bytes, 1 GB ≈ 10⁹ bytes (exactly they are 2¹⁰, 2²⁰ and 2³⁰ bytes — within 7%). Size = how many × bytes each.",
+        visual: "1920 × 1080 pixels × 4 bytes ≈ 8,000,000 bytes ≈ 8 MB" },
+      { title: "Time anchors",
+        explanation: "60 s × 60 min × 24 h = <strong>86,400</strong> seconds in a day. A 365-day year is 31,536,000 s ≈ 3 × 10⁷ s. A computer doing about 10⁹ simple steps per second needs 10¹² steps ÷ 10⁹ = 1,000 s — about 17 minutes.",
+        visual: "1 day = 86,400 s &nbsp; 1 year ≈ 3 × 10⁷ s" },
+      { title: "Fermi estimates",
+        explanation: "For questions nobody has measured, <strong>state your assumptions</strong>, multiply them, and round to one significant figure. Heartbeats in a day, assuming 70 per minute: 70 × 60 × 24 = 100,800 ≈ 100,000.",
+        visual: "assumption × assumption × ... → round to one significant figure" }
+    ],
+    finalAnswer: "about 10⁹ (a billion)",
+    answerExplanation: "2³⁰ = (2¹⁰)³ ≈ (10³)³ = 10⁹. The exact value is 1,073,741,824.",
+    example: { problem: "Two nested loops each run 2,000 times. About how long does that take at 10⁹ steps per second?", steps: [
+      { text: "Count the steps", math: "2,000 × 2,000 = 4,000,000 = 4 × 10⁶" },
+      { text: "Divide by the speed", math: "4 × 10⁶ ÷ 10⁹ = 0.004 s" },
+      { text: "Judge it", math: "about 4 milliseconds — fast enough" }
+    ]},
+    keyPoints: [
+      "Round to one significant figure and track the power of ten",
+      "2¹⁰ ≈ 10³, so 2²⁰ ≈ 10⁶ and 2³⁰ ≈ 10⁹",
+      "Nested loops multiply; a doubling loop to N takes about log₂ N steps",
+      "1 KB ≈ 10³, 1 MB ≈ 10⁶, 1 GB ≈ 10⁹ bytes",
+      "86,400 seconds in a day; about 3 × 10⁷ in a year",
+      "Fermi estimates: state assumptions, multiply, round"
+    ],
+    mistakes: [
+      { wrong: "2³⁰ ≈ 10³⁰", why: "Each 2¹⁰ is only about 10³, so 2³⁰ ≈ 10⁹. 10³⁰ is far too big." },
+      { wrong: "A day has 24 × 60 = 1,440 seconds", why: "That is the minutes in a day. Multiply by 60 again: 86,400 seconds." },
+      { wrong: "A doubling loop to a million takes about 500,000 steps", why: "Doubling grows fast: 2²⁰ ≈ 10⁶, so it takes about 20 steps." }
+    ],
+    guided: {
+      problem: "How many seconds are in 3 days?",
+      steps: [
+        { label: "Seconds in an hour", value: "3600" },
+        { label: "Seconds in a day", value: "86400" },
+        { label: "Seconds in 3 days", value: "259200" }
+      ],
+      answer: "259200", answerLabel: "Seconds in 3 days =",
+      interactiveSteps: [
+        { prompt: "There are 60 seconds in a minute and 60 minutes in an hour. How many seconds are in an hour?",
+          hint: "60 × 60", answer: "3600", acceptableAnswers: ["3600", "3,600"], formatHint: "Enter a number" },
+        { prompt: "How many seconds are in a day (24 hours)?",
+          hint: "3,600 × 24", answer: "86400", acceptableAnswers: ["86400", "86,400"], formatHint: "Enter a number" },
+        { prompt: "How many seconds are in 3 days?",
+          hint: "86,400 × 3", answer: "259200", acceptableAnswers: ["259200", "259,200"], formatHint: "Enter a number" }
+      ]
+    }
+  }, function(){
+    const mode = pick(["pow2", "product", "loop_count", "storage", "storage_exact", "time_units", "fermi", "ops_time"]);
+
+    if (mode === "pow2") {
+      // 2^(10q + r) = 2^r × (2^10)^q ≈ 2^r × 10^(3q). The approximation is
+      // off by 1.024^q ≤ 1.13 for q ≤ 5, and the options sit a factor of 1000
+      // apart, so the answer is always the closest. q ≤ 5 keeps 2^n ≤ 2^53,
+      // where the exact value prints exactly.
+      const q = ri(2, 5), r = ri(0, 3), n = 10 * q + r, c = Math.pow(2, r), ans = sci(c, 3 * q);
+      return { subType: mode, forceChoice: true,
+        question: `Using 2¹⁰ ≈ 10³, which is closest to 2${sup(n)}?`,
+        answer: ans,
+        // a thousand times too big or small; 2^10 taken as 10; 2 taken as 10
+        options: opt4(ans, [sci(c, 3 * q + 3), sci(c, 3 * q - 3), sci(c, q), sci(1, n)]),
+        explanation: `2${sup(n)} = ${r ? "2" + sup(r) + " × " : ""}(2¹⁰)${sup(q)} ≈ ${r ? c + " × " : ""}(10³)${sup(q)} = ${ans}. (Exactly, 2${sup(n)} = ${fmt(Math.pow(2, n))}.)` };
+    }
+
+    if (mode === "product") {
+      const a = ri(110, 990) * Math.pow(10, ri(0, 2)) + ri(0, 9), b = ri(12, 98) * Math.pow(10, ri(1, 3));
+      const ra = sig1(a), rb = sig1(b), est = ra * rb;
+      // Rounding each factor moves the product by at most a factor of about
+      // 2.3, less than the factor of 10 between options.
+      return { subType: mode, forceChoice: true,
+        question: `Which is closest to ${fmt(a)} × ${fmt(b)}?`,
+        answer: fmt(est),
+        // the power of ten miscounted by one or two
+        options: opt4(fmt(est), [fmt(est * 10), fmt(est / 10), fmt(est * 100)]),
+        explanation: `Round each to one significant figure: ${fmt(ra)} × ${fmt(rb)} = ${fmt(est)}. (Exactly: ${fmt(a * b)}.)` };
+    }
+
+    if (mode === "loop_count") {
+      const kind = ri(0, 3);
+      if (kind === 0) {
+        const n = pick([100, 200, 300, 500, 1000, 2000]), m = pick([10, 20, 50, 100, 400, 1000]);
+        let runs = 0;
+        for (let i = 0; i < n; i++) runs += m;   // the inner loop adds m each time round
+        return { subType: "loop_count",
+          question: `for (let i = 0; i < ${n}; i++) { for (let j = 0; j < ${m}; j++) { work(); } } How many times does work() run?`,
+          answer: String(runs),
+          // added instead of multiplied; a power of ten off
+          options: opt4(String(runs), [n + m, runs * 10, runs / 10, n * (m - 1)]),
+          explanation: `The inner loop runs ${m} times for each of the ${n} outer passes: ${fmt(n)} × ${fmt(m)} = ${fmt(runs)}.` };
+      }
+      if (kind === 1) {
+        const n = pick([10, 20, 50, 100, 200, 1000]);
+        let runs = 0;
+        for (let i = 0; i < n; i++) runs += i;   // inner loop j < i runs i times
+        return { subType: "loop_count",
+          question: `for (let i = 0; i < ${n}; i++) { for (let j = 0; j < i; j++) { work(); } } How many times does work() run?`,
+          answer: String(runs),
+          // as if the inner loop always ran n times; counted 1 to n; half of n squared
+          options: opt4(String(runs), [n * n, n * (n + 1) / 2, n * n / 2, n]),
+          explanation: `The inner loop runs 0, 1, 2, ..., ${n - 1} times: 0 + 1 + ... + ${n - 1} = ${n} × ${n - 1} / 2 = ${fmt(runs)} — about half of ${n}².` };
+      }
+      if (kind === 2) {
+        const N0 = pick([100, 1000, 5000, 10000, 100000, 1000000, 1000000000]);
+        let steps = 0;
+        for (let i = 1; i < N0; i *= 2) { steps++; }
+        return { subType: "loop_count",
+          question: `let steps = 0; for (let i = 1; i < ${N0}; i *= 2) { steps++; } What is steps after the loop?`,
+          answer: String(steps),
+          // off by one; counted the digits; half of N
+          options: opt4(String(steps), [steps + 1, steps - 1, String(N0).length - 1, N0 / 2]),
+          explanation: `i takes 1, 2, 4, ..., doubling each time. 2${sup(steps - 1)} = ${fmt(Math.pow(2, steps - 1))} is below ${fmt(N0)} but 2${sup(steps)} = ${fmt(Math.pow(2, steps))} is not, so i takes 2⁰ to 2${sup(steps - 1)}: ${steps} steps. (Estimate: 2¹⁰ ≈ 10³.)` };
+      }
+      const N0 = pick([64, 100, 1000, 1024, 5000, 1000000]);
+      let v = N0, steps = 0;
+      while (v > 1) { v = Math.floor(v / 2); steps++; }
+      return { subType: "loop_count",
+        question: `let n = ${N0}; let steps = 0; while (n > 1) { n = Math.floor(n / 2); steps++; } What is steps after the loop?`,
+        answer: String(steps),
+        // off by one; half of N; the digit count
+        options: opt4(String(steps), [steps + 1, steps - 1, N0 / 2, String(N0).length]),
+        explanation: `Each pass halves n (rounding down). 2${sup(steps)} = ${fmt(Math.pow(2, steps))} ≤ ${fmt(N0)} < 2${sup(steps + 1)}, so it takes ${steps} halvings to reach 1.` };
+    }
+
+    if (mode === "storage") {
+      const sc = pick(["image", "book", "song", "records"]);
+      let bytes, what, calc;
+      if (sc === "image") {
+        const [w, h] = pick([[1920, 1080], [1280, 720], [3840, 2160], [2560, 1440], [800, 600]]), bpp = pick([3, 4]);
+        bytes = w * h * bpp; what = `${art(w)} ${w} × ${h} image with ${bpp} bytes per pixel`; calc = `${fmt(w)} × ${fmt(h)} × ${bpp}`;
+      } else if (sc === "book") {
+        const pages = pick([200, 300, 500, 800]), chars = 2000;
+        bytes = pages * chars; what = `${art(pages)} ${pages}-page book with about ${fmt(chars)} characters per page, 1 byte per character`; calc = `${pages} × ${fmt(chars)}`;
+      } else if (sc === "song") {
+        const min = ri(2, 6);
+        bytes = min * 60 * 128000 / 8; what = `a ${min}-minute song at 128,000 bits per second`; calc = `${min} × 60 × 128,000 ÷ 8`;
+      } else {
+        const count = pick([10000, 50000, 200000, 1000000]), size = pick([100, 200, 500]);
+        bytes = count * size; what = `${fmt(count)} saved records of ${size} bytes each`; calc = `${fmt(count)} × ${size}`;
+      }
+      const est = sig1(bytes / 1e6), say = v => `about ${fmtNum(v)} MB`;
+      return { subType: "storage", forceChoice: true,
+        question: `Roughly how much storage does ${what} need? Use 1 MB ≈ 1,000,000 bytes.`,
+        answer: say(est),
+        // the power of ten miscounted (forgot or doubled a ×1000, or the ÷8 for bits)
+        options: opt4(say(est), [say(sig1(est * 10)), say(sig1(est / 10)), say(sig1(est * 100)), say(sig1(est / 100))]),
+        explanation: `${calc} = ${fmt(bytes)} bytes. ${fmt(bytes)} ÷ 1,000,000 ≈ ${Math.round(bytes / 1e4) / 100}, which is ${say(est)}.` };
+    }
+
+    if (mode === "storage_exact") {
+      const w = pick([16, 32, 50, 64, 100, 128]), h = pick([10, 20, 32, 40, 64]), bpp = pick([1, 3, 4]), bits = Math.random() < 0.3;
+      const bytes = w * h * bpp, ans = bits ? bytes * 8 : bytes;
+      return { subType: "storage_exact",
+        question: `An image is ${w} × ${h} pixels with ${bpp} byte${bpp === 1 ? "" : "s"} per pixel. How many ${bits ? "bits" : "bytes"} does it take? (1 byte = 8 bits)`,
+        answer: String(ans),
+        // bytes vs bits mixed up; bytes per pixel left out; width + height
+        options: opt4(String(ans), bits ? [bytes, w * h * 8, ans * 2, (w + h) * bpp * 8] : [bytes * 8, w * h, bytes / 8, (w + h) * bpp]),
+        explanation: `${w} × ${h} = ${fmt(w * h)} pixels, × ${bpp} = ${fmt(bytes)} bytes${bits ? `, × 8 = ${fmt(ans)} bits` : ""}.` };
+    }
+
+    if (mode === "time_units") {
+      const kind = pick(["sec_days", "min_weeks", "sec_hours", "frames", "sec_year"]);
+      let q, ans, why, wrong;
+      if (kind === "sec_days") {
+        const d = ri(1, 7); ans = d * 86400; q = `How many seconds are in ${d} day${d > 1 ? "s" : ""}?`;
+        why = `60 × 60 × 24 = 86,400 seconds per day, × ${d} = ${fmt(ans)}.`;
+        wrong = [d * 1440, d * 3600, d * 8640, d * 24 * 100 * 100];   // minutes; one hour; a zero lost; 100s for 60s
+      } else if (kind === "min_weeks") {
+        const wk = ri(1, 6); ans = wk * 10080; q = `How many minutes are in ${wk} week${wk > 1 ? "s" : ""}?`;
+        why = `60 × 24 = 1,440 minutes per day, × 7 = 10,080 per week, × ${wk} = ${fmt(ans)}.`;
+        wrong = [wk * 1440, wk * 168, wk * 604800, wk * 7 * 24 * 100];   // one day; hours; seconds; 100 minutes an hour
+      } else if (kind === "sec_hours") {
+        const hrs = ri(2, 24); ans = hrs * 3600; q = `How many seconds are in ${hrs} hours?`;
+        why = `60 × 60 = 3,600 seconds per hour, × ${hrs} = ${fmt(ans)}.`;
+        wrong = [hrs * 60, hrs * 6000, hrs * 360, hrs * 10000];
+      } else if (kind === "frames") {
+        const fps = pick([30, 60, 120]), min = ri(1, 10); ans = fps * 60 * min;
+        q = `A game draws ${fps} frames per second. How many frames does it draw in ${min} minute${min > 1 ? "s" : ""}?`;
+        why = `${min} minute${min > 1 ? "s" : ""} = ${60 * min} seconds, × ${fps} = ${fmt(ans)} frames.`;
+        wrong = [fps * min, fps * 3600 * min, fps * 100 * min, fps * 60 * (min + 1)];
+      } else {
+        ans = 31536000; q = `How many seconds are in a 365-day year?`;
+        why = `86,400 seconds per day × 365 = 31,536,000 — about 3 × 10⁷.`;
+        wrong = [525600, 8760 * 60 * 100, 3153600, 31622400];   // minutes; 100s; a zero lost; a 366-day year
+      }
+      return { subType: "time_units", question: q, answer: String(ans),
+        options: opt4(String(ans), wrong), explanation: why };
+    }
+
+    if (mode === "fermi") {
+      const sc = pick(["heart_day", "heart_year", "steps", "frames", "pixels", "blinks", "paper"]);
+      let q, value, calc;
+      if (sc === "heart_day") { const B = ri(60, 80); value = B * 60 * 24; calc = `${B} × 60 × 24`; q = `About how many times does a heart beat in one day, assuming ${B} beats per minute?`; }
+      else if (sc === "heart_year") { const B = ri(60, 80); value = B * 60 * 24 * 365; calc = `${B} × 60 × 24 × 365`; q = `About how many times does a heart beat in a year, assuming ${B} beats per minute?`; }
+      else if (sc === "steps") { const S = 1000 * ri(4, 12); value = S * 365; calc = `${fmt(S)} × 365`; q = `About how many steps does a person walk in a year, assuming ${fmt(S)} steps a day?`; }
+      else if (sc === "frames") { const F = pick([30, 60, 120]), Hh = ri(2, 9); value = F * 3600 * Hh; calc = `${F} × 3,600 × ${Hh}`; q = `About how many frames does a game draw in ${Hh} hours at ${F} frames per second?`; }
+      else if (sc === "pixels") { const [w, h] = pick([[1920, 1080], [2560, 1440], [3840, 2160], [1280, 720]]); value = w * h; calc = `${fmt(w)} × ${fmt(h)}`; q = `About how many pixels are on a ${w} × ${h} screen?`; }
+      else if (sc === "blinks") { const st = ri(20, 35), rate = ri(12, 20); value = st * 50 * rate; calc = `${st} × 50 × ${rate}`; q = `About how many blinks happen in a class of ${st} students during a 50-minute lesson, assuming each blinks ${rate} times a minute?`; }
+      else { const kids = 10 * ri(20, 90); value = kids * 2 * 180; calc = `${kids} × 2 × 180`; q = `About how many sheets of paper does a school of ${kids} students use in a 180-day year, assuming 2 sheets per student per day?`; }
+      const est = sig1(value), say = v => `about ${fmt(v)}`;
+      return { subType: "fermi", forceChoice: true,
+        question: q,
+        answer: say(est),
+        // the power of ten miscounted
+        options: opt4(say(est), [say(est * 10), say(est / 10), say(est * 100)]),
+        explanation: `${calc} = ${fmt(value)}, which rounds to ${say(est)}.` };
+    }
+
+    // ops_time: operations ÷ speed, read back in human units
+    const c = pick([1, 2, 3, 5]), e = ri(9, 15), secs = c * Math.pow(10, e - 9);
+    return { subType: "ops_time", forceChoice: true,
+      question: `A computer does about 10⁹ simple operations per second. About how long do ${sci(c, e)} operations take?`,
+      answer: human(secs),
+      // the power of ten miscounted by a factor of 1000 or a million
+      options: opt4(human(secs), [human(secs * 1000), human(secs / 1000), human(secs * 1e6), human(secs / 1e6)]),
+      explanation: `${sci(c, e)} ÷ 10⁹ = ${sci(c, e - 9)} seconds = ${fmt(secs)} seconds${(secs < 1 || secs >= 60) ? ", which is " + human(secs) : ""}.` };
+  });
+
+})();
 // ==== END GRADUATION PLAN CONTENT: CS-COMPUTATIONAL ====
 </script>
 
