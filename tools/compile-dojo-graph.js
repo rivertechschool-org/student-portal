@@ -56,42 +56,15 @@ for (const n of cur.nodes) {
   for (const n of cur.nodes) visit(n.id, []);
 }
 
-// ---- classes ----
-const planCodes = new Map();   // id -> [codes]
-const branchOf = new Map();    // id -> Set(branch letters)
-const coreListed = new Set();
-const addCode = (id, code) => { if (!planCodes.has(id)) planCodes.set(id, []); if (!planCodes.get(id).includes(code)) planCodes.get(id).push(code); };
+// ---- classes (tools/lib/math-plan.js, shared with compile-math-graph) ----
+const { classify } = require('./lib/math-plan');
+const { cls, planCodes, branchOf, coreClosure } = classify(cur.nodes, plan);
 const checkItem = (it, where) => {
   if (!it.skills.length) errors.push(`${where} item ${it.code} lists no skills`);
   for (const id of it.skills) if (!byId.has(id)) errors.push(`${where} item ${it.code}: unknown skill ${id}`);
 };
-for (const d of plan.core.domains) for (const it of d.items) {
-  checkItem(it, 'core');
-  for (const id of it.skills) { coreListed.add(id); addCode(id, it.code); }
-}
-for (const b of plan.branches) for (const d of b.domains) for (const it of d.items) {
-  checkItem(it, `branch ${b.id}`);
-  for (const id of it.skills) {
-    addCode(id, it.code);
-    if (!branchOf.has(id)) branchOf.set(id, new Set());
-    branchOf.get(id).add(b.id);
-  }
-}
-const coreClosure = new Set();
-const stack = [...coreListed];
-while (stack.length) {
-  const id = stack.pop();
-  if (coreClosure.has(id)) continue;
-  coreClosure.add(id);
-  for (const p of byId.get(id)?.hard_prereqs || []) stack.push(p);
-}
-const cls = id => {
-  if (coreListed.has(id)) return 'core';
-  if (coreClosure.has(id)) return 'foundation';
-  if (branchOf.has(id)) return 'branch';
-  const t = byId.get(id).dojo_tier;
-  return t <= 4 ? 'foundation' : t <= 6 ? 'enrichment' : 'beyond';
-};
+for (const d of plan.core.domains) for (const it of d.items) checkItem(it, 'core');
+for (const b of plan.branches) for (const d of b.domains) for (const it of d.items) checkItem(it, `branch ${b.id}`);
 for (const id of coreClosure) if (cls(id) === 'branch') errors.push(`core needs branch-only skill ${byId.get(id).title}`);
 
 // Branch-listed skills that core needs anyway: legitimate (a branch can build
