@@ -52263,6 +52263,1315 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: BUSINESS-MODELING ====
+// Business branch, domain 10B "Business Modeling" (plan items 94B-100B):
+// Forecasting, Business Growth Models, Cost-Benefit Analysis, Expected Value
+// Decisions (T7) and Risk Analysis, Constrained Optimization, Scenario
+// Modeling (T8). Tiers and prerequisites come from data/math_curriculum_v2.json.
+//
+// Everything here is typed from tier 5 up, so the answer strings are chosen to
+// round-trip through AnswerInterpreter:
+//   * a dollar answer is a plain grouped number, "12,500" or "-1,250", never
+//     "$12,500". AnswerInterpreter.parseMoney stops reading at the first comma,
+//     so "$678,400" and "$678,976" both parse as $678 and grade as EQUAL - a
+//     "$"-with-commas answer would accept wrong totals. "-$1,250" is also
+//     classified as text, which would drop the question back to multiple
+//     choice. A typed "$12,500", "12500" or "$12500" is still accepted;
+//   * selection answers ("Option B", "Linear", a risk's name) are forceChoice -
+//     "Exponential" on its own happens to parse as typeable, and a student cannot
+//     be asked to spell the name of a choice they were never shown.
+// Every question's numbers are computed here and rounded explicitly; nothing is
+// left to floating point to "come out right".
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (generateQuestion then tops
+  // the set up itself).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+  const pt = (x,y) => "(" + x + ", " + y + ")";
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- number and money formatting -----------------------------------------
+  // Round to cents with a nudge, so 2.675 (stored as 2.67499...) still rounds up.
+  const r2 = n => Math.round(n * 100 + (n >= 0 ? 1e-7 : -1e-7)) / 100;
+  // A plain numeric string: whole numbers bare, anything else to two places.
+  const plain = n => { n = r2(n); return Number.isInteger(n) ? String(n) : n.toFixed(2); };
+  const cm = s => { const [i, d] = String(s).split("."); return i.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (d ? "." + d : ""); };
+  // Display form for question and explanation text: $12,500 / -$1,250 / $7.50.
+  const usd = n => (r2(n) < 0 ? "-$" : "$") + cm(plain(Math.abs(n)));
+  const nf = n => cm(plain(n));                       // 12,500 / 7.50, no $
+  // The answer string: digits grouped, NO dollar sign (see the header note).
+  const mAns = n => cm(plain(n));
+  const uniq = a => a.filter((v, i) => v !== undefined && a.indexOf(v) === i);
+  // Typed alternatives - deliberately with NO "$" form. A typed "$12,500" or
+  // "$12500" already grades right against the plain number. Listing "$12500"
+  // as an alternate would make it a money answer, and the money/number
+  // equivalence also reads a bare number as CENTS, so a student typing
+  // 1,250,000 (the percent never converted) would be marked right.
+  const mAlts = n => uniq([mAns(n), plain(n), String(r2(n))]);
+  const fin = a => a.filter(v => Number.isFinite(v));
+  // Money answer + its typed forms + four same-kind options.
+  const money = (n, cands) => ({ answer: mAns(n), acceptableAnswers: mAlts(n),
+    options: opt4(mAns(n), fin(cands).map(mAns)) });
+  // Plain-number answer (counts, years, ratios).
+  const fmtN = n => String(r2(n));                    // 2.5, 14, -400
+  const num = (n, cands) => ({ answer: fmtN(n), acceptableAnswers: uniq([fmtN(n), cm(fmtN(n)), plain(n)]),
+    options: opt4(fmtN(n), fin(cands).map(fmtN)) });
+  // A point answer, accepted with or without the parentheses.
+  const point = (x, y, cands) => ({ answer: pt(x, y),
+    acceptableAnswers: [pt(x, y), x + ", " + y, "(" + x + "," + y + ")", x + "," + y],
+    options: opt4(pt(x, y), cands.map(c => pt(c[0], c[1]))) });
+  // A selection: the board stays on screen and the answer is never typed.
+  const choice = (ans, opts) => ({ answer: ans, options: sh(opts.slice()), forceChoice: true });
+  // Exact half-up rounding of N / D for integer N, D (both well under 2^53).
+  const roundDiv = (N, D) => { const q = Math.floor(N / D), rem = N - q * D; return rem * 2 >= D ? q + 1 : q; };
+  const unit = (n, u) => n + " " + (n === 1 ? u[0] : u[1]);
+  // "an 8% chance", "an 80% chance", "an 18% chance", "a 25% chance"
+  const aPct = p => (/^(8|11|18)/.test(String(p)) ? "an " : "a ") + p + "%";
+  const term = (a, v) => (a === 1 ? "" : a) + v;      // 1x -> x
+
+  // =====================================================================
+  // M-351  Forecasting  (tier 7)   prereqs: Correlation and Trend Lines,
+  //                                         Linear Modeling
+  // =====================================================================
+  _addSkill(7, "Forecasting", "Forecasting", 3, {
+    goalProblem: "A shop sold 340, 385, 430 and 475 units in four straight years, rising by the same amount each year. Forecast sales three years after the last of those years.",
+    teachingSteps: [
+      { title: "A forecast extends a pattern", explanation: "Forecasting means using past data to estimate a future value. You already know the main tool from <strong>Linear Modeling</strong> and <strong>Trend Lines</strong>: fit y = mx + b to the data, then substitute a future x.", visual: "trend line y = 25x + 180\nweek 16: y = 25(16) + 180 = 580" },
+      { title: "Constant change: count the steps", explanation: "When the data rise by the same amount each period, find that <strong>change per period</strong>, then multiply by <strong>how many periods ahead</strong> you are forecasting. Add the result to the most recent value.", visual: "340 → 385 → 430 → 475   (+45 each year)\n3 years on: 475 + 3 × 45 = 610" },
+      { title: "Moving averages smooth the noise", explanation: "Real data bounce around. A <strong>k-period moving average</strong> forecasts the next period as the average of the <strong>k most recent</strong> values. It ignores older data on purpose, so it follows recent conditions.", visual: "Apr 142, May 150, Jun 146\n3-month forecast for July = (142 + 150 + 146) ÷ 3 = 146" },
+      { title: "Average change and growth rate", explanation: "For bumpy data, the <strong>average change per period</strong> is (last − first) ÷ number of <em>gaps</em>. Five years of data have only four gaps. If the business grows by a <strong>percent</strong> instead, multiply by the growth factor (1 + r) once per period.", visual: "average change = (290 − 200) ÷ 4 = 22.5 per year\n8% growth: next = now × 1.08" },
+      { title: "Seasonal patterns", explanation: "Many businesses have busy and slow seasons. A <strong>seasonal index</strong> compares a season with an average season: index 1.4 means 40% above average. Forecast a season as (average season) × (index).", visual: "yearly forecast $480,000 → average quarter $120,000\nQ4 index 1.4 → Q4 forecast $168,000" },
+      { title: "Know the limits of extrapolation", explanation: "A trend only describes the range it was measured in. The further you forecast beyond the data, the less you should trust it. A falling line will eventually forecast negative sales, which is impossible: the pattern has to change before then.", visual: "data: weeks 1-10, y = −30x + 600\nweek 25: y = −150  (impossible)" }
+    ],
+    finalAnswer: "610 units",
+    answerExplanation: "Sales rise by 385 − 340 = 45 units per year. Three years past the last value: 475 + 3 × 45 = 475 + 135 = 610 units.",
+    example: { problem: "Monthly orders were Jan 120, Feb 135, Mar 128, Apr 142, May 150, Jun 146. Forecast July with a 3-month moving average.", steps: [
+      { text: "Take the three most recent months", math: "Apr 142, May 150, Jun 146" },
+      { text: "Add them", math: "142 + 150 + 146 = 438" },
+      { text: "Divide by 3", math: "438 ÷ 3 = 146 orders" }
+    ]},
+    keyPoints: [
+      "Trend line forecast: substitute the future x into y = mx + b",
+      "Constant change: last value + (change per period) × (periods ahead)",
+      "A k-period moving average uses only the k most recent values",
+      "Average change = (last − first) ÷ number of gaps, not number of values",
+      "Seasonal forecast = average season × seasonal index",
+      "The further past the data, the less a forecast can be trusted"
+    ],
+    mistakes: [
+      { wrong: "Dividing the total change over 5 years of data by 5", why: "Five values have four year-to-year gaps. Divide by the number of gaps." },
+      { wrong: "Averaging every month for a 3-month moving average", why: "A moving average uses only the most recent k values; that is what lets it follow recent conditions." },
+      { wrong: "Trusting a forecast 20 years past 5 years of data", why: "Extrapolating far beyond the data assumes the pattern never changes. Treat it as a rough guess at best." }
+    ],
+    guided: { problem: "A trend line for a store's weekly sales (weeks 1 to 10) is y = 25x + 180, where x is the week number. Forecast sales for week 16.", steps: [
+      { label: "Slope: units added per week", value: "25" },
+      { label: "Multiply the slope by the week", value: "25 × 16 = 400" },
+      { label: "Add the intercept", value: "400 + 180 = 580" }
+    ], answer: "580", answerLabel: "Week 16 forecast =",
+      interactiveSteps: [
+        { prompt: "In y = 25x + 180, how many units does the trend add each week?", hint: "The slope is the number multiplying x.", answer: "25", acceptableAnswers: ["25"], formatHint: "Enter a number", commonMistakes: { "180": "180 is the intercept (the starting level). The slope is the number multiplying x." } },
+        { prompt: "Substitute x = 16 into the slope term: 25 × 16 = ?", hint: "Multiply the slope by the week number.", answer: "400", acceptableAnswers: ["400"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "Add the intercept: 400 + 180 = ?", hint: "y = 25x + 180, so add 180.", answer: "580", acceptableAnswers: ["580"], formatHint: "Enter a number", commonMistakes: { "400": "Do not forget the intercept: the line starts at 180." } }
+      ] }
+  }, function genForecasting(){
+    const type = pick(["trend_line","extend_table","moving_average","avg_change","growth_rate","seasonal","extrapolation"]);
+    const biz = pick(["a bike shop","an online store","a coffee cart","a phone repair shop","a garden center","a bookstore"]);
+
+    if (type === "trend_line") {
+      const c = pick([{ who: "a bike shop", per: "month", what: "bikes sold", last: 12 }, { who: "an online store", per: "week", what: "website visitors", last: 10 },
+                      { who: "a smoothie stand", per: "day", what: "smoothies sold", last: 14 }, { who: "a gym", per: "quarter", what: "new members", last: 8 },
+                      { who: "a bookstore", per: "month", what: "books sold", last: 12 }]);
+      const m = ri(6, 85), b = ri(120, 900), x = c.last + ri(2, 12);
+      const ans = m * x + b;
+      return { subType: type,
+        question: `A trend line fit to ${c.who}'s data for ${c.per}s 1 to ${c.last} is y = ${m}x + ${b}, where x is the ${c.per} number and y is ${c.what}. Forecast y for ${c.per} ${x}.`,
+        // distractors: plugging in the last data period instead of the target,
+        // dropping the intercept, an off-by-one period, slope and intercept swapped
+        ...num(ans, [m * c.last + b, m * x, m * (x - 1) + b, b * x + m]),
+        explanation: `Substitute x = ${x}: y = ${m}(${x}) + ${b} = ${m * x} + ${b} = ${ans}.` };
+    }
+    if (type === "extend_table") {
+      const y0 = ri(2017, 2022), d = pick([1, 1, 1, -1]) * ri(3, 25) * 5;
+      const v0 = ri(40, 90) * 10, k = ri(2, 5);
+      const v = [0, 1, 2, 3].map(i => v0 + d * i);
+      if (v[3] + d * k <= 0) return genForecasting();
+      const ans = v[3] + d * k;
+      return { subType: type,
+        question: `${biz[0].toUpperCase() + biz.slice(1)} sold ${v[0]}, ${v[1]}, ${v[2]} and ${v[3]} units in ${y0}, ${y0 + 1}, ${y0 + 2} and ${y0 + 3}. Sales change by the same amount each year. Forecast sales for ${y0 + 3 + k}.`,
+        // distractors: only one year ahead, one year too many, counting from the
+        // first year instead of the last, one year too few
+        ...num(ans, [v[3] + d, v[3] + d * (k + 1), v[0] + d * k, v[3] + d * (k - 1)]),
+        explanation: `Change per year = ${v[1]} − ${v[0]} = ${d}. ${y0 + 3 + k} is ${k} years after ${y0 + 3}, so the forecast is ${v[3]} + ${k} × (${d}) = ${ans} units.` };
+    }
+    if (type === "moving_average") {
+      const k = pick([3, 4]);
+      const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      const start = ri(0, 5), base = ri(8, 40) * 10;
+      const vals = [0, 1, 2, 3, 4, 5].map(() => base + ri(-30, 30));
+      // Make the k most recent values sum to a multiple of k, so the average is whole.
+      const sumK = () => vals.slice(6 - k).reduce((s, v) => s + v, 0);
+      vals[5] -= sumK() % k;
+      const s = sumK(), ans = s / k;
+      const all = Math.round(vals.reduce((t, v) => t + v, 0) / 6);
+      const first = Math.round(vals.slice(0, k).reduce((t, v) => t + v, 0) / k);
+      const listTxt = vals.map((v, i) => `${months[start + i]} ${v}`).join(", ");
+      return { subType: type,
+        question: `Monthly orders at ${biz}: ${listTxt}. Forecast ${months[start + 6]} using a ${k}-month moving average.`,
+        // distractors: averaging every month, averaging the OLDEST k months,
+        // carrying the last month forward unchanged
+        ...num(ans, [all, first, vals[5], Math.round((vals[4] + vals[5]) / 2)]),
+        explanation: `A ${k}-month moving average uses the ${k} most recent months: (${vals.slice(6 - k).join(" + ")}) ÷ ${k} = ${s} ÷ ${k} = ${ans} orders.` };
+    }
+    if (type === "avg_change") {
+      const y0 = ri(2016, 2021), v0 = ri(20, 80) * 10, d = ri(6, 60);
+      const v = [v0];
+      for (let i = 1; i <= 3; i++) v.push(v0 + d * i + ri(-Math.floor(d * 0.8), Math.floor(d * 0.8)));
+      v.push(v0 + 4 * d);
+      if (v[4] - v[3] === d) v[3] += pick([-2, 2]);   // keep "last change only" a different answer
+      const ans = v[4] + d;
+      return { subType: type,
+        question: `Revenue at ${biz} (in thousands of dollars): ${v.map((x, i) => `${y0 + i}: ${x}`).join(", ")}. Use the average change per year from ${y0} to ${y0 + 4} to forecast ${y0 + 5}.`,
+        // distractors: using only the most recent change, adding the whole
+        // 4-year change at once, dividing by 5 values instead of 4 gaps
+        ...num(ans, [v[4] + (v[4] - v[3]), v[4] + 4 * d, Math.round(v[4] + 4 * d / 5)]),
+        explanation: `Average change = (${v[4]} − ${v0}) ÷ 4 = ${4 * d} ÷ 4 = ${d} per year (five years of data have four gaps). Forecast for ${y0 + 5} = ${v[4]} + ${d} = ${ans} thousand dollars.` };
+    }
+    if (type === "growth_rate") {
+      const k = ri(12, 95), base = k * 10000, r = pick([3, 4, 5, 6, 8, 10, 12, 15]), t = pick([2, 3]);
+      // base × ((100 + r)/100)^t computed in whole numbers: k × (100 + r)^t / 100^(t-2)
+      const ans = t === 2 ? k * (100 + r) * (100 + r) : roundDiv(k * Math.pow(100 + r, 3), 100);
+      const fac = (100 + r) / 100;
+      const lin = base + base * r * t / 100;
+      return { subType: type,
+        question: `${biz[0].toUpperCase() + biz.slice(1)}'s revenue has grown about ${r}% per year and is ${usd(base)} this year. If that rate continues, forecast revenue ${t} years from now${t === 3 ? ", to the nearest dollar" : ""}.`,
+        // distractors: adding r% of TODAY's revenue each year (linear, no
+        // compounding), only one year of growth, one year too many
+        ...money(ans, [lin, base * fac, Math.round(base * Math.pow(fac, t + 1))]),
+        explanation: `Multiply by the growth factor ${fac} once per year: ${usd(base)} × ${fac}^${t} = ${usd(ans)}. Adding ${r}% of this year's revenue every year would give ${usd(lin)}, which ignores that each year's growth builds on the last.` };
+    }
+    if (type === "seasonal") {
+      if (Math.random() < 0.5) {
+        const total = ri(8, 60) * 40000, idx = pick([0.6, 0.7, 0.8, 0.9, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6]);
+        const q = pick(["Q1", "Q2", "Q3", "Q4"]), avg = total / 4;
+        const ans = Math.round(avg * idx);
+        return { subType: type,
+          question: `${biz[0].toUpperCase() + biz.slice(1)}'s ${q} sales are usually ${idx} times an average quarter (seasonal index ${idx}). Total sales next year are forecast at ${usd(total)}. Forecast ${q} sales.`,
+          // distractors: index applied to the whole year, ignoring the season,
+          // dividing by the index instead of multiplying
+          ...money(ans, [Math.round(total * idx), avg, Math.round(avg / idx)]),
+          explanation: `An average quarter is ${usd(total)} ÷ 4 = ${usd(avg)}. ${q} runs at ${idx} times that: ${usd(avg)} × ${idx} = ${usd(ans)}.` };
+      }
+      const qs = [0, 1, 2, 3].map(() => ri(6, 30) * 10), gr = pick([10, 20, 30]), which = ri(0, 3);
+      const ans = qs[which] * (100 + gr) / 100;
+      const avgAll = Math.round(qs.reduce((s, v) => s + v, 0) / 4 * (100 + gr) / 100);
+      const other = qs[(which + 1) % 4] * (100 + gr) / 100;
+      return { subType: type,
+        question: `Last year ${biz} had quarterly sales (in thousands of dollars) of Q1: ${qs[0]}, Q2: ${qs[1]}, Q3: ${qs[2]}, Q4: ${qs[3]}. This year every quarter is running ${gr}% above the same quarter last year. Forecast Q${which + 1} this year, in thousands of dollars.`,
+        // distractors: averaging out the season, adding the percent as a count,
+        // growing the wrong quarter, no growth at all
+        ...num(ans, [avgAll, qs[which] + gr, other, qs[which]]),
+        explanation: `Start from the same quarter last year so the season is built in: Q${which + 1} was ${qs[which]}. Growing ${gr}%: ${qs[which]} × ${(100 + gr) / 100} = ${ans} thousand dollars.` };
+    }
+    // extrapolation
+    if (Math.random() < 0.5) {
+      const L = ri(1, 20), H = L + ri(8, 14);
+      const inside = ri(L + 1, H - 1);
+      const dists = sh([ri(1, 3), ri(5, 8), ri(11, 20)]);
+      const far = Math.max(...dists);
+      const pts = dists.map(dd => (L - dd >= 1 && Math.random() < 0.4) ? L - dd : H + dd);
+      const ansMonth = pts[dists.indexOf(far)];
+      const opts = [inside, ...pts].map(m => "Month " + m);
+      return { subType: type, ...choice("Month " + ansMonth, opts),
+        question: `A trend line was fit to a store's sales for months ${L} through ${H}. Which of these forecasts should be trusted the LEAST?`,
+        explanation: `The data cover months ${L} to ${H}. Month ${inside} is inside that range. The others lie outside it, and Month ${ansMonth} is the farthest from the data (${far} months beyond its edge), so that forecast relies most on the pattern continuing unchanged.` };
+    }
+    const c = pick([{ what: "DVD rentals", per: "week" }, { what: "printed newspaper sales", per: "week" },
+                    { what: "landline subscribers (in thousands)", per: "month" }, { what: "fax machine orders", per: "month" }]);
+    const m = ri(8, 40), b = m * ri(14, 25) + ri(0, m - 1);
+    const X = Math.ceil(b / m) + ri(2, 10);
+    const ans = b - m * X;
+    return { subType: type,
+      question: `${c.what[0].toUpperCase() + c.what.slice(1)} fell steadily over ${c.per}s 1 to 10, and the trend line is y = −${m}x + ${b}. What does the line forecast for ${c.per} ${X}? (Look at the sign of your answer.)`,
+      // distractors: the sign flipped, a floor of zero, the last data point
+      ...num(ans, [m * X - b, 0, b - m * 10]),
+      explanation: `y = −${m}(${X}) + ${b} = ${-m * X} + ${b} = ${ans}. A negative count is impossible: the line only describes ${c.per}s 1 to 10, and extending it this far past the data breaks the model.` };
+  });
+
+  // =====================================================================
+  // M-352  Business Growth Models  (tier 7)   prereqs: Exponential Growth
+  //                                           and Decay, Linear Modeling
+  // =====================================================================
+  _addSkill(7, "Business Growth Models", "Business Growth Models", 3, {
+    goalProblem: "A startup has 2,000 customers. Plan A adds 300 customers per month. Plan B grows the customer base 10% per month. Which plan gives more customers after 12 months?",
+    teachingSteps: [
+      { title: "Linear growth adds the same amount", explanation: "If a business gains the <strong>same number</strong> each period, the growth is <strong>linear</strong>: y = a + d·t, where a is the start and d is the amount added per period. In a table, the <strong>differences</strong> between neighbours are constant.", visual: "2,000 → 2,300 → 2,600 → 2,900   (+300 each month)" },
+      { title: "Exponential growth multiplies by the same factor", explanation: "If it grows by the same <strong>percent</strong> each period, the growth is <strong>exponential</strong>: y = a(1 + r)^t. In a table, the <strong>ratios</strong> between neighbours are constant. A loss of r% per period is exponential decay: y = a(1 − r)^t.", visual: "2,000 → 2,200 → 2,420 → 2,662   (× 1.10 each month)" },
+      { title: "Choosing the model", explanation: "From a <strong>table</strong>: check differences (constant → linear) and ratios (constant → exponential). From <strong>words</strong>: \"adds 40 per week\" or \"loses $2,000 per year\" is linear; \"grows 6% per year\", \"doubles every 3 years\" or \"loses 15% of its value\" is exponential.", visual: "500, 600, 720, 864\ndifferences 100, 120, 144 (not constant)\nratios 1.2, 1.2, 1.2 → exponential" },
+      { title: "Time to reach a target", explanation: "Linear: months needed = (target − start) ÷ amount per month, then <strong>round up</strong>, because the target is not reached until that whole period ends. Exponential: multiply by the growth factor period by period until you pass the target (or use logarithms).", visual: "1,200 + 150t ≥ 3,000 → t ≥ 12 months\n5,000 × 1.2^t ≥ 10,000 → t = 4 years (1.2^4 ≈ 2.07)" },
+      { title: "Doubling time", explanation: "Something that doubles every k years is multiplied by 2 once per k years: after t years it is a·2^(t/k). The <strong>rule of 70</strong> estimates doubling time: about 70 ÷ (percent growth rate) periods.", visual: "doubles every 3 years: 2,500 → 5,000 → 10,000 → 20,000 → 40,000 in 12 years\n7% growth: doubles in about 70 ÷ 7 = 10 years" },
+      { title: "Exponential always overtakes linear", explanation: "A linear plan adds a fixed amount; an exponential plan adds more each period because it grows on a bigger base. Even if the linear plan leads at first, the exponential one eventually passes it. Find the crossover by comparing values period by period.", visual: "month 12: Plan A 5,600   Plan B ≈ 6,277" }
+    ],
+    finalAnswer: "Plan B (about 6,277 customers vs 5,600)",
+    answerExplanation: "Plan A is linear: 2,000 + 300 × 12 = 5,600. Plan B is exponential: 2,000 × 1.1^12 ≈ 2,000 × 3.138 ≈ 6,277. Plan B gives more customers after a year.",
+    example: { problem: "Customers at the end of each year: 500, 600, 720, 864. Which model fits, and what is next year's value?", steps: [
+      { text: "Differences", math: "100, 120, 144: not constant, so not linear" },
+      { text: "Ratios", math: "600 ÷ 500 = 1.2, 720 ÷ 600 = 1.2, 864 ÷ 720 = 1.2: constant" },
+      { text: "Exponential with factor 1.2", math: "next = 864 × 1.2 = 1,036.8 ≈ 1,037 customers" }
+    ]},
+    keyPoints: [
+      "Linear: same AMOUNT each period, constant differences, y = a + dt",
+      "Exponential: same PERCENT each period, constant ratios, y = a(1 + r)^t",
+      "Round time-to-target UP to the first whole period that reaches it",
+      "Doubling every k periods: multiply by 2 once per k periods",
+      "Rule of 70: doubling time ≈ 70 ÷ growth rate in percent",
+      "Exponential growth eventually overtakes any linear growth"
+    ],
+    mistakes: [
+      { wrong: "Adding 5% of the starting revenue every year", why: "That is linear growth. Exponential growth takes 5% of the CURRENT value, so each year's increase is bigger than the last." },
+      { wrong: "Rounding time-to-target down: 11.4 months → 11", why: "After 11 months the target has not been reached yet. Round up to 12." },
+      { wrong: "Calling \"loses 15% of its value each year\" linear", why: "A percent change is multiplicative: it is exponential decay with factor 0.85." }
+    ],
+    guided: { problem: "A company's revenue is $40,000 and grows 5% per year. What will revenue be after 3 years, to the nearest dollar?", steps: [
+      { label: "Growth factor", value: "1.05" },
+      { label: "After year 1", value: "40000 × 1.05 = 42000" },
+      { label: "After year 2", value: "42000 × 1.05 = 44100" },
+      { label: "After year 3", value: "44100 × 1.05 = 46305" }
+    ], answer: "46305", answerLabel: "Revenue after 3 years =",
+      interactiveSteps: [
+        { prompt: "Revenue grows 5% per year. What number do you multiply by each year (the growth factor)?", hint: "Keep 100% and add 5%: 1 + 0.05.", answer: "1.05", acceptableAnswers: ["1.05"], formatHint: "Enter a decimal", commonMistakes: { "0.05": "Multiplying by 0.05 gives only the increase. Multiply by 1.05 to keep the original amount too.", "5": "Write the percent as a decimal and add it to 1: 1.05." } },
+        { prompt: "After year 1: 40,000 × 1.05 = ?", hint: "5% of 40,000 is 2,000.", answer: "42000", acceptableAnswers: ["42000", "42,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "After year 2: 42,000 × 1.05 = ?", hint: "5% of 42,000 is 2,100, which is more than last year's increase.", answer: "44100", acceptableAnswers: ["44100", "44,100"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "44000": "That adds 5% of the ORIGINAL 40,000 again (linear). Take 5% of 42,000." } },
+        { prompt: "After year 3: 44,100 × 1.05 = ?", hint: "5% of 44,100 is 2,205.", answer: "46305", acceptableAnswers: ["46305", "46,305"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "46000": "That is linear growth: 2,000 added each year. Each year adds 5% of the new total." } }
+      ] }
+  }, function genGrowthModels(){
+    const type = pick(["identify_table","identify_description","linear_value","exponential_value","time_to_target_linear","time_to_target_exp","doubling","crossover"]);
+    const biz = pick(["A bakery","A streaming startup","A gym","A food delivery app","A tutoring company","A sneaker shop"]);
+
+    if (type === "identify_table") {
+      const kind = pick(["Linear", "Exponential", "Neither"]);
+      let v;
+      if (kind === "Linear") {
+        // a ≥ 400 and |d| ≤ 100, so a falling line stays positive through Year 3
+        const a = ri(40, 90) * 10, d = pick([1, 1, -1]) * ri(2, 20) * 5;
+        v = [0, 1, 2, 3].map(i => a + d * i);
+      } else if (kind === "Exponential") {
+        // Each (start, ratio) pair is chosen so every value is a whole number.
+        const c = pick([[ri(2, 40) * 5, 2], [ri(2, 20), 3], [8 * ri(2, 15), 1.5], [1000 * ri(1, 9), 1.1],
+                        [125 * ri(2, 8), 1.2], [8 * ri(5, 30), 0.5], [125 * ri(2, 10), 0.8]]);
+        v = [0, 1, 2, 3].map(i => Math.round(c[0] * Math.pow(c[1], i)));
+      } else {
+        const a = ri(10, 60) * 5;
+        let d = ri(2, 15) * 5; if (d === a) d += 5;
+        v = [a, a + d, a + 3 * d, a + 6 * d];   // differences d, 2d, 3d and ratios that drift
+      }
+      const diffs = [1, 2, 3].map(i => v[i] - v[i - 1]);
+      const ratios = [1, 2, 3].map(i => Math.round(v[i] / v[i - 1] * 1000) / 1000);
+      const what = pick(["customers", "subscribers", "members", "orders per week"]);
+      return { subType: type, ...choice(kind, ["Linear", "Exponential", "Neither"]),
+        question: `${biz}'s ${what} at the end of each year: Year 0: ${v[0]}, Year 1: ${v[1]}, Year 2: ${v[2]}, Year 3: ${v[3]}. Which model fits these data: linear, exponential, or neither?`,
+        explanation: `Differences: ${diffs.join(", ")}. Ratios: ${ratios.join(", ")}. ` + (kind === "Linear" ? "The differences are constant, so the growth is linear."
+          : kind === "Exponential" ? "The ratios are constant, so the growth is exponential."
+          : "Neither the differences nor the ratios are constant, so neither model fits exactly.") };
+    }
+    if (type === "identify_description") {
+      const n = ri(2, 9) * 10, r = ri(3, 18), k = ri(2, 6);
+      const d = pick([
+        [`A streaming service adds about ${n * 10} new subscribers every month.`, "Linear"],
+        [`A coffee shop's revenue grows ${r}% each year.`, "Exponential"],
+        [`A town's population increases by ${n * 5} people per year.`, "Linear"],
+        [`The number of downloads of an app doubles every ${k} weeks.`, "Exponential"],
+        [`A delivery van loses ${r}% of its value each year.`, "Exponential"],
+        [`A company's equipment loses ${usd(n * 50)} of value each year.`, "Linear"],
+        [`A savings account earns ${Math.min(r, 9)}% interest, compounded yearly.`, "Exponential"],
+        [`A bakery sells ${n} more loaves each week than the week before.`, "Linear"],
+        [`Views of a viral ad multiply by 1.${k} every day.`, "Exponential"],
+        [`A salesperson's pay rises by ${usd(n * 50)} every year.`, "Linear"],
+        [`A store's customer list shrinks by ${n} customers each month.`, "Linear"],
+        [`An online game's player count falls ${r}% every month.`, "Exponential"]
+      ]);
+      return { subType: type, ...choice(d[1], ["Linear", "Exponential"]),
+        question: `${d[0]} Is this growth (or decline) linear or exponential?`,
+        explanation: d[1] === "Linear"
+          ? "The same AMOUNT is added or taken away each period, so the change is linear."
+          : "The amount changes by the same PERCENT or FACTOR each period, so the change is exponential." };
+    }
+    if (type === "linear_value") {
+      const C0 = ri(5, 80) * 50, d = ri(2, 45) * 10, t = ri(6, 36);
+      const ans = C0 + d * t;
+      return { subType: type,
+        question: `${biz} has ${cm(C0)} customers and gains about ${d} new customers every month. If that continues, how many customers will it have after ${t} months?`,
+        // distractors: one month short, leaving out the starting customers,
+        // one month too many, counting each month's gain twice
+        ...num(ans, [C0 + d * (t - 1), d * t, C0 + d * (t + 1), C0 + 2 * d * t]),
+        explanation: `Linear growth: ${cm(C0)} + ${d} × ${t} = ${cm(C0)} + ${cm(d * t)} = ${cm(ans)} customers.` };
+    }
+    if (type === "exponential_value") {
+      const decay = Math.random() < 0.35;
+      const k = ri(2, 40), S = k * 1000, r = decay ? pick([2, 3, 4, 5, 6, 8]) : pick([3, 4, 5, 6, 8, 10, 12, 15, 20]);
+      const t = ri(2, 5), f = decay ? 100 - r : 100 + r;
+      const ans = roundDiv(S * Math.pow(f, t), Math.pow(100, t));
+      const lin = S + (decay ? -1 : 1) * S * r * t / 100;
+      const cands = [lin, Math.round(S * Math.pow(f / 100, t - 1)), Math.round(S * Math.pow(f / 100, t + 1))];
+      if (decay) return { subType: type,
+        question: `A town of ${cm(S)} people is shrinking ${r}% per year. Predict its population after ${t} years, to the nearest whole person.`,
+        // distractors: subtracting r% of the ORIGINAL population every year
+        // (linear), one year too few, one year too many
+        ...num(ans, cands),
+        explanation: `Each year keeps ${f}% of the year before: ${cm(S)} × ${f / 100}^${t} ≈ ${cm(ans)} people. Taking ${r}% of the original ${cm(S)} every year would give ${cm(Math.round(lin))}, which treats the decline as linear.` };
+      return { subType: type,
+        question: `${biz} has yearly revenue of ${usd(S)} that grows ${r}% per year. Predict revenue after ${t} years, to the nearest dollar.`,
+        ...money(ans, cands),
+        explanation: `Multiply by ${f / 100} once per year: ${usd(S)} × ${f / 100}^${t} ≈ ${usd(ans)}. Adding ${r}% of the original revenue every year would give ${usd(lin)}, which ignores compounding.` };
+    }
+    if (type === "time_to_target_linear") {
+      const C0 = ri(5, 60) * 100, d = ri(5, 60) * 10;
+      const T = C0 + d * ri(5, 30) + ri(1, d - 1);
+      const exact = (T - C0) / d, ans = Math.ceil(exact);
+      return { subType: type,
+        question: `${biz} has ${cm(C0)} members and adds ${d} members each month. After how many months will it first have at least ${cm(T)} members?`,
+        // distractors: rounding down, one month extra, forgetting the members it
+        // already has
+        ...num(ans, [Math.floor(exact), ans + 1, Math.ceil(T / d)]),
+        explanation: `${cm(C0)} + ${d}t ≥ ${cm(T)} → t ≥ (${cm(T)} − ${cm(C0)}) ÷ ${d} = ${cm(T - C0)} ÷ ${d} ≈ ${Math.round(exact * 100) / 100}. After ${Math.floor(exact)} months it has only ${cm(C0 + d * Math.floor(exact))}, so round up: ${ans} months.` };
+    }
+    if (type === "time_to_target_exp") {
+      for (let tries = 0; tries < 50; tries++) {
+        const S = ri(2, 50) * 1000, r = pick([5, 6, 8, 10, 12, 15, 20, 25]), mult = pick([1.5, 2, 2.5, 3, 4]);
+        const T = S * mult;
+        let n = 0, val = S;
+        while (val < T) { n++; val = S * Math.pow(1 + r / 100, n); }
+        const prev = S * Math.pow(1 + r / 100, n - 1);
+        // Skip draws where a year lands within 0.1% of the target: rounding could flip them.
+        if (Math.abs(val - T) / T < 0.001 || Math.abs(prev - T) / T < 0.001) continue;
+        const linGuess = Math.ceil((T - S) / (S * r / 100));
+        return { subType: type,
+          question: `${biz}'s yearly revenue is ${usd(S)} and grows ${r}% per year. After how many whole years will it first reach at least ${usd(T)}?`,
+          // distractors: adding r% of the STARTING revenue each year (linear),
+          // one year short, one year extra
+          ...num(n, [linGuess, n - 1, n + 1]),
+          explanation: `Multiply by ${1 + r / 100} each year. After ${n - 1} years: about ${usd(Math.round(prev))} (short of ${usd(T)}). After ${n} years: about ${usd(Math.round(val))}, which reaches it. So ${n} years.` };
+      }
+      return genGrowthModels();
+    }
+    if (type === "doubling") {
+      const v = pick(["every", "rule70", "exact"]);
+      if (v === "every") {
+        const k = ri(2, 6), N = ri(2, 50) * 100, m = ri(2, 5);
+        const ans = N * Math.pow(2, m);
+        return { subType: type,
+          question: `The number of users of an app doubles every ${k} months. It has ${cm(N)} users now. How many users will it have in ${k * m} months if the pattern holds?`,
+          // distractors: adding the original amount each period (linear), one
+          // doubling short, one doubling extra
+          ...num(ans, [N * (1 + m), N * Math.pow(2, m - 1), N * Math.pow(2, m + 1)]),
+          explanation: `${k * m} months is ${k * m} ÷ ${k} = ${m} doubling periods: ${cm(N)} × 2^${m} = ${cm(N)} × ${Math.pow(2, m)} = ${cm(ans)} users.` };
+      }
+      if (v === "rule70") {
+        const r = pick([2, 5, 7, 10, 14]);
+        const ans = 70 / r;
+        return { subType: type,
+          question: `A business's sales grow ${r}% per year. Use the rule of 70 to estimate how many years it takes sales to double.`,
+          // distractors: 100 ÷ r (adding r% of the start each year), twice the
+          // estimate, half the estimate
+          ...num(ans, [Math.round(100 / r), 2 * ans, Math.round(ans / 2)]),
+          explanation: `Rule of 70: doubling time ≈ 70 ÷ ${r} = ${ans} years.` };
+      }
+      const r = pick([6, 8, 9, 10, 12, 15, 18, 20, 25]);
+      let n = 0; while (Math.pow(1 + r / 100, n) < 2) n++;
+      return { subType: type,
+        question: `A company's customer base grows ${r}% each year. After how many whole years will it first be at least double its current size?`,
+        // distractors: 100 ÷ r rounded up (linear thinking), one year short,
+        // one year extra
+        ...num(n, [Math.ceil(100 / r), n - 1, n + 1]),
+        explanation: `Find the first n with ${1 + r / 100}^n ≥ 2. ${1 + r / 100}^${n - 1} ≈ ${Math.round(Math.pow(1 + r / 100, n - 1) * 1000) / 1000} (not yet double) and ${1 + r / 100}^${n} ≈ ${Math.round(Math.pow(1 + r / 100, n) * 1000) / 1000}, so ${n} years.` };
+    }
+    // crossover: exponential overtakes linear
+    for (let tries = 0; tries < 200; tries++) {
+      const SA = ri(10, 60) * 1000, d = ri(2, 15) * 500;
+      const SB = SA - ri(0, 5) * 1000, r = pick([8, 10, 12, 15, 20]);
+      if (SB <= 0) continue;
+      const A = n => SA + d * n, B = n => SB * Math.pow(1 + r / 100, n);
+      let n = 1; while (n <= 40 && !(B(n) > A(n))) n++;
+      if (n < 3 || n > 20) continue;
+      if (B(n) - A(n) < 1 || A(n - 1) - B(n - 1) < 1) continue;   // no near-ties
+      // misconception: the first year B's yearly INCREASE beats d (not its total)
+      let m = 1; while (SB * Math.pow(1 + r / 100, m - 1) * r / 100 <= d) m++;
+      return { subType: type,
+        question: `Store A's revenue is ${usd(SA)} and grows by ${usd(d)} per year. Store B's revenue is ${usd(SB)} and grows ${r}% per year. After how many whole years will Store B's revenue first be higher than Store A's?`,
+        // distractors: one year early, one year late, the year B's yearly
+        // increase first beats A's (not when its total does)
+        ...num(n, [n - 1, n + 1, m, n + 2]),
+        explanation: `Compare year by year. Year ${n - 1}: A = ${usd(A(n - 1))}, B ≈ ${usd(Math.round(B(n - 1)))} (A still ahead). Year ${n}: A = ${usd(A(n))}, B ≈ ${usd(Math.round(B(n)))}. B first passes A after ${n} years.` };
+    }
+    return genGrowthModels();
+  });
+
+  // =====================================================================
+  // M-353  Cost-Benefit Analysis  (tier 7)   prereq: Profit and Break-Even
+  // =====================================================================
+  _addSkill(7, "Cost-Benefit Analysis", "Cost-Benefit Analysis", 3, {
+    goalProblem: "A cafe can buy an espresso machine for $6,000. It would save $250 a month compared with buying coffee wholesale. How long until the machine pays for itself?",
+    teachingSteps: [
+      { title: "List costs and benefits over one horizon", explanation: "Cost-benefit analysis compares everything an option <strong>costs</strong> (up-front price, running costs, maintenance) with everything it <strong>gains</strong> (savings, extra revenue) over the <strong>same time horizon</strong>. Put monthly and yearly amounts on the same footing first.", visual: "$250 per month = $3,000 per year" },
+      { title: "Net benefit", explanation: "<strong>Net benefit = total benefits − total costs</strong>, both over the horizon. A positive net benefit means the option pays off over that period; a negative one means it does not. It is the same idea as profit = revenue − cost.", visual: "5 years: 9,000 saved − 4,800 price − 1,000 upkeep = $3,200" },
+      { title: "Payback period", explanation: "The <strong>payback period</strong> is how long the savings take to cover the up-front cost: payback = up-front cost ÷ net savings per period. Subtract any running cost from the savings first.", visual: "$6,000 ÷ $3,000 per year = 2 years" },
+      { title: "Benefit-cost ratio", explanation: "The <strong>benefit-cost ratio</strong> (BCR) = total benefits ÷ total costs. A BCR above 1 means benefits outweigh costs; below 1 means they do not. A BCR of 1.5 returns $1.50 for every $1 spent.", visual: "benefits $90,000 ÷ costs $60,000 = 1.5" },
+      { title: "Comparing two options over time", explanation: "For each option, total cost = up-front + (running cost per year × years). A cheap option with high running costs can lose to a pricier one with low running costs. They cost the same at the crossover: (difference in price) ÷ (difference in yearly running cost).", visual: "Van A: 30,000 + 6,000/yr   Van B: 38,000 + 3,500/yr\ncrossover = 8,000 ÷ 2,500 = 3.2 years" },
+      { title: "The horizon decides", explanation: "Before the crossover the cheaper-to-buy option wins; after it, the cheaper-to-run option wins. Always say which horizon you used: \"Option B saves $4,500 over 5 years\" is an answer; \"Option B is better\" is not.", visual: "5 years: A = 60,000, B = 55,500 → B saves $4,500" }
+    ],
+    finalAnswer: "2 years",
+    answerExplanation: "Savings are $250 × 12 = $3,000 per year. Payback = $6,000 ÷ $3,000 per year = 2 years.",
+    example: { problem: "Van A costs $30,000 and $6,000 a year to run. Van B costs $38,000 and $3,500 a year. Which costs less over 5 years, and by how much?", steps: [
+      { text: "Van A total", math: "30,000 + 6,000 × 5 = 60,000" },
+      { text: "Van B total", math: "38,000 + 3,500 × 5 = 55,500" },
+      { text: "Compare", math: "Van B costs $4,500 less over 5 years" }
+    ]},
+    keyPoints: [
+      "Compare costs and benefits over the SAME horizon, in the same units (months or years)",
+      "Net benefit = total benefits − total costs",
+      "Payback period = up-front cost ÷ net savings per period",
+      "Benefit-cost ratio = benefits ÷ costs; above 1 is worth it",
+      "Total cost of an option = up-front + running cost × time",
+      "Crossover time = price difference ÷ running-cost difference"
+    ],
+    mistakes: [
+      { wrong: "Multiplying a monthly saving by the number of years", why: "Convert first: $150 per month is $1,800 per year." },
+      { wrong: "Comparing only the price tags", why: "Running costs add up. Over a long enough horizon the cheaper-to-run option usually wins." },
+      { wrong: "Dividing costs by benefits for the BCR", why: "BCR = benefits ÷ costs. Costs ÷ benefits flips the meaning, so a good project looks bad." }
+    ],
+    guided: { problem: "An LED lighting upgrade costs $4,800. It saves $150 per month in electricity and needs $200 per year in maintenance. What is the net benefit over 5 years?", steps: [
+      { label: "Savings per year", value: "150 × 12 = 1800" },
+      { label: "Savings over 5 years", value: "1800 × 5 = 9000" },
+      { label: "Maintenance over 5 years", value: "200 × 5 = 1000" },
+      { label: "Net benefit", value: "9000 − 4800 − 1000 = 3200" }
+    ], answer: "3200", answerLabel: "Net benefit =",
+      interactiveSteps: [
+        { prompt: "Savings per year: $150 × 12 = ?", hint: "Turn the monthly saving into a yearly one.", answer: "1800", acceptableAnswers: ["1800", "1,800"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Savings over 5 years: $1,800 × 5 = ?", hint: "Multiply the yearly saving by the horizon.", answer: "9000", acceptableAnswers: ["9000", "9,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "750": "That multiplied the MONTHLY saving by 5. Use the yearly saving." } },
+        { prompt: "Maintenance over 5 years: $200 × 5 = ?", hint: "The upkeep is a cost every year.", answer: "1000", acceptableAnswers: ["1000", "1,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Net benefit = 9,000 − 4,800 − 1,000 = ?", hint: "Total benefits minus every cost.", answer: "3200", acceptableAnswers: ["3200", "3,200"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "4200": "Subtract the maintenance too: it is a cost.", "5200": "Subtract both the price and the maintenance." } }
+      ] }
+  }, function genCostBenefit(){
+    const type = pick(["net_benefit","payback_period","bcr","compare_options","horizon_savings","crossover_time"]);
+
+    if (type === "net_benefit") {
+      const c = pick([["a bakery", "commercial oven"], ["a pizza shop", "set of delivery e-bikes"], ["a boutique", "point-of-sale system"],
+                      ["a warehouse", "LED lighting upgrade"], ["a laundromat", "solar water heater"], ["a print shop", "faster printer"]]);
+      const C = ri(8, 80) * 250, s = ri(8, 60) * 10, Y = ri(2, 6), u = ri(0, 8) * 100;
+      const net = 12 * s * Y - C - u * Y;
+      return { subType: type,
+        question: `${c[0][0].toUpperCase() + c[0].slice(1)} is considering a ${c[1]} that costs ${usd(C)} up front and saves about ${usd(s)} per month${u ? `, with ${usd(u)} per year in maintenance` : ""}. What is the net benefit over ${Y} years? (Use a negative number if the costs are larger.)`,
+        // distractors: leaving out maintenance, forgetting to turn months into
+        // years, leaving out the price, adding maintenance instead of subtracting
+        ...money(net, [12 * s * Y - C, s * Y - C - u * Y, 12 * s * Y - u * Y, 12 * s * Y - C + u * Y]),
+        explanation: `Benefits: ${usd(s)} × 12 × ${Y} = ${usd(12 * s * Y)}. Costs: ${usd(C)} up front${u ? ` + ${usd(u)} × ${Y} = ${usd(u * Y)} maintenance` : ""}. Net benefit = ${usd(12 * s * Y)} − ${usd(C)}${u ? ` − ${usd(u * Y)}` : ""} = ${usd(net)}.` };
+    }
+    if (type === "payback_period") {
+      if (Math.random() < 0.6) {
+        const A = ri(6, 50) * 100, P = pick([1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8]), C = A * P;
+        const m = Math.random() < 0.5 ? ri(1, 10) * 100 : 0, G = A + m;
+        const item = pick(["solar panels", "a new HVAC system", "an inventory scanner", "insulated windows", "a heat pump"]);
+        return { subType: type,
+          question: `A business can install ${item} for ${usd(C)}. ${m ? `That would save ${usd(G)} per year but cost ${usd(m)} per year to maintain.` : `That would save ${usd(G)} per year.`} What is the payback period in years?`,
+          // distractors: ignoring maintenance, a year too long, double, half a year short
+          ...num(P, [m ? r2(C / G) : P + 0.5, P + 1, 2 * P, P - 0.5]),
+          explanation: `Net savings per year = ${usd(G)}${m ? ` − ${usd(m)} = ${usd(A)}` : ""}. Payback = ${usd(C)} ÷ ${usd(A)} per year = ${P} years.` };
+      }
+      const s = ri(5, 60) * 10, Pm = ri(4, 36), C = s * Pm;
+      const item = pick(["an espresso machine", "a dishwasher", "a laptop for invoicing", "a delivery scooter"]);
+      return { subType: type,
+        question: `A small business buys ${item} for ${usd(C)}. It saves ${usd(s)} per month. How many months until it pays for itself?`,
+        // distractors: the answer in years instead of months, two months either
+        // way, double
+        ...num(Pm, [r2(Pm / 12), Pm + 2, Pm - 2, 2 * Pm]),
+        explanation: `Payback = ${usd(C)} ÷ ${usd(s)} per month = ${Pm} months.` };
+    }
+    if (type === "bcr") {
+      const Ct = ri(4, 40) * 1000;
+      const ratio = pick([0.6, 0.75, 0.8, 1.2, 1.25, 1.4, 1.5, 1.6, 1.75, 2, 2.4, 2.5]);
+      const Bt = Math.round(Ct * ratio);
+      const c2 = ri(1, Ct / 500 - 1) * 250, c1 = Ct - c2;
+      const b2 = ri(1, Math.max(1, Math.floor(Bt / 500) - 1)) * 250, b1 = Bt - b2;
+      const p = pick([["A city", "a bike-share program", "equipment", "operations", "reduced road repairs", "health savings"],
+                      ["A school", "solar panels", "installation", "inspections", "lower power bills", "a state rebate"],
+                      ["A company", "a training program", "course fees", "staff time", "fewer errors", "faster sales"],
+                      ["A town", "a new park", "construction", "upkeep", "higher local spending", "event rentals"]]);
+      return { subType: type,
+        question: `${p[0]} is weighing ${p[1]}. Costs: ${usd(c1)} for ${p[2]} and ${usd(c2)} for ${p[3]}. Benefits: ${usd(b1)} in ${p[4]} and ${usd(b2)} in ${p[5]}. What is the benefit-cost ratio, to the nearest hundredth?`,
+        // distractors: costs ÷ benefits (flipped), net benefit ÷ cost, only one
+        // benefit counted, only the first cost counted
+        ...num(ratio, [r2(Ct / Bt), r2(ratio - 1), r2(b1 / Ct), r2(Bt / c1)]),
+        explanation: `Total benefits = ${usd(b1)} + ${usd(b2)} = ${usd(Bt)}. Total costs = ${usd(c1)} + ${usd(c2)} = ${usd(Ct)}. BCR = ${usd(Bt)} ÷ ${usd(Ct)} = ${ratio}, ${ratio > 1 ? "above 1, so the benefits outweigh the costs" : "below 1, so the costs outweigh the benefits"}.` };
+    }
+    // The three comparison types share one setup: Option B costs more up front
+    // and less to run, and the two totals are equal after exactly n0 years.
+    // The fourth entry scales the dollar amounts to the purchase, so a mower is
+    // hundreds of dollars and a van is tens of thousands. Every scaled amount
+    // stays a whole number of dollars (500·0.05 = 25, 100·0.05 = 5).
+    const ctx = pick([["a gas mower", "an electric mower", "fuel and repairs", 0.05], ["a used delivery van", "a new hybrid van", "fuel and maintenance", 1],
+                      ["a standard furnace", "a high-efficiency furnace", "energy", 0.25], ["a basic office copier", "a premium office copier", "toner and service", 0.5],
+                      ["standard warehouse lighting", "LED warehouse lighting", "electricity and bulbs", 0.5]]);
+    const sc = ctx[3];
+    const UA = Math.round(ri(10, 60) * 500 * sc), dd = Math.round(ri(2, 20) * 100 * sc), RB = Math.round(ri(3, 30) * 100 * sc), RA = RB + dd;
+    const n0 = ri(2, 10), UB = UA + dd * n0;
+    const setup = `Option A is ${ctx[0]}: ${usd(UA)} up front plus ${usd(RA)} per year in ${ctx[2]}. Option B is ${ctx[1]}: ${usd(UB)} up front plus ${usd(RB)} per year.`;
+    if (type === "crossover_time") {
+      return { subType: type,
+        question: `${setup} After how many years will the two options have cost the same in total?`,
+        // distractors: a year either way, price gap ÷ A's running cost, price
+        // gap ÷ B's running cost
+        ...num(n0, [n0 + 1, n0 - 1, Math.round((UB - UA) / RA), Math.round((UB - UA) / RB)]),
+        explanation: `B costs ${usd(UB - UA)} more up front but saves ${usd(RA)} − ${usd(RB)} = ${usd(dd)} per year. Equal after ${usd(UB - UA)} ÷ ${usd(dd)} = ${n0} years. Check: A = ${usd(UA + RA * n0)}, B = ${usd(UB + RB * n0)}.` };
+    }
+    let H = ri(1, 12); if (H === n0) H = n0 + pick([-1, 1, 2]); if (H < 1) H = n0 + 2;
+    const TA = UA + RA * H, TB = UB + RB * H, diff = Math.abs(TA - TB);
+    if (type === "compare_options") {
+      const win = TA < TB ? "Option A" : "Option B";
+      return { subType: type, ...choice(win, ["Option A", "Option B"]),
+        question: `${setup} Which option costs less in total over ${H} years?`,
+        explanation: `Over ${H} years: A = ${usd(UA)} + ${usd(RA)} × ${H} = ${usd(TA)}; B = ${usd(UB)} + ${usd(RB)} × ${H} = ${usd(TB)}. ${win} is cheaper by ${usd(diff)}. (They break even at ${n0} years.)` };
+    }
+    return { subType: "horizon_savings",
+      question: `${setup} Over ${H} years, how much less does the cheaper option cost in total?`,
+      // distractors: comparing only the up-front prices, only the running
+      // costs, adding the two gaps instead of letting them offset
+      ...money(diff, [UB - UA, dd * H, UB - UA + dd * H]),
+      explanation: `A = ${usd(UA)} + ${usd(RA)} × ${H} = ${usd(TA)}. B = ${usd(UB)} + ${usd(RB)} × ${H} = ${usd(TB)}. Difference = ${usd(diff)}, in favor of Option ${TA < TB ? "A" : "B"}.` };
+  });
+
+  // =====================================================================
+  // M-354  Expected Value Decisions  (tier 7)   prereq: Probability
+  //                                             Distributions
+  // =====================================================================
+  _addSkill(7, "Expected Value Decisions", "Expected Value Decisions", 3, {
+    goalProblem: "A $150 warranty on a laptop covers repairs for two years. There is a 12% chance the laptop needs a $700 repair in that time. What is the expected value of buying the warranty?",
+    teachingSteps: [
+      { title: "Expected value is the long-run average", explanation: "From <strong>Probability Distributions</strong>: E = Σ (value × probability). It is what you would average per decision if you faced the same choice many times. Gains are positive, losses and costs are negative.", visual: "E = v₁p₁ + v₂p₂ + …" },
+      { title: "Insurance and warranties", explanation: "A warranty <strong>pays your expected repair cost</strong> for you, and you pay its price. Expected value of buying = (probability × repair cost) − price. Usually negative: that is how the seller makes money. It can still be sensible if you could not afford the loss.", visual: "0.12 × 700 = 84 expected repair\n84 − 150 = −66 per warranty" },
+      { title: "Raffles and games: include the price", explanation: "Find the expected winnings (each prize × its probability, added up), then <strong>subtract what you paid to play</strong>. Every prize counts, including the small ones.", visual: "2,000 tickets at $5, prizes $3,000 + 4 × $250\nwinnings 4,000 ÷ 2,000 = $2 → EV = 2 − 5 = −$3" },
+      { title: "Investments and business bets", explanation: "List every outcome with its probability and its money result, losses negative, and subtract any fee that is paid no matter what. The probabilities must add to 1 (100%).", visual: "festival: 0.6 × 1,200 + 0.4 × 250 − 300 fee = $520" },
+      { title: "Comparing options", explanation: "Compute the expected value of <strong>each</strong> option and compare. The option with the biggest possible prize is often not the one with the biggest expected value; a likely medium prize can beat an unlikely big one.", visual: "A: sure $300   B: 20% of $1,200 = $240\nA has the higher EV" },
+      { title: "Fair price", explanation: "A game is <strong>fair</strong> when its expected value is 0. So the fair price to play equals the expected winnings. Charging more favors the house; charging less favors the player.", visual: "5% × $200 + 20% × $25 = $10 + $5 → fair price $15" }
+    ],
+    finalAnswer: "−$66 (the warranty costs more than the repair it is expected to cover)",
+    answerExplanation: "Expected repair cost covered = 0.12 × $700 = $84. Expected value of buying = $84 − $150 = −$66 per warranty, so on average buying it loses $66.",
+    example: { problem: "A charity sells 2,000 raffle tickets at $5. Prizes: one $3,000 prize and four $250 prizes. What is the expected value of one ticket?", steps: [
+      { text: "Total prize money", math: "3,000 + 4 × 250 = 4,000" },
+      { text: "Expected winnings per ticket", math: "4,000 ÷ 2,000 = $2" },
+      { text: "Subtract the ticket price", math: "2 − 5 = −$3 per ticket" }
+    ]},
+    keyPoints: [
+      "E = Σ (value × probability); losses and prices enter as negatives",
+      "Warranty or insurance EV = expected loss covered − price",
+      "Raffle EV = total prizes ÷ tickets sold − ticket price",
+      "Compare options by EV, not by their biggest possible payoff",
+      "Fair price = expected winnings (makes EV = 0)"
+    ],
+    mistakes: [
+      { wrong: "Warranty EV = $700 − $150", why: "The repair only happens 12% of the time. Weight it: 0.12 × 700 = 84, then subtract the price." },
+      { wrong: "Forgetting the ticket price in a raffle", why: "You pay the price on every ticket, win or lose. Subtract it from the expected winnings." },
+      { wrong: "Choosing the option with the largest prize", why: "A 10% chance at $2,000 is worth $200 on average; a sure $300 is worth more." }
+    ],
+    guided: { problem: "A food truck can pay a $300 fee to sell at a festival. With good weather (60% chance) it expects $1,200 profit; if it rains (40%) it expects $250. What is the expected net profit of going?", steps: [
+      { label: "Good-weather term", value: "0.6 × 1200 = 720" },
+      { label: "Rain term", value: "0.4 × 250 = 100" },
+      { label: "Expected profit before the fee", value: "720 + 100 = 820" },
+      { label: "Subtract the fee", value: "820 − 300 = 520" }
+    ], answer: "520", answerLabel: "Expected net profit =",
+      interactiveSteps: [
+        { prompt: "Good weather: 0.6 × $1,200 = ?", hint: "Probability times the money result.", answer: "720", acceptableAnswers: ["720"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Rain: 0.4 × $250 = ?", hint: "Do not skip the less likely outcome.", answer: "100", acceptableAnswers: ["100"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Expected profit before the fee: 720 + 100 = ?", hint: "Add the weighted outcomes.", answer: "820", acceptableAnswers: ["820"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Subtract the $300 fee: 820 − 300 = ?", hint: "The fee is paid whatever the weather.", answer: "520", acceptableAnswers: ["520"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "900": "That is the best case minus the fee. Weight the outcomes by their probabilities.", "820": "Remember to subtract the fee." } }
+      ] }
+  }, function genEVDecisions(){
+    const type = pick(["warranty","insurance","raffle","investment","compare_bets","fair_price","business_bet"]);
+
+    if (type === "warranty") {
+      const item = pick([["a", "laptop"], ["a", "phone"], ["a", "washing machine"], ["a", "TV"], ["an", "e-bike"], ["a", "refrigerator"]]);
+      const R = ri(3, 15) * 100, p = pick([5, 8, 10, 12, 15, 20, 25, 30]), W = ri(4, 40) * 10;
+      const exp = p * R / 100, ev = exp - W;
+      return { subType: type,
+        question: `A store offers a 2-year warranty on ${item[0]} ${item[1]} for ${usd(W)}. There is ${aPct(p)} chance the ${item[1]} needs a ${usd(R)} repair in that time, which the warranty would pay. What is the expected value of buying the warranty? (Expected repair cost covered minus the price; use a negative number for an expected loss.)`,
+        // distractors: ignoring the probability of a repair, the sign flipped,
+        // ignoring what the warranty pays, forgetting the price
+        ...money(ev, [R - W, W - exp, -W, exp]),
+        explanation: `Expected repair cost covered = ${p / 100} × ${usd(R)} = ${usd(exp)}. Expected value of buying = ${usd(exp)} − ${usd(W)} = ${usd(ev)}. ${ev < 0 ? "On average the warranty loses money." : "On average the warranty comes out ahead."}` };
+    }
+    if (type === "insurance") {
+      const what = pick(["phone", "bike", "camera", "set of tools"]);
+      if (Math.random() < 0.5) {
+        const M = ri(4, 25), p = pick([5, 10, 15, 20, 25, 30]), D = ri(1, 6) * 50;
+        const ev = 12 * M + p * D / 100;
+        return { subType: type,
+          question: `Insurance for a ${what} costs ${usd(M)} per month with a ${usd(D)} deductible (you pay the first ${usd(D)} of any claim). There is a ${p}% chance of one claim in a year. What is the expected yearly cost of having the insurance?`,
+          // distractors: ignoring the deductible, forgetting to multiply the
+          // premium by 12, treating the deductible as certain
+          ...money(ev, [12 * M, M + p * D / 100, 12 * M + D]),
+          explanation: `Premiums: ${usd(M)} × 12 = ${usd(12 * M)}. Expected deductible: ${p / 100} × ${usd(D)} = ${usd(p * D / 100)}. Expected yearly cost = ${usd(12 * M)} + ${usd(p * D / 100)} = ${usd(ev)}.` };
+      }
+      const p1 = pick([10, 15, 20, 25, 30]), L1 = ri(1, 5) * 50, p2 = pick([2, 4, 5, 8, 10]), L2 = ri(4, 12) * 100;
+      const ev = p1 * L1 / 100 + p2 * L2 / 100;
+      return { subType: type,
+        question: `Without insurance, a ${what} has a ${p1}% chance each year of damage costing ${usd(L1)} and a separate ${p2}% chance of being lost, costing ${usd(L2)}. What is the expected yearly cost of going uninsured?`,
+        // distractors: no probabilities at all, only the big loss, only the
+        // small loss, a plain average of the two losses
+        ...money(ev, [L1 + L2, p2 * L2 / 100, p1 * L1 / 100, (L1 + L2) / 2]),
+        explanation: `Expected cost = ${p1 / 100} × ${usd(L1)} + ${p2 / 100} × ${usd(L2)} = ${usd(p1 * L1 / 100)} + ${usd(p2 * L2 / 100)} = ${usd(ev)} per year. Compare this with the price of insurance to decide.` };
+    }
+    if (type === "raffle") {
+      for (let tries = 0; tries < 100; tries++) {
+        const N = pick([500, 1000, 2000, 2500, 5000]), T = pick([1, 2, 5, 10, 20]);
+        const P1 = ri(4, 60) * 50, k2 = ri(0, 5), P2 = ri(1, 10) * 50;
+        const sum = P1 + k2 * P2;
+        if (!Number.isInteger(sum * 100 / N)) continue;   // keep the EV in whole cents
+        if (sum > 0.8 * N * T) continue;                  // a fundraiser has to raise money
+        const ev = sum / N - T;
+        const more = k2 === 0 ? "" : k2 === 1 ? ` and one ${usd(P2)} prize` : ` and ${k2} prizes of ${usd(P2)}`;
+        return { subType: type,
+          question: `A charity sells ${cm(N)} raffle tickets at ${usd(T)} each. Prizes: one ${usd(P1)} prize${more}. What is the expected value of buying one ticket?`,
+          // distractors: forgetting the ticket price, ignoring the smaller
+          // prizes, counting the smaller prizes only once (or, with no smaller
+          // prizes, adding the price instead of subtracting it), ignoring every prize
+          ...money(ev, [sum / N, P1 / N - T, k2 > 1 ? (P1 + P2) / N - T : sum / N + T, -T]),
+          explanation: `Total prizes = ${k2 ? `${usd(P1)} + ${k2} × ${usd(P2)} = ` : ""}${usd(sum)}. Expected winnings per ticket = ${usd(sum)} ÷ ${cm(N)} = ${usd(sum / N)}. Subtract the price: ${usd(sum / N)} − ${usd(T)} = ${usd(ev)}.` };
+      }
+      return genEVDecisions();
+    }
+    if (type === "investment") {
+      const pr = pick([[50, 30, 20], [40, 40, 20], [30, 50, 20], [60, 10, 30], [25, 50, 25], [20, 60, 20], [45, 35, 20], [35, 40, 25]]);
+      const G = ri(5, 40) * 500, gs = ri(1, 8) * 250, L = ri(2, 30) * 500;
+      const ev = (pr[0] * G + pr[1] * gs - pr[2] * L) / 100;
+      return { subType: type,
+        question: `A small-business investment has a ${pr[0]}% chance of gaining ${usd(G)}, a ${pr[1]}% chance of gaining ${usd(gs)}, and a ${pr[2]}% chance of losing ${usd(L)}. What is its expected value? (Use a negative number for an expected loss.)`,
+        // distractors: averaging the outcomes without probabilities, treating
+        // the loss as a gain, counting only the best case
+        ...money(ev, [(G + gs - L) / 3, (pr[0] * G + pr[1] * gs + pr[2] * L) / 100, pr[0] * G / 100]),
+        explanation: `E = ${pr[0] / 100}(${G}) + ${pr[1] / 100}(${gs}) + ${pr[2] / 100}(−${L}) = ${nf(pr[0] * G / 100)} + ${nf(pr[1] * gs / 100)} − ${nf(pr[2] * L / 100)} = ${usd(ev)}.` };
+    }
+    if (type === "compare_bets") {
+      for (let tries = 0; tries < 100; tries++) {
+        const X = ri(10, 60) * 10;
+        const p = pick([10, 20, 25, 30, 40, 50]), Y = ri(5, 40) * 100;
+        const q = pick([40, 50, 60, 70, 75, 80]), Z = ri(3, 20) * 100, Lc = ri(1, 8) * 100;
+        const evs = [X, p * Y / 100, (q * Z - (100 - q) * Lc) / 100];
+        const sorted = evs.slice().sort((a, b) => b - a);
+        if (sorted[0] - sorted[1] < 10 || sorted[1] - sorted[2] < 10) continue;
+        const best = "Option " + "ABC"[evs.indexOf(sorted[0])];
+        return { subType: type, ...choice(best, ["Option A", "Option B", "Option C"]),
+          question: `A business owner can take one of three deals. Option A: a guaranteed ${usd(X)}. Option B: ${aPct(p)} chance of ${usd(Y)}, otherwise nothing. Option C: ${aPct(q)} chance of ${usd(Z)}, otherwise a loss of ${usd(Lc)}. Which deal has the highest expected value?`,
+          explanation: `A: ${usd(X)}. B: ${p / 100} × ${usd(Y)} = ${usd(evs[1])}. C: ${q / 100} × ${usd(Z)} − ${(100 - q) / 100} × ${usd(Lc)} = ${usd(evs[2])}. The highest expected value is ${best}.` };
+      }
+      return genEVDecisions();
+    }
+    if (type === "fair_price") {
+      const p1 = pick([1, 2, 5, 10]), P1 = ri(5, 50) * 20, p2 = pick([10, 20, 25, 30]), P2 = ri(1, 12) * 5;
+      const fair = (p1 * P1 + p2 * P2) / 100;
+      return { subType: type,
+        question: `A carnival game pays ${usd(P1)} with probability ${p1}%, ${usd(P2)} with probability ${p2}%, and nothing otherwise. What price to play would make the game fair (an expected value of zero for the player)?`,
+        // distractors: averaging the prizes, counting only the big prize, only
+        // the small prize
+        ...money(fair, [(P1 + P2) / 2, p1 * P1 / 100, p2 * P2 / 100, (P1 + P2) / 3]),
+        explanation: `Expected winnings = ${p1 / 100} × ${usd(P1)} + ${p2 / 100} × ${usd(P2)} = ${usd(p1 * P1 / 100)} + ${usd(p2 * P2 / 100)} = ${usd(fair)}. Charging exactly that makes the expected value 0.` };
+    }
+    // business_bet
+    const ev0 = pick([["A food truck", "sell at a festival", "the weather is good", "it rains"],
+                      ["A T-shirt company", "rent a booth at a convention", "attendance is high", "attendance is low"],
+                      ["A band", "book an outdoor concert", "the weather holds", "it storms"],
+                      ["A pop-up shop", "open for a holiday weekend", "foot traffic is strong", "traffic is slow"]]);
+    const F = ri(2, 12) * 50, p = pick([50, 60, 65, 70, 75, 80]), G = ri(8, 40) * 50, B = ri(0, 8) * 25;
+    const ev = p * G / 100 + (100 - p) * B / 100 - F;
+    return { subType: type,
+      question: `${ev0[0]} can pay a ${usd(F)} fee to ${ev0[1]}. If ${ev0[2]} (${p}% chance) it expects ${usd(G)} in profit; if ${ev0[3]} it expects ${usd(B)}. What is the expected net profit of going, after the fee? (Use a negative number for an expected loss.)`,
+      // distractors: assuming the good case happens, ignoring the
+      // probabilities, forgetting the fee, ignoring the bad-case profit
+      ...money(ev, [G - F, (G + B) / 2 - F, ev + F, p * G / 100 - F]),
+      explanation: `Expected profit = ${p / 100} × ${usd(G)} + ${(100 - p) / 100} × ${usd(B)} = ${usd(p * G / 100)} + ${usd((100 - p) * B / 100)} = ${usd(ev + F)}. Subtract the fee: ${usd(ev + F)} − ${usd(F)} = ${usd(ev)}.` };
+  });
+
+  // =====================================================================
+  // M-355  Risk Analysis  (tier 8)   prereqs: Expected Value Decisions,
+  //                                  Standard Deviation and Spread
+  // =====================================================================
+  _addSkill(8, "Risk Analysis", "Risk Analysis", 4, {
+    goalProblem: "A warehouse has a 2% chance each year of a flood that would cause $500,000 in damage. What is the expected annual loss from flooding?",
+    teachingSteps: [
+      { title: "Risk = probability × impact", explanation: "Businesses measure a risk by its <strong>expected loss</strong>: the probability that it happens times the money it would cost. It is an expected value (from <strong>Expected Value Decisions</strong>) with only one outcome that costs anything.", visual: "2% × $500,000 = 0.02 × 500,000 = $10,000 per year" },
+      { title: "Ranking risks", explanation: "A dramatic but rare risk can matter less than a modest, common one. Compare <strong>expected losses</strong>, not impacts alone and not probabilities alone. Adding the expected losses gives the total yearly exposure.", visual: "Flood: 1% × 400,000 = 4,000\nSupplier delay: 30% × 20,000 = 6,000 ← bigger risk" },
+      { title: "Is a safeguard worth it?", explanation: "A control (sprinklers, backups, training) lowers the probability or the impact. Its value is the <strong>drop in expected loss</strong>. Net benefit = drop in expected loss − cost of the control.", visual: "fire 5% → 1% on $300,000: 15,000 → 3,000\nsaves 12,000 − 8,000 cost = $4,000 per year" },
+      { title: "Expected value is not the whole story", explanation: "Two options can share an expected value and still be very different. Measure the <strong>spread</strong> too (from <strong>Standard Deviation and Spread</strong>): the <strong>range</strong> (best − worst) and the <strong>standard deviation</strong>. More spread means more risk.", visual: "A: 8,000 / 10,000 / 12,000  range 4,000\nB: −10,000 / 10,000 / 30,000  range 40,000" },
+      { title: "Standard deviation of an uncertain profit", explanation: "For outcomes x with probabilities p and mean μ: variance = Σ p(x − μ)², and SD = √variance. For two outcomes this simplifies to SD = |x₁ − x₂| × √(p(1 − p)).", visual: "50/50 on 30,000 or −10,000: μ = 10,000\nSD = 40,000 × √0.25 = 20,000" },
+      { title: "Risk tolerance", explanation: "A <strong>risk-neutral</strong> decision maker picks the highest expected value. A <strong>risk-averse</strong> one first rules out options whose worst case they cannot afford, then picks the highest expected value among the rest. Same numbers, different right answer, so state the rule you are using.", visual: "can't lose more than $2,000 → drop any option with a bigger worst case" }
+    ],
+    finalAnswer: "$10,000 per year",
+    answerExplanation: "Expected annual loss = probability × impact = 0.02 × $500,000 = $10,000.",
+    example: { problem: "Venture A pays $8,000, $10,000 or $12,000 (equally likely). Venture B pays −$10,000, $10,000 or $30,000 (equally likely). Which is riskier?", steps: [
+      { text: "Expected values", math: "A: 30,000 ÷ 3 = 10,000   B: 30,000 ÷ 3 = 10,000" },
+      { text: "Ranges", math: "A: 12,000 − 8,000 = 4,000   B: 30,000 − (−10,000) = 40,000" },
+      { text: "Same EV, ten times the spread", math: "B is riskier" }
+    ]},
+    keyPoints: [
+      "Expected loss = probability × impact (convert % to a decimal first)",
+      "Rank risks by expected loss, not by impact or probability alone",
+      "A control is worth it when the drop in expected loss beats its cost",
+      "Spread measures risk: range = best − worst, SD = √(Σ p(x − μ)²)",
+      "Risk-neutral: highest EV. Risk-averse: limit the worst case, then highest EV"
+    ],
+    mistakes: [
+      { wrong: "4% of $250,000 = 4 × 250,000", why: "Convert the percent: 4% = 0.04, so 0.04 × 250,000 = $10,000." },
+      { wrong: "Calling the biggest impact the biggest risk", why: "A $1,000,000 event with a 0.1% chance has an expected loss of $1,000, smaller than a $20,000 event with a 30% chance ($6,000)." },
+      { wrong: "Range = 30,000 − 10,000 when the worst case is −10,000", why: "Subtracting a negative adds: 30,000 − (−10,000) = 40,000." }
+    ],
+    guided: { problem: "A sprinkler system costs $8,000 per year. It cuts the yearly chance of a major fire from 5% to 1%. A fire would cause $300,000 in damage. What is the net yearly benefit of the sprinklers?", steps: [
+      { label: "Expected loss without sprinklers", value: "0.05 × 300000 = 15000" },
+      { label: "Expected loss with sprinklers", value: "0.01 × 300000 = 3000" },
+      { label: "Drop in expected loss", value: "15000 − 3000 = 12000" },
+      { label: "Net benefit", value: "12000 − 8000 = 4000" }
+    ], answer: "4000", answerLabel: "Net yearly benefit =",
+      interactiveSteps: [
+        { prompt: "Expected loss without sprinklers: 0.05 × $300,000 = ?", hint: "Probability times impact.", answer: "15000", acceptableAnswers: ["15000", "15,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "1500000": "Convert 5% to 0.05 before multiplying." } },
+        { prompt: "Expected loss with sprinklers: 0.01 × $300,000 = ?", hint: "Same impact, new probability.", answer: "3000", acceptableAnswers: ["3000", "3,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Drop in expected loss: 15,000 − 3,000 = ?", hint: "This is what the sprinklers save on average each year.", answer: "12000", acceptableAnswers: ["12000", "12,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: {} },
+        { prompt: "Net benefit: 12,000 − 8,000 = ?", hint: "Subtract the yearly cost of the sprinklers.", answer: "4000", acceptableAnswers: ["4000", "4,000"], formatHint: "Enter a dollar amount, like 1250", commonMistakes: { "12000": "Subtract the $8,000 the sprinklers cost each year." } }
+      ] }
+  }, function genRisk(){
+    const type = pick(["expected_loss","rank_risks","total_expected_loss","mitigation","range","std_dev","spread_compare","risk_tolerance"]);
+    const RISKS = ["Data breach","Supplier delay","Equipment failure","Flood damage","Key employee leaving","Product recall","Price war","Server outage"];
+
+    if (type === "expected_loss") {
+      const c = pick(["a flood at its warehouse", "a week-long server outage", "a product recall", "a data breach", "its main supplier going out of business", "a lawsuit"]);
+      const p = pick([0.5, 1, 2, 2.5, 4, 5, 8, 10, 12, 15, 20, 25]), k = ri(5, 400), I = k * 1000;
+      const el = Math.round(p * 10) * k;   // p% of k thousand, in whole dollars
+      return { subType: type,
+        question: `A company estimates ${aPct(p)} chance each year of ${c}, which would cost ${usd(I)}. What is the expected annual loss (risk = probability × impact)?`,
+        // distractors: impact alone, the percent not converted, the decimal
+        // point moved one place too far, impact minus expected loss
+        ...money(el, [I, p * I, el / 10, I - el]),
+        explanation: `${p}% = ${p / 100}. Expected loss = ${p / 100} × ${usd(I)} = ${usd(el)} per year.` };
+    }
+    if (type === "rank_risks" || type === "total_expected_loss") {
+      for (let tries = 0; tries < 80; tries++) {
+        const names = sh(RISKS).slice(0, 3);
+        const ps = names.map(() => pick([1, 2, 4, 5, 10, 15, 20, 25, 30, 40]));
+        const imps = names.map(() => ri(2, 200) * 1000);
+        const els = ps.map((p, i) => p * imps[i] / 100);
+        if (new Set(els).size < 3) continue;
+        const iMax = els.indexOf(Math.max(...els));
+        const desc = names.map((n, i) => `${n}: ${ps[i]}% chance, ${usd(imps[i])} impact`).join(". ");
+        const work = names.map((n, i) => `${n} ${ps[i] / 100} × ${usd(imps[i])} = ${usd(els[i])}`).join("; ");
+        if (type === "rank_risks") {
+          // Prefer draws where the biggest risk is NOT simply the biggest impact
+          // or the most likely event - that is the judgement being taught.
+          if (tries < 60 && (imps.indexOf(Math.max(...imps)) === iMax || ps.indexOf(Math.max(...ps)) === iMax)) continue;
+          return { subType: type, ...choice(names[iMax], names),
+            question: `A company lists three risks for next year. ${desc}. Which is the biggest risk by expected loss?`,
+            explanation: `Expected loss = probability × impact. ${work}. The largest is ${names[iMax]}.` };
+        }
+        const total = els.reduce((s, v) => s + v, 0);
+        return { subType: "total_expected_loss",
+          question: `A company lists three risks for next year. ${desc}. What is the total expected annual loss from all three?`,
+          // distractors: adding the impacts with no probabilities, only the
+          // largest risk, the percent not converted
+          ...money(total, [imps.reduce((s, v) => s + v, 0), els[iMax], total * 100, total - Math.min(...els)]),
+          explanation: `${work}. Total = ${els.map(usd).join(" + ")} = ${usd(total)}.` };
+      }
+      return genRisk();
+    }
+    if (type === "mitigation") {
+      const c = pick([["a sprinkler system", "a major fire"], ["a backup generator", "a long power outage"],
+                      ["cybersecurity monitoring", "a data breach"], ["flood barriers", "a flood"], ["a second supplier contract", "a supply shutdown"]]);
+      const p1 = pick([4, 5, 6, 8, 10, 12]), p2 = pick([1, 2, 3]), I = ri(10, 90) * 10000, K = ri(2, 30) * 1000;
+      const before = p1 * I / 100, after = p2 * I / 100, drop = before - after;
+      if (Math.random() < 0.5) return { subType: type,
+        question: `A business can add ${c[0]} for ${usd(K)} per year. It cuts the yearly chance of ${c[1]} from ${p1}% to ${p2}%. ${c[1][0].toUpperCase() + c[1].slice(1)} would cost ${usd(I)}. By how much does it reduce the expected annual loss?`,
+        // distractors: the old expected loss, the new expected loss, the
+        // reduction minus the cost (answers a different question)
+        ...money(drop, [before, after, drop - K, (p1 - p2) * I / 10]),
+        explanation: `Before: ${p1 / 100} × ${usd(I)} = ${usd(before)}. After: ${p2 / 100} × ${usd(I)} = ${usd(after)}. Reduction = ${usd(before)} − ${usd(after)} = ${usd(drop)}.` };
+      const net = drop - K;
+      return { subType: type,
+        question: `A business can add ${c[0]} for ${usd(K)} per year. It cuts the yearly chance of ${c[1]} from ${p1}% to ${p2}%. ${c[1][0].toUpperCase() + c[1].slice(1)} would cost ${usd(I)}. What is the net yearly benefit (reduction in expected loss minus the cost)? Use a negative number if it costs more than it saves.`,
+        // distractors: forgetting the cost, adding the cost, using the whole old
+        // expected loss as the saving, the sign flipped
+        ...money(net, [drop, drop + K, before - K, K - drop]),
+        explanation: `Expected loss falls from ${usd(before)} to ${usd(after)}, a drop of ${usd(drop)}. Net benefit = ${usd(drop)} − ${usd(K)} = ${usd(net)}. ${net >= 0 ? "It pays for itself on average." : "On average it costs more than it saves."}` };
+    }
+    if (type === "range") {
+      const vals = new Set();
+      vals.add(-ri(1, 40) * 1000); vals.add(ri(1, 80) * 1000);
+      while (vals.size < 4) vals.add(ri(-40, 80) * 1000);
+      const v = sh([...vals]), hi = Math.max(...v), lo = Math.min(...v);
+      const what = pick(["A new product line", "An expansion into a second city", "A seasonal kiosk", "A restaurant's new menu"]);
+      return { subType: type,
+        question: `${what} could produce any of these annual profits: ${v.map(usd).join(", ")}. What is the range of possible outcomes?`,
+        // distractors: max + min (dropping the minus sign on the loss), the best
+        // case alone, the size of the worst loss
+        ...money(hi - lo, [hi + lo, hi, -lo, hi - (v.filter(x => x > lo).sort((a, b) => a - b)[0])]),
+        explanation: `Range = best − worst = ${usd(hi)} − (${usd(lo)}) = ${usd(hi)} + ${usd(-lo)} = ${usd(hi - lo)}.` };
+    }
+    if (type === "std_dev") {
+      const pp = pick([[50, 0.5], [20, 0.4], [80, 0.4], [10, 0.3], [90, 0.3]]);   // [p as %, √(p(1−p))]
+      const p = pp[0] / 100;
+      const x1 = ri(2, 60) * 1000, x2 = pick([-1, -1, 1]) * ri(0, 30) * 1000;
+      if (x1 === x2) return genRisk();
+      const diff = Math.abs(x1 - x2), sd = Math.round(diff * pp[1]);
+      const mean = Math.round(p * x1 + (1 - p) * x2);
+      const varTxt = cm(String(Math.round(p * (1 - p) * diff * diff)));
+      return { subType: type,
+        question: `A venture earns ${usd(x1)} with probability ${pp[0]}% and ${x2 < 0 ? `loses ${usd(-x2)}` : `earns ${usd(x2)}`} with probability ${100 - pp[0]}%. Its expected profit is ${usd(mean)}. What is the standard deviation of the profit?`,
+        // distractors: the range, the variance factor without the square root
+        // (diff × p(1−p)), half the range, the mean
+        ...money(sd, [diff, Math.round(diff * p * (1 - p)), diff / 2, mean]),
+        explanation: `Deviations from μ = ${usd(mean)}: ${usd(x1 - mean)} and ${usd(x2 - mean)}. Variance = ${p}(${nf(x1 - mean)})² + ${r2(1 - p)}(${nf(x2 - mean)})² = ${varTxt}. SD = √${varTxt} = ${usd(sd)}.` };
+    }
+    if (type === "spread_compare") {
+      for (let tries = 0; tries < 100; tries++) {
+        const m = ri(5, 50) * 1000;
+        const mk = dev => pick([[m - dev, m, m + dev], [m - dev, m - dev, m + 2 * dev]]);
+        const A = mk(ri(1, 12) * 1000), B = mk(ri(1, 12) * 1000);
+        const range = v => Math.max(...v) - Math.min(...v);
+        const sd = v => Math.sqrt(v.reduce((s, x) => s + (x - m) * (x - m), 0) / 3);
+        const rA = range(A), rB = range(B), sA = sd(A), sB = sd(B);
+        // Range and SD must agree, and clearly, or "less risky" is a judgement call.
+        if (Math.abs(rA - rB) < 0.2 * Math.max(rA, rB) || (rA < rB) !== (sA < sB)) continue;
+        const ans = rA < rB ? "Project A" : "Project B";
+        return { subType: type, ...choice(ans, ["Project A", "Project B"]),
+          question: `Two projects each have three equally likely profits. Project A: ${sh(A).map(usd).join(", ")}. Project B: ${sh(B).map(usd).join(", ")}. Both have an expected profit of ${usd(m)}. Which project is less risky?`,
+          explanation: `Same expected value, so compare spread. Range A = ${usd(rA)}, range B = ${usd(rB)}; SD A ≈ ${usd(Math.round(sA))}, SD B ≈ ${usd(Math.round(sB))}. ${ans} has the smaller spread, so it is less risky.` };
+      }
+      return genRisk();
+    }
+    // risk_tolerance
+    for (let tries = 0; tries < 200; tries++) {
+      const GC = ri(5, 30) * 100;
+      const LB = ri(5, 30) * 100, pB = pick([50, 60, 70, 75, 80]), GB = ri(10, 80) * 100;
+      const LA = LB + ri(10, 40) * 100, pA = pick([50, 60, 70]), GA = ri(20, 150) * 100;
+      const evB = (pB * GB - (100 - pB) * LB) / 100, evA = (pA * GA - (100 - pA) * LA) / 100;
+      if (!(evB >= GC + 200 && evA >= evB + 200)) continue;
+      const kind = pick(["neutral", "limit", "none"]);
+      const lim = LB + ri(0, (LA - LB) / 100 - 1) * 100;
+      const ans = kind === "neutral" ? "Option A" : kind === "limit" ? "Option B" : "Option C";
+      const who = kind === "neutral" ? "cares only about expected value"
+        : kind === "limit" ? `wants the best expected value but cannot afford to lose more than ${usd(lim)}`
+        : "cannot accept any chance of losing money";
+      return { subType: "risk_tolerance", ...choice(ans, ["Option A", "Option B", "Option C"]),
+        question: `An investor ${who}. Option A: ${pA}% chance to gain ${usd(GA)}, otherwise lose ${usd(LA)}. Option B: ${pB}% chance to gain ${usd(GB)}, otherwise lose ${usd(LB)}. Option C: a guaranteed gain of ${usd(GC)}. Which option fits this investor?`,
+        explanation: `EV A = ${pA / 100}(${GA}) − ${(100 - pA) / 100}(${LA}) = ${usd(evA)}, worst case −${usd(LA)}. EV B = ${pB / 100}(${GB}) − ${(100 - pB) / 100}(${LB}) = ${usd(evB)}, worst case −${usd(LB)}. EV C = ${usd(GC)}, no loss. ` +
+          (kind === "neutral" ? "Highest expected value: Option A."
+            : kind === "limit" ? `Option A can lose ${usd(LA)}, more than ${usd(lim)}, so it is out. Of B and C, B has the higher expected value.`
+            : "Only Option C has no chance of a loss.") };
+    }
+    return genRisk();
+  });
+
+  // =====================================================================
+  // M-356  Constrained Optimization  (tier 8)   prereqs: Systems of
+  //                                             Inequalities, Profit and Break-Even
+  // =====================================================================
+  // Two-constraint linear programs with integer corner points. The two
+  // constraint lines are built THROUGH a chosen integer point (px, py), with
+  // integer axis intercepts, and each line must be the binding one on a
+  // different axis - otherwise one constraint is redundant and the "corner"
+  // is not a corner. Every corner is then re-checked against every constraint.
+  function lpRegion(ge) {
+    for (let tries = 0; tries < 2000; tries++) {
+      const a1 = ri(1, 6), b1 = ri(1, 6), a2 = ri(1, 6), b2 = ri(1, 6);
+      if (a1 * b2 === a2 * b1) continue;                    // parallel lines
+      const px = ri(2, 24), py = ri(2, 24);
+      const c1 = a1 * px + b1 * py, c2 = a2 * px + b2 * py;
+      if (c1 % a1 || c1 % b1 || c2 % a2 || c2 % b2) continue;   // integer intercepts
+      const X1 = c1 / a1, Y1 = c1 / b1, X2 = c2 / a2, Y2 = c2 / b2;
+      if (!((X1 < X2 && Y1 > Y2) || (X2 < X1 && Y2 > Y1))) continue;
+      if (Math.max(X1, X2, Y1, Y2) > 150) continue;
+      const ok = (x, y) => x >= 0 && y >= 0 && (ge
+        ? a1 * x + b1 * y >= c1 && a2 * x + b2 * y >= c2
+        : a1 * x + b1 * y <= c1 && a2 * x + b2 * y <= c2);
+      // ≤ region: bounded quadrilateral. ≥ region: unbounded, three corners.
+      const corners = ge
+        ? [[0, Math.max(Y1, Y2)], [px, py], [Math.max(X1, X2), 0]]
+        : [[0, 0], [Math.min(X1, X2), 0], [px, py], [0, Math.min(Y1, Y2)]];
+      if (!corners.every(c => ok(c[0], c[1]))) continue;
+      // The intercept that is NOT a corner: the classic wrong point to test.
+      const fakeX = ge ? Math.min(X1, X2) : Math.max(X1, X2), fakeY = ge ? Math.min(Y1, Y2) : Math.max(Y1, Y2);
+      if (ok(fakeX, 0) || ok(0, fakeY)) continue;
+      return { a1, b1, c1, a2, b2, c2, px, py, corners, fakeX, fakeY, ok };
+    }
+    return null;
+  }
+  const ineq = (a, b, c, op) => `${term(a, "x")} + ${term(b, "y")} ${op} ${c}`;
+
+  _addSkill(8, "Constrained Optimization", "Constrained Optimization", 4, {
+    goalProblem: "A furniture maker builds tables and chairs. A table takes 3 hours of carpentry and 1 hour of finishing; a chair takes 1 hour of carpentry and 2 hours of finishing. There are 120 carpentry hours and 80 finishing hours each week. Profit is $40 per table and $25 per chair. How many of each maximize profit?",
+    teachingSteps: [
+      { title: "Variables, constraints, objective", explanation: "Let x = tables and y = chairs. Each limited resource becomes an inequality: carpentry <strong>3x + y ≤ 120</strong>, finishing <strong>x + 2y ≤ 80</strong>, and you cannot build negative furniture: <strong>x ≥ 0, y ≥ 0</strong>. The quantity to make as large (or small) as possible is the <strong>objective</strong>: P = 40x + 25y.", visual: "3x + y ≤ 120\nx + 2y ≤ 80\nx ≥ 0, y ≥ 0\nmaximize P = 40x + 25y" },
+      { title: "The feasible region", explanation: "From <strong>Systems of Inequalities</strong>: graph each boundary line and shade the side that satisfies it. The overlap of all the shading is the <strong>feasible region</strong>, every plan the business can actually carry out.", visual: "3x + y = 120 meets the axes at (40, 0) and (0, 120)\nx + 2y = 80 meets the axes at (80, 0) and (0, 40)" },
+      { title: "Find the corner points", explanation: "Corners are where boundaries meet. On each axis, the corner is the intercept that satisfies <strong>every</strong> constraint (the smaller one for ≤). The slanted corner is where the two lines cross: solve the system.", visual: "axis corners: (40, 0) and (0, 40)\n3x + y = 120 and x + 2y = 80 → (32, 24)" },
+      { title: "Why corners?", explanation: "The objective is linear, so moving across the region in one direction increases it steadily. The best value is reached at the edge of the region, and always at a corner. This is the <strong>corner point principle</strong>.", visual: "max or min of P = ax + by on a polygon → at a vertex" },
+      { title: "Test every corner", explanation: "Evaluate the objective at each corner and pick the largest (for profit) or smallest (for cost). Report both the best value and the plan that gives it.", visual: "(0, 0): 0   (40, 0): 1,600\n(32, 24): 1,880   (0, 40): 1,000\nbest: 32 tables, 24 chairs, $1,880" },
+      { title: "Check feasibility", explanation: "Not every intercept is a corner. (80, 0) lies on the finishing line, but 3(80) + 0 = 240 breaks the carpentry limit, so it is outside the region. Test only points that satisfy every constraint. For a minimum-cost problem with ≥ constraints, the region is unbounded and the corners are the LARGER intercepts and the crossing point.", visual: "(80, 0): 3(80) = 240 > 120 → not feasible" }
+    ],
+    finalAnswer: "32 tables and 24 chairs, for $1,880 profit",
+    answerExplanation: "The corners are (0, 0), (40, 0), (32, 24) and (0, 40). P = 40x + 25y gives 0, 1,600, 1,880 and 1,000. The maximum, $1,880, is at (32, 24): 32 tables and 24 chairs.",
+    example: { problem: "Maximize P = 5x + 4y subject to x + y ≤ 10, 2x + y ≤ 14, x ≥ 0, y ≥ 0.", steps: [
+      { text: "Solve the boundary lines together", math: "(2x + y) − (x + y) = 14 − 10 → x = 4, y = 6" },
+      { text: "Axis corners (smaller intercepts)", math: "x-axis: 2x ≤ 14 → (7, 0)   y-axis: y ≤ 10 → (0, 10)" },
+      { text: "Evaluate P at each corner", math: "(0, 0): 0   (7, 0): 35   (4, 6): 44   (0, 10): 40" },
+      { text: "Choose the largest", math: "maximum P = 44 at (4, 6)" }
+    ]},
+    keyPoints: [
+      "Each limited resource becomes an inequality; add x ≥ 0 and y ≥ 0",
+      "The feasible region is where all the inequalities overlap",
+      "The best value of a linear objective is always at a corner",
+      "Corners: the feasible axis intercepts and the intersection of the lines",
+      "Evaluate the objective at EVERY corner, then choose the max or min",
+      "Check each point against every constraint before trusting it"
+    ],
+    mistakes: [
+      { wrong: "Using (80, 0) as a corner because it is on the finishing line", why: "It breaks the carpentry constraint (3 × 80 = 240 > 120). Only intercepts that satisfy every constraint are corners." },
+      { wrong: "Picking a point in the middle of the region", why: "A linear objective is never best in the interior; it can always be improved by moving toward an edge." },
+      { wrong: "Choosing the corner with the biggest x", why: "The objective decides. Evaluate it at every corner." }
+    ],
+    guided: { problem: "Maximize P = 3x + 5y subject to x + y ≤ 8, x + 3y ≤ 18, x ≥ 0, y ≥ 0.", steps: [
+      { label: "Subtract the equations to find y", value: "2y = 10, y = 5" },
+      { label: "Then x", value: "x = 8 − 5 = 3" },
+      { label: "P at (8, 0)", value: "3(8) + 5(0) = 24" },
+      { label: "P at (0, 6)", value: "3(0) + 5(6) = 30" },
+      { label: "P at (3, 5)", value: "3(3) + 5(5) = 34" }
+    ], answer: "34", answerLabel: "Maximum P =",
+      interactiveSteps: [
+        { prompt: "Subtract x + y = 8 from x + 3y = 18. What is y?", hint: "The x terms cancel, leaving 2y = 10.", answer: "5", acceptableAnswers: ["5", "y = 5", "y=5"], formatHint: "Enter a number", commonMistakes: { "10": "2y = 10, so divide by 2." } },
+        { prompt: "Substitute y = 5 into x + y = 8. What is x?", hint: "x = 8 − 5.", answer: "3", acceptableAnswers: ["3", "x = 3", "x=3"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "The axis corners are (8, 0) and (0, 6). What is P = 3x + 5y at (8, 0)?", hint: "3 × 8 + 5 × 0.", answer: "24", acceptableAnswers: ["24"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "What is P at (0, 6)?", hint: "3 × 0 + 5 × 6.", answer: "30", acceptableAnswers: ["30"], formatHint: "Enter a number", commonMistakes: { "40": "(0, 8) is not a corner: 3(8) = 24 breaks x + 3y ≤ 18. Use (0, 6)." } },
+        { prompt: "What is P at the crossing point (3, 5)?", hint: "3 × 3 + 5 × 5.", answer: "34", acceptableAnswers: ["34"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "Corner values are 0, 24, 34 and 30. What is the maximum value of P?", hint: "Pick the largest corner value.", answer: "34", acceptableAnswers: ["34", "P = 34"], formatHint: "Enter a number", commonMistakes: { "30": "34 at (3, 5) is larger." } }
+      ] }
+  }, function genOptimization(){
+    const type = pick(["intersection_corner","axis_corner","max_value","optimal_mix","max_profit","minimize_cost","identify_corner"]);
+
+    if (type === "minimize_cost") {
+      const R = lpRegion(true);
+      if (!R) return genOptimization();
+      for (let tries = 0; tries < 50; tries++) {
+        const p = ri(2, 15), q = ri(2, 15);
+        const vals = R.corners.map(c => p * c[0] + q * c[1]);
+        const best = Math.min(...vals);
+        if (vals.filter(v => v === best).length > 1) continue;   // unique minimum
+        const c = pick([{ s: "A rancher mixes two feeds", x: ["bag of Feed A", "bags of Feed A"], y: ["bag of Feed B", "bags of Feed B"], n1: ["unit of protein", "units of protein"], n2: ["unit of fiber", "units of fiber"], need: "The herd needs at least" },
+                        { s: "A factory runs two machines", x: ["hour on Machine A", "hours on Machine A"], y: ["hour on Machine B", "hours on Machine B"], n1: ["widget", "widgets"], n2: ["gadget", "gadgets"], need: "An order calls for at least" },
+                        { s: "A gardener blends two fertilizers", x: ["scoop of Mix A", "scoops of Mix A"], y: ["scoop of Mix B", "scoops of Mix B"], n1: ["unit of nitrogen", "units of nitrogen"], n2: ["unit of potassium", "units of potassium"], need: "The garden needs at least" }]);
+        const atFake = Math.min(p * R.fakeX, q * R.fakeY);
+        return { subType: type,
+          question: `${c.s}. Each ${c.x[0]} provides ${unit(R.a1, c.n1)} and ${unit(R.a2, c.n2)}; each ${c.y[0]} provides ${unit(R.b1, c.n1)} and ${unit(R.b2, c.n2)}. ${c.need} ${unit(R.c1, c.n1)} and ${unit(R.c2, c.n2)}. Each ${c.x[0]} costs ${usd(p)} and each ${c.y[0]} costs ${usd(q)}. What is the minimum cost that meets both requirements?`,
+          // distractors: the other (non-minimum) corners, a point that misses a
+          // requirement (the smaller intercept), and $0 from the origin
+          ...money(best, [...vals.filter(v => v !== best), atFake, 0]),
+          explanation: `Constraints: ${ineq(R.a1, R.b1, R.c1, "≥")}, ${ineq(R.a2, R.b2, R.c2, "≥")}, x ≥ 0, y ≥ 0. Corners: ${R.corners.map((cc, i) => `${pt(cc[0], cc[1])} costs ${usd(vals[i])}`).join(", ")}. The minimum is ${usd(best)}.` };
+      }
+      return genOptimization();
+    }
+
+    const R = lpRegion(false);
+    if (!R) return genOptimization();
+    const sys = `x ≥ 0, y ≥ 0, ${ineq(R.a1, R.b1, R.c1, "≤")}, ${ineq(R.a2, R.b2, R.c2, "≤")}`;
+    const [O, XC, P, YC] = R.corners;
+
+    if (type === "intersection_corner") {
+      return { subType: type,
+        question: `The feasible region is defined by ${sys}. At which corner point do the two slanted boundary lines meet?`,
+        // distractors: x and y swapped, the two axis corners
+        ...point(R.px, R.py, [[R.py, R.px], XC, YC, [R.px + 1, R.py - 1]]),
+        explanation: `Solve ${R.a1}x + ${R.b1}y = ${R.c1} and ${R.a2}x + ${R.b2}y = ${R.c2} together: x = ${R.px}, y = ${R.py}. Check: ${R.a1}(${R.px}) + ${R.b1}(${R.py}) = ${R.c1} and ${R.a2}(${R.px}) + ${R.b2}(${R.py}) = ${R.c2}. Corner: ${pt(R.px, R.py)}.` };
+    }
+    if (type === "axis_corner") {
+      const onX = Math.random() < 0.5;
+      const ans = onX ? XC : YC, fake = onX ? [R.fakeX, 0] : [0, R.fakeY];
+      const other = onX ? YC : XC;
+      return { subType: type,
+        question: `The feasible region is defined by ${sys}. Other than the origin, which corner of the region lies on the ${onX ? "x" : "y"}-axis?`,
+        // distractors: the other line's intercept (outside the region), the
+        // corner on the other axis, the slanted corner
+        ...point(ans[0], ans[1], [fake, other, [R.px, R.py], [ans[1], ans[0]]]),
+        explanation: `On the ${onX ? "x" : "y"}-axis ${onX ? "y" : "x"} = 0. The lines cross it at ${pt(...ans)} and ${pt(...fake)}. ${pt(...fake)} breaks the other constraint, so the corner is the smaller intercept, ${pt(...ans)}.` };
+    }
+    if (type === "identify_corner") {
+      const inside = [Math.max(1, Math.floor(R.px / 2)), Math.max(1, Math.floor(R.py / 2))];
+      const edge = Math.random() < 0.5 ? [ri(1, XC[0] - 1), 0] : [0, ri(1, YC[1] - 1)];
+      const outside = pick([[R.px + ri(1, 3), R.py + ri(1, 3)], [R.fakeX, 0], [0, R.fakeY]]);
+      const isCorner = c => R.corners.some(k => k[0] === c[0] && k[1] === c[1]);
+      if (isCorner(inside) || !R.ok(inside[0], inside[1]) || inside[0] * R.a1 + inside[1] * R.b1 === R.c1 ||
+          inside[0] * R.a2 + inside[1] * R.b2 === R.c2 || isCorner(edge) || R.ok(outside[0], outside[1])) return genOptimization();
+      const opts = [pt(R.px, R.py), pt(...inside), pt(...edge), pt(...outside)];
+      if (new Set(opts).size < 4) return genOptimization();
+      return { subType: type, ...choice(pt(R.px, R.py), opts),
+        question: `The feasible region is defined by ${sys}. Which of these points is a corner (vertex) of the region?`,
+        explanation: `${pt(R.px, R.py)} is where both boundary lines meet, so it is a corner. ${pt(...inside)} is inside the region, ${pt(...edge)} lies along an edge but not at a corner, and ${pt(...outside)} breaks a constraint. The full set of corners is ${R.corners.map(c => pt(c[0], c[1])).join(", ")}.` };
+    }
+
+    // The objective types: pick a profit per unit with a single best corner.
+    // Random profits put the best plan on an axis about half the time ("make
+    // only chairs"); aim for the crossing point on ~60% of draws so the system
+    // of equations is usually part of the answer, while axis optima still
+    // appear to stop "the answer is always the middle corner" from working.
+    const wantMid = Math.random() < 0.6;
+    let p, q, vals, best, bi;
+    for (let tries = 0; ; tries++) {
+      p = ri(2, 15) * (type === "max_value" ? 1 : 5); q = ri(2, 15) * (type === "max_value" ? 1 : 5);
+      vals = R.corners.map(c => p * c[0] + q * c[1]);
+      best = Math.max(...vals); bi = vals.indexOf(best);
+      const unique = vals.filter(v => v === best).length === 1;
+      if ((unique && (bi === 2) === wantMid) || (unique && tries > 40) || tries > 80) break;
+    }
+    if (vals.filter(v => v === best).length > 1) return genOptimization();
+    const fakeVals = [p * R.fakeX, q * R.fakeY];
+    const work = R.corners.map((c, i) => `${pt(c[0], c[1])} → ${vals[i]}`).join(", ");
+
+    if (type === "max_value") {
+      return { subType: type,
+        question: `Maximize P = ${p}x + ${q}y subject to ${sys}. What is the maximum value of P?`,
+        // distractors: P at the infeasible intercepts, P at the other corners
+        ...num(best, [...fakeVals, ...vals.filter(v => v !== best && v !== 0)]),
+        explanation: `Corners: ${R.corners.map(c => pt(c[0], c[1])).join(", ")}. P at each: ${work}. The maximum is ${best} at ${pt(...R.corners[bi])}.` };
+    }
+    const c = pick([{ s: "A furniture maker builds tables and chairs", x: ["table", "tables"], y: ["chair", "chairs"], r1: ["hour of carpentry", "hours of carpentry"], r2: ["hour of finishing", "hours of finishing"] },
+                    { s: "A bakery makes cakes and pies", x: ["cake", "cakes"], y: ["pie", "pies"], r1: ["hour of oven time", "hours of oven time"], r2: ["pound of flour", "pounds of flour"] },
+                    { s: "A farmer plants corn and soybeans", x: ["acre of corn", "acres of corn"], y: ["acre of soybeans", "acres of soybeans"], r1: ["hour of labor", "hours of labor"], r2: ["bag of fertilizer", "bags of fertilizer"] },
+                    { s: "A company makes phone cases and chargers", x: ["phone case", "phone cases"], y: ["charger", "chargers"], r1: ["machine hour", "machine hours"], r2: ["assembly hour", "assembly hours"] },
+                    { s: "A print shop makes posters and banners", x: ["poster batch", "poster batches"], y: ["banner", "banners"], r1: ["hour of printing", "hours of printing"], r2: ["hour of trimming", "hours of trimming"] }]);
+    const story = `${c.s}. Each ${c.x[0]} needs ${unit(R.a1, c.r1)} and ${unit(R.a2, c.r2)}; each ${c.y[0]} needs ${unit(R.b1, c.r1)} and ${unit(R.b2, c.r2)}. There are ${unit(R.c1, c.r1)} and ${unit(R.c2, c.r2)} available. Profit is ${usd(p)} per ${c.x[0]} and ${usd(q)} per ${c.y[0]}.`;
+    const setupTxt = `With x = ${c.x[1]} and y = ${c.y[1]}: ${ineq(R.a1, R.b1, R.c1, "≤")}, ${ineq(R.a2, R.b2, R.c2, "≤")}, x ≥ 0, y ≥ 0, P = ${p}x + ${q}y. `;
+    if (type === "optimal_mix") {
+      const bc = R.corners[bi];
+      return { subType: type,
+        question: `${story} How many of each should be made to maximize profit? Answer as (${c.x[1]}, ${c.y[1]}).`,
+        // distractors: the other corners, an intercept that is outside the region
+        ...point(bc[0], bc[1], [...R.corners.filter((k, i) => i !== bi && !(k[0] === 0 && k[1] === 0)), [R.fakeX, 0], [0, R.fakeY]]),
+        explanation: setupTxt + `Profit at the corners: ${work}. The best plan is ${pt(bc[0], bc[1])}: ${unit(bc[0], c.x)} and ${unit(bc[1], c.y)}.` };
+    }
+    // max_profit
+    return { subType: "max_profit",
+      question: `${story} What is the maximum possible profit?`,
+      // distractors: profit at an infeasible intercept, at the other corners
+      ...money(best, [...fakeVals, ...vals.filter(v => v !== best && v !== 0)]),
+      explanation: setupTxt + `Profit at the corners: ${work}. Maximum profit = ${usd(best)} at ${pt(...R.corners[bi])}.` };
+  });
+
+  // =====================================================================
+  // M-357  Scenario Modeling  (tier 8)   prereqs: Cost-Benefit Analysis,
+  //                                      Forecasting, Spreadsheet Formulas
+  // =====================================================================
+  // One profit model under every question: profit = (price − unit cost) ×
+  // units − fixed costs, with worst / expected / best unit forecasts.
+  function scenarioModel() {
+    const P = ri(8, 60), c = ri(Math.ceil(P * 0.3), Math.floor(P * 0.75));
+    const mg = P - c;
+    const Ve = ri(10, 60) * 100, Vw = Ve - ri(3, 8) * 100, Vb = Ve + ri(3, 10) * 100;
+    const F = Math.max(500, Math.floor(mg * Ve * ri(30, 90) / 100 / 500) * 500);
+    const prof = V => mg * V - F;
+    const what = pick([["A school club", "hoodies"], ["A candle maker", "candles"], ["A food truck", "burritos"],
+                       ["A skate shop", "skateboards"], ["A startup", "phone stands"], ["A potter", "planters"]]);
+    return { P, c, mg, Vw: Math.max(100, Vw), Ve, Vb, F, prof, who: what[0], item: what[1] };
+  }
+
+  _addSkill(8, "Scenario Modeling", "Scenario Modeling", 4, {
+    goalProblem: "A product sells for $20, costs $12 per unit to make, and has $10,000 in fixed costs. Sales could be 1,000 units (worst case), 2,000 (expected) or 2,800 (best case). What is the profit in each case, and how far apart are the best and worst cases?",
+    teachingSteps: [
+      { title: "A model with assumptions", explanation: "A business model turns <strong>assumptions</strong> into an outcome: profit = (price − unit cost) × units − fixed costs. In a spreadsheet (from <strong>Spreadsheet Formulas</strong>) each assumption sits in its own cell and the profit cell is a formula, so changing one input updates the answer.", visual: "B1 price  B2 unit cost  B3 units  B4 fixed\nB5: =(B1-B2)*B3-B4" },
+      { title: "Best, expected and worst case", explanation: "Because the future is uncertain, run the model for a <strong>worst case</strong>, an <strong>expected case</strong> and a <strong>best case</strong>. The gap between best and worst shows how much is at stake.", visual: "margin = 20 − 12 = $8\nworst 8 × 1,000 − 10,000 = −2,000\nexpected 8 × 2,000 − 10,000 = 6,000\nbest 8 × 2,800 − 10,000 = 12,400" },
+      { title: "Weighting the scenarios", explanation: "If you can estimate how likely each scenario is, the <strong>probability-weighted profit</strong> is an expected value: Σ (probability × scenario profit). The probabilities must add to 100%.", visual: "0.2(−2,000) + 0.6(6,000) + 0.2(12,400) = 5,680" },
+      { title: "What-if analysis", explanation: "Change one or two assumptions and recompute. Raising the price might lower sales; a supplier increase raises unit cost. Work from the model, not by guessing: new margin × new units − fixed costs.", visual: "price +$2, units −10%:\n(22 − 12) × 1,800 − 10,000 = 8,000" },
+      { title: "Sensitivity: which assumption matters most?", explanation: "Move each assumption by the amount it could realistically be off, one at a time, and see how far profit moves. Price changes move profit by (change × units); unit cost the same way; volume by (change × margin); fixed costs dollar for dollar. The biggest swing is where better information is worth the most.", visual: "price ±$1 → ±2,000   unit cost ±$0.50 → ±1,000\nvolume ±300 → ±2,400   fixed ±$1,500 → ±1,500\nvolume matters most" },
+      { title: "Plan for the bad case", explanation: "A plan that only works in the best case is fragile. Check what it takes to <strong>break even</strong> in the worst case: units needed = fixed costs ÷ (price − unit cost), rounded up.", visual: "worst-case price $18: 10,000 ÷ (18 − 12) ≈ 1,667 → 1,667 units" }
+    ],
+    finalAnswer: "Worst −$2,000, expected $6,000, best $12,400; best and worst are $14,400 apart",
+    answerExplanation: "Each unit earns 20 − 12 = $8. Worst: 8 × 1,000 − 10,000 = −$2,000. Expected: 8 × 2,000 − 10,000 = $6,000. Best: 8 × 2,800 − 10,000 = $12,400. Gap: 12,400 − (−2,000) = $14,400, which is also 8 × (2,800 − 1,000).",
+    example: { problem: "Same product, 2,000 units expected. Price could be off by ±$1, unit cost by ±$0.50, volume by ±300 units and fixed costs by ±$1,500. Which assumption matters most?", steps: [
+      { text: "Price", math: "$1 × 2,000 units = $2,000" },
+      { text: "Unit cost", math: "$0.50 × 2,000 units = $1,000" },
+      { text: "Volume", math: "300 units × $8 margin = $2,400" },
+      { text: "Fixed costs", math: "$1,500" },
+      { text: "Largest swing", math: "sales volume ($2,400)" }
+    ]},
+    keyPoints: [
+      "Profit = (price − unit cost) × units − fixed costs",
+      "Run the model for worst, expected and best cases",
+      "Best − worst = margin × (best units − worst units) when only volume changes",
+      "Weighted profit = Σ probability × scenario profit",
+      "Sensitivity: change each assumption by its realistic error; the biggest profit swing matters most",
+      "Worst-case break-even units = fixed costs ÷ margin, rounded up"
+    ],
+    mistakes: [
+      { wrong: "Profit = price × units − fixed costs", why: "That leaves out the cost of making each unit. Use the margin: (price − unit cost) × units." },
+      { wrong: "Assuming the assumption with the biggest number matters most", why: "What matters is how far profit moves when the assumption is wrong. Compute each swing." },
+      { wrong: "Averaging the three scenarios when they are not equally likely", why: "Weight each scenario by its probability." }
+    ],
+    guided: { problem: "Using the profits worst −$2,000, expected $6,000 and best $12,400, with probabilities 20%, 60% and 20%, find the probability-weighted profit.", steps: [
+      { label: "Worst-case term", value: "0.2 × (−2000) = −400" },
+      { label: "Expected-case term", value: "0.6 × 6000 = 3600" },
+      { label: "Best-case term", value: "0.2 × 12400 = 2480" },
+      { label: "Add", value: "−400 + 3600 + 2480 = 5680" }
+    ], answer: "5680", answerLabel: "Weighted profit =",
+      interactiveSteps: [
+        { prompt: "Worst case: 0.2 × (−2,000) = ?", hint: "A loss times a probability is still a loss.", answer: "-400", acceptableAnswers: ["-400", "−400"], formatHint: "Enter a number (negative for a loss)", commonMistakes: { "400": "The worst case is a loss, so its term is negative: −400." } },
+        { prompt: "Expected case: 0.6 × 6,000 = ?", hint: "60% of 6,000.", answer: "3600", acceptableAnswers: ["3600", "3,600"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "Best case: 0.2 × 12,400 = ?", hint: "20% of 12,400.", answer: "2480", acceptableAnswers: ["2480", "2,480"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "Add the terms: −400 + 3,600 + 2,480 = ?", hint: "Adding −400 is the same as subtracting 400.", answer: "5680", acceptableAnswers: ["5680", "5,680"], formatHint: "Enter a number", commonMistakes: { "6480": "The −400 must be subtracted, not added.", "5467": "That is a plain average. Weight each case by its probability." } }
+      ] }
+  }, function genScenario(){
+    const type = pick(["case_profit","best_worst_range","weighted_expected","what_if","profit_change","sensitivity","break_even_scenario","spreadsheet_whatif"]);
+    const M = scenarioModel();
+    const base = `${M.who} sells ${M.item} for ${usd(M.P)} each. Each costs ${usd(M.c)} to make, and fixed costs are ${usd(M.F)}.`;
+    const cases = `Sales forecast: worst case ${cm(M.Vw)} units, expected ${cm(M.Ve)}, best case ${cm(M.Vb)}.`;
+    const pw = M.prof(M.Vw), pe = M.prof(M.Ve), pb = M.prof(M.Vb);
+
+    if (type === "case_profit") {
+      const k = pick([["worst", M.Vw], ["expected", M.Ve], ["best", M.Vb]]);
+      const ans = M.prof(k[1]);
+      const other = k[0] === "expected" ? pb : pe;
+      return { subType: type,
+        question: `${base} ${cases} What is the profit in the ${k[0]} case? (Use a negative number for a loss.)`,
+        // distractors: revenue minus fixed costs (no unit cost), margin × units
+        // without fixed costs, another scenario's profit, fixed costs added
+        ...money(ans, [M.P * k[1] - M.F, M.mg * k[1], other, M.mg * k[1] + M.F]),
+        explanation: `Margin = ${usd(M.P)} − ${usd(M.c)} = ${usd(M.mg)} per unit. Profit = ${usd(M.mg)} × ${cm(k[1])} − ${usd(M.F)} = ${usd(M.mg * k[1])} − ${usd(M.F)} = ${usd(ans)}.` };
+    }
+    if (type === "best_worst_range") {
+      const ans = pb - pw;
+      return { subType: type,
+        question: `${base} ${cases} How much higher is the best-case profit than the worst-case profit?`,
+        // distractors: the difference in units, the difference in revenue,
+        // the best-case profit alone, fixed costs subtracted from the gap
+        ...money(ans, [M.Vb - M.Vw, M.P * (M.Vb - M.Vw), pb, ans - M.F]),
+        explanation: `Best: ${usd(M.mg)} × ${cm(M.Vb)} − ${usd(M.F)} = ${usd(pb)}. Worst: ${usd(M.mg)} × ${cm(M.Vw)} − ${usd(M.F)} = ${usd(pw)}. Gap = ${usd(pb)} − (${usd(pw)}) = ${usd(ans)}, which is the margin ${usd(M.mg)} × ${cm(M.Vb - M.Vw)} extra units. Fixed costs cancel.` };
+    }
+    if (type === "weighted_expected") {
+      const pr = pick([[20, 60, 20], [25, 50, 25], [20, 70, 10], [20, 50, 30], [30, 50, 20], [25, 60, 15], [15, 60, 25]]);
+      const ans = (pr[0] * pw + pr[1] * pe + pr[2] * pb) / 100;
+      return { subType: type,
+        question: `${base} ${cases} The worst, expected and best cases have probabilities ${pr[0]}%, ${pr[1]}% and ${pr[2]}%. What is the probability-weighted profit? (Use a negative number for a loss.)`,
+        // distractors: a plain average of the three, the expected case alone,
+        // the worst and best probabilities swapped (same as the answer when
+        // they are equal, so two more follow), dropping the worst case, and the
+        // probability-weighted contribution margin with fixed costs forgotten
+        ...money(ans, [(pw + pe + pb) / 3, pe, (pr[2] * pw + pr[1] * pe + pr[0] * pb) / 100,
+                       (pr[1] * pe + pr[2] * pb) / 100, ans + M.F]),
+        explanation: `Scenario profits: worst ${usd(pw)}, expected ${usd(pe)}, best ${usd(pb)}. Weighted = ${pr[0] / 100}(${nf(pw)}) + ${pr[1] / 100}(${nf(pe)}) + ${pr[2] / 100}(${nf(pb)}) = ${usd(ans)}.` };
+    }
+    if (type === "what_if") {
+      const V = M.Ve, k = pick([5, 10, 15, 20, 25]);
+      const v = pick(["price", "cost", "ads"]);
+      if (v === "price") {
+        const dP = ri(1, 5), V2 = V * (100 - k) / 100;
+        const ans = (M.mg + dP) * V2 - M.F;
+        return { subType: type,
+          question: `${base} It expects to sell ${cm(V)} units. What if it raises the price by ${usd(dP)} and sales fall ${k}% as a result? What would the new profit be? (Use a negative number for a loss.)`,
+          // distractors: the price rise without the lost sales, the lost sales
+          // without the price rise, the original profit
+          ...money(ans, [(M.mg + dP) * V - M.F, M.mg * V2 - M.F, M.prof(V)]),
+          explanation: `New margin = ${usd(M.mg)} + ${usd(dP)} = ${usd(M.mg + dP)}. New units = ${cm(V)} × ${(100 - k) / 100} = ${cm(V2)}. Profit = ${usd(M.mg + dP)} × ${cm(V2)} − ${usd(M.F)} = ${usd(ans)} (was ${usd(M.prof(V))}).` };
+      }
+      if (v === "cost") {
+        const dc = ri(1, Math.max(1, M.mg - 1));
+        const ans = (M.mg - dc) * V - M.F;
+        return { subType: type,
+          question: `${base} It expects to sell ${cm(V)} units. What if its supplier raises the unit cost by ${usd(dc)}? What would the new profit be? (Use a negative number for a loss.)`,
+          // distractors: the cost rise counted once instead of per unit, the
+          // rise added to profit, the original profit
+          ...money(ans, [M.prof(V) - dc, (M.mg + dc) * V - M.F, M.prof(V)]),
+          explanation: `New margin = ${usd(M.mg)} − ${usd(dc)} = ${usd(M.mg - dc)}. Profit = ${usd(M.mg - dc)} × ${cm(V)} − ${usd(M.F)} = ${usd(ans)}.` };
+      }
+      const dF = ri(2, 20) * 250, V2 = V * (100 + k) / 100;
+      const ans = M.mg * V2 - M.F - dF;
+      return { subType: type,
+        question: `${base} It expects to sell ${cm(V)} units. What if it spends an extra ${usd(dF)} on advertising (a fixed cost) and sales rise ${k}%? What would the new profit be? (Use a negative number for a loss.)`,
+        // distractors: the extra sales without the ad cost, the ad cost without
+        // the extra sales, the rise applied to revenue instead of margin
+        ...money(ans, [M.mg * V2 - M.F, M.prof(V) - dF, M.P * V2 - M.c * V - M.F - dF]),
+        explanation: `New units = ${cm(V)} × ${(100 + k) / 100} = ${cm(V2)}. Profit = ${usd(M.mg)} × ${cm(V2)} − ${usd(M.F)} − ${usd(dF)} = ${usd(ans)} (was ${usd(M.prof(V))}).` };
+    }
+    if (type === "profit_change") {
+      const V = M.Ve;
+      const v = pick(["cost", "price", "volume", "fixed"]);
+      let ans, q, cands, why;
+      if (v === "cost") { const d = pick([0.5, 1, 1.5, 2, 2.5, 3]); ans = -d * V;
+        q = `the unit cost rises by ${usd(d)}`; cands = [-d, d * V, -d * V - M.F];
+        why = `Every unit's margin falls by ${usd(d)}: ${cm(V)} × (−${usd(d)}) = ${usd(ans)}.`; }
+      else if (v === "price") { const d = pick([0.5, 1, 1.5, 2, 3]); ans = -d * V;
+        q = `the price is cut by ${usd(d)} and sales stay the same`; cands = [-d, d * V, -d * V + M.F];
+        why = `Every unit earns ${usd(d)} less: ${cm(V)} × (−${usd(d)}) = ${usd(ans)}.`; }
+      else if (v === "volume") { const d = ri(1, 10) * 50; ans = M.mg * d;
+        q = `sales rise by ${cm(d)} units`; cands = [M.P * d, d, M.mg * d - M.F];
+        why = `Each extra unit adds its margin, ${usd(M.mg)}: ${cm(d)} × ${usd(M.mg)} = ${usd(ans)}. (Revenue rises by ${usd(M.P * d)}, but each unit also costs ${usd(M.c)}.)`; }
+      else { const d = ri(1, 12) * 250; ans = -d;
+        q = `rent raises fixed costs by ${usd(d)}`; cands = [d, -d * V / 100, -M.F - d];
+        why = `Fixed costs come straight off profit: the change is ${usd(ans)}.`; }
+      return { subType: type,
+        question: `${base} It expects to sell ${cm(V)} units. By how much does profit change if ${q}, with everything else the same? (Use a negative number for a decrease.)`,
+        // distractors: the per-unit change only, the sign flipped, revenue
+        // instead of margin, fixed costs dragged into a change
+        ...money(ans, cands),
+        explanation: why };
+    }
+    if (type === "sensitivity") {
+      for (let tries = 0; tries < 100; tries++) {
+        const a = pick([0.5, 1, 1.5, 2, 3]), b = pick([0.5, 1, 1.5, 2]), n = ri(1, 12) * 50, f = ri(1, 16) * 500;
+        const sw = [a * M.Ve, b * M.Ve, n * M.mg, f];
+        const sorted = sw.slice().sort((x, y) => y - x);
+        if (sorted[0] < sorted[1] * 1.15) continue;   // a clear winner only
+        const names = ["Price", "Unit cost", "Sales volume", "Fixed costs"];
+        const ans = names[sw.indexOf(sorted[0])];
+        return { subType: type, ...choice(ans, names),
+          question: `${base} It expects to sell ${cm(M.Ve)} units. Its estimates could be off by: price ±${usd(a)}, unit cost ±${usd(b)}, sales volume ±${cm(n)} units, fixed costs ±${usd(f)}. Which assumption, if wrong, would change profit the most?`,
+          explanation: `Profit swing from each: price ${usd(a)} × ${cm(M.Ve)} = ${usd(sw[0])}; unit cost ${usd(b)} × ${cm(M.Ve)} = ${usd(sw[1])}; volume ${cm(n)} × ${usd(M.mg)} margin = ${usd(sw[2])}; fixed costs ${usd(f)}. The largest is ${ans}.` };
+      }
+      return genScenario();
+    }
+    if (type === "break_even_scenario") {
+      const drop = ri(1, Math.max(1, M.mg - 1)), Pw = M.P - drop, m2 = Pw - M.c;
+      const ans = Math.ceil(M.F / m2);
+      return { subType: type,
+        question: `${base} In the worst case, competition forces the price down to ${usd(Pw)}. How many units must it sell to at least break even at that price?`,
+        // distractors: forgetting the unit cost, using the original price,
+        // rounding down instead of up
+        ...num(ans, [Math.ceil(M.F / Pw), Math.ceil(M.F / M.mg), Math.floor(M.F / m2) === ans ? ans + 1 : Math.floor(M.F / m2)]),
+        explanation: `Worst-case margin = ${usd(Pw)} − ${usd(M.c)} = ${usd(m2)} per unit. Units needed = ${usd(M.F)} ÷ ${usd(m2)} ` +
+          (Number.isInteger(M.F / m2) ? `= ${cm(ans)} exactly, so ${cm(ans)} units just break even.`
+            : `≈ ${Math.round(M.F / m2 * 100) / 100}. A part of a unit cannot be sold, so round up: ${cm(ans)} units.`) };
+    }
+    // spreadsheet_whatif
+    const cell = pick(["B1", "B2", "B3"]);
+    let P2 = M.P, c2 = M.c, V2 = M.Ve, newVal;
+    if (cell === "B1") { P2 = M.P + pick([-2, -1, 1, 2, 3]); newVal = P2; }
+    else if (cell === "B2") { c2 = M.c + pick([-2, -1, 1, 2]); newVal = c2; }
+    else { V2 = M.Ve + pick([-1, 1]) * ri(1, 5) * 100; newVal = V2; }
+    if (P2 <= c2) return genScenario();
+    const ans = (P2 - c2) * V2 - M.F, old = M.prof(M.Ve);
+    return { subType: "spreadsheet_whatif",
+      question: `In a spreadsheet, B1 = ${M.P} (price), B2 = ${M.c} (unit cost), B3 = ${M.Ve} (units), B4 = ${M.F} (fixed costs), and B5 holds =(B1-B2)*B3-B4. If ${cell} is changed to ${newVal}, what will B5 show?`,
+      // distractors: the old result, the formula without the unit cost, the
+      // formula without the fixed costs
+      ...num(ans, [old, P2 * V2 - M.F, (P2 - c2) * V2, ans + M.F * 2]),
+      explanation: `With ${cell} = ${newVal}: B5 = (${P2} − ${c2}) × ${V2} − ${M.F} = ${P2 - c2} × ${V2} − ${M.F} = ${ans}. (Before the change it showed ${old}.)` };
+  });
+})();
 // ==== END GRADUATION PLAN CONTENT: BUSINESS-MODELING ====
 </script>
 
