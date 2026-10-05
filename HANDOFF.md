@@ -4499,3 +4499,41 @@ a generator.
 the bottom of the window by the progress lines added above it. It now sits
 under the problem, and the answer box itself flashes green or red (with a
 shake when wrong), so the result is where the student is already looking.
+
+## 2026-10-04 — Math graduation plan: 65 required core skills + four branches
+
+The Dojo now carries a graduation plan: **65 core items every student must
+complete**, and four optional branches (STEM, Business/Finance/Data,
+Trades/Technical, CS/Game Math). An item is complete when every skill in it is
+mastered. Branch skills unlock by their prerequisites like any other skill, so
+a student can work in any branch they are ready for, several at once.
+
+Where things live:
+
+- `data/math_graduation_plan.json`: the plan. Each item lists the skills
+  (curriculum node ids) that complete it. Built by
+  `tools/build-graduation-plan.py`, which also added the 102 skills the plan
+  needed to `data/math_curriculum_v2.json`.
+- `node tools/compile-dojo-graph.js`: writes `MATH_CONNECTIONS`,
+  `MATH_GRAPH_V2` and `MATH_PLAN` into `games/math-dojo.html` from the data.
+  **Edit the JSON, then run this; never edit those three by hand.**
+  `MATH_CONNECTIONS` (what unlocking walks) was hand-kept and disagreed with
+  the curriculum on 288 edges. It is now generated, and `--check` fails if the
+  page is out of date. The compiler refuses a plan where core needs a
+  branch-only skill.
+- `node tools/compile-math-graph.js`: the portal skill tree. Branch skills get
+  `path_type = 'Branch'` (drawn dashed in SkillTreeViewer). The seed it writes
+  to the backend repo has to be applied before the portal tree shows the new
+  skills; the Dojo itself does not need it.
+- Skill classes (`tools/lib/math-plan.js`, shared by both compilers): core,
+  foundation, branch, enrichment (unlisted Tier 5–6), beyond (unlisted Tier
+  7+, shown as "Elective").
+
+In the Dojo: a Graduation Core panel on the home screen, a Graduation Path
+screen (core solid gold and Required; each branch dashed in its own colour),
+and Core / branch badges on Training Grounds cards.
+
+Content for the 102 new skills is in the `GRADUATION PLAN CONTENT` script
+blocks near the end of `math-dojo.html`, one per group, each registering via
+`_addSkill`. `python debug-tools/graduation-path-journey.py` walks the path
+as a student and fails if any planned skill has no lesson or questions.
