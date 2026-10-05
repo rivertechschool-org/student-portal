@@ -4554,3 +4554,34 @@ look at first.
 now run the graduation blocks; before, no check except the distractor sweep
 and step hints could see them. `tools/dojo-skill-audit.js` and
 `tools/dojo-lesson-audit.js` still read only the literal tables.
+
+## 2026-10-05 — Math Dojo: Progress Check; Belt Test opens everything beneath
+
+**The Belt Test is placement, not a progress measure.** It seeds itself from
+what it already believes about a returning student, only ever raises skills,
+and asks a different set of questions each time, so two results cannot be
+compared. Jordan had been using it as a progress test; the **Progress Check**
+replaces it for that:
+
+- two questions on each core item the student is working on (up to 12),
+  re-checks of up to 6 finished ones, up to 4 branch items they have started;
+  each item scored secure / shaky / not yet
+- changes no skill (no BKT update, no promotion): the record is the result
+- saved by the host as a `math_dojo_sessions` row, `mode = 'progress_check'`.
+  `skill_details` holds one `{kind:'item', skill, code, status, ...}` per item
+  plus one `{kind:'summary', core_done, core_total}` with no `skill`.
+  Both hosts write it (student site and portal homework); no schema change.
+- teachers see the history in the student hub's Skills tab, with what moved
+  since the previous check.
+
+**Belt Test unlocking.** It opened only tiers strictly below a placement
+tier computed from tier accuracy, and only one-hop prerequisites, so a student
+could master most of tier 3 and find tier 1 locked. It now opens (never
+credits) every tier below the highest tier with a mastered skill, and every
+prerequisite at any depth of anything with evidence.
+
+**Plot-the-point questions crashed on Submit** (Coordinate Plane): the
+answer lives in `visual.data.targetPoint` and Submit read `target`. Fixed.
+
+Harnesses: `debug-tools/progress-check-journey.py` (port 8793),
+`tests/progress-check-record.test.js`.

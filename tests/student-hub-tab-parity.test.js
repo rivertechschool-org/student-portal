@@ -60,8 +60,10 @@ const TABS = [
           'sd-active-privileges'] },
   { key: 'skills',      fn: 'renderStudentHubSkillsTab',
     onClick: ['openStudentSkillTree'],
-    onRender: ['loadStudentSkillsTab'],
-    ids: ['skill-subject-select', 'skill-progress-content'] },
+    // loadStudentProgressChecks: the Math Dojo Progress Check history, under
+    // the skill progress.
+    onRender: ['loadStudentSkillsTab', 'loadStudentProgressChecks'],
+    ids: ['skill-subject-select', 'skill-progress-content', 'student-progress-checks'] },
   { key: 'activity',    fn: 'renderStudentHubActivityTab',
     onClick: [],
     onRender: ['loadStudentWeeklyActivity'],
