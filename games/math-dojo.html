@@ -52253,6 +52253,1817 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: FINANCE ====
+// Business branch, Financial Mathematics (plan items 66B-78B): the twelve
+// skills M-331..M-342. Every one sits at tier 6 or 7, so students TYPE these
+// answers; the conventions below exist to make typed money and percent answers
+// grade the way a teacher would grade them on paper.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (generateQuestion then tops
+  // the board up itself).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- rounding and formatting ------------------------------------------
+  // toPrecision(12) strips binary noise before rounding, so 1.005 * 100 is
+  // treated as the 100.5 it is meant to be and a half-cent rounds up, as it
+  // does on a calculator. Every answer below goes through rnd(), never toFixed
+  // alone (toFixed rounds the binary value, which is how 2.675 becomes 2.67).
+  const rnd = (x, dp) => { const f = Math.pow(10, dp); return Math.round(Number((x * f).toPrecision(12))) / f; };
+  const r2 = x => rnd(x, 2), r1 = x => rnd(x, 1), r0 = x => rnd(x, 0);
+  const c2 = x => r2(x).toFixed(2);
+  const withCommas = s => { const p = String(s).split('.'); const neg = p[0].charAt(0) === '-';
+    const i = neg ? p[0].slice(1) : p[0];
+    return (neg ? '-' : '') + i.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (p.length > 1 ? '.' + p[1] : ''); };
+  const usd = x => '$' + withCommas(c2(x));           // display, to the cent
+  const usd0 = x => '$' + withCommas(String(r0(x)));  // display, to the dollar
+  const num = (x, dp) => String(rnd(x, dp));          // plain number, trailing zeros dropped
+  const mult = m => String(rnd(m, 6));                 // a multiplier as written in working
+  // "19.284% ≈ 19.3%", but just "10%" when the working is already exact.
+  const ap = (exact, ans) => exact === ans ? ans : exact + "% ≈ " + ans;
+  const pmt = (P, r, n) => r === 0 ? P / n : P * r * Math.pow(1 + r, n) / (Math.pow(1 + r, n) - 1);
+
+  // ---- typed-answer builders ----------------------------------------------
+  // Why answers are bare numbers ("1234.50") rather than "$1,234.50":
+  // AnswerInterpreter.parseMoney stops at the first comma, so "$1,234.50" reads
+  // as $1 - as the EXPECTED answer it would mark "$1,999" correct. A bare number
+  // already accepts "1234.5", "1,234.50" (via parseArithmetic) and "$1234.50"
+  // (money/number cross-check). The one form left over, "$1,234.50", is caught
+  // by validate(), which reads the digits itself and compares to the cent.
+  // "$..." forms are deliberately NOT listed in acceptableAnswers: listing
+  // "$1234.50" would also accept a typed "123450" (the interpreter's cents
+  // reading of a bare number).
+  const readNumber = s => {
+    let t = String(s).trim().toLowerCase().replace(/\s*(dollars?|usd|percent|%)$/, '');
+    t = t.split('$').join('').split(',').join('').split(' ').join('');
+    return /^-?\d+(\.\d+)?$/.test(t) ? parseFloat(t) : null;
+  };
+  const mkValidate = (v, tol) => typed => { const n = readNumber(typed); return n !== null && Math.abs(n - v) <= tol + 1e-9; };
+  // dp 2 = to the cent, 0 = to the dollar. tol widens the accepted band only
+  // where a student who rounds a calculator intermediate (the loan-payment
+  // formula) can honestly land one cent away.
+  function money(val, dp, tol) {
+    dp = dp === 0 ? 0 : 2;
+    const v = rnd(val, dp), ans = dp === 2 ? v.toFixed(2) : String(v);
+    const alts = [withCommas(ans)].filter(a => a !== ans);
+    return { answer: ans, acceptableAnswers: alts, validate: mkValidate(v, tol || 0) };
+  }
+  // Percents: the answer is the bare number of percent ("12.5"). Listing
+  // "12.5%" lets AnswerInterpreter's percent/number cross-check accept 12.5%,
+  // 12.5 and the decimal 0.125 - all three are legitimate when the question
+  // asks for a percent.
+  function percent(val, dp) {
+    const v = rnd(val, dp), ans = String(v);
+    return { answer: ans, acceptableAnswers: [ans + '%'], validate: mkValidate(v, 0) };
+  }
+  // fixed: keep trailing zeros ("0.30") where the question asks for hundredths.
+  function plain(val, dp, fixed) {
+    const v = rnd(val, dp || 0), ans = fixed ? v.toFixed(dp) : String(v);
+    const alts = [withCommas(ans)].filter(a => a !== ans);
+    return { answer: ans, acceptableAnswers: alts, validate: mkValidate(v, 0) };
+  }
+  // Numeric options formatted like the answer, distinct by VALUE (the page's
+  // own value-dedupe is switched off for any question that says "nearest", and
+  // nearly all of these do), never negative.
+  function optN(ansObj, cands, dp) {
+    // Money to the cent shows two decimals like its answer; percents and
+    // counts drop trailing zeros like theirs.
+    // A ratio shown as "0.30" gets "1.30" beside it, not "1.3".
+    const isPct = (ansObj.acceptableAnswers || []).some(a => /%$/.test(a));
+    const fixed = !isPct && dp > 0 && (String(ansObj.answer).split('.')[1] || '').length === dp;
+    const fmt = x => fixed ? rnd(x, dp).toFixed(dp) : String(rnd(x, dp));
+    const out = [ansObj.answer], vals = [parseFloat(ansObj.answer)];
+    for (const c of cands) {
+      if (typeof c !== 'number' || !isFinite(c) || c < 0) continue;
+      const s = fmt(c), v = parseFloat(s);
+      if (vals.some(w => Math.abs(w - v) < 1e-9)) continue;
+      out.push(s); vals.push(v);
+      if (out.length === 4) break;
+    }
+    // Short sets are returned as they are: generateQuestion tops a board up
+    // with near-miss numbers, which keeps the real misconceptions on it.
+    return out.length >= 2 ? sh(out) : undefined;
+  }
+  // One question object. `a` is a money()/percent()/plain() result.
+  const Q = (subType, question, a, options, explanation) =>
+    ({ subType, question, answer: a.answer, acceptableAnswers: a.acceptableAnswers, validate: a.validate, options, explanation });
+  // Selection questions (which formula, what does it mean): the candidates are
+  // the question, so they stay multiple choice at every tier.
+  const QC = (subType, question, answer, distractors, explanation) =>
+    ({ subType, question, answer, options: opt4(answer, distractors), forceChoice: true, explanation });
+
+  // Guided-step answers go through AnswerInterpreter.checkAnswer only (no
+  // validate), so they stay plain numbers with their comma form listed.
+  const step = (prompt, hint, answer, extraAlts, mistakes, formatHint) => {
+    const alts = [answer].concat(extraAlts || []);
+    const c = withCommas(answer); if (alts.indexOf(c) < 0) alts.push(c);
+    const s = { prompt, hint, answer, acceptableAnswers: alts, commonMistakes: {} };
+    // A "mistake" equal to an accepted answer could never show; drop it here
+    // rather than trust every computed key.
+    for (const k of Object.keys(mistakes || {})) if (alts.indexOf(k) < 0) s.commonMistakes[k] = mistakes[k];
+    if (formatHint) s.formatHint = formatHint;
+    return s;
+  };
+  const HINT_USD = "Dollar amount, e.g., 125.40 (no $ needed)";
+  const HINT_PCT = "Percent, e.g., 12.5";
+
+  // =====================================================================
+  // M-331  Successive Percent Changes  (tier 6)   plan 66B
+  // =====================================================================
+  _addSkill(6, "Successive Percent Changes", "Successive Percent Changes", 3, function(){
+    const gFinal = c2(150 * 1.10 * 0.70);
+    return {
+      goalProblem: "An $80 jacket is marked up 25%, then put on sale at 20% off. What is the final price?",
+      teachingSteps: [
+        { title: "A percent change is a multiplier", explanation: "Increasing by r% multiplies by <strong>(1 + r/100)</strong>. Decreasing by r% multiplies by <strong>(1 − r/100)</strong>. This is the same idea as percent increase and decrease, written as one multiplication.", visual: "+25% → × 1.25     −20% → × 0.80" },
+        { title: "Each change acts on the new amount", explanation: "The second change is a percent of the price <em>after</em> the first change, not of the original price.", visual: "$80 × 1.25 = $100, then $100 × 0.80 = $80" },
+        { title: "Never add the percents", explanation: "+25% followed by −20% is <strong>not</strong> +5%. The 20% is taken from $100, so it removes $20 — exactly the $20 the markup added.", visual: "1.25 × 0.80 = 1.00 → overall change 0%" },
+        { title: "The overall change", explanation: "Multiply all the multipliers together. Subtract 1 and turn the result into a percent. A positive result is an increase, a negative one a decrease.", visual: "overall % change = (m₁ × m₂ × … − 1) × 100" },
+        { title: "The same change repeated", explanation: "A change of r% repeated n times multiplies by <strong>(1 ± r/100)ⁿ</strong> — this is compound growth or decay, the same as compound interest.", visual: "−15% a year for 3 years: × 0.85³ = × 0.614125" },
+        { title: "Undoing a change", explanation: "To get back to the start, divide by the multiplier. After a 25% increase, a 20% decrease returns to the original because 1 ÷ 1.25 = 0.80.", visual: "undo +25%: 1 ÷ 1.25 = 0.80 → a 20% decrease" }
+      ],
+      finalAnswer: "$80.00",
+      answerExplanation: "80 × 1.25 × 0.80 = 80 × 1.00 = $80.00. The markup and the sale cancel exactly — not a 5% increase.",
+      example: { problem: "A stock rises 20% in one month and falls 10% the next. What is the overall percent change?", steps: [
+        { text: "Write each change as a multiplier", math: "+20% → 1.20,  −10% → 0.90" },
+        { text: "Multiply them", math: "1.20 × 0.90 = 1.08" },
+        { text: "Subtract 1 and convert", math: "1.08 − 1 = 0.08 → an 8% increase (not 10%)" }
+      ]},
+      keyPoints: [
+        "Write every percent change as a multiplier: 1 + r/100 or 1 − r/100",
+        "Successive changes multiply — they never add",
+        "Overall change = (product of multipliers − 1) × 100",
+        "Equal percents up and down always leave you lower than you started"
+      ],
+      mistakes: [
+        { wrong: "+25% then −20% is +5%", why: "The 20% comes off the larger, marked-up price. 1.25 × 0.80 = 1.00, so the overall change is 0%." },
+        { wrong: "Up 20% then down 20% gets back to the start", why: "1.20 × 0.80 = 0.96 — the price ends 4% lower." },
+        { wrong: "Losing 15% a year for 3 years is a 45% loss", why: "Each year's 15% comes off a smaller value: 0.85³ = 0.614, a 38.6% loss." }
+      ],
+      guided: {
+        problem: "A $150 bike is raised 10% in price, then sold at 30% off. What is the final price, to the nearest cent?",
+        steps: [
+          { label: "First multiplier", value: "1 + 0.10 = 1.10" },
+          { label: "Second multiplier", value: "1 - 0.30 = 0.70" },
+          { label: "Combined multiplier", value: "1.10 × 0.70 = 0.77" },
+          { label: "Final price", value: "150 × 0.77 = " + gFinal }
+        ],
+        answer: gFinal, answerLabel: "Final price ($):",
+        interactiveSteps: [
+          step("A 10% increase multiplies the price by what number?", "An increase of r% multiplies by 1 + r/100.", "1.1", ["1.10", "110%"],
+            { "0.1": "0.1 is only the increase. The new price is the old price plus 10%, so multiply by 1.10.", "0.9": "0.9 is a 10% decrease. An increase multiplies by 1.10." }, "e.g., 1.25"),
+          step("A 30% decrease multiplies the price by what number?", "A decrease of r% multiplies by 1 - r/100.", "0.7", ["0.70", "70%"],
+            { "0.3": "0.3 is the part taken off. What is left is 1 - 0.30 = 0.70.", "1.3": "1.3 would be a 30% increase. A decrease multiplies by 0.70." }, "e.g., 0.85"),
+          step("Multiply the two multipliers: 1.10 × 0.70 = ?", "Multiply them - do not add the percents.", "0.77", [],
+            { "0.8": "0.8 comes from adding +10% and -30%. Multiply instead: 1.10 × 0.70 = 0.77." }, "e.g., 0.95"),
+          step("Final price: 150 × 0.77 = ? (to the nearest cent)", "Multiply the original price by the combined multiplier.", gFinal, ["115.5"],
+            { "120": "120 is 150 × 0.80, which adds the percents. Each change acts on the new price: 150 × 0.77 = 115.50.", "120.00": "120 is 150 × 0.80, which adds the percents. Each change acts on the new price: 150 × 0.77 = 115.50." }, HINT_USD)
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["final_price","overall_change","same_up_down","repeated","undo","find_original","single_equivalent"]);
+    if (st === "final_price") {
+      const P = ri(8, 80) * 5;
+      const a = pick([10, 15, 20, 25, 30, 40]), b = pick([5, 10, 15, 20, 25, 30, 35]);
+      const kind = pick(["up_down", "down_up", "down_down"]);
+      const s1 = kind === "up_down" ? 1 : -1, s2 = kind === "down_up" ? 1 : -1;
+      const m1 = 1 + s1 * a / 100, m2 = 1 + s2 * b / 100;
+      const fin = P * m1 * m2;
+      const item = pick(["jacket", "pair of headphones", "bike helmet", "backpack", "skateboard", "desk lamp", "pair of boots"]);
+      const story = kind === "up_down" ? `The store raises the price by ${a}%, and later marks the new price down ${b}%.`
+                  : kind === "down_up" ? `It goes on sale for ${a}% off, and after the sale the sale price is raised ${b}%.`
+                  : `It is marked ${a}% off, and at the register an extra ${b}% is taken off the sale price.`;
+      const a1 = money(fin);
+      const added = P * (1 + (s1 * a + s2 * b) / 100);
+      return Q(st, `A ${item} costs ${usd(P)}. ${story} What is the final price, to the nearest cent?`, a1,
+        // adds the two percents | stops after the first change | flips the second change's direction
+        optN(a1, [added, P * m1, P * m1 * (1 - s2 * b / 100)], 2),
+        `Each change multiplies the current price: ${s1 > 0 ? "+" : "−"}${a}% is × ${m1.toFixed(2)} and ${s2 > 0 ? "+" : "−"}${b}% is × ${m2.toFixed(2)}. ` +
+        `${usd(P)} × ${m1.toFixed(2)} × ${m2.toFixed(2)} = ${usd(fin)}. Adding the percents (${s1 * a + s2 * b}%) would give ${usd(added)}, which is wrong because the second change acts on the new price.`);
+    }
+    if (st === "overall_change") {
+      const n = pick([2, 2, 3]);
+      const periods = n === 2 ? pick([["January", "February"], ["the first year", "the second year"], ["week 1", "week 2"]])
+                              : ["the first year", "the second year", "the third year"];
+      let ch, prod, net;
+      do {
+        ch = []; for (let i = 0; i < n; i++) ch.push(pick([-30, -25, -20, -15, -10, -5, 5, 10, 15, 20, 25, 30, 40, 50]));
+        prod = ch.reduce((p, c) => p * (1 + c / 100), 1);
+        net = (prod - 1) * 100;
+      } while (Math.abs(r1(net)) < 0.1);
+      const sum = ch.reduce((s, c) => s + c, 0);
+      const what = pick(["A share price", "A town's population", "A company's monthly sales", "The value of a baseball card"]);
+      const moves = ch.map((c, i) => `${c > 0 ? "rises" : "falls"} ${Math.abs(c)}% in ${periods[i]}`);
+      const word = net > 0 ? "increase" : "decrease";
+      const a1 = percent(Math.abs(net), 1);
+      const ms = ch.map(c => (1 + c / 100).toFixed(2));
+      return Q(st, `${what} ${moves.slice(0, -1).join(", ")}${n > 2 ? "," : ""} and ${moves[n - 1]}. What is the overall percent ${word}, to the nearest tenth of a percent?`, a1,
+        // adds the percents | reports the multiplier as the change | uses only the cross term
+        optN(a1, [Math.abs(sum), prod * 100, Math.abs(ch[0] * ch[1] / 100)], 1),
+        `Multipliers: ${ms.join(" × ")} = ${mult(prod)}. Overall change = (${mult(prod)} − 1) × 100 = ${num(net, 2)}%, so the overall ${word} is ${a1.answer}%. Adding the percents (${sum}%) ignores that each change acts on the new amount.`);
+    }
+    if (st === "same_up_down") {
+      const x = pick([10, 15, 20, 25, 30, 40, 50]);
+      const upFirst = pick([true, false]);
+      const a1 = percent(x * x / 100, 2);
+      const order = upFirst ? `goes up ${x}% and then down ${x}%` : `goes down ${x}% and then up ${x}%`;
+      return Q(st, `A price ${order}. What is the overall percent decrease? (Give the exact percent.)`, a1,
+        // thinks the changes cancel | reports x itself | doubles the cross term
+        optN(a1, [0, x, 2 * x * x / 100], 2),
+        `(1 + ${x / 100}) × (1 − ${x / 100}) = 1 − ${x / 100}² = ${mult(1 - x * x / 10000)}. The price ends ${a1.answer}% lower — equal percents up and down never cancel, because the second percent is taken of a different amount.`);
+    }
+    if (st === "repeated") {
+      const n = pick([2, 3, 4, 5]);
+      if (pick([true, false])) {
+        const V = ri(16, 45) * 1000, d = pick([10, 12, 15, 18, 20, 25]);
+        const val = V * Math.pow(1 - d / 100, n);
+        const a1 = money(val, 0);
+        return Q(st, `A car bought for ${usd0(V)} loses ${d}% of its value each year. What is it worth after ${n} years, to the nearest dollar?`, a1,
+          // subtracts n × d% of the original (simple, not compound) | one year too few | one year too many
+          optN(a1, [V * (1 - n * d / 100), V * Math.pow(1 - d / 100, n - 1), V * Math.pow(1 - d / 100, n + 1)], 0),
+          `Each year the value is multiplied by 1 − ${d / 100} = ${mult(1 - d / 100)}. After ${n} years: ${usd0(V)} × ${mult(1 - d / 100)}^${n} = ${usd(val)} ≈ ${usd0(val)}. Taking ${n} × ${d}% = ${n * d}% off the original would ignore that each year's loss comes off a smaller value.`);
+      }
+      const R = ri(90, 220) * 10, gr = pick([2, 3, 4, 5, 6, 8]);
+      const val = R * Math.pow(1 + gr / 100, n);
+      const a1 = money(val);
+      return Q(st, `An apartment rents for ${usd(R)} a month, and the rent goes up ${gr}% every year. What will the monthly rent be after ${n} increases, to the nearest cent?`, a1,
+        // adds n × g% (simple) | one increase too few | one increase too many
+        optN(a1, [R * (1 + n * gr / 100), R * Math.pow(1 + gr / 100, n - 1), R * Math.pow(1 + gr / 100, n + 1)], 2),
+        `Each increase multiplies the rent by ${mult(1 + gr / 100)}. After ${n} increases: ${usd(R)} × ${mult(1 + gr / 100)}^${n} = ${usd(val)}. Adding ${n} × ${gr}% = ${n * gr}% gives ${usd(R * (1 + n * gr / 100))}, which misses the increases on the increases.`);
+    }
+    if (st === "undo") {
+      if (pick([true, false])) {
+        const a = pick([10, 20, 25, 30, 40, 50, 60, 75, 100]);
+        const v = a / (100 + a) * 100;
+        const a1 = percent(v, 1);
+        return Q(st, `A price rises ${a}%. By what percent must the new price fall to get back to the original price? Give the percent to the nearest tenth.`, a1,
+          // assumes the same percent undoes it | uses the decrease-undo formula | halves it
+          optN(a1, [a, a < 100 ? a / (100 - a) * 100 : -1, a / 2], 1),
+          `After the rise the price is × ${mult(1 + a / 100)}. To return, multiply by 1 ÷ ${mult(1 + a / 100)} = ${mult(1 / (1 + a / 100))}, a decrease of ${a} ÷ ${100 + a} = ${ap(num(v, 3), a1.answer)}%. Falling ${a}% would overshoot, because ${a}% of the bigger price is more than the amount added.`);
+      }
+      const d = pick([10, 20, 25, 30, 40, 50, 60, 75]);
+      const v = d / (100 - d) * 100;
+      const a1 = percent(v, 1);
+      return Q(st, `A share price falls ${d}%. By what percent must it rise to get back to where it started? Give the percent to the nearest tenth.`, a1,
+        // assumes the same percent undoes it | uses the increase-undo formula | doubles it
+        optN(a1, [d, d / (100 + d) * 100, 2 * d], 1),
+        `After the fall the price is × ${mult(1 - d / 100)}. To return, multiply by 1 ÷ ${mult(1 - d / 100)} = ${mult(1 / (1 - d / 100))}, a rise of ${d} ÷ ${100 - d} = ${ap(num(v, 3), a1.answer)}%. A ${d}% rise is not enough, because it is ${d}% of the smaller price.`);
+    }
+    if (st === "find_original") {
+      const O = ri(8, 60) * 5, a = pick([10, 15, 20, 25, 30]), b = pick([10, 15, 20, 25]);
+      const F = r2(O * (1 - a / 100) * (1 - b / 100));
+      const prod = (1 - a / 100) * (1 - b / 100);
+      const a1 = money(F / prod, 0);
+      return Q(st, `After ${a}% off and then an extra ${b}% off the sale price, a coat costs ${usd(F)}. What was the original price, to the nearest dollar?`, a1,
+        // treats the two discounts as one of a+b% | reverses each discount by adding it back | undoes only one discount
+        optN(a1, [F / (1 - (a + b) / 100), F * (1 + a / 100) * (1 + b / 100), F / (1 - a / 100)], 0),
+        `Original × ${mult(1 - a / 100)} × ${mult(1 - b / 100)} = ${usd(F)}, so original = ${usd(F)} ÷ ${mult(prod)} = ${usd0(F / prod)}. Adding the percents back (× ${mult(1 + a / 100)} × ${mult(1 + b / 100)}) does not undo a decrease — you must divide by the multipliers.`);
+    }
+    // single_equivalent
+    const a = pick([10, 15, 20, 25, 30, 40, 50]), b = pick([10, 15, 20, 25, 30]);
+    if (pick([true, false])) {
+      const v = 100 - (100 - a) * (100 - b) / 100;
+      const a1 = percent(v, 2);
+      return Q(st, `A store takes ${a}% off, then takes another ${b}% off the sale price. What single discount gives the same final price? (Give the exact percent.)`, a1,
+        // adds the discounts | gives the percent still paid | wrong sign on the overlap
+        optN(a1, [a + b, (100 - a) * (100 - b) / 100, a + b + a * b / 100], 2),
+        `You pay ${mult(1 - a / 100)} × ${mult(1 - b / 100)} = ${mult((1 - a / 100) * (1 - b / 100))} of the price, so the single discount is 1 − ${mult((1 - a / 100) * (1 - b / 100))} = ${a1.answer}%. That is less than ${a + b}%, because the second discount comes off a smaller price.`);
+    }
+    const v = (100 + a) * (100 + b) / 100 - 100;
+    const a1 = percent(v, 2);
+    return Q(st, `An employee gets a ${a}% raise one year and a ${b}% raise the next. What single raise would give the same final salary? (Give the exact percent.)`, a1,
+      // adds the raises | subtracts the overlap | reports the multiplier as the percent
+      optN(a1, [a + b, a + b - a * b / 100, (100 + a) * (100 + b) / 100], 2),
+      `${mult(1 + a / 100)} × ${mult(1 + b / 100)} = ${mult((1 + a / 100) * (1 + b / 100))}, so the single raise is ${a1.answer}%. It is more than ${a + b}% because the second raise is a percent of the already-raised salary.`);
+  });
+
+  // =====================================================================
+  // M-332  Loans and Amortization  (tier 7)   plan 68B
+  // =====================================================================
+  // Rates are chosen so APR ÷ 12 is a short decimal (4.8% → 0.004) and the
+  // working stays calculator-friendly.
+  const LOAN_APRS = [3.6, 4.2, 4.8, 5.4, 6, 6.6, 7.2, 7.8, 8.4, 9, 9.6, 10.8, 12];
+  _addSkill(7, "Loans and Amortization", "Loans and Amortization", 4, function(){
+    const P = 12000, r = 0.005, n = 48;
+    const M = r2(pmt(P, r, n)), i1 = r2(P * r), p1 = r2(M - i1), b1 = r2(P - p1), tot = r2(M * n - P);
+    const eP = 20000, er = 0.006, en = 60, eM = r2(pmt(eP, er, en));
+    const gP = 9000, gr = 0.004, gn = 36, gM = r2(pmt(gP, gr, gn));
+    const gi = r2(gP * gr), gp = r2(gM - gi), gb = r2(gP - gp), gt = r2(gM * gn - gP);
+    return {
+      goalProblem: `A $12,000 car loan at 6% APR is repaid monthly over 4 years. What is the monthly payment, and how much of the first payment is interest?`,
+      teachingSteps: [
+        { title: "The monthly rate", explanation: "Loans quote an <strong>annual percentage rate (APR)</strong>. Payments are monthly, so divide the APR by 12 and write it as a decimal. This is the same r you used for compound interest compounded monthly.", visual: "6% APR → r = 0.06 ÷ 12 = 0.005" },
+        { title: "Count the payments", explanation: "n is the number of <strong>monthly</strong> payments, not years.", visual: "4 years → n = 4 × 12 = 48" },
+        { title: "The payment formula", explanation: "The fixed monthly payment that pays off principal P exactly is <strong>M = P·r(1 + r)ⁿ ÷ ((1 + r)ⁿ − 1)</strong>. Keep full calculator precision until the end, then round to the cent.", visual: `M = 12,000 × 0.005 × 1.005⁴⁸ ÷ (1.005⁴⁸ − 1) = ${usd(M)}` },
+        { title: "Interest first, then principal", explanation: "Each month, interest = <strong>current balance × r</strong>. Whatever is left of the payment pays down the principal.", visual: `interest = 12,000 × 0.005 = ${usd(i1)};  principal = ${c2(M)} − ${c2(i1)} = ${usd(p1)}` },
+        { title: "The new balance", explanation: "Subtract only the principal part. An <strong>amortization table</strong> repeats this every month: the interest part shrinks and the principal part grows, while the payment stays the same.", visual: `12,000 − ${c2(p1)} = ${usd(b1)}` },
+        { title: "Total interest", explanation: "Total paid is the payment times the number of payments. Subtract what you borrowed to get the interest.", visual: `${c2(M)} × 48 − 12,000 = ${usd(tot)}` }
+      ],
+      finalAnswer: `${usd(M)} a month; ${usd(i1)} of the first payment is interest`,
+      answerExplanation: `r = 0.005 and n = 48 give M = ${usd(M)}. The first month's interest is 12,000 × 0.005 = ${usd(i1)}, so ${usd(p1)} goes to principal.`,
+      example: { problem: "Find the monthly payment on a $20,000 loan at 7.2% APR for 5 years.", steps: [
+        { text: "Monthly rate", math: "r = 0.072 ÷ 12 = 0.006" },
+        { text: "Number of payments", math: "n = 5 × 12 = 60" },
+        { text: "Payment formula", math: `M = 20,000 × 0.006 × 1.006⁶⁰ ÷ (1.006⁶⁰ − 1) = ${usd(eM)}` },
+        { text: "Total interest", math: `${c2(eM)} × 60 − 20,000 = ${usd(r2(eM * 60 - eP))}` }
+      ]},
+      keyPoints: [
+        "r = APR ÷ 12 (as a decimal) and n = years × 12",
+        "M = P·r(1 + r)ⁿ ÷ ((1 + r)ⁿ − 1), rounded to the cent at the end",
+        "Interest each month = current balance × r; principal = payment − interest",
+        "New balance = old balance − principal part; total interest = M × n − P"
+      ],
+      mistakes: [
+        { wrong: "Using the APR as the monthly rate", why: "6% is per year. Monthly it is 0.06 ÷ 12 = 0.005. Using 0.06 makes the interest twelve times too big." },
+        { wrong: "Subtracting the whole payment from the balance", why: "Part of every payment is interest. Only payment − interest reduces what you owe." },
+        { wrong: "Using n = number of years", why: "Payments are monthly, so a 4-year loan has n = 48, not 4." }
+      ],
+      guided: {
+        problem: `A $9,000 loan at 4.8% APR for 3 years has a monthly payment of ${usd(gM)}. Split the first payment and find the new balance.`,
+        steps: [
+          { label: "Monthly rate r", value: "0.048 ÷ 12 = 0.004" },
+          { label: "First month's interest", value: "9000 × 0.004 = " + c2(gi) },
+          { label: "Principal part", value: `${c2(gM)} - ${c2(gi)} = ${c2(gp)}` },
+          { label: "New balance", value: `9000 - ${c2(gp)} = ${c2(gb)}` }
+        ],
+        answer: c2(gb), answerLabel: "Balance after the first payment ($):",
+        interactiveSteps: [
+          step("What is the monthly rate r as a decimal? (4.8% APR)", "Divide the APR by 12, then write the percent as a decimal.", "0.004", ["0.4%"],
+            { "0.048": "0.048 is the annual rate. Divide by 12: 0.048 ÷ 12 = 0.004.", "0.4": "0.4 is the monthly rate as a percent (0.4%). As a decimal it is 0.004." }, "e.g., 0.005"),
+          step("First month's interest: 9000 × 0.004 = ?", "Interest = balance × monthly rate.", c2(gi), ["36"],
+            { "432": "432 is a whole year's interest (9000 × 0.048). One month is 9000 × 0.004 = 36.", "432.00": "432 is a whole year's interest (9000 × 0.048). One month is 9000 × 0.004 = 36." }, HINT_USD),
+          step(`How much of the ${c2(gM)} payment goes to principal?`, "Principal part = payment - interest.", c2(gp), [num(gp, 2)],
+            { [c2(gM)]: "Not all of the payment reduces the loan - the interest is paid first.", [c2(gi)]: "That is the interest part. The principal part is what is left." }, HINT_USD),
+          step("What is the balance after the first payment?", "Subtract only the principal part from 9000.", c2(gb), [num(gb, 2)],
+            { [c2(r2(gP - gM))]: "That subtracts the whole payment. Only the principal part reduces the balance." }, HINT_USD),
+          step("How much interest is paid over all 36 payments?", "Total paid is payment × 36. Subtract the 9000 borrowed.", c2(gt), [num(gt, 2)],
+            { [c2(r2(gM * gn))]: "That is the total paid. Subtract the 9000 borrowed to get the interest." }, HINT_USD)
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["payment", "first_interest", "first_principal", "balance_after_first", "total_interest", "balance_after_k", "table_row"]);
+    const apr = pick(LOAN_APRS), r = apr / 1200, yrs = pick([2, 3, 4, 5, 6]), n = yrs * 12;
+    const P = ri(16, 70) * 500;
+    const what = pick(["car loan", "personal loan", "loan for a used truck", "student loan", "home-improvement loan"]);
+    const M = r2(pmt(P, r, n)), i1 = r2(P * r);
+    const lead = `A ${usd0(P)} ${what} at ${apr}% APR is repaid monthly over ${yrs} years`;
+    if (st === "payment") {
+      const a1 = money(pmt(P, r, n), 2, 0.01);
+      return Q(st, `${lead}. Use M = P·r(1 + r)^n ÷ ((1 + r)^n − 1) to find the monthly payment, to the nearest cent.`, a1,
+        // simple interest spread evenly | no interest at all | APR used as the monthly rate
+        optN(a1, [P * (1 + apr / 100 * yrs) / n, P / n, pmt(P, apr / 100, n)], 2),
+        `r = ${apr}% ÷ 12 = ${mult(r)} and n = ${yrs} × 12 = ${n}. (1 + r)^n = ${mult(Math.pow(1 + r, n))}. M = ${P} × ${mult(r)} × ${mult(Math.pow(1 + r, n))} ÷ (${mult(Math.pow(1 + r, n))} − 1) = ${usd(M)}.`);
+    }
+    if (st === "first_interest") {
+      const a1 = money(i1);
+      return Q(st, `${lead}. How much of the first monthly payment is interest, to the nearest cent?`, a1,
+        // a whole year's interest | the principal part instead | the whole payment
+        optN(a1, [P * apr / 100, M - i1, M], 2),
+        `Interest for one month = balance × APR ÷ 12 = ${P} × ${num(apr / 100, 6)} ÷ 12 = ${usd(i1)}. Using the APR without dividing by 12 gives a full year's interest, ${usd(P * apr / 100)}.`);
+    }
+    if (st === "first_principal") {
+      const a1 = money(M - i1);
+      return Q(st, `${lead}, with a monthly payment of ${usd(M)}. How much of the first payment goes to principal, to the nearest cent?`, a1,
+        // the interest part | adds interest to payment | an even split of the principal
+        optN(a1, [i1, M + i1, P / n], 2),
+        `First month's interest = ${P} × ${mult(r)} = ${usd(i1)}. Principal part = ${usd(M)} − ${usd(i1)} = ${usd(M - i1)}.`);
+    }
+    if (st === "balance_after_first") {
+      const a1 = money(P - (M - i1));
+      return Q(st, `${lead}, with a monthly payment of ${usd(M)}. What is the balance after the first payment, to the nearest cent?`, a1,
+        // subtracts the whole payment | subtracts the interest | adds the interest and stops
+        optN(a1, [P - M, P - i1, P + i1], 2),
+        `Interest = ${P} × ${mult(r)} = ${usd(i1)}. Principal paid = ${usd(M)} − ${usd(i1)} = ${usd(M - i1)}. New balance = ${usd(P)} − ${usd(M - i1)} = ${usd(P - (M - i1))}.`);
+    }
+    if (st === "total_interest") {
+      const a1 = money(M * n - P);
+      return Q(st, `${lead}, with a monthly payment of ${usd(M)}. How much interest is paid over the life of the loan, to the nearest cent?`, a1,
+        // the total paid | simple interest | compound interest as if nothing were ever repaid
+        optN(a1, [M * n, P * apr / 100 * yrs, P * (Math.pow(1 + r, n) - 1), i1 * n], 2),
+        `Total paid = ${usd(M)} × ${n} = ${usd(M * n)}. Interest = ${usd(M * n)} − ${usd(P)} = ${usd(M * n - P)}.`);
+    }
+    if (st === "balance_after_k") {
+      const k = pick([6, 12, 18, 24].filter(x => x < n));
+      const gk = Math.pow(1 + r, k);
+      const B = P * gk - M * (gk - 1) / r;
+      const a1 = money(B, 0, 1);
+      return Q(st, `${lead}, with a monthly payment of ${usd(M)}. Use B = P(1 + r)^k − M[(1 + r)^k − 1] ÷ r to find the balance after ${k} payments, to the nearest dollar.`, a1,
+        // ignores interest | repeats the first month's principal | straight-line payoff
+        optN(a1, [P - M * k, P - (M - i1) * k, P * (1 - k / n)], 0),
+        `r = ${mult(r)}, (1 + r)^${k} = ${mult(gk)}. B = ${P} × ${mult(gk)} − ${c2(M)} × (${mult(gk)} − 1) ÷ ${mult(r)} = ${usd(B)} ≈ ${usd0(B)}. Subtracting ${k} whole payments (${usd0(P - M * k)}) forgets that part of each payment was interest.`);
+    }
+    // table_row: one row of an amortization table, mid-loan
+    const mth = ri(8, n - 6);
+    const Bb = r2(P * (ri(30, 85) / 100) + ri(0, 99) / 100);
+    const it = r2(Bb * r);
+    const a1 = money(Bb - (M - it));
+    return Q(st, `In an amortization table for a loan at ${apr}% APR with payments of ${usd(M)}, month ${mth} begins with a balance of ${usd(Bb)}. Interest is balance × APR ÷ 12, rounded to the cent. What is the balance at the end of month ${mth}?`, a1,
+      // subtracts the whole payment | subtracts only the interest | uses a year's interest
+      optN(a1, [Bb - M, Bb - it, Bb - (M - r2(Bb * apr / 100))], 2),
+      `Interest = ${usd(Bb)} × ${num(apr / 100, 6)} ÷ 12 = ${usd(it)}. Principal = ${usd(M)} − ${usd(it)} = ${usd(M - it)}. Ending balance = ${usd(Bb)} − ${usd(M - it)} = ${usd(Bb - (M - it))}.`);
+  });
+
+  // =====================================================================
+  // M-333  Credit Card Math  (tier 6)   plan 69B
+  // =====================================================================
+  _addSkill(6, "Credit Card Math", "Credit Card Math", 3, function(){
+    // ADB example: $800 for 12 days, $1,100 for 10 days, $650 for 8 days.
+    const adb = r2((800 * 12 + 1100 * 10 + 650 * 8) / 30);
+    return {
+      goalProblem: "A card has a $1,500 balance at 21.6% APR. How much interest is charged for one month, and what is the minimum payment if it is the greater of $25 or 2% of the balance?",
+      teachingSteps: [
+        { title: "APR to a monthly rate", explanation: "A card's <strong>APR</strong> is a yearly rate. The monthly (periodic) rate is APR ÷ 12.", visual: "21.6% APR → 21.6 ÷ 12 = 1.8% a month" },
+        { title: "One month's interest", explanation: "Interest = balance × monthly rate (as a decimal), rounded to the cent.", visual: "1,500 × 0.018 = $27.00" },
+        { title: "The minimum payment", explanation: "Cards set a minimum such as <strong>the greater of a flat amount or a percent of the balance</strong>, or <strong>1% of the balance plus that month's interest</strong>. Work out every option the rule names, then apply the rule.", visual: "greater of $25 or 2% × 1,500 = $30 → minimum $30.00" },
+        { title: "Average daily balance", explanation: "Many cards charge interest on the <strong>average daily balance</strong>: multiply each balance by the number of days it lasted, add, and divide by the days in the cycle.", visual: `(800×12 + 1,100×10 + 650×8) ÷ 30 = ${usd(adb)}` },
+        { title: "The cost of carrying a balance", explanation: "Paying only part of the balance means paying interest on the rest every month. The extra cost of a purchase is everything you paid minus its price.", visual: "extra cost = total of all payments − price" }
+      ],
+      finalAnswer: "$27.00 interest; minimum payment $30.00",
+      answerExplanation: "Monthly rate = 21.6% ÷ 12 = 1.8%. Interest = 1,500 × 0.018 = $27.00. 2% of 1,500 = $30, which is more than $25, so the minimum is $30.00.",
+      example: { problem: "A 30-day cycle: $800 for 12 days, then $1,100 for 10 days, then $650 for 8 days. Find the average daily balance.", steps: [
+        { text: "Balance × days for each part", math: "800 × 12 = 9,600;  1,100 × 10 = 11,000;  650 × 8 = 5,200" },
+        { text: "Add them", math: "9,600 + 11,000 + 5,200 = 25,800" },
+        { text: "Divide by the days in the cycle", math: `25,800 ÷ 30 = ${usd(adb)}` }
+      ]},
+      keyPoints: [
+        "Monthly rate = APR ÷ 12; interest = balance × monthly rate",
+        "Apply the minimum-payment rule exactly as stated — compute each option",
+        "Average daily balance weights each balance by the days it lasted",
+        "Carrying a balance costs everything paid minus the purchase price"
+      ],
+      mistakes: [
+        { wrong: "Charging the full APR for one month", why: "21.6% is per year. One month is 21.6% ÷ 12 = 1.8%." },
+        { wrong: "Averaging the balances without the days", why: "A balance that lasted 20 days counts more than one that lasted 2. Weight each balance by its days." },
+        { wrong: "Thinking the minimum payment clears the debt quickly", why: "Most of a minimum payment can be interest, so the balance falls very slowly." }
+      ],
+      guided: {
+        problem: "A card has a $2,400 balance at 18% APR. The minimum payment is the greater of $35 or 3% of the balance after interest is added. Find the interest, the minimum payment and the balance after paying it.",
+        steps: [
+          { label: "Monthly rate (%)", value: "18 ÷ 12 = 1.5" },
+          { label: "Interest", value: "2400 × 0.015 = 36.00" },
+          { label: "Minimum payment", value: "3% of 2436 = 73.08" },
+          { label: "Balance after paying", value: "2436 - 73.08 = 2362.92" }
+        ],
+        answer: "2362.92", answerLabel: "Balance after the minimum payment ($):",
+        interactiveSteps: [
+          step("What is the monthly rate, as a percent? (18% APR)", "Divide the APR by 12.", "1.5", ["1.5%"],
+            { "18": "18% is the yearly rate. Monthly it is 18 ÷ 12 = 1.5%." }, HINT_PCT),
+          step("How much interest is charged on $2,400 this month?", "Interest = balance × 0.015.", "36.00", ["36"],
+            { "432": "That is a year of interest (2400 × 0.18). One month is 2400 × 0.015.", "432.00": "That is a year of interest (2400 × 0.18). One month is 2400 × 0.015." }, HINT_USD),
+          step("The balance with interest is $2,436. What is the minimum payment (greater of $35 or 3%)?", "3% of 2436 is 0.03 × 2436. Compare it with 35.", "73.08", [],
+            { "35": "3% of 2436 is 73.08, which is more than 35, so the minimum is 73.08.", "35.00": "3% of 2436 is 73.08, which is more than 35, so the minimum is 73.08.", "72": "72 is 3% of 2400. The rule uses the balance after interest, 2436.", "72.00": "72 is 3% of 2400. The rule uses the balance after interest, 2436." }, HINT_USD),
+          step("What is the balance after paying the minimum?", "Subtract the payment from 2436.", "2362.92", [],
+            { "2328.00": "That subtracts 72 from 2400 and forgets the interest. Start from 2436.", "2328": "That subtracts 72 from 2400 and forgets the interest. Start from 2436." }, HINT_USD)
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["monthly_rate", "month_interest", "minimum_greater_of", "minimum_plus_interest", "next_balance", "average_daily_balance", "adb_finance_charge", "carrying_cost"]);
+    const NICE = [15.6, 16.8, 18, 19.2, 20.4, 21.6, 22.8, 24, 26.4, 19.99, 23.99, 17.49];
+    if (st === "monthly_rate") {
+      const apr = pick([17.99, 19.99, 21.99, 22.99, 24.99, 15.49, 18.24, 26.99, 29.49, 16.75]);
+      const a1 = percent(apr / 12, 2);
+      return Q(st, `A credit card has an APR of ${apr}%. What is its monthly periodic rate, as a percent to the nearest hundredth?`, a1,
+        // forgets to divide | divides by 365 (daily) | divides by 52 (weekly)
+        optN(a1, [apr, apr / 365, apr / 52], 2),
+        `Monthly rate = APR ÷ 12 = ${apr} ÷ 12 = ${ap(num(apr / 12, 5), a1.answer)}%.`);
+    }
+    if (st === "month_interest") {
+      const apr = pick(NICE), B = ri(300, 4800) + ri(0, 99) / 100;
+      const I = B * apr / 1200;
+      const a1 = money(I);
+      return Q(st, `A credit card balance of ${usd(B)} is charged ${apr}% APR. How much interest is added for one month, to the nearest cent?`, a1,
+        // a year of interest | one day's interest | the new balance instead of the interest
+        optN(a1, [B * apr / 100, B * apr / 36500, B + r2(I)], 2),
+        `Monthly rate = ${apr}% ÷ 12 = ${num(apr / 12, 5)}%. Interest = ${usd(B)} × ${num(apr / 1200, 7)} = ${usd(I)}.`);
+    }
+    if (st === "minimum_greater_of") {
+      const p = pick([2, 3, 4]), floor = pick([25, 30, 35, 40]);
+      const B = ri(400, 6000) + ri(0, 99) / 100;
+      const pct = r2(B * p / 100), min = Math.max(floor, pct);
+      const a1 = money(min);
+      return Q(st, `A card's minimum payment is the greater of $${floor} or ${p}% of the balance. The balance is ${usd(B)}. What is the minimum payment, to the nearest cent?`, a1,
+        // picks the smaller of the two | takes p% as p/10 | adds both amounts
+        optN(a1, [Math.min(floor, pct), B * p / 1000, floor + pct], 2),
+        `${p}% of ${usd(B)} = ${usd(pct)}. The greater of $${floor}.00 and ${usd(pct)} is ${usd(min)}.`);
+    }
+    if (st === "minimum_plus_interest") {
+      const apr = pick(NICE), B = ri(500, 7000) + ri(0, 99) / 100;
+      const one = r2(B * 0.01), I = r2(B * apr / 1200);
+      const a1 = money(one + I);
+      return Q(st, `A card's minimum payment is 1% of the balance plus that month's interest. The balance is ${usd(B)} at ${apr}% APR. What is the minimum payment, to the nearest cent?`, a1,
+        // only the 1% | only the interest | 1% plus a full year's interest
+        optN(a1, [one, I, one + B * apr / 100], 2),
+        `1% of ${usd(B)} = ${usd(one)}. Interest = ${usd(B)} × ${apr}% ÷ 12 = ${usd(I)}. Minimum = ${usd(one)} + ${usd(I)} = ${usd(one + I)}.`);
+    }
+    if (st === "next_balance") {
+      const apr = pick(NICE), B = ri(600, 5000) + ri(0, 99) / 100;
+      const pay = ri(5, 30) * 10, pur = pick([0, 0, ri(20, 300) + ri(0, 99) / 100]);
+      const base = r2(B - pay + pur), I = r2(base * apr / 1200);
+      const a1 = money(base + I);
+      const purTxt = pur ? `, makes ${usd(pur)} of new purchases` : "";
+      return Q(st, `A card has a balance of ${usd(B)} at ${apr}% APR. The cardholder pays ${usd(pay)}${purTxt}. Interest for the month (APR ÷ 12) is charged on the balance after the payment${pur ? " and purchases" : ""}. What is the new balance, to the nearest cent?`, a1,
+        // forgets interest | charges interest on the old balance | charges a year of interest
+        optN(a1, [base, base + r2(B * apr / 1200), base + base * apr / 100], 2),
+        `Balance after payment${pur ? " and purchases" : ""}: ${usd(B)} − ${usd(pay)}${pur ? " + " + usd(pur) : ""} = ${usd(base)}. Interest = ${usd(base)} × ${apr}% ÷ 12 = ${usd(I)}. New balance = ${usd(base + I)}.`);
+    }
+    if (st === "average_daily_balance") {
+      const D = pick([30, 31]);
+      const d1 = ri(5, 14), d2 = ri(5, 12), d3 = D - d1 - d2;
+      const s1 = ri(20, 150) * 10, s2 = s1 + pick([1, -1]) * ri(5, 60) * 10;
+      const s3 = Math.max(50, s2 + pick([1, -1]) * ri(5, 50) * 10);
+      const adb = (s1 * d1 + s2 * d2 + s3 * d3) / D;
+      const a1 = money(adb);
+      return Q(st, `In a ${D}-day billing cycle, a card balance is ${usd0(s1)} for the first ${d1} days, ${usd0(s2)} for the next ${d2} days and ${usd0(s3)} for the last ${d3} days. What is the average daily balance, to the nearest cent?`, a1,
+        // averages the three balances, ignoring days | the ending balance | the starting balance
+        optN(a1, [(s1 + s2 + s3) / 3, s3, s1], 2),
+        `Weight each balance by its days: ${s1}×${d1} + ${s2}×${d2} + ${s3}×${d3} = ${s1 * d1 + s2 * d2 + s3 * d3}. Divide by ${D}: ${usd(adb)}.`);
+    }
+    if (st === "adb_finance_charge") {
+      const apr = pick(NICE), D = pick([28, 30, 31]);
+      const adb = ri(400, 5000) + ri(0, 99) / 100;
+      const fc = adb * apr / 100 / 365 * D;
+      const a1 = money(fc);
+      return Q(st, `A card's average daily balance for a ${D}-day cycle is ${usd(adb)} and its APR is ${apr}%. The finance charge is ADB × (APR ÷ 365) × days in the cycle. What is the finance charge, to the nearest cent?`, a1,
+        // one day's charge | a year's charge | APR ÷ 12 instead of the daily method
+        optN(a1, [adb * apr / 36500, adb * apr / 100, adb * apr / 1200], 2),
+        `Daily rate = ${apr}% ÷ 365 = ${num(apr / 365, 6)}%. Charge = ${usd(adb)} × ${num(apr / 36500, 8)} × ${D} = ${usd(fc)}.`);
+    }
+    // carrying_cost
+    const apr = pick([18, 19.2, 21.6, 22.8, 24, 26.4]), X = ri(60, 300) * 10, nm = pick([12, 18, 24, 36]);
+    const F = Math.ceil(pmt(X, apr / 1200, nm) * 100 - 1e-6) / 100;   // rounded UP so n payments cover it
+    const a1 = money(F * nm - X);
+    return Q(st, `A ${usd0(X)} laptop is put on a card at ${apr}% APR and paid off with ${nm} monthly payments of ${usd(F)}. How much more than the price of the laptop is paid in total, to the nearest cent?`, a1,
+      // the total paid, not the extra | one year of simple interest | simple interest over the whole term
+      optN(a1, [F * nm, X * apr / 100, X * apr / 100 * nm / 12], 2),
+      `Total paid = ${usd(F)} × ${nm} = ${usd(F * nm)}. Extra cost = ${usd(F * nm)} − ${usd0(X)} = ${usd(F * nm - X)} — the price of carrying the balance.`);
+  });
+
+  // =====================================================================
+  // M-334  Mortgages  (tier 7)   plan 70B
+  // =====================================================================
+  const MORT_APRS = [4.2, 4.8, 5.4, 6, 6.3, 6.6, 6.9, 7.2];
+  _addSkill(7, "Mortgages", "Mortgages", 4, function(){
+    const L = 240000, M30 = r2(pmt(L, 0.005, 360)), M15 = r2(pmt(L, 0.0045, 180));
+    const T30 = r2(M30 * 360 - L), T15 = r2(M15 * 180 - L);
+    const gL = 225000, gM = r2(pmt(gL, 0.0055, 360)), gi = r2(gL * 0.0055), gp = r2(gM - gi);
+    return {
+      goalProblem: "A $300,000 home is bought with 20% down and a 30-year mortgage at 6% APR. What is the monthly payment, and how much interest is paid over the 30 years?",
+      teachingSteps: [
+        { title: "Down payment and loan amount", explanation: "The <strong>down payment</strong> is paid up front. The <strong>loan amount</strong> is the price minus the down payment. Down payment % = down payment ÷ price.", visual: "$300,000 with 20% down: down = $60,000, loan = $240,000" },
+        { title: "The 20% line", explanation: "Lenders usually add <strong>private mortgage insurance (PMI)</strong> when the down payment is under 20% of the price. Putting at least 20% down avoids it.", visual: "PMI-free down payment ≥ 0.20 × 300,000 = $60,000" },
+        { title: "The monthly payment", explanation: "A mortgage is an amortized loan, so use the same payment formula: r = APR ÷ 12 and n = 360 for 30 years or 180 for 15 years.", visual: `240,000 at 6%, 30 years: r = 0.005, n = 360 → M = ${usd(M30)}` },
+        { title: "Total interest", explanation: "Total interest = monthly payment × number of payments − loan amount. Over 30 years it can be more than the loan itself.", visual: `${c2(M30)} × 360 − 240,000 = ${usd(T30)}` },
+        { title: "15 years or 30 years", explanation: "A 15-year loan has a higher payment but far less interest, partly because it usually carries a lower rate and partly because the balance falls faster.", visual: `15 years at 5.4%: M = ${usd(M15)}, interest = ${usd(T15)}` },
+        { title: "The full monthly cost", explanation: "Lenders also collect property tax and homeowner's insurance with the payment. Add one twelfth of each annual bill to get the full monthly cost (PITI).", visual: "monthly cost = M + annual tax ÷ 12 + annual insurance ÷ 12" }
+      ],
+      finalAnswer: `${usd(M30)} a month; ${usd(T30)} total interest`,
+      answerExplanation: `Loan = 300,000 − 60,000 = 240,000. With r = 0.005 and n = 360, M = ${usd(M30)}. Total interest = ${c2(M30)} × 360 − 240,000 = ${usd(T30)}.`,
+      example: { problem: "Compare the total interest on a $240,000 loan: 30 years at 6% or 15 years at 5.4%.", steps: [
+        { text: "30-year payment and interest", math: `M = ${usd(M30)};  ${c2(M30)} × 360 − 240,000 = ${usd(T30)}` },
+        { text: "15-year payment and interest", math: `M = ${usd(M15)};  ${c2(M15)} × 180 − 240,000 = ${usd(T15)}` },
+        { text: "Interest saved by the 15-year loan", math: `${c2(T30)} − ${c2(T15)} = ${usd(r2(T30 - T15))}` }
+      ]},
+      keyPoints: [
+        "Loan amount = price − down payment; down payment % = down ÷ price",
+        "At least 20% down usually avoids PMI",
+        "Payment uses M = P·r(1 + r)ⁿ ÷ ((1 + r)ⁿ − 1) with n = 180 or 360",
+        "Total interest = M × n − loan; add tax ÷ 12 and insurance ÷ 12 for the full monthly cost"
+      ],
+      mistakes: [
+        { wrong: "Using the home price as the loan amount", why: "You only borrow what the down payment does not cover: price − down payment." },
+        { wrong: "Thinking the 15-year loan costs more because its payment is bigger", why: "It has half as many payments. Total interest is usually less than half of the 30-year loan's." },
+        { wrong: "Adding the annual property tax to the monthly payment", why: "The tax bill is yearly. Add tax ÷ 12 to each monthly payment." }
+      ],
+      guided: {
+        problem: `A $250,000 home is bought with $25,000 down. The loan is 30 years at 6.6% APR, with a monthly payment of ${usd(gM)}.`,
+        steps: [
+          { label: "Down payment %", value: "25000 ÷ 250000 = 10%" },
+          { label: "Loan amount", value: "250000 - 25000 = 225000" },
+          { label: "Down payment needed to avoid PMI", value: "0.20 × 250000 = 50000" },
+          { label: "First month's interest", value: "225000 × 0.0055 = " + c2(gi) },
+          { label: "First month's principal", value: `${c2(gM)} - ${c2(gi)} = ${c2(gp)}` }
+        ],
+        answer: c2(gp), answerLabel: "Principal paid in month 1 ($):",
+        interactiveSteps: [
+          step("What percent of the price is the $25,000 down payment?", "Down payment ÷ price × 100.", "10", ["10%"],
+            { "90": "90% is the part being borrowed. The down payment is 25000 ÷ 250000 = 10%." }, HINT_PCT),
+          step("What is the loan amount?", "Price minus down payment.", "225000", [],
+            { "250000": "The down payment is paid up front, so only 250000 - 25000 is borrowed." }, "Dollar amount, e.g., 180000"),
+          step("How much down payment would avoid PMI (20% of the price)?", "0.20 × 250000.", "50000", [],
+            { "45000": "45000 is 20% of the loan. PMI is based on 20% of the price: 0.20 × 250000." }, "Dollar amount, e.g., 60000"),
+          step("First month's interest at 6.6% APR (r = 0.0055)?", "Interest = loan × r.", c2(gi), ["1237.5"],
+            { "14850": "14850 is a whole year's interest. One month uses r = 0.066 ÷ 12 = 0.0055.", "14850.00": "14850 is a whole year's interest. One month uses r = 0.066 ÷ 12 = 0.0055." }, HINT_USD),
+          step(`How much of the ${c2(gM)} payment reduces the loan?`, "Payment minus that month's interest.", c2(gp), [num(gp, 2)],
+            { [c2(gi)]: "That is the interest part. The principal part is what is left of the payment." }, HINT_USD)
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["loan_amount", "down_pct", "pmi_free", "payment", "total_interest", "compare_15_30", "piti", "first_month"]);
+    const H = ri(180, 650) * 1000;
+    if (st === "loan_amount") {
+      const d = pick([3, 5, 10, 15, 20, 25]);
+      const a1 = money(H * (100 - d) / 100, 0);
+      return Q(st, `A family buys a ${usd0(H)} home with ${d}% down. What is the loan amount, in dollars?`, a1,
+        // the down payment itself | the full price | adds the down payment instead
+        optN(a1, [H * d / 100, H, H * (100 + d) / 100], 0),
+        `Down payment = ${d}% × ${usd0(H)} = ${usd0(H * d / 100)}. Loan = ${usd0(H)} − ${usd0(H * d / 100)} = ${usd0(H * (100 - d) / 100)}.`);
+    }
+    if (st === "down_pct") {
+      const D = ri(Math.ceil(H * 0.03 / 500), Math.floor(H * 0.3 / 500)) * 500;
+      const pc = D / H * 100;
+      const a1 = percent(pc, 1);
+      return Q(st, `A buyer puts ${usd0(D)} down on a ${usd0(H)} home. What percent of the price is the down payment, to the nearest tenth of a percent?`, a1,
+        // divides by the loan instead of the price | the percent borrowed | a decimal-place slip
+        optN(a1, [D / (H - D) * 100, 100 - pc, pc / 10], 1),
+        `Down payment % = ${usd0(D)} ÷ ${usd0(H)} × 100 = ${ap(num(pc, 3), a1.answer)}%.`);
+    }
+    if (st === "pmi_free") {
+      const S = ri(5, Math.floor(H * 0.2 / 1000) - 2) * 1000;
+      const need = H * 0.2 - S;
+      const a1 = money(need, 0);
+      return Q(st, `To avoid PMI, a lender wants at least 20% down. A couple has saved ${usd0(S)} toward a ${usd0(H)} home. How much more must they save, in dollars?`, a1,
+        // forgets the savings | takes 20% of what is left | uses 10% instead of 20%
+        optN(a1, [H * 0.2, (H - S) * 0.2, H * 0.1 - S], 0),
+        `20% of ${usd0(H)} = ${usd0(H * 0.2)}. They have ${usd0(S)}, so they need ${usd0(H * 0.2)} − ${usd0(S)} = ${usd0(need)} more.`);
+    }
+    const apr = pick(MORT_APRS), r = apr / 1200;
+    const d = pick([5, 10, 15, 20, 25]), L = H * (100 - d) / 100;
+    if (st === "payment") {
+      const T = pick([15, 30]), n = T * 12;
+      const a1 = money(pmt(L, r, n), 2, 0.01);
+      const gk = Math.pow(1 + r, n);
+      return Q(st, `A ${usd0(L)} mortgage is taken at ${apr}% APR for ${T} years. Use M = P·r(1 + r)^n ÷ ((1 + r)^n − 1) to find the monthly payment, to the nearest cent.`, a1,
+        // uses the other term | APR used as the monthly rate | simple interest spread evenly
+        optN(a1, [pmt(L, r, T === 15 ? 360 : 180), pmt(L, apr / 100, n), L * (1 + apr / 100 * T) / n], 2),
+        `r = ${apr}% ÷ 12 = ${mult(r)}, n = ${T} × 12 = ${n}, (1 + r)^n = ${mult(gk)}. M = ${L} × ${mult(r)} × ${mult(gk)} ÷ (${mult(gk)} − 1) = ${usd(pmt(L, r, n))}.`);
+    }
+    if (st === "total_interest") {
+      const T = pick([15, 30]), n = T * 12, M = r2(pmt(L, r, n));
+      const a1 = money(M * n - L);
+      return Q(st, `A ${usd0(L)} mortgage at ${apr}% APR for ${T} years has a monthly payment of ${usd(M)}. How much interest is paid over the full term, to the nearest cent?`, a1,
+        // the total of all payments | simple interest | subtracts the home price instead of the loan
+        optN(a1, [M * n, L * apr / 100 * T, M * n - H], 2),
+        `Total paid = ${usd(M)} × ${n} = ${usd(M * n)}. Interest = ${usd(M * n)} − ${usd0(L)} = ${usd(M * n - L)}.`);
+    }
+    if (st === "compare_15_30") {
+      const apr15 = r1(apr - 0.6);
+      const M30 = r2(pmt(L, r, 360)), M15 = r2(pmt(L, apr15 / 1200, 180));
+      const I30 = r2(M30 * 360 - L), I15 = r2(M15 * 180 - L);
+      const a1 = money(I30 - I15);
+      return Q(st, `A ${usd0(L)} loan can be a 30-year mortgage at ${apr}% (payment ${usd(M30)}) or a 15-year mortgage at ${apr15}% (payment ${usd(M15)}). How much less total interest does the 15-year loan cost, to the nearest cent?`, a1,
+        // the difference in one year of payments | the 30-year interest alone | the monthly difference × 180
+        optN(a1, [(M15 - M30) * 12, I30, (M15 - M30) * 180], 2),
+        `30-year interest = ${usd(M30)} × 360 − ${usd0(L)} = ${usd(I30)}. 15-year interest = ${usd(M15)} × 180 − ${usd0(L)} = ${usd(I15)}. Savings = ${usd(I30 - I15)}.`);
+    }
+    if (st === "piti") {
+      const M = r2(pmt(L, r, 360)), tax = ri(24, 96) * 100, ins = ri(9, 36) * 100;
+      const a1 = money(M + tax / 12 + ins / 12);
+      return Q(st, `A mortgage payment is ${usd(M)} a month. The annual property tax is ${usd0(tax)} and the annual homeowner's insurance is ${usd0(ins)}; the lender collects both monthly with the payment. What is the total monthly payment, to the nearest cent?`, a1,
+        // adds the annual bills | forgets insurance | forgets the tax
+        optN(a1, [M + tax + ins, M + tax / 12, M + ins / 12], 2),
+        `Tax per month = ${usd0(tax)} ÷ 12 = ${usd(tax / 12)}. Insurance per month = ${usd0(ins)} ÷ 12 = ${usd(ins / 12)}. Total = ${usd(M)} + ${usd(tax / 12)} + ${usd(ins / 12)} = ${usd(M + tax / 12 + ins / 12)}.`);
+    }
+    // first_month
+    const M = r2(pmt(L, r, 360)), i1 = r2(L * r);
+    if (pick([true, false])) {
+      const a1 = money(i1);
+      return Q(st, `A ${usd0(L)} 30-year mortgage at ${apr}% APR has a monthly payment of ${usd(M)}. How much of the first payment is interest, to the nearest cent?`, a1,
+        // a year of interest | the principal part | the whole payment
+        optN(a1, [L * apr / 100, M - i1, M], 2),
+        `Interest = loan × APR ÷ 12 = ${L} × ${num(apr / 100, 6)} ÷ 12 = ${usd(i1)}.`);
+    }
+    const a1 = money(M - i1);
+    return Q(st, `A ${usd0(L)} 30-year mortgage at ${apr}% APR has a monthly payment of ${usd(M)}. How much of the first payment reduces the loan balance, to the nearest cent?`, a1,
+      // the interest part | an even split of the loan over 360 months | the whole payment
+      optN(a1, [i1, L / 360, M], 2),
+      `Interest = ${L} × ${mult(r)} = ${usd(i1)}. Principal = ${usd(M)} − ${usd(i1)} = ${usd(M - i1)} — early on, most of a mortgage payment is interest.`);
+  });
+
+  // =====================================================================
+  // M-335  Investment Returns  (tier 6)   plan 71B
+  // =====================================================================
+  _addSkill(6, "Investment Returns", "Investment Returns", 3, {
+    goalProblem: "An investor buys 40 shares at $25.00, collects $0.80 a share in dividends, and sells at $31.50. What is the total return as a percent?",
+    teachingSteps: [
+      { title: "Gain or loss", explanation: "Gain = what you sold for − what you paid. A negative result is a loss. Multiply per-share amounts by the number of shares.", visual: "40 × (31.50 − 25.00) = $260 gain" },
+      { title: "Return on investment (ROI)", explanation: "ROI is the gain as a percent of what you put in — it is a percent change: <strong>(final − initial) ÷ initial × 100</strong>.", visual: "260 ÷ 1,000 × 100 = 26%" },
+      { title: "Dividends count too", explanation: "<strong>Dividends</strong> are cash paid to shareholders. Total return adds them to the price gain. Dividend yield = annual dividend ÷ price.", visual: "(260 + 32) ÷ 1,000 = 29.2%" },
+      { title: "Average annual return", explanation: "Over several years, the <strong>annualized</strong> (compound) return r solves initial × (1 + r)ⁿ = final, so r = (final ÷ initial)^(1/n) − 1. It is the compound-interest formula run backwards.", visual: "5,000 → 7,320.50 in 4 years: 1.4641^(1/4) = 1.10 → 10% a year" },
+      { title: "Average of yearly returns", explanation: "The <strong>arithmetic</strong> average of yearly returns is the plain mean. It is not the same as the compound rate — to find the final value, multiply the yearly multipliers.", visual: "+20% then −10%: mean 5%, but 1.20 × 0.90 = 1.08" }
+    ],
+    finalAnswer: "29.2%",
+    answerExplanation: "Cost = 40 × 25 = $1,000. Price gain = 40 × 6.50 = $260. Dividends = 40 × 0.80 = $32. Total return = 292 ÷ 1,000 = 29.2%.",
+    example: { problem: "$5,000 grows to $7,320.50 in 4 years. What is the average annual (compound) return?", steps: [
+      { text: "Growth factor", math: "7,320.50 ÷ 5,000 = 1.4641" },
+      { text: "Take the 4th root", math: "1.4641^(1/4) = 1.10" },
+      { text: "Subtract 1", math: "1.10 − 1 = 0.10 → 10% a year (not 46.41% ÷ 4 = 11.6%)" }
+    ]},
+    keyPoints: [
+      "Gain = (sell price − buy price) × shares; negative means a loss",
+      "ROI = gain ÷ amount invested × 100 — always divide by the starting amount",
+      "Total return includes dividends; dividend yield = annual dividend ÷ price",
+      "Annualized return = (final ÷ initial)^(1/n) − 1"
+    ],
+    mistakes: [
+      { wrong: "Dividing the gain by the final value", why: "Return is measured against what you put in. Divide by the starting amount." },
+      { wrong: "Annualizing by dividing the total return by the years", why: "Returns compound. 46.41% over 4 years is 10% a year, not 11.6%." },
+      { wrong: "Leaving out dividends", why: "Cash paid to you is part of your return. Add it to the price gain." }
+    ],
+    guided: {
+      problem: "$2,000 invested in a fund is worth $2,450 a year later, and it also paid $60 in dividends. Find the gain, the ROI on price alone, and the total return.",
+      steps: [
+        { label: "Price gain", value: "2450 - 2000 = 450" },
+        { label: "ROI on price", value: "450 ÷ 2000 × 100 = 22.5" },
+        { label: "Total return", value: "(450 + 60) ÷ 2000 × 100 = 25.5" }
+      ],
+      answer: "25.5", answerLabel: "Total return (%):",
+      interactiveSteps: [
+        step("What is the gain in value, in dollars?", "Final value - amount invested.", "450", [],
+          { "2450": "2450 is the final value. The gain is 2450 - 2000." }, "Dollar amount, e.g., 300"),
+        step("ROI on price alone, as a percent?", "Gain ÷ amount invested × 100.", "22.5", ["22.5%"],
+          { "18.4": "That divides by the final value (2450). Divide by what was invested, 2000." }, HINT_PCT),
+        step("Total return including the $60 of dividends, as a percent?", "(gain + dividends) ÷ 2000 × 100.", "25.5", ["25.5%"],
+          { "3": "3% is the dividends alone. Add them to the 450 gain first." }, HINT_PCT)
+      ]
+    }
+  }, function(){
+    const st = pick(["gain_loss", "roi_pct", "total_return", "dividend_yield", "dividend_income", "annualized", "average_annual", "value_from_returns"]);
+    const who = pick(["An investor", "A student", "A retiree", "A club treasurer"]);
+    if (st === "gain_loss") {
+      const n = ri(10, 200), b = ri(1500, 9000) / 100;
+      const ch = pick([-35, -25, -20, -15, -10, -5, 5, 10, 15, 20, 30, 40, 60]);
+      const s = r2(b * (1 + ch / 100)), gain = n * (s - b);
+      const a1 = money(Math.abs(gain));
+      return Q(st, `${who} buys ${n} shares at ${usd(b)} each and later sells all of them at ${usd(s)} each. How much money was ${gain > 0 ? "gained" : "lost"}, to the nearest cent?`, a1,
+        // per share, forgetting the number of shares | the sale proceeds | the cost
+        optN(a1, [Math.abs(s - b), n * s, n * b], 2),
+        `${gain > 0 ? "Gain" : "Loss"} per share = |${usd(s)} − ${usd(b)}| = ${usd(Math.abs(s - b))}. Times ${n} shares = ${usd(Math.abs(gain))}.`);
+    }
+    if (st === "roi_pct") {
+      const I = ri(20, 200) * 50;
+      const x = pick([-40, -30, -25, -20, -15, -10, -6, 6, 8, 10, 12, 15, 18, 20, 25, 30, 40, 50, 75]) + pick([0, 0.3, 0.7]);
+      const E = r0(I * (1 + x / 100)), pc = (E - I) / I * 100;
+      const a1 = percent(Math.abs(pc), 1);
+      return Q(st, `${who} invests ${usd0(I)}, and the investment is later worth ${usd0(E)}. What is the percent ${pc > 0 ? "return (ROI)" : "loss"}, to the nearest tenth of a percent?`, a1,
+        // divides by the final value | final as a percent of initial | the dollar change ÷ 100
+        optN(a1, [Math.abs(E - I) / E * 100, E / I * 100, Math.abs(E - I) / 100], 1),
+        `Change = ${usd0(E)} − ${usd0(I)} = ${E - I < 0 ? "−" : ""}${usd0(Math.abs(E - I))}. ${pc > 0 ? "ROI" : "Loss"} = ${usd0(Math.abs(E - I))} ÷ ${usd0(I)} × 100 = ${ap(num(Math.abs(pc), 3), a1.answer)}%.`);
+    }
+    if (st === "total_return") {
+      const n = ri(20, 300), b = ri(2000, 8000) / 100, dv = ri(40, 400) / 100;
+      let s; do { s = r2(b * (1 + pick([-8, -4, 4, 6, 10, 15, 20, 25, 35]) / 100)); } while ((s - b + dv) / b * 100 < 0.5);   // keeps the return clearly positive (never "0.0%")
+      const tr = (s - b + dv) / b * 100;
+      const a1 = percent(tr, 1);
+      return Q(st, `${who} buys ${n} shares at ${usd(b)}, receives ${usd(dv)} per share in dividends while holding them, then sells at ${usd(s)}. What is the total return as a percent, to the nearest tenth?`, a1,
+        // ignores dividends | dividends only | divides by the sale price
+        optN(a1, [Math.abs(s - b) / b * 100, dv / b * 100, (s - b + dv) / s * 100], 1),
+        `Per share: price change ${usd(s)} − ${usd(b)} = ${s - b < 0 ? "−" : ""}${usd(Math.abs(s - b))}, plus ${usd(dv)} dividends = ${usd(s - b + dv)}. Total return = ${usd(s - b + dv)} ÷ ${usd(b)} × 100 = ${ap(num(tr, 3), a1.answer)}%. (The number of shares cancels.)`);
+    }
+    if (st === "dividend_yield") {
+      const p = ri(2000, 15000) / 100, q = ri(10, 120) / 100;
+      const y = 4 * q / p * 100;
+      const a1 = percent(y, 2);
+      return Q(st, `A stock trades at ${usd(p)} and pays a quarterly dividend of ${usd(q)} per share. What is its annual dividend yield, as a percent to the nearest hundredth?`, a1,
+        // one quarter's dividend only | treats it as monthly | yield on half a year
+        optN(a1, [q / p * 100, 12 * q / p * 100, 2 * q / p * 100], 2),
+        `Annual dividend = 4 × ${usd(q)} = ${usd(4 * q)}. Yield = ${usd(4 * q)} ÷ ${usd(p)} × 100 = ${ap(num(y, 4), a1.answer)}%.`);
+    }
+    if (st === "dividend_income") {
+      const n = ri(25, 800), q = ri(8, 150) / 100;
+      const a1 = money(n * q * 4);
+      return Q(st, `${who} owns ${n} shares of a company that pays ${usd(q)} per share every quarter. How much dividend income does that give in a year, to the nearest cent?`, a1,
+        // one quarter | monthly instead of quarterly | per share only
+        optN(a1, [n * q, n * q * 12, q * 4], 2),
+        `Four quarterly payments: ${n} × ${usd(q)} × 4 = ${usd(n * q * 4)}.`);
+    }
+    if (st === "annualized") {
+      const A = ri(20, 150) * 100, gr = pick([3, 4, 5, 6, 7, 8, 9, 10, 12]), n = pick([3, 4, 5, 6, 8, 10]);
+      const B = r0(A * Math.pow(1 + gr / 100, n));
+      const ann = (Math.pow(B / A, 1 / n) - 1) * 100, total = (B - A) / A * 100;
+      const a1 = percent(ann, 1);
+      return Q(st, `An account grows from ${usd0(A)} to ${usd0(B)} in ${n} years. What is the average annual (compound) rate of return, to the nearest tenth of a percent?`, a1,
+        // total return ÷ years (ignores compounding) | the total return | the growth multiplier as a percent
+        optN(a1, [total / n, total, Math.pow(B / A, 1 / n) * 100], 1),
+        `Growth factor = ${B} ÷ ${A} = ${mult(B / A)}. Annual factor = ${mult(B / A)}^(1/${n}) = ${mult(Math.pow(B / A, 1 / n))}. Rate = ${ap(num(ann, 3), a1.answer)}%. Dividing the total ${num(total, 2)}% by ${n} ignores compounding.`);
+    }
+    if (st === "average_annual") {
+      const k = pick([3, 4]);
+      let rs, mean;
+      do { rs = []; for (let i = 0; i < k; i++) rs.push(pick([-12, -9, -6, -4, -2, 3, 5, 7, 8, 11, 14, 18, 22, 25])); mean = rs.reduce((a, b) => a + b, 0) / k; } while (mean <= 0);
+      const geo = (rs.reduce((p, x) => p * (1 + x / 100), 1) ** (1 / k) - 1) * 100;
+      const a1 = percent(mean, 1);
+      const list = rs.map(x => (x > 0 ? "+" : "−") + Math.abs(x) + "%").join(", ");
+      return Q(st, `A fund's yearly returns were ${list}. What is its average annual return as the arithmetic mean of these returns, to the nearest tenth of a percent?`, a1,
+        // the sum, not the mean | ignores the minus signs | the compound (geometric) rate instead
+        optN(a1, [rs.reduce((a, b) => a + b, 0), rs.reduce((a, b) => a + Math.abs(b), 0) / k, geo], 1),
+        `Mean = (${rs.join(" + ").split("+ -").join("− ")}) ÷ ${k} = ${rs.reduce((a, b) => a + b, 0)} ÷ ${k} = ${ap(num(mean, 3), a1.answer)}%.`);
+    }
+    // value_from_returns
+    const A = ri(10, 100) * 100;
+    const rs = [pick([8, 12, 15, 20, 25]), pick([-10, -15, -5, -20]), pick([6, 10, 4, 18])];
+    const fin = A * rs.reduce((p, x) => p * (1 + x / 100), 1), sum = rs.reduce((a, b) => a + b, 0);
+    const a1 = money(fin, 0);
+    return Q(st, `${usd0(A)} is invested. The returns over three years are ${rs.map(x => (x > 0 ? "+" : "−") + Math.abs(x) + "%").join(", ")}. What is the investment worth at the end, to the nearest dollar?`, a1,
+      // adds the returns | ignores the loss sign | compounds the plain average
+      optN(a1, [A * (1 + sum / 100), A * rs.reduce((p, x) => p * (1 + Math.abs(x) / 100), 1), A * Math.pow(1 + sum / 300, 3)], 0),
+      `Multiply by each year's multiplier: ${A} × ${rs.map(x => mult(1 + x / 100)).join(" × ")} = ${usd(fin)} ≈ ${usd0(fin)}. Adding the returns (${sum}%) would give ${usd0(A * (1 + sum / 100))}.`);
+  });
+
+  // =====================================================================
+  // M-336  Inflation and Purchasing Power  (tier 6)   plan 72B
+  // =====================================================================
+  // CPI figures are invented and labelled as such; only the method is real.
+  _addSkill(6, "Inflation and Purchasing Power", "Inflation and Purchasing Power", 3, function(){
+    const ex = r2(3.50 * 321.5 / 195.3);
+    const gRent = c2(1200 * Math.pow(1.03, 5)), gPow = String(r0(1000 / Math.pow(1.03, 5)));
+    return {
+      goalProblem: "A sandwich cost $3.50 in 2005, when the CPI was 195.3. The CPI is now 321.5. What is the 2005 price in today's dollars?",
+      teachingSteps: [
+        { title: "Inflation is a percent increase in prices", explanation: "The <strong>Consumer Price Index (CPI)</strong> tracks the price of a fixed basket of goods. The inflation rate is the percent change in the CPI.", visual: "CPI 300 → 312: (312 − 300) ÷ 300 = 4% inflation" },
+        { title: "Moving a price between years", explanation: "Multiply by the ratio of the CPIs, with the year you want <strong>on top</strong>.", visual: "price in year B = price in year A × CPI_B ÷ CPI_A" },
+        { title: "Inflation compounds", explanation: "Steady inflation of i% a year is a successive percent change: prices grow by × (1 + i)ⁿ.", visual: "$1,200 rent at 3% for 5 years: 1,200 × 1.03⁵" },
+        { title: "Purchasing power", explanation: "Money loses buying power as prices rise. In today's dollars, a future amount is worth amount ÷ (1 + i)ⁿ.", visual: "$1,000 in 5 years at 3% buys what $863 buys now" },
+        { title: "Real versus nominal", explanation: "A <strong>nominal</strong> rate is the stated one. The <strong>real</strong> rate removes inflation: (1 + nominal) ÷ (1 + inflation) − 1, roughly nominal − inflation.", visual: "7% return, 3% inflation: 1.07 ÷ 1.03 − 1 ≈ 3.88% real" },
+        { title: "The rule of 70", explanation: "Prices double (and money's buying power halves) in about <strong>70 ÷ inflation rate</strong> years.", visual: "3.5% inflation → 70 ÷ 3.5 = 20 years" }
+      ],
+      finalAnswer: usd(ex),
+      answerExplanation: `3.50 × 321.5 ÷ 195.3 = ${usd(ex)}. The CPI of the year you want goes on top.`,
+      example: { problem: "The CPI rose from 296.8 to 307.5 in one year. What was the inflation rate?", steps: [
+        { text: "Change in the CPI", math: "307.5 − 296.8 = 10.7" },
+        { text: "Divide by the starting CPI", math: "10.7 ÷ 296.8 = 0.03605" },
+        { text: "As a percent", math: "≈ 3.6% inflation" }
+      ]},
+      keyPoints: [
+        "Inflation rate = percent change in the CPI",
+        "Convert prices with price × CPI_new ÷ CPI_old (target year on top)",
+        "Future cost = cost × (1 + i)ⁿ; today's value = amount ÷ (1 + i)ⁿ",
+        "Real rate = (1 + nominal) ÷ (1 + inflation) − 1; doubling time ≈ 70 ÷ rate"
+      ],
+      mistakes: [
+        { wrong: "Putting the old CPI on top", why: "To move a price forward the newer, larger CPI goes on top, so the price grows." },
+        { wrong: "Adding the CPI points to the price", why: "The CPI is an index, not dollars. Use the ratio of the two CPIs." },
+        { wrong: "Thinking a 4% raise with 5% inflation is a gain", why: "Real change ≈ 4% − 5% = −1%. Prices rose faster than pay, so buying power fell." }
+      ],
+      guided: {
+        problem: "Rent is $1,200 a month and inflation runs 3% a year. Find the rent in 5 years, what $1,000 received in 5 years is worth today, and the doubling time.",
+        steps: [
+          { label: "Growth factor", value: "1.03^5 = 1.159274" },
+          { label: "Rent in 5 years", value: "1200 × 1.159274 = " + gRent },
+          { label: "Today's value of 1000", value: "1000 ÷ 1.159274 = " + gPow },
+          { label: "Rule of 70", value: "70 ÷ 3 = 23.3" }
+        ],
+        answer: "23.3", answerLabel: "Years for prices to double:",
+        interactiveSteps: [
+          step("Rent in 5 years at 3% inflation, to the nearest cent?", "Multiply 1200 by 1.03 five times (1.03^5 = 1.159274).", gRent, [num(Number(gRent), 2)],
+            { "1380": "1380 adds 5 × 3% = 15% once. Inflation compounds: 1200 × 1.03^5.", "1380.00": "1380 adds 5 × 3% = 15% once. Inflation compounds: 1200 × 1.03^5." }, HINT_USD),
+          step("What is $1,000 received in 5 years worth in today's dollars, to the nearest dollar?", "Divide by the growth factor 1.159274.", gPow, [],
+            { "1159": "That grows the money. To find today's value, divide by 1.159274." }, "Dollar amount, e.g., 900"),
+          step("About how many years until prices double at 3%? (nearest tenth)", "Rule of 70: 70 ÷ rate.", "23.3", [],
+            { "33.3": "That uses 100 ÷ 3. The rule of 70 uses 70 ÷ 3." }, "e.g., 17.5")
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["cpi_adjust", "inflation_rate", "future_cost", "purchasing_power", "real_rate", "real_salary", "rule_of_70"]);
+    if (st === "cpi_adjust") {
+      const yA = ri(1982, 2004), yB = Math.min(2025, yA + ri(10, 25));
+      const cA = ri(950, 2000) / 10, cB = r1(cA * (1 + ri(15, 90) / 100));
+      const item = pick([["a movie ticket", 400, 1200], ["a gallon of milk", 180, 450], ["a pair of sneakers", 4000, 12000], ["a textbook", 3000, 9000], ["a bicycle", 9000, 30000]]);
+      const p = ri(item[1], item[2]) / 100;
+      if (pick([true, false])) {
+        const v = p * cB / cA;
+        const a1 = money(v);
+        return Q(st, `In ${yA}, ${item[0]} cost ${usd(p)}. Using invented CPI values of ${cA} for ${yA} and ${cB} for ${yB}, what is that price in ${yB} dollars, to the nearest cent?`, a1,
+          // CPI ratio upside down | adds the CPI points as dollars | divides by 100 instead of the old CPI
+          optN(a1, [p * cA / cB, p + (cB - cA), p * cB / 100], 2),
+          `Price in ${yB} dollars = ${usd(p)} × ${cB} ÷ ${cA} = ${usd(v)}. The year you want (${yB}) goes on top.`);
+      }
+      const v = p * cA / cB;
+      const a1 = money(v);
+      return Q(st, `In ${yB}, ${item[0]} costs ${usd(p)}. Using invented CPI values of ${cA} for ${yA} and ${cB} for ${yB}, what would that price have been in ${yA} dollars, to the nearest cent?`, a1,
+        // CPI ratio upside down | subtracts the CPI points | divides by 100 instead of the CPI
+        optN(a1, [p * cB / cA, p - (cB - cA), p * cA / 100], 2),
+        `Price in ${yA} dollars = ${usd(p)} × ${cA} ÷ ${cB} = ${usd(v)}. The year you want (${yA}) goes on top.`);
+    }
+    if (st === "inflation_rate") {
+      const c1 = ri(2400, 3200) / 10, c2v = r1(c1 * (1 + ri(10, 80) / 1000));
+      const rate = (c2v - c1) / c1 * 100;
+      const a1 = percent(rate, 1);
+      return Q(st, `An invented price index rose from ${c1} to ${c2v} in one year. What was the inflation rate, to the nearest tenth of a percent?`, a1,
+        // the point change | divides by the new index | the ratio as a percent
+        optN(a1, [c2v - c1, (c2v - c1) / c2v * 100, c2v / c1 * 100], 1),
+        `Change = ${c2v} − ${c1} = ${num(c2v - c1, 1)}. Rate = ${num(c2v - c1, 1)} ÷ ${c1} × 100 = ${ap(num(rate, 3), a1.answer)}%.`);
+    }
+    if (st === "future_cost") {
+      const C = ri(40, 1200) * 5, i = pick([2, 2.5, 3, 3.5, 4, 5, 6]), n = ri(3, 20);
+      const v = C * Math.pow(1 + i / 100, n);
+      const thing = pick(["a year of community-college tuition", "a used car", "a family's monthly grocery bill", "a laptop", "a year of car insurance"]);
+      const a1 = money(v);
+      return Q(st, `Today ${thing} costs ${usd0(C)}. If inflation averages ${i}% a year, what will it cost in ${n} years, to the nearest cent?`, a1,
+        // simple growth (adds n × i%) | one year short | only the increase
+        optN(a1, [C * (1 + n * i / 100), C * Math.pow(1 + i / 100, n - 1), v - C], 2),
+        `Inflation compounds: ${usd0(C)} × ${mult(1 + i / 100)}^${n} = ${usd0(C)} × ${mult(Math.pow(1 + i / 100, n))} = ${usd(v)}.`);
+    }
+    if (st === "purchasing_power") {
+      const X = ri(10, 100) * 100, i = pick([2, 2.5, 3, 4, 5, 6]), n = pick([5, 8, 10, 15, 20]);
+      const v = X / Math.pow(1 + i / 100, n);
+      const a1 = money(v, 0);
+      return Q(st, `If inflation averages ${i}% a year, what will ${usd0(X)} buy in ${n} years, measured in today's dollars (to the nearest dollar)?`, a1,
+        // takes i% off each year | simple loss of n × i% | grows the money instead
+        optN(a1, [X * Math.pow(1 - i / 100, n), X * (1 - n * i / 100), X * Math.pow(1 + i / 100, n)], 0),
+        `Today's value = ${usd0(X)} ÷ ${mult(1 + i / 100)}^${n} = ${usd0(X)} ÷ ${mult(Math.pow(1 + i / 100, n))} = ${usd(v)} ≈ ${usd0(v)}.`);
+    }
+    if (st === "real_rate") {
+      const nom = pick([4, 5, 6, 7, 8, 9, 10, 12]), inf = pick([1.5, 2, 2.5, 3, 3.5, 4].filter(x => x < nom));
+      const real = ((1 + nom / 100) / (1 + inf / 100) - 1) * 100;
+      const a1 = percent(real, 2);
+      return Q(st, `An investment earns a nominal ${nom}% in a year when inflation is ${inf}%. Using real rate = (1 + nominal) ÷ (1 + inflation) − 1, what is the real rate of return, as a percent to the nearest hundredth?`, a1,
+        // the shortcut nominal − inflation | adds inflation | multiplies instead of dividing
+        optN(a1, [nom - inf, nom + inf, ((1 + nom / 100) * (1 + inf / 100) - 1) * 100], 2),
+        `(1 + ${nom / 100}) ÷ (1 + ${inf / 100}) = ${mult((1 + nom / 100) / (1 + inf / 100))}. Real rate = ${ap(num(real, 4), a1.answer)}% — a little less than the shortcut ${nom} − ${inf} = ${num(nom - inf, 1)}%.`);
+    }
+    if (st === "real_salary") {
+      const S = ri(30, 90) * 1000, rr = pick([2, 3, 4, 5, 6]), i = pick([2, 3, 4, 5, 6, 7].filter(x => x !== rr));
+      const newS = S * (1 + rr / 100), v = newS / (1 + i / 100);
+      const a1 = money(v, 0);
+      return Q(st, `A worker earned ${usd0(S)} last year and got a ${rr}% raise. Inflation over the year was ${i}%. What is this year's salary worth in last year's dollars, to the nearest dollar?`, a1,
+        // inflates instead of deflating | ignores inflation | subtracts percent points from the raised salary
+        optN(a1, [newS * (1 + i / 100), newS, newS * (1 - i / 100)], 0),
+        `New salary = ${usd0(S)} × ${mult(1 + rr / 100)} = ${usd0(newS)}. In last year's dollars: ${usd0(newS)} ÷ ${mult(1 + i / 100)} = ${usd(v)} ≈ ${usd0(v)}, which is ${v > S ? "more" : "less"} than ${usd0(S)} — buying power ${v > S ? "rose" : "fell"}.`);
+    }
+    // rule_of_70
+    if (pick([true, false])) {
+      const i = pick([1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8]);
+      const a1 = plain(70 / i, 1);
+      return Q(st, `Using the rule of 70, about how many years will it take prices to double at ${i}% inflation a year? Round to the nearest tenth.`, a1,
+        // the "rule of 100" | half the doubling time | twice the doubling time
+        optN(a1, [100 / i, 35 / i, 140 / i], 1),
+        `Doubling time ≈ 70 ÷ ${i} = ${num(70 / i, 3)} ≈ ${a1.answer} years.`);
+    }
+    const n = pick([10, 14, 20, 25, 28, 35]);
+    const a1 = percent(70 / n, 1);
+    return Q(st, `Prices in a country doubled in ${n} years. Using the rule of 70, what was the average annual inflation rate, as a percent to the nearest tenth?`, a1,
+      // the "rule of 100" | halves it | doubles it
+      optN(a1, [100 / n, 35 / n, 140 / n], 1),
+      `Rate ≈ 70 ÷ ${n} = ${ap(num(70 / n, 3), a1.answer)}% a year.`);
+  });
+
+  // =====================================================================
+  // M-337  Tax Calculations  (tier 6)   plan 73B
+  // =====================================================================
+  // Invented bracket tables (not any real government's). Incomes are drawn in
+  // $100 steps so every bracket slice taxes to whole dollars.
+  const TAX_TABLES = [
+    [[12000, 10], [48000, 15], [100000, 22], [Infinity, 30]],
+    [[10000, 5], [40000, 12], [90000, 20], [Infinity, 28]],
+    [[15000, 8], [60000, 14], [150000, 24], [Infinity, 32]]
+  ];
+  const bracketText = br => br.map((b, i) => {
+    const lo = i === 0 ? 0 : br[i - 1][0];
+    if (i === 0) return `${b[1]}% on the first ${usd0(b[0])}`;
+    if (b[0] === Infinity) return `${b[1]}% on income above ${usd0(lo)}`;
+    return `${b[1]}% on income from ${usd0(lo)} to ${usd0(b[0])}`;
+  }).join("; ");
+  function taxOn(Y, br) {
+    let prev = 0, t = 0, marginal = br[0][1], top = 0;
+    const parts = [];
+    for (const [cap, rate] of br) {
+      if (Y <= prev) break;
+      const amt = Math.min(Y, cap) - prev;
+      t += amt * rate / 100; parts.push(`${rate}% × ${withCommas(String(amt))} = ${withCommas(String(r2(amt * rate / 100)))}`);
+      marginal = rate; top = amt; prev = cap;
+    }
+    return { t: r2(t), parts, marginal, top };
+  }
+  _addSkill(6, "Tax Calculations", "Tax Calculations", 3, function(){
+    const br = TAX_TABLES[0];
+    const a = taxOn(60000, br), gT = taxOn(40000, br);
+    return {
+      goalProblem: `Brackets: ${bracketText(br)}. What is the tax on a taxable income of $60,000, and what are the marginal and effective rates?`,
+      teachingSteps: [
+        { title: "Brackets tax slices, not the whole income", explanation: "In a <strong>progressive</strong> system each rate applies only to the slice of income inside its bracket. Earning into a higher bracket never raises the tax on the dollars below it.", visual: "60,000 = 12,000 + 36,000 + 12,000" },
+        { title: "Tax each slice and add", explanation: "Multiply each slice by its rate (a percent of an amount), then add the pieces.", visual: a.parts.join(";  ") + ` → $${withCommas(String(a.t))}` },
+        { title: "Marginal rate", explanation: "The <strong>marginal rate</strong> is the rate on the next dollar earned — the rate of the highest bracket you reach.", visual: `income 60,000 is in the ${a.marginal}% bracket → marginal rate ${a.marginal}%` },
+        { title: "Effective rate", explanation: "The <strong>effective rate</strong> is total tax ÷ income. It is always below the marginal rate in a progressive system.", visual: `${withCommas(String(a.t))} ÷ 60,000 = ${num(a.t / 600, 2)}%` },
+        { title: "Sales tax and property tax", explanation: "Sales tax is a percent added to a price. Property tax is charged on <strong>assessed value</strong>, often a percent of market value, at a <strong>mill rate</strong>: 1 mill = $1 per $1,000 of assessed value.", visual: "assessed $200,000 at 25 mills: 200,000 × 25 ÷ 1,000 = $5,000" }
+      ],
+      finalAnswer: `$${withCommas(String(a.t))}; marginal ${a.marginal}%, effective ${num(a.t / 600, 1)}%`,
+      answerExplanation: `${a.parts.join(" + ")}: total $${withCommas(String(a.t))}. Marginal rate = ${a.marginal}%. Effective rate = ${withCommas(String(a.t))} ÷ 60,000 = ${num(a.t / 600, 2)}%.`,
+      example: { problem: "A home has a market value of $250,000 and is assessed at 80% of market value. The mill rate is 25 mills. Find the property tax.", steps: [
+        { text: "Assessed value", math: "0.80 × 250,000 = 200,000" },
+        { text: "Mills to a rate", math: "25 mills = 25 ÷ 1,000 = 0.025" },
+        { text: "Tax", math: "200,000 × 0.025 = $5,000" }
+      ]},
+      keyPoints: [
+        "Each bracket rate applies only to the income inside that bracket",
+        "Marginal rate = the rate on the next dollar; effective rate = tax ÷ income",
+        "Sales tax: total = price × (1 + rate); price before tax = total ÷ (1 + rate)",
+        "Property tax = assessed value × mills ÷ 1,000"
+      ],
+      mistakes: [
+        { wrong: "Taxing all income at the top bracket rate", why: `Only the slice above ${usd0(br[1][0])} is taxed at ${br[2][1]}%. Lower slices keep their lower rates.` },
+        { wrong: "Thinking a raise into a higher bracket can lower take-home pay", why: "Only the new dollars are taxed at the higher rate, so more income always means more after-tax income." },
+        { wrong: "Using mills as a percent", why: "25 mills is $25 per $1,000, which is 2.5%, not 25%." }
+      ],
+      guided: {
+        problem: `Same brackets (${bracketText(br)}). Find the tax, the effective rate and the marginal rate on a taxable income of $40,000.`,
+        steps: [
+          { label: "First slice", value: "10% × 12000 = 1200" },
+          { label: "Second slice", value: "15% × 28000 = 4200" },
+          { label: "Total tax", value: "1200 + 4200 = " + gT.t },
+          { label: "Effective rate", value: `${gT.t} ÷ 40000 = ${num(gT.t / 400, 1)}%` }
+        ],
+        answer: num(gT.t / 400, 1), answerLabel: "Effective rate (%):",
+        interactiveSteps: [
+          step("Tax on the first $12,000 (at 10%)?", "10% of 12000.", "1200", [],
+            { "4000": "That taxes all 40000 at 10%. Only the first 12000 is in the 10% bracket." }, "Dollar amount, e.g., 900"),
+          step("Tax on the income from $12,000 to $40,000 (at 15%)?", "That slice is 40000 - 12000 = 28000; take 15% of it.", "4200", [],
+            { "6000": "6000 is 15% of all 40000. Only the 28000 above 12000 is taxed at 15%." }, "Dollar amount, e.g., 3000"),
+          step("What is the total tax?", "Add the slices.", String(gT.t), [],
+            { "6000": "That taxes all income at 15%. Add the slices instead: 1200 + 4200." }, "Dollar amount, e.g., 4500"),
+          step("Effective tax rate, as a percent to the nearest tenth?", "Total tax ÷ income × 100.", num(gT.t / 400, 1), [num(gT.t / 400, 1) + "%"],
+            { "15": "15% is the marginal rate. The effective rate is tax ÷ income." }, HINT_PCT),
+          step("What is the marginal tax rate, as a percent?", "The rate of the highest bracket this income reaches.", "15", ["15%"],
+            { [num(gT.t / 400, 1)]: "That is the effective rate. The marginal rate is the rate on the next dollar earned." }, HINT_PCT)
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["bracket_tax", "marginal_rate", "effective_rate", "with_deduction", "sales_tax_total", "price_before_tax", "property_tax"]);
+    const br = pick(TAX_TABLES);
+    const Y = ri(150, 1800) * 100;
+    const lead = `A tax uses these invented brackets: ${bracketText(br)}.`;
+    if (st === "bracket_tax") {
+      const a = taxOn(Y, br);
+      const a1 = money(a.t, 0);
+      return Q(st, `${lead} What is the tax on a taxable income of ${usd0(Y)}, in dollars?`, a1,
+        // whole income at the marginal rate | whole income at the lowest rate | only the top slice
+        optN(a1, [Y * a.marginal / 100, Y * br[0][1] / 100, a.top * a.marginal / 100], 0),
+        `Tax each slice: ${a.parts.join("; ")}. Total = ${usd0(a.t)}. Taxing all ${usd0(Y)} at ${a.marginal}% would give ${usd0(Y * a.marginal / 100)}, but each rate applies only to its own slice.`);
+    }
+    if (st === "marginal_rate") {
+      const a = taxOn(Y, br);
+      const a1 = percent(a.marginal, 0);
+      return Q(st, `${lead} What is the marginal tax rate for someone with a taxable income of ${usd0(Y)}, as a percent?`, a1,
+        // the other bracket rates, and the effective rate (a common confusion)
+        optN(a1, br.map(b => b[1]).filter(x => x !== a.marginal).concat([r0(a.t / Y * 100)]), 0),
+        `${usd0(Y)} reaches the ${a.marginal}% bracket, so the next dollar earned is taxed at ${a.marginal}%. (The effective rate, tax ÷ income, is ${num(a.t / Y * 100, 1)}%.)`);
+    }
+    if (st === "effective_rate") {
+      const a = taxOn(Y, br);
+      const a1 = percent(a.t / Y * 100, 1);
+      const used = br.slice(0, a.parts.length).map(b => b[1]);
+      return Q(st, `${lead} What is the effective tax rate on a taxable income of ${usd0(Y)}, as a percent to the nearest tenth?`, a1,
+        // the marginal rate | the average of the bracket rates used | tax per $1,000 read as a percent
+        optN(a1, [a.marginal, used.reduce((s, x) => s + x, 0) / used.length, a.t / 1000], 1),
+        `Tax: ${a.parts.join("; ")} → ${usd0(a.t)}. Effective rate = ${usd0(a.t)} ÷ ${usd0(Y)} × 100 = ${ap(num(a.t / Y * 100, 3), a1.answer)}%.`);
+    }
+    if (st === "with_deduction") {
+      const ded = pick([12000, 13500, 14600]), G = Y + ded;
+      const a = taxOn(Y, br), full = taxOn(G, br);
+      const a1 = money(a.t, 0);
+      return Q(st, `${lead} A worker earns ${usd0(G)} and takes a ${usd0(ded)} standard deduction before tax is figured. How much tax is owed, in dollars?`, a1,
+        // taxes the gross pay | reports the taxable income | flat marginal rate on taxable income
+        optN(a1, [full.t, Y, Y * a.marginal / 100], 0),
+        `Taxable income = ${usd0(G)} − ${usd0(ded)} = ${usd0(Y)}. Tax: ${a.parts.join("; ")} → ${usd0(a.t)}.`);
+    }
+    const rate = pick([5.3, 6, 6.5, 7, 7.25, 8.25, 8.875, 9.5]);
+    if (st === "sales_tax_total") {
+      const sub = ri(500, 25000) / 100, tax = r2(sub * rate / 100);
+      const a1 = money(sub + tax);
+      return Q(st, `A shopping trip comes to ${usd(sub)} before tax. Sales tax is ${rate}%. What is the total with tax, to the nearest cent?`, a1,
+        // the tax alone | adds the rate as dollars | subtracts the tax
+        optN(a1, [tax, sub + rate, sub - tax], 2),
+        `Tax = ${usd(sub)} × ${num(rate / 100, 5)} = ${usd(tax)}. Total = ${usd(sub)} + ${usd(tax)} = ${usd(sub + tax)}.`);
+    }
+    if (st === "price_before_tax") {
+      const pre = ri(500, 30000) / 100, total = r2(pre + r2(pre * rate / 100));
+      const v = total / (1 + rate / 100);
+      const a1 = money(v);
+      return Q(st, `A receipt total, including ${rate}% sales tax, is ${usd(total)}. What was the price before tax, to the nearest cent?`, a1,
+        // takes rate% off the total | subtracts the rate as dollars | adds tax again
+        optN(a1, [total * (1 - rate / 100), total - rate, total * (1 + rate / 100)], 2),
+        `Total = price × ${mult(1 + rate / 100)}, so price = ${usd(total)} ÷ ${mult(1 + rate / 100)} = ${usd(v)}. Taking ${rate}% off the total is wrong: the tax was ${rate}% of the smaller, pre-tax price.`);
+    }
+    // property_tax
+    const MV = ri(150, 700) * 1000, ratio = pick([100, 80, 60, 50, 40, 35]), mill = pick([9.75, 12.5, 15.8, 18, 22.4, 26, 31.2]);
+    const AV = MV * ratio / 100, t = AV * mill / 1000;
+    const a1 = money(t);
+    return Q(st, `A house has a market value of ${usd0(MV)}. The town assesses property at ${ratio}% of market value and charges ${mill} mills (1 mill = $1 per $1,000 of assessed value). What is the annual property tax, to the nearest cent?`, a1,
+      // forgets the assessment ratio | reads mills as a percent | divides by 10,000
+      optN(a1, [MV * mill / 1000, AV * mill / 100, AV * mill / 10000], 2),
+      `Assessed value = ${ratio}% × ${usd0(MV)} = ${usd0(AV)}. Tax = ${usd0(AV)} × ${mill} ÷ 1,000 = ${usd(t)}.`);
+  });
+
+  // =====================================================================
+  // M-338  Revenue and Expenses  (tier 6)   plan 74B
+  // =====================================================================
+  _addSkill(6, "Revenue and Expenses", "Revenue and Expenses", 2, {
+    goalProblem: "A print shop pays $1,200 a month in fixed costs and $4.50 in materials per T-shirt. It sells 150 shirts at $18 each. Find its revenue, total cost and net income.",
+    teachingSteps: [
+      { title: "Revenue", explanation: "<strong>Revenue</strong> is money coming in: price × quantity. As a function of units sold, R(x) = px — a line through the origin with slope equal to the price.", visual: "R = 18 × 150 = $2,700" },
+      { title: "Fixed and variable costs", explanation: "<strong>Fixed costs</strong> stay the same however much you make (rent, insurance, salaries). <strong>Variable costs</strong> are paid per unit (materials, packaging, shipping).", visual: "fixed: $1,200 a month;  variable: $4.50 per shirt" },
+      { title: "The cost function", explanation: "Total cost is a linear function: <strong>C(x) = F + vx</strong>. The fixed cost F is the y-intercept and the variable cost v is the slope.", visual: "C(x) = 1,200 + 4.5x → C(150) = 1,200 + 675 = $1,875" },
+      { title: "Net income", explanation: "Net income = revenue − total expenses. A negative result is a net loss.", visual: "2,700 − 1,875 = $825" },
+      { title: "Average cost per unit", explanation: "Average cost = C(x) ÷ x. It falls as x grows, because the fixed cost is spread over more units.", visual: "1,875 ÷ 150 = $12.50 per shirt" }
+    ],
+    finalAnswer: "Revenue $2,700; cost $1,875; net income $825",
+    answerExplanation: "R = 18 × 150 = 2,700. C = 1,200 + 4.50 × 150 = 1,875. Net income = 2,700 − 1,875 = $825.",
+    example: { problem: "A café takes in $18,400 in a month and spends $5,200 on rent, $8,100 on wages and $2,600 on supplies. What is its net income, and what percent of expenses is wages?", steps: [
+      { text: "Total expenses", math: "5,200 + 8,100 + 2,600 = 15,900" },
+      { text: "Net income", math: "18,400 − 15,900 = $2,500" },
+      { text: "Wages as a share of expenses", math: "8,100 ÷ 15,900 × 100 ≈ 50.9%" }
+    ]},
+    keyPoints: [
+      "Revenue R(x) = price × quantity",
+      "Cost C(x) = fixed + variable × quantity — a linear function",
+      "Net income = revenue − total expenses",
+      "Average cost = C(x) ÷ x, and it falls as x grows"
+    ],
+    mistakes: [
+      { wrong: "Leaving out fixed costs", why: "Rent is paid whether you sell 1 shirt or 1,000. Total cost = F + vx." },
+      { wrong: "Calling revenue \"profit\"", why: "Revenue is everything that comes in. Profit (net income) is what is left after expenses." },
+      { wrong: "Multiplying the fixed cost by the quantity", why: "Fixed costs are paid once per period, not once per unit." }
+    ],
+    guided: {
+      problem: "A bakery sells 400 muffins at $3.25 each. Its fixed costs are $450 a week and each muffin costs $0.90 to make. Find the week's net income.",
+      steps: [
+        { label: "Revenue", value: "3.25 × 400 = 1300" },
+        { label: "Variable cost", value: "0.90 × 400 = 360" },
+        { label: "Total cost", value: "450 + 360 = 810" },
+        { label: "Net income", value: "1300 - 810 = 490" }
+      ],
+      answer: "490", answerLabel: "Net income ($):",
+      interactiveSteps: [
+        step("What is the revenue from 400 muffins at $3.25?", "Revenue = price × quantity.", "1300", ["1300.00"],
+          { "940": "940 is revenue minus variable cost. Revenue alone is 3.25 × 400." }, "Dollar amount, e.g., 950"),
+        step("What is the variable cost of 400 muffins at $0.90 each?", "Variable cost = cost per unit × quantity.", "360", ["360.00"],
+          { "180000": "Only the per-muffin cost is multiplied by 400; the fixed cost is not." }, "Dollar amount, e.g., 250"),
+        step("What is the total cost (fixed + variable)?", "C = 450 + 360.", "810", ["810.00"],
+          { "360": "That is only the variable cost. Add the 450 fixed cost." }, "Dollar amount, e.g., 700"),
+        step("What is the net income?", "Revenue - total cost.", "490", ["490.00"],
+          { "940": "That leaves out the fixed cost. Net income = 1300 - 810." }, "Dollar amount, e.g., 300")
+      ]
+    }
+  }, function(){
+    const st = pick(["revenue", "total_cost", "cost_function", "net_income", "average_cost", "expense_share", "max_units"]);
+    const biz = pick([["food truck", "tacos"], ["print shop", "posters"], ["candle maker", "candles"], ["bike shop", "tune-ups"], ["bakery", "loaves"], ["phone-case startup", "cases"]]);
+    const F = ri(4, 40) * 100, v = ri(150, 2500) / 100;
+    if (st === "revenue") {
+      const p = r2(v + ri(100, 2000) / 100), q = ri(20, 600);
+      const a1 = money(p * q);
+      return Q(st, `A ${biz[0]} sells ${q} ${biz[1]} at ${usd(p)} each. Each one costs ${usd(v)} to make. What is the revenue, to the nearest cent?`, a1,
+        // subtracts costs (that is profit, not revenue) | the costs | adds cost to price
+        optN(a1, [(p - v) * q, v * q, (p + v) * q], 2),
+        `Revenue = price × quantity = ${usd(p)} × ${q} = ${usd(p * q)}. The cost to make them does not change revenue.`);
+    }
+    if (st === "total_cost") {
+      const q = ri(20, 600);
+      const a1 = money(F + v * q);
+      return Q(st, `A ${biz[0]} has fixed costs of ${usd0(F)} a month and a variable cost of ${usd(v)} per item. What is the total cost of making ${q} ${biz[1]} in a month, to the nearest cent?`, a1,
+        // leaves out fixed costs | adds one unit's cost | multiplies the fixed cost by the quantity too
+        optN(a1, [v * q, F + v, (F + v) * q], 2),
+        `C(x) = ${F} + ${num(v, 2)}x. C(${q}) = ${F} + ${num(v, 2)} × ${q} = ${F} + ${c2(v * q)} = ${usd(F + v * q)}.`);
+    }
+    if (st === "cost_function") {
+      const p = r2(v + ri(100, 2000) / 100), vs = num(v, 2);
+      return QC(st, `A ${biz[0]} pays ${usd0(F)} a month in fixed costs and ${usd(v)} in materials for each of its ${biz[1]}, which sell for ${usd(p)}. Which function gives the total monthly cost of making x ${biz[1]}?`,
+        `C(x) = ${F} + ${vs}x`,
+        // swaps fixed and variable | the revenue function | charges the fixed cost per unit
+        [`C(x) = ${vs} + ${F}x`, `C(x) = ${num(p, 2)}x`, `C(x) = ${num(F + v, 2)}x`],
+        `Total cost = fixed cost + variable cost per unit × units: C(x) = ${F} + ${vs}x. The selling price belongs in the revenue function R(x) = ${num(p, 2)}x, not in the cost.`);
+    }
+    if (st === "net_income") {
+      let R, ex;
+      do {
+        R = ri(80, 400) * 100;
+        ex = [["rent", ri(10, 40) * 100], ["wages", ri(20, 120) * 100], ["supplies", ri(5, 50) * 100], ["utilities", ri(2, 10) * 100]];
+      } while (ex.reduce((s, e) => s + e[1], 0) >= R - 200);
+      const tot = ex.reduce((s, e) => s + e[1], 0);
+      const a1 = money(R - tot, 0);
+      return Q(st, `A ${biz[0]} takes in ${usd0(R)} in revenue this month. Its expenses are ${ex.map(e => e[0] + " " + usd0(e[1])).join(", ")}. What is its net income, in dollars?`, a1,
+        // revenue mistaken for income | reports total expenses | leaves wages out of expenses
+        optN(a1, [R, tot, R - tot + ex[1][1]], 0),
+        `Total expenses = ${ex.map(e => withCommas(String(e[1]))).join(" + ")} = ${usd0(tot)}. Net income = ${usd0(R)} − ${usd0(tot)} = ${usd0(R - tot)}.`);
+    }
+    if (st === "average_cost") {
+      const q = ri(25, 800);
+      const a1 = money((F + v * q) / q);
+      return Q(st, `A ${biz[0]} has fixed costs of ${usd0(F)} and a variable cost of ${usd(v)} per item. What is the average cost per item when it makes ${q} ${biz[1]}, to the nearest cent?`, a1,
+        // the variable cost alone | the fixed cost per unit alone | divides only one unit's cost
+        optN(a1, [v, F / q, (F + v) / q], 2),
+        `C(${q}) = ${F} + ${num(v, 2)} × ${q} = ${c2(F + v * q)}. Average cost = ${c2(F + v * q)} ÷ ${q} = ${usd((F + v * q) / q)}.`);
+    }
+    if (st === "expense_share") {
+      const R = ri(150, 400) * 100;
+      const ex = [["rent", ri(10, 40) * 100], ["payroll", ri(30, 90) * 100], ["marketing", ri(5, 30) * 100], ["supplies", ri(5, 40) * 100]];
+      const tot = ex.reduce((s, e) => s + e[1], 0), k = ri(0, 3), part = ex[k][1];
+      const a1 = percent(part / tot * 100, 1);
+      return Q(st, `A ${biz[0]} had ${usd0(R)} in revenue and these expenses: ${ex.map(e => e[0] + " " + usd0(e[1])).join(", ")}. What percent of total expenses was ${ex[k][0]}, to the nearest tenth of a percent?`, a1,
+        // percent of revenue instead | compares to the other expenses only | the remaining share
+        optN(a1, [part / R * 100, part / (tot - part) * 100, 100 - part / tot * 100], 1),
+        `Total expenses = ${usd0(tot)}. Share = ${usd0(part)} ÷ ${usd0(tot)} × 100 = ${ap(num(part / tot * 100, 3), a1.answer)}%.`);
+    }
+    // max_units: largest whole number of units inside a budget
+    const B = F + ri(20, 600) * 10;
+    const units = Math.floor((B - F) / v + 1e-9);
+    const a1 = plain(units);
+    return Q(st, `A ${biz[0]} has fixed costs of ${usd0(F)} and a variable cost of ${usd(v)} per item. What is the greatest whole number of ${biz[1]} it can make without total cost going over ${usd0(B)}?`, a1,
+      // ignores fixed costs | adds the fixed cost to the budget | rounds up past the budget
+      optN(a1, [Math.floor(B / v), Math.floor((B + F) / v), Math.ceil((B - F) / v - 1e-9) === units ? units + 1 : Math.ceil((B - F) / v)], 0),
+      `${F} + ${num(v, 2)}x ≤ ${B} → ${num(v, 2)}x ≤ ${B - F} → x ≤ ${num((B - F) / v, 3)}. The greatest whole number is ${units}${(B - F) / v % 1 > 1e-9 ? " — rounding up would go over budget" : ""}.`);
+  });
+
+  // =====================================================================
+  // M-339  Profit and Break-Even  (tier 6)   plan 75B
+  // =====================================================================
+  _addSkill(6, "Profit and Break-Even", "Profit and Break-Even", 3, {
+    goalProblem: "A candle business has $2,400 of fixed costs. Each candle costs $6 to make and sells for $14. How many candles must it sell to break even?",
+    teachingSteps: [
+      { title: "Profit = revenue − cost", explanation: "With R(x) = px and C(x) = F + vx, profit is <strong>P(x) = px − (F + vx) = (p − v)x − F</strong>.", visual: "P(x) = 14x − (2,400 + 6x) = 8x − 2,400" },
+      { title: "Contribution margin", explanation: "<strong>p − v</strong> is what each sale contributes toward the fixed costs. Once those are covered, it is profit.", visual: "14 − 6 = $8 per candle" },
+      { title: "The break-even point", explanation: "Break-even is where profit is zero — where the revenue and cost lines cross. Solve the system R(x) = C(x), or use <strong>x = F ÷ (p − v)</strong>. If it is not a whole number, round <strong>up</strong>: one unit short is still a loss.", visual: "2,400 ÷ 8 = 300 candles" },
+      { title: "Break-even revenue", explanation: "Multiply the break-even units by the price. At that point revenue equals total cost.", visual: "300 × 14 = $4,200" },
+      { title: "Planning for a target profit", explanation: "To earn a target profit T, the margin must cover the fixed costs <em>and</em> T: <strong>x = (F + T) ÷ (p − v)</strong>.", visual: "(2,400 + 2,000) ÷ 8 = 550 candles for $2,000 profit" }
+    ],
+    finalAnswer: "300 candles",
+    answerExplanation: "Each candle contributes 14 − 6 = $8. Covering $2,400 takes 2,400 ÷ 8 = 300 candles.",
+    example: { problem: "R(x) = 25x and C(x) = 1,800 + 13x. Find the break-even point.", steps: [
+      { text: "Set revenue equal to cost", math: "25x = 1,800 + 13x" },
+      { text: "Solve", math: "12x = 1,800 → x = 150" },
+      { text: "Revenue there", math: "R(150) = 25 × 150 = 3,750 → break-even point (150, 3750)" }
+    ]},
+    keyPoints: [
+      "P(x) = (p − v)x − F",
+      "Break-even units = F ÷ (p − v), rounded up to a whole unit",
+      "Break-even revenue = break-even units × price",
+      "Units for a target profit = (F + T) ÷ (p − v)"
+    ],
+    mistakes: [
+      { wrong: "Dividing the fixed cost by the price", why: "Each sale also has to pay for its own materials. Only p − v goes toward fixed costs." },
+      { wrong: "Rounding the break-even units down", why: "299.4 candles is not possible, and 299 still loses money. Round up to 300." },
+      { wrong: "Forgetting the fixed costs when planning a target profit", why: "The margin must pay the fixed costs first: (F + T) ÷ (p − v)." }
+    ],
+    guided: {
+      problem: "A screen-printing shop has $1,800 of fixed costs. Each shirt costs $13 to print and sells for $25. Find the break-even units, the break-even revenue, and the units needed for a $1,200 profit.",
+      steps: [
+        { label: "Contribution margin", value: "25 - 13 = 12" },
+        { label: "Break-even units", value: "1800 ÷ 12 = 150" },
+        { label: "Break-even revenue", value: "150 × 25 = 3750" },
+        { label: "Units for $1,200 profit", value: "(1800 + 1200) ÷ 12 = 250" }
+      ],
+      answer: "250", answerLabel: "Shirts needed for a $1,200 profit:",
+      interactiveSteps: [
+        step("What does each shirt contribute toward fixed costs (p - v)?", "Price minus variable cost.", "12", ["12.00"],
+          { "38": "That adds the cost to the price. The margin is 25 - 13." }, "Dollar amount, e.g., 8"),
+        step("How many shirts must be sold to break even?", "Fixed costs ÷ margin per shirt.", "150", [],
+          { "72": "1800 ÷ 25 = 72 ignores the cost of printing each shirt. Divide by the margin, 12." }, "Whole number, e.g., 300"),
+        step("What is the break-even revenue?", "Break-even units × price.", "3750", ["3750.00"],
+          { "1800": "1800 is the fixed cost. Revenue at break-even is 150 × 25." }, "Dollar amount, e.g., 4200"),
+        step("How many shirts give a profit of $1,200?", "(fixed costs + target profit) ÷ margin.", "250", [],
+          { "100": "1200 ÷ 12 = 100 forgets that the fixed costs must be covered first." }, "Whole number, e.g., 400")
+      ]
+    }
+  }, function(){
+    const st = pick(["profit_at_q", "loss_at_q", "break_even_units", "break_even_revenue", "target_profit", "break_even_point", "price_to_break_even", "profit_function"]);
+    const biz = pick([["candle maker", "candles"], ["food stand", "meals"], ["T-shirt printer", "shirts"], ["app developer", "subscriptions"], ["woodshop", "cutting boards"], ["bakery", "cakes"]]);
+    const F = ri(10, 80) * 100, v = ri(2, 40) + pick([0, 0.5, 0.25, 0.75]), m = ri(3, 30) + pick([0, 0.5]), p = v + m;
+    const be = F / m, lead = `${/^[aeiou]/i.test(biz[0]) ? "An" : "A"} ${biz[0]} has fixed costs of ${usd0(F)}. Each of its ${biz[1]} costs ${usd(v)} to make and sells for ${usd(p)}.`;
+    if (st === "profit_at_q") {
+      const x = Math.ceil(be) + ri(10, 400);
+      const a1 = money(m * x - F);
+      return Q(st, `${lead} What is the profit from selling ${x} ${biz[1]}, to the nearest cent?`, a1,
+        // ignores variable costs | ignores fixed costs | adds the fixed cost
+        optN(a1, [p * x - F, m * x, m * x + F], 2),
+        `P(x) = (${num(p, 2)} − ${num(v, 2)})x − ${F} = ${num(m, 2)}x − ${F}. P(${x}) = ${num(m, 2)} × ${x} − ${F} = ${usd(m * x - F)}.`);
+    }
+    if (st === "loss_at_q") {
+      const x = Math.max(1, Math.floor(be * ri(2, 8) / 10));
+      const a1 = money(F - m * x);
+      return Q(st, `${lead} It sells only ${x} ${biz[1]}. How much money does it lose, to the nearest cent?`, a1,
+        // the whole fixed cost | the contribution alone | ignores variable costs
+        optN(a1, [F, m * x, F - p * x], 2),
+        `P(${x}) = ${num(m, 2)} × ${x} − ${F} = −${usd(F - m * x)}, a loss of ${usd(F - m * x)}. The ${x} sales contributed ${usd(m * x)} toward the ${usd0(F)} of fixed costs.`);
+    }
+    if (st === "break_even_units") {
+      const a1 = plain(Math.ceil(be - 1e-9));
+      const whole = Math.abs(be - Math.round(be)) < 1e-9;
+      return Q(st, `${lead} What is the smallest whole number of ${biz[1]} it must sell to break even?`, a1,
+        // divides by the price | rounds down | divides by the variable cost
+        optN(a1, [Math.ceil(F / p), whole ? be + 1 : Math.floor(be), Math.ceil(F / v)], 0),
+        `Margin per item = ${num(p, 2)} − ${num(v, 2)} = ${num(m, 2)}. ${F} ÷ ${num(m, 2)} = ${num(be, 3)}${whole ? "" : ", so round up"}: ${a1.answer} ${biz[1]}.`);
+    }
+    if (st === "break_even_revenue") {
+      const mi = ri(3, 30), x0 = ri(20, 900), Fi = mi * x0, pi = v + mi;
+      const a1 = money(pi * x0);
+      return Q(st, `${/^[aeiou]/i.test(biz[0]) ? "An" : "A"} ${biz[0]} has fixed costs of ${usd0(Fi)}. Each of its ${biz[1]} costs ${usd(v)} to make and sells for ${usd(pi)}. What is its break-even revenue, to the nearest cent?`, a1,
+        // reports the fixed cost | the variable cost at break-even | divides the fixed cost by the price first
+        optN(a1, [Fi, v * x0, Math.ceil(Fi / pi) * pi], 2),
+        `Break-even units = ${Fi} ÷ (${num(pi, 2)} − ${num(v, 2)}) = ${Fi} ÷ ${mi} = ${x0}. Break-even revenue = ${x0} × ${usd(pi)} = ${usd(pi * x0)}.`);
+    }
+    if (st === "target_profit") {
+      const T = ri(5, 60) * 100;
+      const a1 = plain(Math.ceil((F + T) / m - 1e-9));
+      return Q(st, `${lead} How many ${biz[1]} must it sell to make a profit of at least ${usd0(T)}?`, a1,
+        // forgets fixed costs | only breaks even | divides by the price
+        optN(a1, [Math.ceil(T / m), Math.ceil(F / m), Math.ceil((F + T) / p)], 0),
+        `Units = (F + T) ÷ (p − v) = (${F} + ${T}) ÷ ${num(m, 2)} = ${num((F + T) / m, 3)} → ${a1.answer} ${biz[1]} (round up).`);
+    }
+    if (st === "break_even_point") {
+      const vi = ri(2, 40), pi = vi + ri(3, 30), x0 = ri(20, 400), Fi = (pi - vi) * x0;
+      const ans = `(${x0}, ${pi * x0})`;
+      return { subType: st, question: `Revenue is R(x) = ${pi}x and cost is C(x) = ${Fi} + ${vi}x, where x is the number of items. Solve the system to find the break-even point (x, y).`,
+        answer: ans, acceptableAnswers: [`(${x0},${pi * x0})`, `${x0}, ${pi * x0}`],
+        // y read as the fixed cost | coordinates reversed | y from the cost line's slope alone
+        options: opt4(ans, [`(${x0}, ${Fi})`, `(${pi * x0}, ${x0})`, `(${x0}, ${vi * x0})`]),
+        explanation: `${pi}x = ${Fi} + ${vi}x → ${pi - vi}x = ${Fi} → x = ${x0}. R(${x0}) = ${pi} × ${x0} = ${pi * x0}, so the lines cross at (${x0}, ${pi * x0}).` };
+    }
+    if (st === "price_to_break_even") {
+      const q = ri(5, 60) * 10;
+      const a1 = money(v + F / q);
+      return Q(st, `${/^[aeiou]/i.test(biz[0]) ? "An" : "A"} ${biz[0]} has fixed costs of ${usd0(F)} and spends ${usd(v)} to make each of its ${biz[1]}. It expects to sell ${q}. What is the lowest price per item that lets it break even, to the nearest cent?`, a1,
+        // forgets the variable cost | spreads only one unit's cost | adds the whole fixed cost to each item
+        optN(a1, [F / q, (F + v) / q, v + F], 2),
+        `Break even: p × ${q} = ${F} + ${num(v, 2)} × ${q}, so p = ${num(v, 2)} + ${F} ÷ ${q} = ${usd(v + F / q)}.`);
+    }
+    // profit_function
+    const ms = num(m, 2), ps = num(p, 2);
+    return QC(st, `${lead} Which function gives the profit from selling x ${biz[1]}?`, `P(x) = ${ms}x − ${F}`,
+      // ignores variable costs | adds the fixed cost | adds cost to price
+      [`P(x) = ${ps}x − ${F}`, `P(x) = ${ms}x + ${F}`, `P(x) = ${num(p + v, 2)}x − ${F}`],
+      `P(x) = R(x) − C(x) = ${ps}x − (${F} + ${num(v, 2)}x) = ${ms}x − ${F}.`);
+  });
+
+  // =====================================================================
+  // M-340  Margins and Markups  (tier 6)   plan 76B
+  // =====================================================================
+  _addSkill(6, "Margins and Markups", "Margins and Markups", 3, {
+    goalProblem: "A shop buys a jacket for $40 and sells it for $50. What is the markup percent, and what is the margin percent?",
+    teachingSteps: [
+      { title: "Markup is a percent of COST", explanation: "Markup % = (price − cost) ÷ <strong>cost</strong> × 100. It is a percent increase from cost to price.", visual: "(50 − 40) ÷ 40 = 25% markup" },
+      { title: "Margin is a percent of PRICE", explanation: "Margin % = (price − cost) ÷ <strong>price</strong> × 100. It is the share of each sale that is gross profit.", visual: "(50 − 40) ÷ 50 = 20% margin" },
+      { title: "Same dollars, different base", explanation: "Both use the same $10 profit, but divide by different amounts. The margin is always the smaller percent.", visual: "$10 on $40 cost = 25%;  $10 on $50 price = 20%" },
+      { title: "Pricing from a markup or a margin", explanation: "From a markup m: price = cost × (1 + m). From a target margin g: price = cost ÷ (1 − g).", visual: "cost $30, 40% margin: 30 ÷ 0.60 = $50 (not 30 × 1.40 = $42)" },
+      { title: "Converting between them", explanation: "margin = markup ÷ (1 + markup);  markup = margin ÷ (1 − margin).", visual: "25% markup → 0.25 ÷ 1.25 = 20% margin" }
+    ],
+    finalAnswer: "Markup 25%; margin 20%",
+    answerExplanation: "Profit = 50 − 40 = $10. Markup = 10 ÷ 40 = 25%. Margin = 10 ÷ 50 = 20%.",
+    example: { problem: "A retailer wants a 40% margin on an item that costs $30. What price should it charge?", steps: [
+      { text: "Margin is a share of the price, so cost is the rest", math: "cost = 60% of price" },
+      { text: "Solve for price", math: "price = 30 ÷ 0.60 = $50" },
+      { text: "Check", math: "(50 − 30) ÷ 50 = 40% ✓   (30 × 1.40 = $42 would only be a 28.6% margin)" }
+    ]},
+    keyPoints: [
+      "Markup divides the profit by cost; margin divides it by price",
+      "Price from markup: cost × (1 + m); price from margin: cost ÷ (1 − g)",
+      "margin = markup ÷ (1 + markup); markup = margin ÷ (1 − margin)",
+      "For the same item, the margin % is always smaller than the markup %"
+    ],
+    mistakes: [
+      { wrong: "Marking up 40% to get a 40% margin", why: "30 × 1.40 = $42 gives a margin of 12 ÷ 42 = 28.6%. To get 40% margin, divide: 30 ÷ 0.60." },
+      { wrong: "Dividing by the price to find markup", why: "Markup is measured against cost. Dividing by the price gives the margin." },
+      { wrong: "Finding cost by taking the markup off the price", why: "A 25% markup on cost is not 25% of the price. Cost = price ÷ 1.25." }
+    ],
+    guided: {
+      problem: "An item costs a store $60. The store wants a 25% margin. Find the price, the profit per item and the markup percent.",
+      steps: [
+        { label: "Price", value: "60 ÷ (1 - 0.25) = 80" },
+        { label: "Profit per item", value: "80 - 60 = 20" },
+        { label: "Markup %", value: "20 ÷ 60 × 100 = 33.3" }
+      ],
+      answer: "33.3", answerLabel: "Markup (%):",
+      interactiveSteps: [
+        step("What price gives a 25% margin on a $60 cost?", "Price = cost ÷ (1 - margin) = 60 ÷ 0.75.", "80", ["80.00"],
+          { "75": "75 is a 25% markup (60 × 1.25). That is only a 20% margin.", "75.00": "75 is a 25% markup (60 × 1.25). That is only a 20% margin." }, "Dollar amount, e.g., 50"),
+          step("What is the profit per item?", "Price - cost.", "20", ["20.00"],
+          { "15": "15 is 25% of the cost. The profit is 80 - 60." }, "Dollar amount, e.g., 10"),
+        step("What is the markup percent, to the nearest tenth?", "Profit ÷ cost × 100.", "33.3", ["33.3%"],
+          { "25": "25% is the margin (profit ÷ price). Markup divides by cost: 20 ÷ 60." }, HINT_PCT)
+      ]
+    }
+  }, function(){
+    const st = pick(["price_from_markup", "markup_pct", "margin_pct", "markup_to_margin", "margin_to_markup", "price_for_margin", "cost_from_price"]);
+    const item = pick(["a pair of sneakers", "a phone charger", "a lamp", "a hoodie", "a board game", "a set of tools", "a bike lock"]);
+    if (st === "price_from_markup") {
+      const C = ri(400, 40000) / 100, m = pick([20, 25, 30, 40, 50, 60, 75, 80, 100]);
+      const a1 = money(C * (1 + m / 100));
+      return Q(st, `A store pays ${usd(C)} for ${item} and marks it up ${m}% on cost. What is the selling price, to the nearest cent?`, a1,
+        // treats the markup as a margin | the markup amount only | adds the percent as dollars
+        optN(a1, [m < 100 ? C / (1 - m / 100) : -1, C * m / 100, C + m], 2),
+        `Price = cost × (1 + markup) = ${usd(C)} × ${mult(1 + m / 100)} = ${usd(C * (1 + m / 100))}.`);
+    }
+    if (st === "markup_pct" || st === "margin_pct") {
+      const C = ri(4, 400), m = pick([15, 20, 25, 30, 35, 40, 50, 60, 75, 80, 100, 120, 150]);
+      const P = r2(C * (1 + m / 100)), pr = r2(P - C);
+      if (st === "markup_pct") {
+        const a1 = percent(pr / C * 100, 1);
+        return Q(st, `A store buys ${item} for ${usd(C)} and sells it for ${usd(P)}. What is the markup percent on cost, to the nearest tenth?`, a1,
+          // divides by the price (margin) | price as a percent of cost | the dollar profit
+          optN(a1, [pr / P * 100, P / C * 100, pr], 1),
+          `Profit = ${usd(P)} − ${usd(C)} = ${usd(pr)}. Markup = ${usd(pr)} ÷ ${usd(C)} × 100 = ${ap(num(pr / C * 100, 3), a1.answer)}%.`);
+      }
+      const a1 = percent(pr / P * 100, 1);
+      return Q(st, `A store buys ${item} for ${usd(C)} and sells it for ${usd(P)}. What is the profit margin as a percent of the selling price, to the nearest tenth?`, a1,
+        // divides by cost (markup) | cost as a percent of price | the dollar profit
+        optN(a1, [pr / C * 100, C / P * 100, pr], 1),
+        `Profit = ${usd(P)} − ${usd(C)} = ${usd(pr)}. Margin = ${usd(pr)} ÷ ${usd(P)} × 100 = ${ap(num(pr / P * 100, 3), a1.answer)}%.`);
+    }
+    if (st === "markup_to_margin") {
+      const m = pick([10, 20, 25, 30, 40, 50, 60, 75, 80, 100, 150]);
+      const a1 = percent(m / (100 + m) * 100, 1);
+      return Q(st, `A product is priced with a ${m}% markup on cost. What is its margin as a percent of the price, to the nearest tenth?`, a1,
+        // assumes they are equal | uses the margin-to-markup formula | 100 minus the markup
+        optN(a1, [m, m < 100 ? m / (100 - m) * 100 : -1, 100 - m], 1),
+        `On a cost of 100, the price is ${100 + m} and the profit ${m}. Margin = ${m} ÷ ${100 + m} = ${ap(num(m / (100 + m) * 100, 3), a1.answer)}%.`);
+    }
+    if (st === "margin_to_markup") {
+      const gm = pick([10, 15, 20, 25, 30, 35, 40, 45, 50, 60]);
+      const a1 = percent(gm / (100 - gm) * 100, 1);
+      return Q(st, `A product earns a ${gm}% margin on its selling price. What is its markup as a percent of cost, to the nearest tenth?`, a1,
+        // assumes they are equal | uses the markup-to-margin formula | 100 minus the margin
+        optN(a1, [gm, gm / (100 + gm) * 100, 100 - gm], 1),
+        `On a price of 100, the profit is ${gm} and the cost ${100 - gm}. Markup = ${gm} ÷ ${100 - gm} = ${ap(num(gm / (100 - gm) * 100, 3), a1.answer)}%.`);
+    }
+    if (st === "price_for_margin") {
+      const C = ri(500, 30000) / 100, gm = pick([15, 20, 25, 30, 35, 40, 45, 50, 60]);
+      const a1 = money(C / (1 - gm / 100));
+      return Q(st, `${cap1(item)} costs a store ${usd(C)}. What price gives a ${gm}% profit margin (as a percent of the price), to the nearest cent?`, a1,
+        // uses the margin as a markup | takes the margin off the cost | divides by the margin
+        optN(a1, [C * (1 + gm / 100), C * (1 - gm / 100), C / (gm / 100)], 2),
+        `Cost is ${100 - gm}% of the price, so price = ${usd(C)} ÷ ${mult(1 - gm / 100)} = ${usd(C / (1 - gm / 100))}. Marking up ${gm}% would give ${usd(C * (1 + gm / 100))}, a margin of only ${num(gm / (100 + gm) * 100, 1)}%.`);
+    }
+    // cost_from_price
+    const P = ri(1000, 50000) / 100, m = pick([20, 25, 30, 40, 50, 60, 75, 100]);
+    const a1 = money(P / (1 + m / 100));
+    return Q(st, `${cap1(item)} sells for ${usd(P)}, which includes a ${m}% markup on cost. What did the store pay for it, to the nearest cent?`, a1,
+      // takes the markup off the price | subtracts the percent as dollars | treats it as a margin the wrong way
+      optN(a1, [P * (1 - m / 100), P - m, m < 100 ? P / (1 - m / 100) : -1], 2),
+      `Price = cost × ${mult(1 + m / 100)}, so cost = ${usd(P)} ÷ ${mult(1 + m / 100)} = ${usd(P / (1 + m / 100))}. Taking ${m}% off the price is wrong because the markup was ${m}% of the smaller cost.`);
+  });
+  const cap1 = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+  // =====================================================================
+  // M-341  Financial Ratios  (tier 7)   plan 77B
+  // =====================================================================
+  _addSkill(7, "Financial Ratios", "Financial Ratios", 4, {
+    goalProblem: "A company has revenue of $500,000 and expenses of $440,000. Its current assets are $180,000 and current liabilities $120,000. Find its profit margin and current ratio.",
+    teachingSteps: [
+      { title: "A ratio compares two amounts", explanation: "Ratios let you compare a small business with a large one, or this year with last year, because the size cancels out. Write each as a decimal or a percent.", visual: "60,000 : 500,000 = 0.12 = 12%" },
+      { title: "Profit margin", explanation: "<strong>Net profit margin = net income ÷ revenue</strong>: how much of each sales dollar is kept as profit.", visual: "(500,000 − 440,000) ÷ 500,000 = 12%" },
+      { title: "Current ratio", explanation: "<strong>Current assets ÷ current liabilities</strong> (what is due within a year). Above 1 means the business can cover its short-term bills.", visual: "180,000 ÷ 120,000 = 1.5" },
+      { title: "Debt-to-equity", explanation: "<strong>Total liabilities ÷ owners' equity</strong>, where equity = total assets − total liabilities. Higher means more of the business is paid for with borrowed money.", visual: "liabilities 300,000, equity 200,000 → 1.5" },
+      { title: "Debt-to-income (personal)", explanation: "<strong>Monthly debt payments ÷ gross monthly income</strong>. Many lenders want it at or below about 36%.", visual: "1,350 ÷ 4,500 = 30%" },
+      { title: "Return ratios", explanation: "<strong>Return on assets</strong> = net income ÷ total assets. <strong>Return on equity</strong> = net income ÷ equity. Both are ROI-type ratios.", visual: "60,000 ÷ 750,000 = 8% ROA" }
+    ],
+    finalAnswer: "Profit margin 12%; current ratio 1.5",
+    answerExplanation: "Net income = 500,000 − 440,000 = 60,000; 60,000 ÷ 500,000 = 12%. Current ratio = 180,000 ÷ 120,000 = 1.5.",
+    example: { problem: "A business has total assets of $800,000 and total liabilities of $480,000. Find its debt-to-equity ratio.", steps: [
+      { text: "Equity", math: "800,000 − 480,000 = 320,000" },
+      { text: "Divide liabilities by equity", math: "480,000 ÷ 320,000 = 1.5" },
+      { text: "Interpret", math: "$1.50 of debt for every $1 of owners' money" }
+    ]},
+    keyPoints: [
+      "Profit margin = net income ÷ revenue",
+      "Current ratio = current assets ÷ current liabilities (above 1 covers short-term bills)",
+      "Debt-to-equity = liabilities ÷ (assets − liabilities)",
+      "Debt-to-income = monthly debts ÷ GROSS monthly income"
+    ],
+    mistakes: [
+      { wrong: "Using annual income in a debt-to-income ratio", why: "The debts are monthly, so divide by monthly income: annual salary ÷ 12." },
+      { wrong: "Dividing liabilities by assets for debt-to-equity", why: "That is the debt ratio. Debt-to-equity divides by equity = assets − liabilities." },
+      { wrong: "Using revenue instead of net income for the profit margin", why: "Expenses must come out first. Margin = (revenue − expenses) ÷ revenue." }
+    ],
+    guided: {
+      problem: "A worker earns $54,000 a year. Monthly debts: rent $1,100, car $380, student loan $220, credit card minimum $50. Find the debt-to-income ratio and the most a lender allowing 36% would accept in total monthly debt.",
+      steps: [
+        { label: "Gross monthly income", value: "54000 ÷ 12 = 4500" },
+        { label: "Total monthly debts", value: "1100 + 380 + 220 + 50 = 1750" },
+        { label: "Debt-to-income", value: "1750 ÷ 4500 × 100 = 38.9" },
+        { label: "Limit at 36%", value: "0.36 × 4500 = 1620" }
+      ],
+      answer: "1620", answerLabel: "Most total monthly debt at 36% ($):",
+      interactiveSteps: [
+        step("What is the gross monthly income?", "Annual salary ÷ 12.", "4500", ["4500.00"],
+          { "54000": "That is the annual salary. The debts are monthly, so divide by 12." }, "Dollar amount, e.g., 3800"),
+        step("What are the total monthly debt payments?", "Add all four payments.", "1750", ["1750.00"],
+          { "650": "Rent counts as a monthly debt obligation too. Include the 1100." }, "Dollar amount, e.g., 1200"),
+        step("What is the debt-to-income ratio, as a percent to the nearest tenth?", "Monthly debts ÷ monthly income × 100.", "38.9", ["38.9%"],
+          { "3.2": "That divides by the annual salary. Use the monthly income, 4500." }, HINT_PCT),
+          step("What is the most total monthly debt allowed at 36%?", "0.36 × monthly income.", "1620", ["1620.00"],
+          { "19440": "That is 36% of the annual salary. Use the monthly income." }, "Dollar amount, e.g., 1400")
+      ]
+    }
+  }, function(){
+    const st = pick(["profit_margin", "current_ratio", "debt_to_income", "debt_to_equity", "return_ratio", "max_payment", "interpret"]);
+    const co = pick(["A hardware store", "A landscaping company", "A small bakery chain", "A software startup", "A family farm", "A bike shop"]);
+    if (st === "profit_margin") {
+      const R = ri(120, 2000) * 1000, NI = ri(Math.ceil(R * 0.02 / 100), Math.floor(R * 0.25 / 100)) * 100, E = R - NI;
+      const a1 = percent(NI / R * 100, 1);
+      return Q(st, `${co} had revenue of ${usd0(R)} and total expenses of ${usd0(E)} last year. What is its net profit margin, as a percent to the nearest tenth?`, a1,
+        // expenses as a share of revenue | divides by expenses | divides by 1,000 instead of revenue
+        optN(a1, [E / R * 100, NI / E * 100, NI / 10000], 1),
+        `Net income = ${usd0(R)} − ${usd0(E)} = ${usd0(NI)}. Margin = ${usd0(NI)} ÷ ${usd0(R)} × 100 = ${ap(num(NI / R * 100, 3), a1.answer)}%.`);
+    }
+    if (st === "current_ratio") {
+      const CA = ri(40, 900) * 1000, CL = ri(30, 700) * 1000;
+      const a1 = plain(CA / CL, 2, true); a1.acceptableAnswers = a1.acceptableAnswers.concat([a1.answer + ":1", a1.answer + " : 1"]);
+      return Q(st, `${co} has current assets of ${usd0(CA)} and current liabilities of ${usd0(CL)}. What is its current ratio, to the nearest hundredth?`, a1,
+        // upside down | working capital ÷ liabilities | assets as a share of the total
+        optN(a1, [CL / CA, CA > CL ? (CA - CL) / CL : -1, CA / (CA + CL)], 2),
+        `Current ratio = ${usd0(CA)} ÷ ${usd0(CL)} = ${num(CA / CL, 4)} ≈ ${a1.answer}. ${CA >= CL ? "Above 1: it can cover its short-term bills." : "Below 1: it owes more in the coming year than it holds in current assets."}`);
+    }
+    if (st === "debt_to_income") {
+      const S = ri(30, 120) * 1000, rent = ri(16, 50) * 50, car = pick([0, ri(8, 24) * 25]), stu = pick([0, ri(4, 16) * 25]), card = ri(2, 12) * 10;
+      const D = rent + car + stu + card, mi = S / 12;
+      const dti = D / mi * 100;
+      const list = [["housing", rent], ["car loan", car], ["student loan", stu], ["credit card minimum", card]].filter(x => x[1] > 0);
+      const a1 = percent(dti, 1);
+      return Q(st, `A borrower earns ${usd0(S)} a year before taxes. Monthly debt payments: ${list.map(x => x[0] + " " + usd0(x[1])).join(", ")}. What is the debt-to-income ratio, as a percent to the nearest tenth?`, a1,
+        // divides by the annual salary | leaves housing out | divides by take-home pay (75% of gross)
+        optN(a1, [D / S * 100, (D - rent) / mi * 100, D / (mi * 0.75) * 100], 1),
+        `Gross monthly income = ${usd0(S)} ÷ 12 = ${usd(mi)}. Debts = ${usd0(D)}. DTI = ${usd0(D)} ÷ ${usd(mi)} × 100 = ${ap(num(dti, 3), a1.answer)}%.`);
+    }
+    if (st === "debt_to_equity") {
+      const A = ri(200, 3000) * 1000, Lb = ri(Math.ceil(A * 0.2 / 1000), Math.floor(A * 0.8 / 1000)) * 1000, Eq = A - Lb;
+      const a1 = plain(Lb / Eq, 2, true);
+      return Q(st, `${co} has total assets of ${usd0(A)} and total liabilities of ${usd0(Lb)}. What is its debt-to-equity ratio, to the nearest hundredth?`, a1,
+        // the debt ratio (÷ assets) | upside down | assets ÷ liabilities
+        optN(a1, [Lb / A, Eq / Lb, A / Lb], 2),
+        `Equity = ${usd0(A)} − ${usd0(Lb)} = ${usd0(Eq)}. Debt-to-equity = ${usd0(Lb)} ÷ ${usd0(Eq)} = ${num(Lb / Eq, 4)} ≈ ${a1.answer}.`);
+    }
+    if (st === "return_ratio") {
+      const A = ri(200, 3000) * 1000, Lb = ri(Math.ceil(A * 0.2 / 1000), Math.floor(A * 0.7 / 1000)) * 1000, Eq = A - Lb;
+      const NI = ri(Math.ceil(A * 0.01 / 1000), Math.floor(A * 0.15 / 1000)) * 1000;
+      if (pick([true, false])) {
+        const a1 = percent(NI / A * 100, 1);
+        return Q(st, `${co} earned net income of ${usd0(NI)}. It has total assets of ${usd0(A)} and total liabilities of ${usd0(Lb)}. What is its return on assets (net income ÷ total assets), as a percent to the nearest tenth?`, a1,
+          // return on equity instead | divides by liabilities | assets ÷ income
+          optN(a1, [NI / Eq * 100, NI / Lb * 100, A / NI], 1),
+          `ROA = ${usd0(NI)} ÷ ${usd0(A)} × 100 = ${ap(num(NI / A * 100, 3), a1.answer)}%.`);
+      }
+      const a1 = percent(NI / Eq * 100, 1);
+      return Q(st, `${co} earned net income of ${usd0(NI)}. It has total assets of ${usd0(A)} and total liabilities of ${usd0(Lb)}. What is its return on equity (net income ÷ owners' equity), as a percent to the nearest tenth?`, a1,
+        // return on assets instead | divides by liabilities | forgets to subtract the liabilities... uses assets + liabilities
+        optN(a1, [NI / A * 100, NI / Lb * 100, NI / (A + Lb) * 100], 1),
+        `Equity = ${usd0(A)} − ${usd0(Lb)} = ${usd0(Eq)}. ROE = ${usd0(NI)} ÷ ${usd0(Eq)} × 100 = ${ap(num(NI / Eq * 100, 3), a1.answer)}%.`);
+    }
+    if (st === "max_payment") {
+      const lim = pick([36, 43]), S = ri(36, 120) * 1000, mi = S / 12;
+      const D = ri(Math.ceil(mi * 0.08 / 10), Math.floor(mi * 0.25 / 10)) * 10;
+      const room = lim / 100 * mi - D;
+      const a1 = money(room);
+      return Q(st, `A lender allows total monthly debt payments of up to ${lim}% of gross monthly income. An applicant earns ${usd0(S)} a year and already pays ${usd0(D)} a month in debts. What is the largest new monthly payment the lender will allow, to the nearest cent?`, a1,
+        // ignores the existing debts | uses the annual salary | takes the percent after removing debts
+        optN(a1, [lim / 100 * mi, lim / 100 * S - D, (mi - D) * lim / 100], 2),
+        `Monthly income = ${usd0(S)} ÷ 12 = ${usd(mi)}. Limit = ${lim}% × ${usd(mi)} = ${usd(lim / 100 * mi)}. Room left = ${usd(lim / 100 * mi)} − ${usd0(D)} = ${usd(room)}.`);
+    }
+    // interpret: a choice between meanings, so it stays multiple choice
+    if (pick([true, false])) {
+      const CA = ri(40, 900) * 1000;
+      const below = pick([true, false]);
+      const CL = below ? r0(CA / (ri(50, 95) / 100) / 1000) * 1000 : r0(CA / (ri(120, 300) / 100) / 1000) * 1000;
+      const v = CA / CL;
+      const MORE = "It has more in current assets than it owes in the coming year";
+      const LESS = "It owes more in the coming year than it has in current assets";
+      return QC(st, `${co} has current assets of ${usd0(CA)} and current liabilities of ${usd0(CL)}. What does its current ratio tell you?`,
+        v >= 1 ? MORE : LESS,
+        // the opposite reading | confuses liquidity with profit | confuses current with long-term debt
+        [v >= 1 ? LESS : MORE, "It made a profit on most of its sales this year", "It has paid off all of its long-term debt"],
+        `Current ratio = ${usd0(CA)} ÷ ${usd0(CL)} = ${num(v, 2)}. ${v >= 1 ? "Above 1, so current assets cover the bills due within a year." : "Below 1, so the bills due within a year are larger than its current assets."} The ratio says nothing about profit or long-term debt.`);
+    }
+    const RA = ri(200, 900) * 1000, mA = ri(8, 20), RB = RA + ri(100, 900) * 1000;
+    let mB; do { mB = ri(3, 18); } while (mB === mA);
+    const NIA = RA * mA / 100, NIB = RB * mB / 100;
+    const best = mA > mB ? "Company A" : "Company B";
+    return QC(st, `Company A had revenue of ${usd0(RA)} and net income of ${usd0(NIA)}. Company B had revenue of ${usd0(RB)} and net income of ${usd0(NIB)}. Which company keeps more profit from each dollar of sales?`,
+      best,
+      // the other company (often chosen for its bigger revenue) | ignores the difference | reaches for unrelated data
+      [best === "Company A" ? "Company B" : "Company A", "They keep the same share", "It cannot be told without their assets"],
+      `Profit margin A = ${usd0(NIA)} ÷ ${usd0(RA)} = ${mA}%. Profit margin B = ${usd0(NIB)} ÷ ${usd0(RB)} = ${mB}%. ${best} keeps more of each sales dollar, whatever its size.`);
+  });
+
+  // =====================================================================
+  // M-342  Financial Spreadsheets  (tier 7)   plan 78B
+  // =====================================================================
+  // Grids are described in words ("B2:B6 hold ...") because q.question is
+  // plain text and questions must stand without a visual.
+  _addSkill(7, "Financial Spreadsheets", "Financial Spreadsheets", 4, function(){
+    const B2 = 12000, apr = 6, F2 = 300;
+    const C2 = r2(B2 * apr / 1200), D2 = r2(F2 - C2), E2 = r2(B2 - D2), C3 = r2(E2 * apr / 1200);
+    return {
+      goalProblem: "A loan sheet has the rate in F1 and the payment in F2. Row 2 starts with a balance of $12,000 in B2. What do the interest, principal and ending-balance cells show, and what goes in B3?",
+      teachingSteps: [
+        { title: "Formulas and references", explanation: "A formula starts with <strong>=</strong> and refers to other cells by column letter and row number. When a referenced cell changes, the formula updates.", visual: "=B2*12   =SUM(B2:B7)   =ROUND(B2*F1/12,2)" },
+        { title: "A running balance", explanation: "Put the first amount in C2 with =B2. Then C3 gets <strong>=C2+B3</strong>: the balance above plus this row's amount. Filled down, every row adds onto the one before.", visual: "B: 500, −120, 250  →  C: 500, 380, 630" },
+        { title: "Relative references move", explanation: "Filling a formula down shifts every relative reference by the same number of rows. =C2+B3 in C3 becomes =C5+B6 in C6.", visual: "C3: =C2+B3 → C4: =C3+B4 → C6: =C5+B6" },
+        { title: "Absolute references stay put", explanation: "A dollar sign locks a reference. A rate kept in one cell is written <strong>$F$1</strong> so every row uses it after filling.", visual: "D5: =C5*$B$1 → D9: =C9*$B$1" },
+        { title: "A loan schedule", explanation: "Each row: interest =ROUND(B2*$F$1/12,2), principal =$F$2−C2, ending balance =B2−D2, and the next row starts with =E2. It is the amortization table from Loans and Amortization, built once and filled down.", visual: `B2 12,000 → C2 ${c2(C2)} → D2 ${c2(D2)} → E2 ${c2(E2)}` },
+        { title: "PMT", explanation: "=PMT(rate, nper, pv) returns the payment. Use the <strong>monthly</strong> rate and the number of <strong>months</strong>; a negative pv makes the payment come out positive.", visual: "=PMT(B2/12, B3*12, -B1)" }
+      ],
+      finalAnswer: `C2 ${c2(C2)}, D2 ${c2(D2)}, E2 ${c2(E2)}; B3 is =E2`,
+      answerExplanation: `C2 = ROUND(12000 × 0.06 ÷ 12, 2) = ${c2(C2)}. D2 = 300 − ${c2(C2)} = ${c2(D2)}. E2 = 12000 − ${c2(D2)} = ${c2(E2)}. The next row starts where this one ends, so B3 is =E2.`,
+      example: { problem: "B2:B5 hold 450, −120, 300, −85. C2 has =B2 and C3 has =C2+B3, filled down to C5. What does each C cell show?", steps: [
+        { text: "C2 copies B2", math: "450" },
+        { text: "C3 = C2 + B3", math: "450 + (−120) = 330" },
+        { text: "C4 = C3 + B4, C5 = C4 + B5", math: "330 + 300 = 630;  630 + (−85) = 545" }
+      ]},
+      keyPoints: [
+        "A running balance adds each row to the balance above: =C2+B3, filled down",
+        "Relative references shift when filled; $-locked references do not",
+        "Loan rows: interest = balance × rate ÷ 12, principal = payment − interest, end = start − principal",
+        "PMT needs the monthly rate and the number of months"
+      ],
+      mistakes: [
+        { wrong: "Writing the tax-rate cell as B1 in a formula that will be filled down", why: "B1 shifts to B2, B3 ... as it fills. Lock it as $B$1." },
+        { wrong: "=PMT(B2, B3, -B1) with an annual rate and years", why: "Payments are monthly: use B2/12 for the rate and B3*12 for the number of payments." },
+        { wrong: "Starting the next loan row from B2 again", why: "Each month starts with the previous month's ending balance: B3 is =E2." }
+      ],
+      guided: {
+        problem: "In a loan sheet F1 holds 6% and F2 holds the $300 payment. B2 is 12000. C2 has =ROUND(B2*$F$1/12,2), D2 has =$F$2-C2, E2 has =B2-D2, and B3 has =E2. Find each value.",
+        steps: [
+          { label: "C2 (interest)", value: "12000 × 0.06 ÷ 12 = " + c2(C2) },
+          { label: "D2 (principal)", value: `300 - ${c2(C2)} = ${c2(D2)}` },
+          { label: "E2 (ending balance)", value: `12000 - ${c2(D2)} = ${c2(E2)}` },
+          { label: "C3 (next month's interest)", value: `${c2(E2)} × 0.06 ÷ 12 = ${c2(C3)}` }
+        ],
+        answer: c2(C3), answerLabel: "C3 shows ($):",
+        interactiveSteps: [
+          step("What does C2 show?", "12000 × 0.06 ÷ 12, rounded to 2 places.", c2(C2), ["60"],
+            { "720": "720 is a year of interest. The formula divides by 12.", "720.00": "720 is a year of interest. The formula divides by 12." }, HINT_USD),
+          step("What does D2 show?", "The payment in F2 minus C2.", c2(D2), [num(D2, 2)],
+            { "300": "That is the whole payment. D2 subtracts the interest in C2." }, HINT_USD),
+          step("What does E2 show?", "B2 minus D2.", c2(E2), [num(E2, 2)],
+            { "11700": "That subtracts the whole payment. E2 subtracts only the principal, D2.", "11700.00": "That subtracts the whole payment. E2 subtracts only the principal, D2." }, HINT_USD),
+          step("B3 copies E2, and C3 is the same formula one row down. What does C3 show?", "Use the new balance: ROUND(B3 × 0.06 ÷ 12, 2).", c2(C3), [num(C3, 2)],
+            { [c2(C2)]: "That is last month's interest. C3 uses the new, smaller balance in B3." }, HINT_USD)
+        ]
+      }
+    };
+  }, function(){
+    const st = pick(["running_balance", "fill_down", "absolute_reference", "formula_value", "which_formula", "loan_schedule_value", "loan_schedule_formula", "pmt_arguments"]);
+    if (st === "running_balance") {
+      const vals = [ri(30, 90) * 10];
+      let run = vals[0];
+      for (let i = 1; i < 5; i++) {
+        let x; do { x = pick([1, -1]) * ri(3, 40) * 5; } while (run + x <= 0);
+        vals.push(x); run += x;
+      }
+      const k = ri(3, 6), cum = vals.slice(0, k - 1).reduce((s, x) => s + x, 0);
+      const prev = vals.slice(0, k - 2).reduce((s, x) => s + x, 0);
+      const a1 = plain(cum);
+      return Q(st, `In a budget sheet, B2:B6 hold ${vals.join(", ")} (deposits positive, withdrawals negative). C2 contains =B2, and C3 contains =C2+B3, filled down to C6. What value does C${k} show?`, a1,
+        // the final balance | the row above | ignores the minus signs
+        optN(a1, [k === 6 ? prev : run, prev, vals.slice(0, k - 1).reduce((s, x) => s + Math.abs(x), 0)], 0),
+        `C${k} is the running total of B2 through B${k}: ${vals.slice(0, k - 1).join(" + ").split("+ -").join("− ")} = ${cum}.`);
+    }
+    if (st === "fill_down") {
+      const k = ri(5, 14);
+      if (pick([true, false])) {
+        return QC(st, `C3 contains =C2+B3 to keep a running balance, and it is filled down column C. Which formula ends up in C${k}?`, `=C${k - 1}+B${k}`,
+          // thinks references stay fixed | shifts one reference too few | refers to its own row
+          [`=C2+B${k}`, `=C${k - 1}+B${k - 1}`, `=C${k}+B${k}`],
+          `Filling down from row 3 to row ${k} moves every relative reference down ${k - 3} rows: C2 → C${k - 1} and B3 → B${k}. So C${k} holds =C${k - 1}+B${k}.`);
+      }
+      return QC(st, `B1 holds a yearly growth rate. D4 contains =D3*(1+$B$1) and is filled down column D. Which formula ends up in D${k}?`, `=D${k - 1}*(1+$B$1)`,
+        // treats the rate as relative | freezes the balance reference | refers to its own row
+        [`=D${k - 1}*(1+B${k - 3})`, `=D3*(1+$B$1)`, `=D${k}*(1+$B$1)`],
+        `D3 is relative, so it moves to D${k - 1}; $B$1 is absolute, so it stays. D${k} holds =D${k - 1}*(1+$B$1).`);
+    }
+    if (st === "absolute_reference") {
+      const k = ri(7, 12);
+      const what = pick(["the sales tax rate", "the commission rate", "the discount rate", "the hourly wage"]);
+      return QC(st, `B1 holds ${what}. D5 contains =C5*$B$1 and is filled down to D12. Which formula is in D${k}?`, `=C${k}*$B$1`,
+        // what =C5*B1 would have become | thinks nothing moves | locks the wrong row
+        [`=C${k}*B${k - 4}`, `=C5*$B$1`, `=C${k}*$B$${k - 4}`],
+        `C5 is relative and moves down ${k - 5} rows to C${k}. $B$1 is locked by the dollar signs, so every row still multiplies by B1: =C${k}*$B$1.`);
+    }
+    if (st === "formula_value") {
+      const kind = pick(["sum_minus", "round_interest", "growth", "average"]);
+      if (kind === "sum_minus") {
+        const vs = []; for (let i = 0; i < 5; i++) vs.push(ri(20, 400) * 5);
+        const ans = vs.reduce((s, x) => s + x, 0) - vs[2];
+        const a1 = plain(ans);
+        return Q(st, `A2:A6 hold monthly expenses of ${vs.join(", ")}. What does =SUM(A2:A6)-A4 return?`, a1,
+          // the whole sum | subtracts the wrong cell (A2) | subtracts twice
+          optN(a1, [ans + vs[2], ans + vs[2] - vs[0], ans - vs[2]], 0),
+          `SUM(A2:A6) = ${vs.join(" + ")} = ${ans + vs[2]}. A4 is ${vs[2]}, so the formula returns ${ans + vs[2]} − ${vs[2]} = ${ans}.`);
+      }
+      if (kind === "round_interest") {
+        const B1 = ri(40, 400) * 100, apr = pick(LOAN_APRS);
+        const a1 = money(B1 * apr / 1200);
+        return Q(st, `B1 holds a loan balance of ${B1} and B2 holds the APR ${apr}%. What does =ROUND(B1*B2/12,2) return?`, a1,
+          // no division by 12 | divides by 100 as well | divides by 365
+          optN(a1, [B1 * apr / 100, B1 * apr / 120000, B1 * apr / 36500], 2),
+          `${B1} × ${num(apr / 100, 6)} ÷ 12 = ${num(B1 * apr / 1200, 4)}, rounded to 2 places: ${a1.answer}.`);
+      }
+      if (kind === "growth") {
+        const B1 = ri(10, 200) * 100, rate = pick([2, 3, 4, 5, 6, 7, 8]), yrs = ri(2, 10);
+        const a1 = money(B1 * Math.pow(1 + rate / 100, yrs));
+        return Q(st, `B1 holds a deposit of ${B1}, B2 holds the yearly rate ${rate}%, and B3 holds ${yrs} (years). What does =ROUND(B1*(1+B2)^B3,2) return?`, a1,
+          // simple interest | one year short | the interest only
+          optN(a1, [B1 * (1 + rate / 100 * yrs), B1 * Math.pow(1 + rate / 100, yrs - 1), B1 * (Math.pow(1 + rate / 100, yrs) - 1)], 2),
+          `${B1} × ${mult(1 + rate / 100)}^${yrs} = ${num(B1 * Math.pow(1 + rate / 100, yrs), 4)}, rounded to 2 places: ${a1.answer}. This is the compound-interest formula written with cell references.`);
+      }
+      const vs = []; for (let i = 0; i < 3; i++) vs.push(ri(30, 300) * 2);
+      let last = ri(30, 300) * 2; while ((vs.reduce((s, x) => s + x, 0) + last) % 4 !== 0) last += 2;
+      vs.push(last);
+      const avg = vs.reduce((s, x) => s + x, 0) / 4;
+      const a1 = plain(avg, 2);
+      return Q(st, `B2:B5 hold weekly sales of ${vs.join(", ")}. What does =AVERAGE(B2:B5) return?`, a1,
+        // the total | divides by 5 (counts the header row) | the middle value
+        optN(a1, [avg * 4, avg * 4 / 5, (vs.slice().sort((a, b) => a - b)[1] + vs.slice().sort((a, b) => a - b)[2]) / 2], 2),
+        `AVERAGE adds the four cells and divides by 4: (${vs.join(" + ")}) ÷ 4 = ${avg * 4} ÷ 4 = ${a1.answer}.`);
+    }
+    if (st === "which_formula") {
+      // Layout varies (column, how many expense rows) so the item cannot be
+      // memorised as one fixed string.
+      const c = pick(["B", "C", "D"]), e = ri(5, 12), inc = e + 2;
+      const X = `${c}2:${c}${e}`, I = `${c}${inc}`;
+      if (pick([true, false])) {
+        return QC(st, `A monthly budget lists expenses in ${X} and income in ${I}. Which formula belongs in ${c}${inc + 1} to show the money left over?`, `=${I}-SUM(${X})`,
+          // backwards (a negative leftover) | counts income as an expense | adds everything
+          [`=SUM(${X})-${I}`, `=${I}-SUM(${c}2:${I})`, `=SUM(${c}2:${I})`],
+          `Left over = income − total expenses = ${I} − SUM(${X}). Including ${I} in the SUM would subtract the income from itself.`);
+      }
+      return QC(st, `A monthly budget lists rent in ${c}2, other expenses in ${c}3:${c}${e} and income in ${I}. Which formula shows rent as a fraction of income?`, `=${c}2/${I}`,
+        // upside down | rent as a share of expenses | multiplies instead
+        [`=${I}/${c}2`, `=${c}2/SUM(${X})`, `=${c}2*${I}`],
+        `"Rent as a fraction of income" is rent ÷ income: =${c}2/${I}. Formatting the cell as a percent shows it as a percent.`);
+    }
+    if (st === "loan_schedule_value") {
+      const apr = pick(LOAN_APRS), B2 = ri(40, 300) * 100, F2 = r2(pmt(B2, apr / 1200, pick([36, 48, 60])));
+      const C2 = r2(B2 * apr / 1200), D2 = r2(F2 - C2), E2 = r2(B2 - D2), C3 = r2(E2 * apr / 1200);
+      const lead = `A loan sheet has the APR ${apr}% in F1 and the payment ${c2(F2)} in F2. B2 holds the starting balance ${B2}. C2 has =ROUND(B2*$F$1/12,2), D2 has =$F$2-C2, E2 has =B2-D2, and B3 has =E2; row 3 repeats row 2's formulas.`;
+      const which = pick(["C2", "E2", "C3"]);
+      if (which === "C2") {
+        const a1 = money(C2);
+        return Q(st, `${lead} What does C2 show?`, a1,
+          // a year of interest | the principal cell | the payment
+          optN(a1, [B2 * apr / 100, D2, F2], 2),
+          `C2 = ROUND(${B2} × ${num(apr / 100, 6)} ÷ 12, 2) = ${a1.answer}.`);
+      }
+      if (which === "E2") {
+        const a1 = money(E2);
+        return Q(st, `${lead} What does E2 show?`, a1,
+          // subtracts the payment | subtracts the interest | adds the interest
+          optN(a1, [B2 - F2, B2 - C2, B2 + C2], 2),
+          `C2 = ${c2(C2)}. D2 = ${c2(F2)} − ${c2(C2)} = ${c2(D2)}. E2 = ${B2} − ${c2(D2)} = ${a1.answer}.`);
+      }
+      const a1 = money(C3);
+      return Q(st, `${lead} What does C3 show?`, a1,
+        // repeats month 1's interest | a year of interest on B3 | interest on the balance minus the whole payment
+        optN(a1, [C2, E2 * apr / 100, (B2 - F2) * apr / 1200], 2),
+        `Row 2: C2 = ${c2(C2)}, D2 = ${c2(D2)}, E2 = ${c2(E2)}. B3 = E2 = ${c2(E2)}, so C3 = ROUND(${c2(E2)} × ${num(apr / 100, 6)} ÷ 12, 2) = ${a1.answer}.`);
+    }
+    if (st === "loan_schedule_formula") {
+      const r = ri(2, 15);   // the row being asked about varies, so the item is not one fixed string
+      if (pick([true, false])) {
+        return QC(st, `In a loan schedule, row ${r} has the starting balance in B${r}, interest in C${r}, principal in D${r} and the ending balance in E${r}. Which formula belongs in B${r + 1} so the schedule continues?`, `=E${r}`,
+          // restarts from the same row's balance | looks at its own row | subtracts interest instead of principal
+          [`=B${r}`, `=E${r + 1}`, `=B${r}-C${r}`],
+          `Each month starts with the previous month's ending balance, so B${r + 1} is =E${r}.`);
+      }
+      const pc = pick([["F", 1], ["F", 2], ["G", 1], ["H", 2]]), cell = pc[0] + pc[1], lock = "$" + pc[0] + "$" + pc[1];
+      return QC(st, `In a loan schedule the monthly payment is in ${cell} and C${r} holds the month's interest. Which formula in D${r} gives the principal paid, and still works when filled down?`, `=${lock}-C${r}`,
+        // the payment cell would slide down when filled | backwards | subtracts the balance instead of the interest
+        [`=${cell}-C${r}`, `=C${r}-${lock}`, `=${lock}-B${r}`],
+        `Principal = payment − interest. The payment cell must be locked (${lock}) so it does not slide down when filled; C${r} stays relative so each row uses its own interest.`);
+    }
+    // pmt_arguments
+    const cells = pick([["B1", "B2", "B3"], ["C2", "C3", "C4"], ["E1", "E2", "E3"]]);
+    const [pv, rt, yr] = cells;
+    return QC(st, `${pv} holds the loan amount, ${rt} holds the APR and ${yr} holds the term in years. Which formula returns the monthly payment as a positive number?`, `=PMT(${rt}/12,${yr}*12,-${pv})`,
+      // annual rate | years instead of months | arguments in the wrong order
+      [`=PMT(${rt},${yr}*12,-${pv})`, `=PMT(${rt}/12,${yr},-${pv})`, `=PMT(${yr}*12,${rt}/12,-${pv})`],
+      `PMT takes (rate per period, number of periods, present value). Monthly payments need the monthly rate ${rt}/12 and ${yr}*12 months; the minus sign on ${pv} makes the result positive.`);
+  });
+
+  // ---- end of FINANCE skills ----
+})();
 // ==== END GRADUATION PLAN CONTENT: FINANCE ====
 </script>
 
