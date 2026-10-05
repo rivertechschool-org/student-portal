@@ -52268,6 +52268,1759 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: TRADES-TECHNICAL ====
+// Trades branch, domain 8C Technical Mathematics: plan items 66C-68C, 70C-72C,
+// 74C and 75C (69C and 73C point at skills the Dojo already teaches). All
+// eight are tier 6, so every question is TYPED unless it is a selection task,
+// which is marked forceChoice and keeps its options on screen.
+//
+// What the typed grader (AnswerInterpreter, via typedAnswerIsCorrect) does,
+// measured against the real page, and what each fact forced here:
+//   * Numbers compare with an ABSOLUTE tolerance of 0.0001, so "0.0069" passes
+//     for 0.00685. No typed answer here depends on a difference under 0.001.
+//   * Equal VALUES pass: "1.2" passes for 1.20, "67 in" for "5 ft 7 in",
+//     "5/16" for 0.3125. So every question whose point is the FORM (trailing
+//     zeros, lowest terms, inches to feet-and-inches, fraction to decimal) is
+//     forceChoice - typed, the student could type the question back.
+//   * "5 ft 7 1/2 in" accepts "5 ft 7 in", so typed feet-and-inches answers
+//     always have whole inches.
+//   * "3 5/8 in", '3 5/8"', "3-5/8" and "23 ft" are not read as numbers, and
+//     "1:48" is read as a clock time, so every typed answer lists the spellings
+//     a tradesperson would write in acceptableAnswers, and no answer is a ratio.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (generateQuestion then tops
+  // the list up itself).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { if (c === null || c === undefined) continue; push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- exact arithmetic on lengths: a value is [numerator, denominator] ----
+  // Floating point cannot be trusted with 1/16ths summed across a cut list, so
+  // every fractional-inch answer is computed as a reduced fraction.
+  const R = (n, d) => { if (d === undefined) d = 1; if (d < 0) { n = -n; d = -d; } const k = g(n, d); return [n / k, d / k]; };
+  const rAdd = (a, b) => R(a[0]*b[1] + b[0]*a[1], a[1]*b[1]);
+  const rSub = (a, b) => R(a[0]*b[1] - b[0]*a[1], a[1]*b[1]);
+  const rMul = (a, b) => R(a[0]*b[0], a[1]*b[1]);
+  const rDiv = (a, b) => R(a[0]*b[1], a[1]*b[0]);
+  const rVal = a => a[0] / a[1];
+  // "3 5/8". Only ever called on positive lengths.
+  const mixed = a => { const r = R(a[0], a[1]), n = r[0], d = r[1];
+    if (d === 1) return String(n);
+    const w = Math.floor(n / d), rem = n - w * d;
+    return w === 0 ? rem + "/" + d : w + " " + rem + "/" + d; };
+  const decStr = a => String(parseFloat(rVal(a).toFixed(6)));
+  // Trims float noise from a computed decimal: num(0.1 + 0.2) -> "0.3".
+  const num = (v, dp) => String(parseFloat(Number(v).toFixed(dp === undefined ? 6 : dp)));
+  // Every way a tradesperson writes a fractional-inch length. The improper
+  // fraction (29/8) is deliberately NOT listed: the interpreter accepts it by
+  // value anyway, and listed here it would ALSO match "2 9/8"-style typos,
+  // because typedAnswerIsCorrect's fallback compares with all whitespace
+  // removed ("5 5/16" becomes "55/16", which is 3 7/16). The decimal (3.4375)
+  // is not listed either, for a second reason: against a NUMBER-typed
+  // alternative the interpreter re-reads a typed mixed number as arithmetic
+  // with the space dropped, so "5 5/16" would again pass. A bare decimal is
+  // still accepted by value against the fraction answer.
+  function inchForms(a) {
+    const m = mixed(a);
+    const bare = [m];
+    if (m.indexOf(" ") > 0) bare.push(m.replace(" ", "-"));
+    const out = bare.slice();
+    for (const b of bare) out.push(b + " in", b + '"', b + " inches", b + " inch");
+    return out;
+  }
+  const unitForms = (s, units) => [s].concat(units.map(u => s + " " + u));
+  // Feet and inches from a whole number of inches.
+  const ftIn = T => { const f = Math.floor(T / 12), i = T % 12;
+    return f === 0 ? i + " in" : i === 0 ? f + " ft" : f + " ft " + i + " in"; };
+  const arch = T => Math.floor(T / 12) + "'-" + (T % 12) + '"';
+  // Not listed: "5 ft. 1 in.", which the interpreter reads as 60 inches, so
+  // listing it would let a bare "5 ft" pass for 5 ft 1 in.
+  function ftInForms(T) {
+    const f = Math.floor(T / 12), i = T % 12;
+    return [ftIn(T), f + "'" + i + '"', f + "'-" + i + '"', f + "' " + i + '"', f + "' - " + i + '"',
+            f + "ft " + i + "in", f + " feet " + i + " inches", f + " foot " + i + " inches",
+            f + " feet " + i + " inch", f + "' " + i, f + "'" + i,
+            T + " in", T + '"', T + " inches"];
+  }
+  const s_ = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+  // "a" or "an" for the word or number that follows ("an 18 in pulley").
+  const an = w => (/^(?:[aeiou]|8|11\b|18\b|11-|18-)/i.test(String(w)) ? "an " : "a ") + w;
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+
+  // =====================================================================
+  // M-358  Precision Measurement  (tier 6)
+  // =====================================================================
+  const TAPE_THINGS = ["the end of a 2×4", "the edge of a cabinet door", "the cut end of a copper pipe",
+    "the edge of a sheet of plywood", "the end of a piece of baseboard", "the end of a length of conduit", "the edge of a window sash"];
+
+  _addSkill(6, "Precision Measurement", "Precision Measurement", 3, {
+    goalProblem: "A tape measure is marked in sixteenths of an inch. The end of a board lines up 5 small marks past the 2 1/2 inch mark. What is the length?",
+    teachingSteps: [
+      { title: "Whole inches first", explanation: "Find the last <strong>numbered inch line</strong> the edge has passed. That whole number is the start of your reading; everything after it is a fraction of an inch.", visual: "edge is past the 2 → reading is 2 and something" },
+      { title: "Know the marks by length", explanation: "On an inch tape the longest mark between numbers is the <strong>1/2</strong>, then the <strong>1/4</strong>s, then the <strong>1/8</strong>s, and the shortest are the <strong>1/16</strong>s. Every small space is one sixteenth.", visual: "1/2 = 8/16    1/4 = 4/16    1/8 = 2/16" },
+      { title: "Count in sixteenths, then reduce", explanation: "Turn the mark you started from into sixteenths, add the marks you counted, and reduce. Even numerators reduce; odd ones are already in lowest terms.", visual: "2 1/2 = 2 8/16 → 2 8/16 + 5/16 = 2 13/16" },
+      { title: "Metric rules count millimetres", explanation: "A metric rule has a numbered line every <strong>centimetre</strong> and 10 small marks (millimetres) in each one. 7 marks past the 12 cm line is 120 + 7 = 127 mm = 12.7 cm.", visual: "12 cm + 7 mm = 127 mm = 12.7 cm" },
+      { title: "Calipers and micrometers: coarse + fine", explanation: "A <strong>vernier caliper</strong> reading is the main scale up to the vernier zero, plus (matching vernier line × its value, 0.02 mm or 0.001 in). An inch <strong>micrometer</strong> is sleeve numbers (0.100 each) + small sleeve lines (0.025 each) + thimble line × 0.001.", visual: "0.300 + 2 × 0.025 + 14 × 0.001 = 0.364 in" },
+      { title: "Choose a tool finer than the job", explanation: "A tool is only good to its smallest division. Pick the <strong>simplest</strong> tool whose smallest reading is at least as fine as the precision the job asks for.", visual: "tape 1/16 in → steel rule 1/64 in → caliper 0.001 in → micrometer 0.0001 in" }
+    ],
+    finalAnswer: "2 13/16 in",
+    answerExplanation: "The 2 1/2 mark is 2 8/16. Five more sixteenths gives 2 13/16, and 13 is odd, so it is already in lowest terms.",
+    example: { problem: "An inch micrometer shows the 0.3 line on the sleeve, 2 small lines after it, and thimble line 14 on the index line. What is the reading?", steps: [
+      { text: "Numbered sleeve line", math: "0.300 in" },
+      { text: "Small sleeve lines, 0.025 each", math: "2 × 0.025 = 0.050 in" },
+      { text: "Thimble, 0.001 per line", math: "14 × 0.001 = 0.014 in" },
+      { text: "Add them", math: "0.300 + 0.050 + 0.014 = 0.364 in" }
+    ]},
+    keyPoints: [
+      "Read the whole number first, then the fraction past it",
+      "Count tape marks in sixteenths and reduce at the end",
+      "A metric rule is 10 mm per numbered centimetre",
+      "Micrometer = sleeve number + 0.025 per small line + 0.001 per thimble line",
+      "The right tool is the simplest one that reads finely enough"
+    ],
+    mistakes: [
+      { wrong: "Reading 5 small marks past 2 1/2 as 2 1/2 + 5/8", why: "The shortest marks are sixteenths, not eighths: 2 8/16 + 5/16 = 2 13/16." },
+      { wrong: "Micrometer: 0.3 + thimble 14 = 0.314, forgetting the 2 small sleeve lines", why: "Each visible small line on the sleeve adds 0.025 in. 0.300 + 0.050 + 0.014 = 0.364." },
+      { wrong: "Vernier line 17 on a 0.02 mm caliper read as 0.17 mm", why: "Each vernier line is worth 0.02 mm, so line 17 is 17 × 0.02 = 0.34 mm." }
+    ],
+    guided: { problem: "An inch micrometer shows the 0.4 line on the sleeve, 1 small line after it, and thimble line 9 on the index line. What is the reading in inches?", steps: [
+      { label: "Numbered sleeve line", value: "0.400" },
+      { label: "One small line at 0.025", value: "0.025" },
+      { label: "Thimble line 9 at 0.001", value: "0.009" },
+      { label: "Add the three parts", value: "0.434" }
+    ], answer: "0.434", answerLabel: "Reading (in) =",
+    interactiveSteps: [
+      { prompt: "The highest numbered line showing on the sleeve is 4. What is it worth in inches?", hint: "Each numbered sleeve line is 0.100 in.", answer: "0.4", acceptableAnswers: ["0.4", "0.400", ".4", "0.4 in"], formatHint: "e.g., 0.2" },
+      { prompt: "One small line shows after it. Each small line is worth 0.025 in. What does it add?", hint: "One line at 0.025 in each.", answer: "0.025", acceptableAnswers: ["0.025", ".025", "0.025 in"], formatHint: "e.g., 0.05" },
+      { prompt: "Thimble line 9 is on the index line, at 0.001 in per line. What does the thimble add?", hint: "9 lines at 0.001 in each.", answer: "0.009", acceptableAnswers: ["0.009", ".009", "0.009 in"], formatHint: "e.g., 0.012" },
+      { prompt: "Add 0.400 + 0.025 + 0.009. What is the reading in inches?", hint: "Line up the decimal points and add.", answer: "0.434", acceptableAnswers: ["0.434", ".434", "0.434 in", '0.434"'], formatHint: "e.g., 0.312" }
+    ] }
+  }, function(){
+    const mode = pick(["tape", "tape", "metric_rule", "caliper", "micrometer", "choose_tool"]);
+
+    if (mode === "tape") {
+      // Four ways an edge is described against a tape or rule. Distractors:
+      // sixteenths read as eighths, one mark off either way, and counting the
+      // marks the wrong way from the line.
+      const form = ri(0, 3);
+      const what = form === 3 ? pick(["the end of a steel bar", "the edge of an aluminium plate", "the end of a brass rod", "the edge of a machined block"])
+                              : pick(TAPE_THINGS);
+      let W, k, unit, start, dir, intro, desc, work;
+      if (form === 0) {
+        W = ri(1, 40); k = ri(1, 15); unit = 16; start = R(W); dir = 1;
+        desc = `${s_(k, "small mark")} past the ${W} inch line`;
+        work = `${W} + ${k}/16 = ${W} ${k}/16`;
+      } else if (form === 1) {
+        W = ri(1, 40); k = ri(1, 7); unit = 16; start = R(2*W + 1, 2); dir = 1;
+        desc = `${s_(k, "small mark")} past the ${W} 1/2 inch mark`;
+        work = `${W} 1/2 = ${W} 8/16, and ${W} 8/16 + ${k}/16 = ${W} ${8 + k}/16`;
+      } else if (form === 2) {
+        W = ri(2, 40); k = ri(1, 7); unit = 16; start = R(W); dir = -1;
+        desc = `${s_(k, "small mark")} short of the ${W} inch line`;
+        work = `${W} − ${k}/16 = ${W - 1} 16/16 − ${k}/16 = ${W - 1} ${16 - k}/16`;
+      } else {
+        W = ri(0, 11); const q = ri(1, 3); k = ri(1, 7); unit = 32; start = R(4*W + q, 4); dir = 1;
+        desc = `${s_(k, "small mark")} past the ${mixed(start)} inch mark`;
+        work = `${mixed(start)} = ${W ? W + " " : ""}${8*q}/32, and adding ${k}/32 gives ${W ? W + " " : ""}${8*q + k}/32`;
+      }
+      intro = unit === 16 ? "A tape measure is marked in sixteenths of an inch."
+                          : "A machinist's steel rule is marked in thirty-seconds of an inch.";
+      const at = (count, u) => rAdd(start, R(dir * count, u));
+      const ans = at(k, unit);
+      const red = mixed(ans);
+      return {
+        subType: "tape",
+        question: `${intro} ${what.charAt(0).toUpperCase() + what.slice(1)} lines up ${desc}. What is the reading in inches? Give a mixed number in lowest terms.`,
+        answer: red,
+        acceptableAnswers: inchForms(ans),
+        options: opt4(red, [mixed(at(k, unit / 2)), mixed(at(k + 1, unit)), mixed(at(k - 1, unit)),
+                            mixed(rAdd(start, R(-dir * k, unit)))]),
+        explanation: `Each small mark is 1/${unit} in. ${work}` +
+          (red.split(" ").pop() !== (work.split(" ").pop()) ? `, which reduces to ${red}.` : ".") + ` The reading is ${red} in.`
+      };
+    }
+
+    if (mode === "metric_rule") {
+      // Distractors: counting the wrong way from the line, treating the cm
+      // number and the mm count as the same unit, and forgetting to convert.
+      const c = ri(2, 29), k = ri(1, 9), short = ri(0, 3) === 0;
+      const mm = short ? 10*c - k : 10*c + k;
+      const inMM = pick([true, false]);
+      const ans = inMM ? String(mm) : num(mm / 10, 1);
+      const wrongWay = short ? 10*c + k : 10*c - k;
+      return {
+        subType: "metric_rule",
+        question: `A steel rule is marked in millimetres, with a numbered line every centimetre. The end of a ${pick(["flat bar", "bracket", "bolt", "hose fitting", "floor tile", "hinge"])} lines up ${s_(k, "small mark")} ${short ? "short of" : "past"} the ${c} cm line. What is the reading in ${inMM ? "millimetres" : "centimetres"}?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, inMM ? ["mm", "millimetres", "millimeters"] : ["cm", "centimetres", "centimeters"]),
+        options: inMM ? opt4(ans, [wrongWay, c + k, 100*c + k, mm + 1])
+                      : opt4(ans, [num(wrongWay / 10, 1), num((100*c + k) / 100, 2), mm, num((mm + 1) / 10, 1)]),
+        explanation: `The ${c} cm line is ${10*c} mm. ${short ? `${k} mm short of it is ${10*c} − ${k}` : `${k} mm past it is ${10*c} + ${k}`} = ${mm} mm` +
+          (inMM ? "." : `, and 10 mm = 1 cm, so ${mm} mm = ${ans} cm.`)
+      };
+    }
+
+    if (mode === "caliper") {
+      if (pick([true, false])) {
+        // Metric vernier, 0.02 mm per line. Worked in hundredths of a mm.
+        const M = ri(5, 150), n = ri(1, 49);
+        const h = 100*M + 2*n, ans = (h / 100).toFixed(2);
+        return {
+          subType: "caliper",
+          question: `A metric vernier caliper reads to 0.02 mm. Measuring the ${pick(["bore of a bushing", "diameter of a bolt", "thickness of a brake pad", "width of a keyway", "diameter of a drill bit"])}, the vernier zero sits just past the ${M} mm line on the main scale, and vernier line ${n} (each line worth 0.02 mm) lines up exactly with a main-scale line. What is the reading in mm?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["mm", "millimetres", "millimeters"]),
+          // each line read as 0.01 mm; one line off; vernier ignored
+          options: opt4(ans, [((100*M + n) / 100).toFixed(2), ((h + 2) / 100).toFixed(2), ((h - 2) / 100).toFixed(2), M.toFixed(2)]),
+          explanation: `Main scale: ${M} mm. Vernier: ${n} × 0.02 = ${(2*n / 100).toFixed(2)} mm. Reading: ${M} + ${(2*n / 100).toFixed(2)} = ${ans} mm.`
+        };
+      }
+      // Inch vernier, 0.001 in per line. Worked in thousandths.
+      const W = ri(0, 5), s = ri(0, 3), n = ri(1, 24);
+      let t = ri(0, 9); if (W === 0 && t === 0) t = ri(1, 9);
+      const th = 1000*W + 100*t + 25*s + n, ans = (th / 1000).toFixed(3);
+      const parts = [];
+      if (W) parts.push(`the ${W} inch line`);
+      parts.push(`${s_(t, "numbered tenth")} (0.100 in each)`);
+      parts.push(`${s_(s, "small mark")} (0.025 in each)`);
+      return {
+        subType: "caliper",
+        question: `An inch vernier caliper reads to 0.001 in. The vernier zero has passed ${parts.join(", ")} on the main scale, and vernier line ${n} lines up exactly. What is the reading in inches?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["in", "inches", '"']),
+        // small marks forgotten; vernier lines read as 0.01; one line off
+        options: opt4(ans, [((th - 25*s) / 1000).toFixed(3), ((th - n + 10*n) / 1000).toFixed(3), ((th + 1) / 1000).toFixed(3), ((th - 1) / 1000).toFixed(3)]),
+        explanation: `${W ? W + " + " : ""}${t} × 0.100 + ${s} × 0.025 + ${n} × 0.001 = ${W ? W + " + " : ""}${(t / 10).toFixed(3)} + ${(25*s / 1000).toFixed(3)} + ${(n / 1000).toFixed(3)} = ${ans} in.`
+      };
+    }
+
+    if (mode === "micrometer") {
+      if (pick([true, false])) {
+        // Inch micrometer in thousandths.
+        const t = ri(0, 9), s = ri(0, 3), tl = ri(1, 24);
+        const th = 100*t + 25*s + tl, ans = (th / 1000).toFixed(3);
+        return {
+          subType: "micrometer",
+          question: `An inch micrometer is closed on a ${pick(["valve stem", "piston pin", "shim", "crankshaft journal", "drill blank"])}. The highest numbered line showing on the sleeve is ${t} (0.${t}00 in), ${s} more small line${s === 1 ? " is" : "s are"} visible after it (0.025 in each), and thimble line ${tl} sits on the index line (0.001 in each). What is the reading in inches?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["in", "inches", '"']),
+          // small sleeve lines forgotten; thimble read as 0.01; small lines read as 0.010
+          options: opt4(ans, [((th - 25*s) / 1000).toFixed(3), ((100*t + 25*s + 10*tl) / 1000).toFixed(3), ((100*t + 10*s + tl) / 1000).toFixed(3), ((th + 1) / 1000).toFixed(3)]),
+          explanation: `Sleeve: 0.${t}00 + ${s} × 0.025 = ${((100*t + 25*s) / 1000).toFixed(3)} in. Thimble: ${tl} × 0.001 = ${(tl / 1000).toFixed(3)} in. Reading: ${ans} in.`
+        };
+      }
+      // Metric micrometer in hundredths of a mm.
+      const M = ri(1, 24), half = pick([true, false]), tl = ri(1, 49);
+      const h = 100*M + (half ? 50 : 0) + tl, ans = (h / 100).toFixed(2);
+      return {
+        subType: "micrometer",
+        question: `A metric micrometer: the last whole-millimetre line showing on the sleeve is ${M} mm, the half-millimetre line after it ${half ? "is" : "is not"} showing, and thimble line ${tl} sits on the index line (each thimble line is 0.01 mm). What is the reading in mm?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["mm", "millimetres", "millimeters"]),
+        // half-mm line handled the wrong way; thimble read as 0.1 mm; one line off
+        options: opt4(ans, [((half ? h - 50 : h + 50) / 100).toFixed(2), ((100*M + (half ? 50 : 0) + 10*tl) / 100).toFixed(2), ((h + 1) / 100).toFixed(2), ((h - 1) / 100).toFixed(2)]),
+        explanation: `Sleeve: ${M}${half ? " + 0.5" : ""} = ${(M + (half ? 0.5 : 0)).toFixed(2)} mm. Thimble: ${tl} × 0.01 = ${(tl / 100).toFixed(2)} mm. Reading: ${ans} mm.`
+      };
+    }
+
+    // choose_tool: the job's precision against each tool's smallest division.
+    // Each job is set strictly between two tools' resolutions so exactly one
+    // answer is "simplest and still fine enough".
+    const imperial = pick([true, false]);
+    const tools = imperial
+      ? ["Tape measure (reads to 1/16 in)", "Steel rule (reads to 1/64 in)", "Dial caliper (reads to 0.001 in)", "Micrometer (reads to 0.0001 in)"]
+      : ["Tape measure (reads to 1 mm)", "Steel rule (reads to 0.5 mm)", "Vernier caliper (reads to 0.02 mm)", "Micrometer (reads to 0.01 mm)"];
+    const jobs = imperial ? [
+      [0, "framing a wall, cutting studs to the nearest 1/8 in"], [0, "laying out deck joists to the nearest 1/4 in"],
+      [1, "marking cabinet hinge holes to the nearest 1/32 in"], [1, "laying out a sheet-metal pattern to the nearest 1/32 in"],
+      [2, "checking a drilled hole to the nearest 0.005 in"], [2, "measuring a bolt diameter to the nearest 0.002 in"],
+      [3, "checking a bearing seat to the nearest 0.0005 in"], [3, "measuring a piston pin to the nearest 0.0002 in"]
+    ] : [
+      [0, "measuring a room for flooring to the nearest 5 mm"], [0, "cutting a fence rail to the nearest 2 mm"],
+      [1, "laying out a sheet-metal flange to the nearest 0.5 mm"], [1, "marking a shelf bracket to the nearest 0.5 mm"],
+      [2, "measuring a bolt diameter to the nearest 0.05 mm"], [2, "checking a slot width to the nearest 0.1 mm"],
+      [3, "checking a shaft journal to the nearest 0.01 mm"], [3, "measuring brake rotor thickness to the nearest 0.01 mm"]
+    ];
+    const [idx, job] = pick(jobs);
+    const ans = tools[idx];
+    return {
+      subType: "choose_tool",
+      question: `You are ${job}. Which is the simplest tool whose smallest reading is fine enough for the job?`,
+      answer: ans,
+      options: sh(tools.slice()),
+      forceChoice: true,
+      explanation: `A tool can only be trusted to its smallest division. ${ans.replace(/ \(reads to (.*)\)/, " reads to $1")}, which is fine enough for this job.` +
+        (idx > 0 ? ` The ${tools[idx - 1].split(" (")[0].toLowerCase()} is too coarse.` : "") +
+        (idx < 3 ? ` Finer tools would work too, but they are slower and more delicate than the job needs.` : "")
+    };
+  });
+
+  // =====================================================================
+  // M-359  Measurement Fractions  (tier 6)
+  // =====================================================================
+  _addSkill(6, "Measurement Fractions", "Measurement Fractions", 3, {
+    goalProblem: "You need 3 pieces, each 28 5/8 in long, from a 96 in board. The saw kerf is 1/8 in and you make one cut per piece. How much board is left over?",
+    teachingSteps: [
+      { title: "Work in sixteenths", explanation: "Tape fractions all have denominators that divide 16. Rewrite each one as sixteenths and the arithmetic becomes whole-number arithmetic on the numerators.", visual: "5/8 = 10/16     3/4 = 12/16     1/2 = 8/16" },
+      { title: "Add, carry, borrow", explanation: "Add the sixteenths; if you reach 16/16 or more, <strong>carry</strong> 1 inch. When subtracting a bigger fraction from a smaller one, <strong>borrow</strong> 1 inch as 16/16 first.", visual: "34 5/16 − 12 13/16 = 33 21/16 − 12 13/16 = 21 8/16 = 21 1/2" },
+      { title: "Halve and double", explanation: "To halve, write the length as one fraction and double the denominator. To double, double the numerator. Reduce at the end.", visual: "half of 27 3/8 = half of 219/8 = 219/16 = 13 11/16" },
+      { title: "Inches and feet-and-inches", explanation: "There are <strong>12</strong> inches in a foot, not 10. Divide by 12: the quotient is feet, the remainder is inches. Going back, multiply the feet by 12 and add the inches.", visual: "67 in = 5 × 12 + 7 = 5 ft 7 in     6'-9\" = 72 + 9 = 81 in" },
+      { title: "Decimal and fraction inches", explanation: "Multiply a decimal inch by 16 to get sixteenths; divide the numerator by the denominator to go back. Learn the common ones.", visual: "0.4375 × 16 = 7 → 7/16      5/16 = 0.3125" },
+      { title: "Kerf: the blade eats wood", explanation: "Every cut turns a strip as wide as the blade (the <strong>kerf</strong>) into sawdust. A cut list must subtract one kerf per cut as well as the pieces.", visual: "board − (pieces) − (cuts × kerf) = leftover" }
+    ],
+    finalAnswer: "9 3/4 in",
+    answerExplanation: "Pieces: 3 × 28 5/8 = 85 7/8 in. Kerf: 3 × 1/8 = 3/8 in. 96 − 85 7/8 − 3/8 = 96 − 86 1/4 = 9 3/4 in.",
+    example: { problem: "A board is 34 5/16 in long. You cut off 12 13/16 in (ignore kerf). How long is the rest?", steps: [
+      { text: "5/16 is smaller than 13/16, so borrow 1 inch", math: "34 5/16 = 33 21/16" },
+      { text: "Subtract wholes and sixteenths", math: "33 21/16 − 12 13/16 = 21 8/16" },
+      { text: "Reduce", math: "8/16 = 1/2 → 21 1/2 in" }
+    ]},
+    keyPoints: [
+      "Rewrite every fraction in sixteenths before adding or subtracting",
+      "Borrow 1 inch as 16/16; carry when the sixteenths reach 16",
+      "12 inches per foot when converting",
+      "Multiply a decimal by 16 to find the nearest sixteenth",
+      "Subtract one kerf for every cut on a cut list"
+    ],
+    mistakes: [
+      { wrong: "5/8 + 3/16 = 8/24", why: "Never add denominators. Rewrite: 10/16 + 3/16 = 13/16." },
+      { wrong: "67 in = 6 ft 7 in", why: "That treats a foot as 10 inches. 67 ÷ 12 = 5 remainder 7, so 5 ft 7 in." },
+      { wrong: "Leaving the kerf out of a cut list", why: "Three cuts with a 1/8 in blade remove 3/8 in of board that no piece gets." }
+    ],
+    guided: { problem: "You need 2 pieces, each 30 3/8 in long, from a 72 in board. The kerf is 1/8 in, one cut per piece. How much is left over?", steps: [
+      { label: "Length of the pieces", value: "2 × 30 3/8 = 60 3/4" },
+      { label: "Kerf for 2 cuts", value: "2 × 1/8 = 1/4" },
+      { label: "Board used", value: "60 3/4 + 1/4 = 61" },
+      { label: "Leftover", value: "72 − 61 = 11" }
+    ], answer: "11", answerLabel: "Leftover (in) =",
+    interactiveSteps: [
+      { prompt: "Two pieces at 30 3/8 in each. What is their total length in inches?", hint: "Double the whole number and double the fraction: 3/8 doubled is 6/8.", answer: "60 3/4", acceptableAnswers: ["60 3/4", "60-3/4", "243/4", "60.75", "60 3/4 in"], formatHint: "e.g., 40 1/2" },
+      { prompt: "Each cut removes 1/8 in and you make 2 cuts. How much do the cuts remove?", hint: "2 × 1/8", answer: "1/4", acceptableAnswers: ["1/4", "0.25", "1/4 in", "2/8"], formatHint: "e.g., 3/8" },
+      { prompt: "Add the pieces and the kerf. How much of the board is used?", hint: "60 3/4 + 1/4", answer: "61", acceptableAnswers: ["61", "61 in"], formatHint: "Enter a number" },
+      { prompt: "The board is 72 in. How much is left over?", hint: "72 − 61", answer: "11", acceptableAnswers: ["11", "11 in", '11"'], formatHint: "Enter a number" }
+    ] }
+  }, function(){
+    const mode = pick(["add_sub", "half_double", "ftin_to_in", "in_to_ftin", "reduce", "dec_frac", "cut_list"]);
+
+    if (mode === "add_sub") {
+      const W1 = ri(20, 70), n1 = ri(1, 15), W2 = ri(5, 18), n2 = ri(1, 15);
+      const a = R(16*W1 + n1, 16), b = R(16*W2 + n2, 16);
+      if (pick([true, false])) {
+        const ans = rAdd(a, b), m = mixed(ans), sum16 = n1 + n2;
+        return {
+          subType: "add_sub",
+          question: `You join two pieces of ${pick(["crown moulding", "baseboard", "PVC pipe", "handrail", "conduit"])} end to end: one is ${mixed(a)} in and the other is ${mixed(b)} in. What is the total length? Give a mixed number in lowest terms.`,
+          answer: m,
+          acceptableAnswers: inchForms(ans),
+          // denominators added; carry dropped; one sixteenth off
+          options: opt4(m, [mixed(R(32*(W1 + W2) + sum16, 32)), sum16 >= 16 ? mixed(R(16*(W1 + W2) + sum16 - 16, 16)) : null,
+                            mixed(rAdd(ans, R(1, 16))), mixed(rSub(ans, R(1, 16)))]),
+          explanation: `In sixteenths: ${W1} ${n1}/16 + ${W2} ${n2}/16 = ${W1 + W2} ${sum16}/16` +
+            (sum16 >= 16 ? `, and ${sum16}/16 is 1 ${sum16 - 16}/16, so carry 1 inch` : "") + `. In lowest terms: ${m} in.`
+        };
+      }
+      const ans = rSub(a, b), m = mixed(ans), borrow = n1 < n2;
+      return {
+        subType: "add_sub",
+        question: `A ${pick(["board", "length of copper pipe", "piece of angle iron", "strip of trim"])} is ${mixed(a)} in long. You cut off ${mixed(b)} in (ignore the saw kerf). How long is the piece that is left? Give a mixed number in lowest terms.`,
+        answer: m,
+        acceptableAnswers: inchForms(ans),
+        // borrow skipped (small fraction taken from the big one); one sixteenth off; added instead
+        options: opt4(m, [borrow ? mixed(R(16*(W1 - W2) + (n2 - n1), 16)) : null, mixed(rAdd(ans, R(1, 16))),
+                          mixed(rSub(ans, R(1, 16))), mixed(rAdd(a, b))]),
+        explanation: (borrow ? `${n1}/16 is less than ${n2}/16, so borrow 1 inch: ${W1} ${n1}/16 = ${W1 - 1} ${n1 + 16}/16. Then ${W1 - 1} ${n1 + 16}/16 − ${W2} ${n2}/16`
+                             : `In sixteenths: ${W1} ${n1}/16 − ${W2} ${n2}/16`) +
+          ` = ${borrow ? W1 - 1 - W2 : W1 - W2} ${borrow ? n1 + 16 - n2 : n1 - n2}/16, which is ${m} in.`
+      };
+    }
+
+    if (mode === "half_double") {
+      if (pick([true, false])) {
+        const W = ri(9, 60), n8 = ri(1, 7), L = R(8*W + n8, 8);
+        const ans = R(8*W + n8, 16), m = mixed(ans);
+        return {
+          subType: "half_double",
+          question: `To mark the centre of a ${pick(["shelf", "door", "countertop", "tabletop", "window header"])} that is ${mixed(L)} in wide, you halve the width. How far from one edge is the centre mark? Give a mixed number in lowest terms.`,
+          answer: m,
+          acceptableAnswers: inchForms(ans),
+          // halved the whole inches but lost the odd inch; halved only the fraction; one sixteenth off
+          options: opt4(m, [mixed(R(16*Math.floor(W / 2) + n8, 16)), mixed(R(16*W + n8, 16)), mixed(rAdd(ans, R(1, 16))), mixed(rSub(ans, R(1, 16)))]),
+          explanation: `Write the width as one fraction: ${mixed(L)} = ${8*W + n8}/8. Halving doubles the denominator: ${8*W + n8}/16 = ${m} in.`
+        };
+      }
+      const W = ri(2, 20), n = ri(1, 15), a = R(16*W + n, 16);
+      const ans = rMul(a, R(2)), m = mixed(ans);
+      return {
+        subType: "half_double",
+        question: `Two ${pick(["shims", "spacers", "pieces of plywood", "steel plates"])}, each ${mixed(a)} in thick, are stacked. How thick is the stack? Give a mixed number in lowest terms.`,
+        answer: m,
+        acceptableAnswers: inchForms(ans),
+        // doubled only the whole inches; doubled only the fraction; one sixteenth off
+        options: opt4(m, [mixed(R(32*W + n, 16)), mixed(R(16*W + 2*n, 16)), mixed(rAdd(ans, R(1, 16))), mixed(rSub(ans, R(1, 16)))]),
+        explanation: (mixed(a) !== `${W} ${n}/16` ? `${mixed(a)} = ${W} ${n}/16. ` : "") + `Doubled: ${2*W} ${2*n}/16` + (2*n >= 16 ? ` = ${2*W + 1} ${2*n - 16}/16` : "") + `, which is ${m} in.`
+      };
+    }
+
+    if (mode === "ftin_to_in") {
+      const ft = ri(2, 14), inch = ri(1, 11), n16 = pick([0, 0, 2, 4, 8, 12, 6, 10, 14, 1, 3, 5]);
+      const inchPart = R(16*inch + n16, 16), total = R(16*(12*ft + inch) + n16, 16), m = mixed(total);
+      return {
+        subType: "ftin_to_in",
+        question: `A drawing gives a length of ${ft}'-${mixed(inchPart)}" (${ft} ft ${mixed(inchPart)} in). How many inches is that?`,
+        answer: m,
+        acceptableAnswers: inchForms(total),
+        // 10 inches to the foot; feet and inches just added; inches dropped
+        options: opt4(m, [mixed(rAdd(R(10*ft), inchPart)), mixed(rAdd(R(ft), inchPart)), String(12*ft), mixed(rAdd(total, R(12)))]),
+        explanation: `${ft} ft × 12 = ${12*ft} in, plus ${mixed(inchPart)} in gives ${m} in.`
+      };
+    }
+
+    if (mode === "in_to_ftin") {
+      // Selection: typed, "67 in" is accepted for "5 ft 7 in", so the student
+      // could type the question back.
+      let T = ri(25, 190); while (T % 12 === 0) T = ri(25, 190);
+      const fr = pick([[0, 1], [0, 1], [1, 2], [1, 4], [3, 4], [3, 8], [5, 8]]);
+      const fs = fr[0] ? " " + fr[0] + "/" + fr[1] : "";
+      const f = Math.floor(T / 12), i = T % 12;
+      const show = (ft, inch) => `${ft} ft ${inch}${fs} in`;
+      const ans = show(f, i);
+      return {
+        subType: "in_to_ftin",
+        question: `Convert ${T}${fs} in to feet and inches.`,
+        answer: ans,
+        // a foot taken as 10 inches; remainder off by one either way
+        options: opt4(ans, [show(Math.floor(T / 10), T % 10), i < 11 ? show(f, i + 1) : show(f + 1, 0), i > 1 ? show(f, i - 1) : show(f, i + 2)]),
+        forceChoice: true,
+        explanation: `${T} ÷ 12 = ${f} remainder ${i}, because ${f} × 12 = ${12*f}. So ${T}${fs} in = ${ans}.`
+      };
+    }
+
+    if (mode === "reduce") {
+      // Selection: an unreduced fraction has the same value, so typed input
+      // would accept the reading straight back. Half-reduced choices are the
+      // point of the question ("lowest terms"), so they are allowed twins.
+      const W = ri(1, 40), k = pick([2, 4, 6, 8, 10, 12, 14]);
+      const ans = mixed(R(16*W + k, 16));
+      const c = [];
+      if (k % 4 === 0) c.push(`${W} ${k / 2}/8`);
+      if (k % 8 === 0) c.push(`${W} ${k / 4}/4`);
+      c.push(`${W} ${k / 2}/16`);                      // halved the top only
+      if (k < 8) c.push(`${W} ${k}/8`);                // halved the bottom only
+      c.push(mixed(R(16*W + k + 2, 16)), mixed(R(16*W + k - 2, 16)));
+      return {
+        subType: "reduce",
+        question: `Your tape reads ${W} and ${k}/16 inches. Write that reading in lowest terms.`,
+        answer: ans,
+        options: opt4(ans, c),
+        forceChoice: true,
+        explanation: `${k} and 16 are both divisible by ${g(k, 16)}: ${k}/16 = ${k / g(k, 16)}/${16 / g(k, 16)}. The reading is ${ans} in.`
+      };
+    }
+
+    if (mode === "dec_frac") {
+      // Selection both ways: typed, the value given in the question would be
+      // accepted as its own conversion.
+      const W = ri(0, 6), k = ri(1, 15), f = R(16*W + k, 16);
+      const near = d => (k + d >= 1 && k + d <= 15) ? R(16*W + k + d, 16) : null;
+      if (pick([true, false])) {
+        const ans = mixed(f);
+        const c = [near(1), near(-1), k < 8 ? R(16*W + 2*k, 16) : null, R(32*W + k, 32)].filter(Boolean).map(mixed);
+        return {
+          subType: "dec_frac",
+          question: `A drawing calls for ${decStr(f)} in. Which tape-measure fraction is that, in lowest terms?`,
+          answer: ans,
+          options: opt4(ans, c),
+          forceChoice: true,
+          explanation: `Multiply the decimal part by 16: ${decStr(R(k, 16))} × 16 = ${k}, so it is ${k}/16` +
+            (g(k, 16) > 1 ? ` = ${frac(k, 16)}` : "") + `. The length is ${ans} in.`
+        };
+      }
+      const ans = decStr(f);
+      const naive = W + "." + (k / g(k, 16));          // numerator read as the decimal digits
+      // neighbouring sixteenths; read as eighths; read as thirty-seconds; two marks off
+      const c = [near(1), near(-1), k < 8 ? R(16*W + 2*k, 16) : null, R(32*W + k, 32), near(2), near(-2)]
+        .filter(Boolean).map(decStr).concat([naive]);
+      return {
+        subType: "dec_frac",
+        question: `Convert ${mixed(f)} in to a decimal.`,
+        answer: ans,
+        options: opt4(ans, c),
+        forceChoice: true,
+        explanation: `${frac(k, 16)} = ${k / g(k, 16)} ÷ ${16 / g(k, 16)} = ${decStr(R(k, 16))}, so ${mixed(f)} in = ${ans} in.`
+      };
+    }
+
+    // cut_list
+    const L = pick([96, 120, 144]), kerf = pick([R(1, 8), R(1, 8), R(3, 32)]), n = ri(2, 6);
+    const maxW = Math.floor((L - 3) / n) - 1;
+    const P = R(16*ri(6, Math.max(6, maxW)) + ri(0, 15), 16);
+    const pieces = rMul(P, R(n)), kerfs = rMul(kerf, R(n));
+    const left = rSub(R(L), rAdd(pieces, kerfs)), m = mixed(left);
+    return {
+      subType: "cut_list",
+      question: `You need ${n} pieces, each ${mixed(P)} in long, from a ${L / 12} ft board (${L} in). The blade's kerf is ${mixed(kerf)} in and you make one cut per piece. How much board is left over? Give a mixed number in lowest terms.`,
+      answer: m,
+      acceptableAnswers: inchForms(left),
+      // kerf forgotten; one cut fewer than pieces; kerf counted twice per cut
+      options: opt4(m, [mixed(rSub(R(L), pieces)), mixed(rAdd(left, kerf)), mixed(rSub(left, kerfs))]),
+      explanation: `Pieces: ${n} × ${mixed(P)} = ${mixed(pieces)} in. Kerf: ${n} cuts × ${mixed(kerf)} = ${mixed(kerfs)} in. Leftover: ${L} − ${mixed(pieces)} − ${mixed(kerfs)} = ${m} in.`
+    };
+  });
+
+  // =====================================================================
+  // M-360  Decimal Tolerances  (tier 6)
+  // =====================================================================
+  // Two measuring systems, worked in integer thousandths of an inch or
+  // hundredths of a millimetre so no limit is ever a float artefact.
+  const TOL_SYS = [
+    { unit: "in", dp: 3, sc: 1000, words: ["in", "inches", '"'], tol: [1, 2, 3, 5, 10], lo: 50, hi: 800, step: 5 },
+    { unit: "mm", dp: 2, sc: 100, words: ["mm", "millimetres", "millimeters"], tol: [1, 2, 5, 10, 20], lo: 10, hi: 300, step: 50 }
+  ];
+  const PARTS = ["shaft diameter", "bore diameter", "pin length", "bushing outside diameter", "slot width", "spacer thickness", "hole spacing"];
+  // A spec: nominal N, plus a and minus b (in the system's integer units).
+  function tolSpec(kind) {
+    const sys = pick(TOL_SYS), N = sys.step * ri(sys.lo, sys.hi);
+    const f = v => (v / sys.sc).toFixed(sys.dp);
+    let a, b;
+    if (kind === "equal") { a = b = pick(sys.tol); }
+    else if (kind === "unequal") { a = pick(sys.tol); b = pick(sys.tol); while (b === a) b = pick(sys.tol); }
+    else { a = pick(sys.tol); b = 0; if (pick([true, false])) { b = a; a = 0; } }
+    const text = a === b ? `${f(N)} ± ${f(a)} ${sys.unit}` : `${f(N)} +${f(a)} / −${f(b)} ${sys.unit}`;
+    return { sys, N, a, b, f, text, part: pick(PARTS), up: N + a, low: N - b };
+  }
+
+  _addSkill(6, "Decimal Tolerances", "Decimal Tolerances", 3, {
+    goalProblem: "A shaft is drawn as 1.250 ± 0.005 in. A machinist measures 1.2538 in. Is the part in spec?",
+    teachingSteps: [
+      { title: "Nominal and tolerance", explanation: "The <strong>nominal</strong> size is the target (1.250). The <strong>tolerance</strong> says how far from it the part may be and still be good (± 0.005).", visual: "1.250 ± 0.005 in" },
+      { title: "Find the two limits", explanation: "<strong>Upper limit</strong> = nominal + plus tolerance. <strong>Lower limit</strong> = nominal − minus tolerance. Line up the decimal points.", visual: "1.250 + 0.005 = 1.255     1.250 − 0.005 = 1.245" },
+      { title: "In spec means between the limits", explanation: "A part is good if it is <strong>at or between</strong> the limits. Compare decimals place by place, padding with zeros so they have the same number of places.", visual: "1.2450 ≤ 1.2538 ≤ 1.2550 → in spec" },
+      { title: "Bilateral or unilateral", explanation: "<strong>Bilateral</strong>: variation allowed both ways, equal (± 0.005) or unequal (+0.003 / −0.001). <strong>Unilateral</strong>: one way only, the other side is zero (+0.002 / −0.000).", visual: "±0.005   +0.003/−0.001   +0.002/−0.000" },
+      { title: "Total tolerance", explanation: "The <strong>total tolerance</strong> (the band) is upper limit − lower limit, which is the plus and minus amounts added together.", visual: "1.255 − 1.245 = 0.010   (0.005 + 0.005)" }
+    ],
+    finalAnswer: "Yes, in spec",
+    answerExplanation: "The limits are 1.245 and 1.255 in. 1.2538 is between 1.2450 and 1.2550, so the part is good.",
+    example: { problem: "A bore is drawn 0.750 +0.002 / −0.001 in. Find the limits and the total tolerance.", steps: [
+      { text: "Upper limit: add the plus tolerance", math: "0.750 + 0.002 = 0.752 in" },
+      { text: "Lower limit: subtract the minus tolerance", math: "0.750 − 0.001 = 0.749 in" },
+      { text: "Total tolerance: upper − lower", math: "0.752 − 0.749 = 0.003 in" }
+    ]},
+    keyPoints: [
+      "Upper limit = nominal + plus tolerance; lower = nominal − minus tolerance",
+      "In spec means at or between the limits",
+      "Pad decimals with zeros before comparing them",
+      "Total tolerance = upper − lower = plus + minus",
+      "Unilateral tolerances allow variation in one direction only"
+    ],
+    mistakes: [
+      { wrong: "Calling 0.005 the total tolerance of 1.250 ± 0.005", why: "± 0.005 allows 0.005 each way, so the band is 0.010." },
+      { wrong: "Thinking 1.2538 is bigger than 1.255 because 2538 &gt; 255", why: "Pad first: 1.2538 vs 1.2550. Then 2538 is less than 2550." },
+      { wrong: "Using the plus tolerance for both limits of +0.002 / −0.001", why: "Each side has its own amount: upper uses +0.002, lower uses −0.001." }
+    ],
+    guided: { problem: "A pin is drawn 2.500 ± 0.004 in. It measures 2.4955 in. Is it in spec?", steps: [
+      { label: "Upper limit", value: "2.500 + 0.004 = 2.504" },
+      { label: "Lower limit", value: "2.500 − 0.004 = 2.496" },
+      { label: "Compare 2.4955 with 2.4960", value: "2.4955 is smaller" },
+      { label: "Verdict", value: "Below the lower limit, reject" }
+    ], answer: "2.496", answerLabel: "Lower limit =",
+    interactiveSteps: [
+      { prompt: "What is the upper limit of 2.500 ± 0.004 in?", hint: "Add the tolerance to the nominal size.", answer: "2.504", acceptableAnswers: ["2.504", "2.504 in"], formatHint: "e.g., 1.255" },
+      { prompt: "What is the lower limit?", hint: "Subtract the tolerance from the nominal size.", answer: "2.496", acceptableAnswers: ["2.496", "2.496 in"], formatHint: "e.g., 1.245" },
+      { prompt: "What is the total tolerance (upper limit minus lower limit)?", hint: "2.504 − 2.496", answer: "0.008", acceptableAnswers: ["0.008", ".008", "0.008 in"], formatHint: "e.g., 0.010" },
+      { prompt: "The pin measures 2.4955 in. By how much is it under the lower limit?", hint: "Pad 2.496 to 2.4960 and subtract 2.4955.", answer: "0.0005", acceptableAnswers: ["0.0005", ".0005", "0.0005 in"], formatHint: "e.g., 0.0010" }
+    ] }
+  }, function(){
+    const mode = pick(["limits", "in_spec", "classify", "band", "plus_minus", "rework"]);
+
+    if (mode === "limits") {
+      const sp = tolSpec(pick(["equal", "unequal", "unilateral"])), f = sp.f;
+      const upper = pick([true, false]), v = upper ? sp.up : sp.low, ans = f(v);
+      return {
+        subType: "limits",
+        question: `A drawing gives the ${sp.part} as ${sp.text}. What is the ${upper ? "upper" : "lower"} limit?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, sp.sys.words),
+        // the other limit; plus and minus swapped; tolerance applied twice
+        options: opt4(ans, [f(upper ? sp.low : sp.up), f(upper ? sp.N + sp.b : sp.N - sp.a), f(upper ? sp.N + 2*sp.a : sp.N - 2*sp.b), f(sp.N)]),
+        explanation: upper ? `Upper limit = nominal + plus tolerance = ${f(sp.N)} + ${f(sp.a)} = ${ans} ${sp.sys.unit}.`
+                           : `Lower limit = nominal − minus tolerance = ${f(sp.N)} − ${f(sp.b)} = ${ans} ${sp.sys.unit}.`
+      };
+    }
+
+    if (mode === "in_spec") {
+      // Measured to one more decimal place than the drawing, as a micrometer
+      // reads. Limits are inclusive.
+      const sp = tolSpec(pick(["equal", "unequal", "unilateral"])), f = sp.f;
+      const up10 = sp.up * 10, lo10 = sp.low * 10, sc10 = sp.sys.sc * 10;
+      const verdict = pick(["in", "in", "over", "under"]);
+      const m = verdict === "in" ? ri(lo10, up10) : verdict === "over" ? up10 + ri(1, 9) : lo10 - ri(1, 9);
+      const ms = (m / sc10).toFixed(sp.sys.dp + 1);
+      const OPTS = ["Accept: within the limits", "Reject: too large", "Reject: too small"];
+      const ans = verdict === "in" ? OPTS[0] : verdict === "over" ? OPTS[1] : OPTS[2];
+      const pad = v => (v / sp.sys.sc).toFixed(sp.sys.dp + 1);
+      return {
+        subType: "in_spec",
+        question: `The ${sp.part} on a drawing is ${sp.text}. The part measures ${ms} ${sp.sys.unit}. Accept or reject it?`,
+        answer: ans,
+        options: sh(OPTS.slice()),
+        forceChoice: true,
+        explanation: `Limits: ${f(sp.low)} to ${f(sp.up)} ${sp.sys.unit}. Padded to the same places: ${pad(sp.low)} and ${pad(sp.up)}. ` +
+          (verdict === "in" ? `${ms} is between them${m === up10 || m === lo10 ? " (exactly on a limit still passes)" : ""}, so accept.`
+            : verdict === "over" ? `${ms} is above the upper limit, so the part is too large.`
+            : `${ms} is below the lower limit, so the part is too small.`)
+      };
+    }
+
+    if (mode === "classify") {
+      const kind = pick(["equal", "unequal", "unilateral"]), sp = tolSpec(kind);
+      const OPTS = ["Bilateral, equal (±)", "Bilateral, unequal", "Unilateral"];
+      const ans = kind === "equal" ? OPTS[0] : kind === "unequal" ? OPTS[1] : OPTS[2];
+      return {
+        subType: "classify",
+        question: `What kind of tolerance is ${sp.text}?`,
+        answer: ans,
+        options: sh(OPTS.slice()),
+        forceChoice: true,
+        explanation: kind === "equal" ? "It allows the same amount above and below nominal: an equal bilateral tolerance."
+          : kind === "unequal" ? `It allows variation both ways, but ${sp.f(sp.a)} up and ${sp.f(sp.b)} down: an unequal bilateral tolerance.`
+          : `One side is zero, so the size may only vary ${sp.a ? "upward" : "downward"}: a unilateral tolerance.`
+      };
+    }
+
+    if (mode === "band") {
+      const sp = tolSpec(pick(["equal", "unequal", "unilateral"])), f = sp.f, tot = sp.a + sp.b, ans = f(tot);
+      const fromLimits = pick([true, false]);
+      return {
+        subType: "band",
+        question: fromLimits
+          ? `A ${sp.part} must be between ${f(sp.low)} and ${f(sp.up)} ${sp.sys.unit}. What is the total tolerance?`
+          : `A drawing gives the ${sp.part} as ${sp.text}. What is the total tolerance?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, sp.sys.words),
+        // only one side; difference of the sides; doubled
+        options: opt4(ans, [f(Math.max(sp.a, sp.b)), f(Math.abs(sp.a - sp.b)), f(2*tot), f(tot + pick(sp.sys.tol))]),
+        explanation: fromLimits ? `Total tolerance = upper − lower = ${f(sp.up)} − ${f(sp.low)} = ${ans} ${sp.sys.unit}.`
+                                : `Total tolerance = plus + minus = ${f(sp.a)} + ${f(sp.b)} = ${ans} ${sp.sys.unit} (the limits are ${f(sp.low)} and ${f(sp.up)}).`
+      };
+    }
+
+    if (mode === "plus_minus") {
+      const sp = tolSpec("equal"), f = sp.f, askTol = pick([true, false]);
+      const ans = askTol ? f(sp.a) : f(sp.N);
+      return {
+        subType: "plus_minus",
+        question: `The limits of a ${sp.part} are ${f(sp.low)} and ${f(sp.up)} ${sp.sys.unit}. Written as nominal ± tolerance, what is the ${askTol ? "tolerance (the ± amount)" : "nominal size"}?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, sp.sys.words),
+        // whole band instead of half; a limit instead of the midpoint
+        options: askTol ? opt4(ans, [f(2*sp.a), f(4*sp.a), f(sp.a + pick(sp.sys.tol))])
+                        : opt4(ans, [f(sp.up), f(sp.low), f(sp.N + 2*sp.a)]),
+        explanation: askTol ? `The band is ${f(sp.up)} − ${f(sp.low)} = ${f(2*sp.a)}. Half of it goes each way, so the tolerance is ± ${ans}.`
+                            : `The nominal size is halfway between the limits: (${f(sp.low)} + ${f(sp.up)}) ÷ 2 = ${ans}.`
+      };
+    }
+
+    // rework: an oversize part, measured to one more decimal place. Removal is
+    // a multiple of 5 fine units so no two plausible answers sit within the
+    // grader's 0.0001 tolerance of each other.
+    const sp = tolSpec(pick(["equal", "unequal"])), f = sp.f, sc10 = sp.sys.sc * 10;
+    const m = sp.up * 10 + 5 * ri(1, 8), least = pick([true, false]);
+    const rem = least ? m - sp.up * 10 : m - sp.low * 10, F = v => (v / sc10).toFixed(sp.sys.dp + 1);
+    const ans = F(rem);
+    return {
+      subType: "rework",
+      question: `A ${sp.part} is drawn as ${sp.text} and measures ${F(m)} ${sp.sys.unit}, so it is oversize. What is the ${least ? "least" : "most"} you can grind off and still have the part in spec?`,
+      answer: ans,
+      acceptableAnswers: unitForms(ans, sp.sys.words),
+      // to nominal instead of a limit; to the other limit
+      options: opt4(ans, [F(m - sp.N * 10), F(least ? m - sp.low * 10 : m - sp.up * 10), F(rem + 10)]),
+      explanation: least ? `Grind down to the upper limit, ${f(sp.up)}: ${F(m)} − ${F(sp.up * 10)} = ${ans} ${sp.sys.unit}.`
+                         : `You can go as far as the lower limit, ${f(sp.low)}: ${F(m)} − ${F(sp.low * 10)} = ${ans} ${sp.sys.unit}.`
+    };
+  });
+
+  // =====================================================================
+  // M-361  Technical Drawings  (tier 6)
+  // =====================================================================
+  // Architect's scales as [numerator, denominator] inches per foot.
+  const ARCH = [[1, 8], [3, 16], [1, 4], [3, 8], [1, 2], [3, 4], [1, 1], [3, 2], [3, 1]];
+  const archLabel = s => `${mixed(s)}" = 1'-0"`;
+  // A real length T (whole inches) whose drawing length at scale s lands on a
+  // tape mark (denominator 16 or coarser) and fits on a sheet.
+  function scaledPair() {
+    for (let tries = 0; tries < 200; tries++) {
+      const s = R(...pick(ARCH));
+      const ft = ri(3, rVal(s) >= 1 ? 14 : rVal(s) >= 0.5 ? 30 : 60);
+      const inch = pick([0, 0, 0, 6, 3, 9, 4, 8, 2, 10, 1, 5, 7, 11]);
+      const T = 12*ft + inch, draw = rMul(R(T, 12), s);
+      if (16 % draw[1] === 0 && rVal(draw) <= 24 && rVal(draw) >= 0.5) return { s, T, draw };
+    }
+    return { s: R(1, 4), T: 12*14, draw: R(7, 2) };
+  }
+  const realForms = T => T % 12 ? ftInForms(T) : unitForms(String(T / 12), ["ft", "feet", "foot", "'"]).concat([T + " in", T + '"', T + " inches"]);
+
+  _addSkill(6, "Technical Drawings", "Technical Drawings", 3, {
+    goalProblem: "A floor plan is drawn at 1/4\" = 1'-0\". A wall measures 5 3/4 in on the plan. How long is the real wall?",
+    teachingSteps: [
+      { title: "Read the scale", explanation: "<strong>1/4\" = 1'-0\"</strong> means every quarter inch on the paper stands for one foot of the real building.", visual: "1/4 in on paper ↔ 1 ft real" },
+      { title: "Drawing to real: divide by the scale", explanation: "Count how many scale units fit in the drawn length. Dividing by a fraction is multiplying by its reciprocal.", visual: "5 3/4 ÷ 1/4 = 23/4 × 4 = 23 ft" },
+      { title: "Real to drawing: multiply by the scale", explanation: "Each real foot becomes one scale unit on paper. Turn inches into a fraction of a foot first.", visual: "14 ft × 1/4 = 3 1/2 in   9'-6\" = 9 1/2 ft × 1/4 = 2 3/8 in" },
+      { title: "Ratio and metric scales", explanation: "1/4\" = 1'-0\" is the same as 1 : 48, because 1 ft = 12 in and 12 ÷ 1/4 = 48. Metric plans give the ratio directly: at 1 : 100, 1 mm on paper is 100 mm real.", visual: "1:100 → 86 mm × 100 = 8600 mm = 8.6 m" },
+      { title: "Missing dimension in a string", explanation: "The pieces of a dimension string add to the overall dimension. Missing piece = overall − the sum of the others. In feet and inches, borrow 12 inches, not 10.", visual: "14'-6\" − (3'-4\" + 2'-10\" + 4'-1\") = 14'-6\" − 10'-3\" = 4'-3\"" }
+    ],
+    finalAnswer: "23 ft",
+    answerExplanation: "Every 1/4 in is 1 ft. 5 3/4 in holds 23 quarter inches (5 3/4 ÷ 1/4 = 23), so the wall is 23 ft long.",
+    example: { problem: "At 1/8\" = 1'-0\", how long should a 26 ft wall be drawn?", steps: [
+      { text: "Each real foot is 1/8 in on paper", math: "26 × 1/8 = 26/8" },
+      { text: "Change to a mixed number", math: "26/8 = 3 2/8" },
+      { text: "Reduce", math: "3 1/4 in" }
+    ]},
+    keyPoints: [
+      "Drawing → real: divide by the scale; real → drawing: multiply",
+      "Convert inches to a fraction of a foot before scaling",
+      "1/4\" = 1'-0\" is 1:48; 1/8\" = 1'-0\" is 1:96",
+      "The pieces of a dimension string add up to the overall dimension",
+      "Borrow 12 inches, not 10, when subtracting feet and inches"
+    ],
+    mistakes: [
+      { wrong: "5 3/4 in at 1/4\" = 1'-0\" is 5 3/4 × 1/4 = 1 7/16 ft", why: "Going from the drawing to the real thing you divide by the scale: 5 3/4 ÷ 1/4 = 23 ft." },
+      { wrong: "Missing dimension 14'-6\" − 10'-8\" = 4'-8\" (borrowing 10)", why: "A foot is 12 inches: 14'-6\" = 13'-18\", and 13'-18\" − 10'-8\" = 3'-10\"." }
+    ],
+    guided: { problem: "A plan is drawn at 1/2\" = 1'-0\". A room is 7 1/4 in long on the plan. How long is the room in feet and inches?", steps: [
+      { label: "Scale units in 7 1/4 in", value: "7 1/4 ÷ 1/2 = 14 1/2" },
+      { label: "Half a foot in inches", value: "1/2 ft = 6 in" },
+      { label: "Real length", value: "14 ft 6 in" }
+    ], answer: "14 ft 6 in", answerLabel: "Real length =",
+    interactiveSteps: [
+      { prompt: "At 1/2\" = 1'-0\", how many feet does 7 1/4 in on the plan stand for?", hint: "Divide by 1/2, which is the same as multiplying by 2.", answer: "14 1/2", acceptableAnswers: ["14 1/2", "14.5", "29/2", "14-1/2", "14.5 ft", "14 1/2 ft"], formatHint: "e.g., 10 1/2" },
+      { prompt: "How many inches is half a foot?", hint: "A foot is 12 inches.", answer: "6", acceptableAnswers: ["6", "6 in", '6"'], formatHint: "Enter a number" },
+      { prompt: "Write the real length in feet and inches.", hint: "14 whole feet plus the half foot.", answer: "14 ft 6 in", acceptableAnswers: ftInForms(174), formatHint: "e.g., 9 ft 3 in" }
+    ] }
+  }, function(){
+    const mode = pick(["real_from_drawing", "drawing_from_real", "find_scale", "scale_ratio", "metric_scale", "dimension_chain", "dimension_chain"]);
+    const SHEETS = ["floor plan", "wall elevation", "framing plan", "foundation plan", "cabinet shop drawing"];
+    const THINGS = ["wall", "beam", "window opening", "countertop", "deck ledger", "garage door header"];
+
+    if (mode === "real_from_drawing") {
+      const { s, T, draw } = scaledPair(), ft = R(T, 12);
+      const ans = T % 12 ? ftIn(T) : String(T / 12);
+      const wrongScale = R(...pick(ARCH.filter(x => rVal(R(...x)) !== rVal(s))));
+      const asReal = t => t % 12 ? ftIn(t) : String(t / 12);
+      return {
+        subType: "real_from_drawing",
+        question: `A ${pick(SHEETS)} is drawn at ${archLabel(s)}. A ${pick(THINGS)} measures ${mixed(draw)} in on the drawing. How long is it in real life? ${T % 12 ? "Give feet and inches." : "Give the length in feet."}`,
+        answer: ans,
+        acceptableAnswers: realForms(T),
+        // a foot off; the drawing read at a different scale; multiplied by the scale
+        options: opt4(ans, [asReal(T + 12), asReal(T > 24 ? T - 12 : T + 24), asReal(Math.round(12 * rVal(rDiv(draw, wrongScale)))), asReal(T * 2)]),
+        explanation: `At ${archLabel(s)}, every ${mixed(s)} in on paper is 1 ft. ${mixed(draw)} ÷ ${mixed(s)} = ${mixed(ft)} ft` +
+          (T % 12 ? `, and ${mixed(R(T % 12, 12))} ft = ${T % 12} in, so ${ftIn(T)}.` : ".")
+      };
+    }
+
+    if (mode === "drawing_from_real") {
+      const { s, T, draw } = scaledPair(), ft = R(T, 12), m = mixed(draw);
+      return {
+        subType: "drawing_from_real",
+        question: `You are drawing a ${pick(SHEETS)} at ${archLabel(s)}. A ${pick(THINGS)} is ${T % 12 ? arch(T) : T / 12 + " ft"} long. How long should it be on the drawing, in inches?`,
+        answer: m,
+        acceptableAnswers: inchForms(draw),
+        // inches dropped (whole feet only); one scale unit off; doubled; divided instead of multiplied
+        options: opt4(m, [T % 12 ? mixed(rMul(R(Math.floor(T / 12)), s)) : null, mixed(rAdd(draw, s)), mixed(rMul(draw, R(2))), mixed(rDiv(ft, s))]),
+        explanation: `${T % 12 ? `${arch(T)} = ${mixed(ft)} ft. ` : ""}Each foot is ${mixed(s)} in on paper: ${mixed(ft)} × ${mixed(s)} = ${m} in.`
+      };
+    }
+
+    if (mode === "find_scale") {
+      let s, ft, draw;
+      do { s = R(...pick(ARCH)); ft = ri(4, 40); draw = rMul(R(ft), s); } while (rVal(draw) > 24 || rVal(draw) < 1);
+      const m = mixed(s);
+      const others = ARCH.map(x => R(...x)).filter(x => rVal(x) !== rVal(s)).map(mixed);
+      return {
+        subType: "find_scale",
+        question: `On a drawing, ${an(ft)} ft ${pick(THINGS)} measures ${mixed(draw)} in. The scale is ___ in = 1 ft. What number goes in the blank?`,
+        answer: m,
+        acceptableAnswers: inchForms(s),
+        // feet per inch (upside down); neighbouring standard scales
+        options: opt4(m, [mixed(rDiv(R(ft), draw))].concat(sh(others))),
+        explanation: `Inches per foot = drawing length ÷ real feet = ${mixed(draw)} ÷ ${ft} = ${m}. The scale is ${archLabel(s)}.`
+      };
+    }
+
+    if (mode === "scale_ratio") {
+      const s = R(...pick(ARCH)), n = rVal(rDiv(R(12), s));
+      return {
+        subType: "scale_ratio",
+        question: `Written as a ratio, the architect's scale ${archLabel(s)} is 1 : n. What is n?`,
+        answer: String(n),
+        acceptableAnswers: [String(n), "1:" + n, "1 : " + n],
+        // forgot 12 inches per foot (used 1/scale); used 10 inches per foot
+        options: opt4(String(n), [num(rVal(rDiv(R(1), s))), num(rVal(rDiv(R(10), s))), String(n * 2)]),
+        explanation: `1 ft = 12 in. ${mixed(s)} in on paper stands for 12 in, and 12 ÷ ${mixed(s)} = ${n}, so the ratio is 1 : ${n}.`
+      };
+    }
+
+    if (mode === "metric_scale") {
+      const k = pick([20, 50, 100, 200, 500]), d = ri(12, 240), realMM = d * k;
+      if (pick([true, false])) {
+        const ans = num(realMM / 1000, 3);
+        return {
+          subType: "metric_scale",
+          question: `A ${pick(["site plan", "floor plan", "landscape plan"])} is drawn at 1 : ${k}. A ${pick(["building", "driveway", "retaining wall", "trench"])} measures ${d} mm on the plan. How long is it in real life, in metres?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["m", "metres", "meters"]),
+          // left in millimetres; divided by the scale; off by a factor of 10
+          options: opt4(ans, [String(realMM), num(d / k, 3), num(realMM / 100, 3), num(realMM / 10000, 4)]),
+          explanation: `At 1 : ${k}, real = ${d} × ${k} = ${realMM} mm. 1000 mm = 1 m, so ${ans} m.`
+        };
+      }
+      const realM = num(realMM / 1000, 3);
+      return {
+        subType: "metric_scale",
+        question: `You are drawing a plan at 1 : ${k}. A wall is ${realM} m long. How long is it on the plan, in millimetres?`,
+        answer: String(d),
+        acceptableAnswers: unitForms(String(d), ["mm", "millimetres", "millimeters"]),
+        // metres not converted to mm; multiplied by the scale; off by 10
+        options: opt4(String(d), [num(realMM / 1000 / k, 4), String(realMM * k), String(d * 10), num(d / 10, 2)]),
+        explanation: `${realM} m = ${realMM} mm. At 1 : ${k}, drawing = ${realMM} ÷ ${k} = ${d} mm.`
+      };
+    }
+
+    // dimension_chain
+    if (pick([true, false])) {
+      const n = ri(3, 4), j = ri(0, n - 1);
+      const segs = Array.from({ length: n }, () => 12*ri(1, 8) + ri(1, 11));
+      const total = segs.reduce((p, c) => p + c, 0), miss = segs[j];
+      const known = total - miss;
+      const ans = ftIn(miss);
+      // the sum of the others; borrowed 10 instead of 12 (when a borrow happens); an inch off
+      const tf = Math.floor(total / 12), ti = total % 12, kf = Math.floor(known / 12), ki = known % 12;
+      const borrow10 = ti < ki ? 12*(tf - 1 - kf) + (ti + 10 - ki) : null;
+      return {
+        subType: "dimension_chain",
+        question: `A dimension string along a wall reads ${segs.map((T, i) => i === j ? "?" : arch(T)).join(", ")}. The overall dimension is ${arch(total)}. What is the missing dimension?`,
+        answer: ans,
+        acceptableAnswers: ftInForms(miss),
+        options: opt4(ans, [borrow10 && borrow10 > 0 ? ftIn(borrow10) : null, ftIn(miss + 1), ftIn(miss - 1), ftIn(known)]),
+        explanation: `The known pieces add to ${segs.filter((_, i) => i !== j).map(arch).join(" + ")} = ${arch(known)}. Missing = ${arch(total)} − ${arch(known)}` +
+          (ti < ki ? ` (borrow a foot: ${arch(total)} = ${tf - 1}'-${ti + 12}")` : "") + ` = ${arch(miss)}, which is ${ans}.`
+      };
+    }
+    const n = ri(3, 4), j = ri(0, n - 1);
+    // At least 1 inch each: a proper-fraction answer such as 13/16 would also
+    // accept "1 3/16" through the grader's whitespace-stripping fallback.
+    const segs = Array.from({ length: n }, () => R(16*ri(1, 4) + ri(1, 15), 16));
+    const total = segs.reduce((p, c) => rAdd(p, c), R(0)), miss = segs[j], known = rSub(total, miss), m = mixed(miss);
+    return {
+      subType: "dimension_chain",
+      question: `A shop drawing of a ${pick(["steel bracket", "mounting plate", "drill jig", "cabinet face frame"])} gives the hole-to-hole dimensions ${segs.map((x, i) => i === j ? "?" : mixed(x)).join(", ")} (inches) and an overall length of ${mixed(total)} in. What is the missing dimension?`,
+      answer: m,
+      acceptableAnswers: inchForms(miss),
+      // the sum of the others; a sixteenth off
+      options: opt4(m, [mixed(known), mixed(rAdd(miss, R(1, 16))), mixed(rAdd(miss, R(1, 8))), rVal(miss) > 1/16 ? mixed(rSub(miss, R(1, 16))) : null]),
+      explanation: `The known dimensions add to ${mixed(known)} in. Missing = ${mixed(total)} − ${mixed(known)} = ${m} in.`
+    };
+  });
+
+  // =====================================================================
+  // M-362  Mixtures and Material Ratios  (tier 6)
+  // =====================================================================
+  const MIXES = [
+    { name: "concrete", parts: [["cement", 1], ["sand", 2], ["gravel", 3]] },
+    { name: "concrete", parts: [["cement", 1], ["sand", 2], ["gravel", 4]] },
+    { name: "concrete", parts: [["cement", 1], ["sand", 3], ["gravel", 3]] },
+    { name: "mortar", parts: [["cement", 1], ["sand", 3]] },
+    { name: "mortar", parts: [["cement", 1], ["lime", 1], ["sand", 6]] },
+    { name: "stucco base coat", parts: [["cement", 1], ["sand", 4]] }
+  ];
+
+  _addSkill(6, "Mixtures and Material Ratios", "Mixtures and Material Ratios", 3, {
+    goalProblem: "A 1:2:3 concrete mix (cement : sand : gravel by volume) is batched to make 18 cubic feet of dry mix. How much sand is needed?",
+    teachingSteps: [
+      { title: "A ratio is parts", explanation: "1:2:3 means 1 part cement, 2 parts sand, 3 parts gravel. The size of a part depends on the batch.", visual: "1 + 2 + 3 = 6 parts in all" },
+      { title: "Find one part", explanation: "Divide the whole batch by the <strong>total number of parts</strong>, not by any single part.", visual: "18 cu ft ÷ 6 parts = 3 cu ft per part" },
+      { title: "Multiply for each ingredient", explanation: "Each ingredient is its number of parts times the size of one part.", visual: "sand = 2 × 3 = 6 cu ft   gravel = 3 × 3 = 9 cu ft" },
+      { title: "Mixes stated against one ingredient", explanation: "Fuel at 50:1 means 1 part oil for every 50 parts gas. If you know the gas, oil = gas ÷ 50. Convert units first: 1 gallon = 128 fl oz.", visual: "2.5 gal = 320 fl oz → 320 ÷ 50 = 6.4 fl oz oil" },
+      { title: "Percent concentration", explanation: "Concentration = amount of the active part ÷ total amount × 100. Turn it around: part = total × percent.", visual: "15 L at 2% → 15 000 mL × 0.02 = 300 mL" },
+      { title: "Scaling a batch", explanation: "Keep the ratio and multiply every ingredient by the same factor: new amount ÷ old amount.", visual: "6 qt per 50 lb → 125 lb is 2.5 × → 15 qt" }
+    ],
+    finalAnswer: "6 cubic feet",
+    answerExplanation: "1 + 2 + 3 = 6 parts. 18 ÷ 6 = 3 cubic feet per part. Sand is 2 parts: 2 × 3 = 6 cubic feet.",
+    example: { problem: "A degreaser is diluted 1:4 (1 part concentrate to 4 parts water). How much concentrate is in 10 litres of mixed solution?", steps: [
+      { text: "Total parts", math: "1 + 4 = 5" },
+      { text: "One part", math: "10 L ÷ 5 = 2 L" },
+      { text: "Concentrate is 1 part", math: "2 L" }
+    ]},
+    keyPoints: [
+      "Add the ratio numbers to get the total parts",
+      "One part = batch ÷ total parts",
+      "\"50:1\" fuel: oil = gas ÷ 50 (convert gallons to ounces first)",
+      "Percent concentration = part ÷ total × 100",
+      "Scale a batch by multiplying every ingredient by the same factor"
+    ],
+    mistakes: [
+      { wrong: "Sand in 18 cu ft of 1:2:3 = 18 ÷ 2 = 9", why: "Divide by the total parts (6), then multiply by sand's 2 parts: 6 cu ft." },
+      { wrong: "1:4 dilution of 10 L has 10 ÷ 4 = 2.5 L concentrate", why: "1:4 is 5 parts in all, so concentrate is 10 ÷ 5 = 2 L." },
+      { wrong: "50:1 in 2 gallons needs 2 ÷ 50 = 0.04 oz of oil", why: "Convert first: 2 gal = 256 fl oz, and 256 ÷ 50 = 5.12 fl oz." }
+    ],
+    guided: { problem: "A 1:3 mortar mix (cement : sand) makes 20 buckets of dry mix. How many buckets of sand?", steps: [
+      { label: "Total parts", value: "1 + 3 = 4" },
+      { label: "One part", value: "20 ÷ 4 = 5" },
+      { label: "Sand is 3 parts", value: "3 × 5 = 15" }
+    ], answer: "15", answerLabel: "Buckets of sand =",
+    interactiveSteps: [
+      { prompt: "A 1:3 mix has how many parts in all?", hint: "Add the numbers in the ratio.", answer: "4", acceptableAnswers: ["4", "four"], formatHint: "Enter a number" },
+      { prompt: "The batch is 20 buckets. How many buckets is one part?", hint: "20 ÷ 4", answer: "5", acceptableAnswers: ["5", "5 buckets"], formatHint: "Enter a number" },
+      { prompt: "Sand is 3 parts. How many buckets of sand?", hint: "3 × 5", answer: "15", acceptableAnswers: ["15", "15 buckets"], formatHint: "Enter a number" }
+    ] }
+  }, function(){
+    const mode = pick(["concrete", "fuel_mix", "dilution", "percent_conc", "scale_batch"]);
+
+    if (mode === "concrete") {
+      const mix = pick(MIXES), sum = mix.parts.reduce((p, c) => p + c[1], 0), k = ri(1, 12);
+      const unit = pick(["cubic feet", "buckets", "shovelfuls"]);
+      const ratio = mix.parts.map(p => p[1]).join(":"), names = mix.parts.map(p => p[0]).join(" : ");
+      const ci = ri(0, mix.parts.length - 1), [cName, cPart] = mix.parts[ci];
+      const unitsOf = unit === "cubic feet" ? ["cubic feet", "cu ft", "ft³", "cubic ft"] : [unit];
+      if (pick([true, false, false])) {
+        // Known ingredient to another ingredient.
+        let oi = ri(0, mix.parts.length - 1); while (oi === ci) oi = ri(0, mix.parts.length - 1);
+        const [oName, oPart] = mix.parts[oi], have = k * oPart, ans = num(k * cPart, 2);
+        return {
+          subType: "concrete",
+          question: `You are mixing ${mix.name} at ${ratio} (${names}, by volume) and have used ${have} ${unit} of ${oName}. How many ${unit} of ${cName} go with it?`,
+          answer: ans,
+          acceptableAnswers: unitsOf.reduce((acc, u) => acc.concat([ans + " " + u]), [ans]),
+          // the known amount reused; divided the wrong way; scaled by the total
+          options: opt4(ans, [String(have), num(have / cPart * oPart, 2), String(k * sum), num(k * cPart + k, 2)]),
+          explanation: `${have} ${unit} of ${oName} is ${oPart} part${oPart > 1 ? "s" : ""}, so one part is ${have} ÷ ${oPart} = ${k}. ${cName.charAt(0).toUpperCase() + cName.slice(1)} is ${cPart} part${cPart > 1 ? "s" : ""}: ${cPart} × ${k} = ${ans} ${unit}.`
+        };
+      }
+      const total = k * sum, ans = String(k * cPart);
+      return {
+        subType: "concrete",
+        question: `A ${ratio} ${mix.name} mix (${names}, by volume) is batched to make ${total} ${unit} of dry mix in all. How many ${unit} of ${cName} are needed?`,
+        answer: ans,
+        acceptableAnswers: unitsOf.reduce((acc, u) => acc.concat([ans + " " + u]), [ans]),
+        // divided by this ingredient's parts (parts vs total); one part only; everything else
+        options: opt4(ans, [num(total / cPart, 2), String(k), String(total - k * cPart), num(total * cPart / (sum - cPart), 2)]),
+        explanation: `${ratio} is ${sum} parts in all. One part = ${total} ÷ ${sum} = ${k} ${unit}. ${cName.charAt(0).toUpperCase() + cName.slice(1)} is ${cPart} part${cPart > 1 ? "s" : ""}: ${cPart} × ${k} = ${ans} ${unit}.`
+      };
+    }
+
+    if (mode === "fuel_mix") {
+      const r = pick([50, 40, 32, 25]), tool = pick(["chainsaw", "string trimmer", "leaf blower", "outboard motor", "hedge trimmer"]);
+      if (pick([true, false])) {
+        // Quarter gallons, kept to combinations whose oil is exact to 0.1 oz.
+        let q; do { q = ri(2, 20); } while ((320 * q) % r !== 0);
+        const gal = q / 4, oz = 32 * q / r, ans = num(oz, 2);
+        return {
+          subType: "fuel_mix",
+          question: `${cap(an(tool))} runs on a ${r}:1 gas-to-oil mix. How many fluid ounces of 2-stroke oil go into ${num(gal)} gallon${gal === 1 ? "" : "s"} of gas? (1 gallon = 128 fl oz)`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["oz", "fl oz", "ounces", "fluid ounces", "fl. oz."]),
+          // gallons not converted; 51 parts used as the divisor; doubled
+          options: opt4(ans, [num(gal / r, 4), num(128 * gal / (r + 1), 2), num(2 * oz, 2), num(oz / 2, 2)]),
+          explanation: `${num(gal)} gal × 128 = ${num(128 * gal)} fl oz of gas. At ${r}:1 the oil is gas ÷ ${r}: ${num(128 * gal)} ÷ ${r} = ${ans} fl oz.`
+        };
+      }
+      let L; do { L = pick([1, 2, 4, 5, 10, 20]); } while ((1000 * L) % r !== 0);
+      const ans = String(1000 * L / r);
+      return {
+        subType: "fuel_mix",
+        question: `${cap(an(tool))} needs a ${r}:1 petrol-to-oil mix. How many millilitres of oil go into ${L} litre${L === 1 ? "" : "s"} of petrol? (1 L = 1000 mL)`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["mL", "ml", "millilitres", "milliliters"]),
+        // litres not converted; multiplied; 51 parts as divisor
+        options: opt4(ans, [num(L / r, 4), String(L * r), num(1000 * L / (r + 1), 1), String(2000 * L / r)]),
+        explanation: `${L} L = ${1000 * L} mL of petrol. At ${r}:1 the oil is ${1000 * L} ÷ ${r} = ${ans} mL.`
+      };
+    }
+
+    if (mode === "dilution") {
+      const n = pick([2, 3, 4, 5, 7, 9, 15, 19]), k = ri(1, 6), V = (n + 1) * k;
+      const unit = pick(["gallons", "litres", "quarts", "cups"]), askConc = pick([true, false]);
+      const ans = askConc ? String(k) : String(n * k);
+      const product = pick(["degreaser", "floor cleaner", "deck brightener", "disinfectant", "concrete etcher"]);
+      return {
+        subType: "dilution",
+        question: `A ${product} label says to dilute it 1:${n} (1 part concentrate to ${n} parts water). How many ${unit} of ${askConc ? "concentrate" : "water"} are in ${V} ${unit} of mixed solution?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, [unit]),
+        // divided by n instead of n + 1 (ratio parts, not the total); the other ingredient
+        options: askConc ? opt4(ans, [num(V / n, 2), String(n * k), num(V - V / n, 2), String(k + 1)])
+                         : opt4(ans, [num(V - V / n, 2), String(k), String(V), num(V / n * (n - 1), 2)]),
+        explanation: `1:${n} is ${n + 1} parts in all. One part = ${V} ÷ ${n + 1} = ${k} ${unit}. ` +
+          (askConc ? `Concentrate is 1 part: ${k} ${unit}.` : `Water is ${n} parts: ${n} × ${k} = ${n * k} ${unit}.`)
+      };
+    }
+
+    if (mode === "percent_conc") {
+      const v = ri(0, 2);
+      if (v === 0) {
+        const p = pick([1, 2, 2.5, 3, 4, 5, 10, 12.5]), V = pick([4, 8, 10, 12, 15, 16, 20, 25]);
+        const ans = num(10 * V * p, 2);
+        return {
+          subType: "percent_conc",
+          question: `${cap(an(V))} L ${pick(["backpack sprayer", "tank sprayer", "pump sprayer"])} is filled with a ${p}% solution of ${pick(["herbicide", "fungicide", "insecticide"])} concentrate. How many millilitres of concentrate are in the tank?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["mL", "ml", "millilitres", "milliliters"]),
+          // percent used as a whole number; left in litres; off by ten
+          options: opt4(ans, [num(V * p, 2), num(V * p / 100, 4), num(100 * V * p, 2), num(10 * V * p / 2, 2)]),
+          explanation: `${V} L = ${1000 * V} mL. ${p}% of it is ${1000 * V} × ${num(p / 100, 4)} = ${ans} mL.`
+        };
+      }
+      if (v === 1) {
+        const p = pick([1, 2, 2.5, 4, 5, 6, 8, 10]), T = pick([2, 4, 5, 8, 10, 20]), a = num(10 * T * p, 2);
+        const ans = num(p) + "%";
+        return {
+          subType: "percent_conc",
+          question: `You mix ${a} mL of ${pick(["concentrate", "sealer additive", "liquid fertilizer"])} into water to make ${T} L of solution in all. What is the percent concentration?`,
+          answer: ans,
+          acceptableAnswers: [num(p), num(p) + " %", num(p) + " percent"],
+          // units not matched (mL over L); ×1000 slip; ÷1000 slip. (Dividing by
+          // the water alone is the textbook mistake, but at these strengths it
+          // lands within the grader's tolerance of the right answer.)
+          options: opt4(ans, [num(a / T, 2) + "%", num(p * 10) + "%", num(p / 10, 3) + "%", num(100 - p) + "%"]),
+          explanation: `${T} L = ${1000 * T} mL. Concentration = ${a} ÷ ${1000 * T} × 100 = ${ans}.`
+        };
+      }
+      let x, y; do { x = ri(1, 12); y = ri(1, 12); } while ((100 * x) % (x + y) !== 0 || x === y);
+      const p = 100 * x / (x + y), ans = p + "%";
+      return {
+        subType: "percent_conc",
+        question: `A cooling system is filled with ${x} quarts of antifreeze and ${y} quarts of water. What percent of the mixture is antifreeze?`,
+        answer: ans,
+        acceptableAnswers: [String(p), p + " %", p + " percent"],
+        // antifreeze over water (parts, not total); the water's share
+        options: opt4(ans, [num(100 * x / y, 1) + "%", (100 - p) + "%", num(100 * x / (x + y + 1), 1) + "%"]),
+        explanation: `Total mixture: ${x} + ${y} = ${x + y} qt. Antifreeze share: ${x} ÷ ${x + y} × 100 = ${ans}.`
+      };
+    }
+
+    // scale_batch: a rate "a units of X per b units of Y", needed for c units of Y.
+    const RECIPES = [
+      { x: "quarts of water", a: 6, y: "lb of thinset", b: 50, what: "thinset mortar" },
+      { x: "fl oz of thinner", a: 8, y: "gallons of paint", b: 1, what: "spray paint" },
+      { x: "lb of fertilizer", a: 3, y: "square feet of lawn", b: 1000, what: "lawn feeding" },
+      { x: "oz of pool shock", a: 16, y: "gallons of pool water", b: 10000, what: "pool treatment" },
+      { x: "quarts of water", a: 5, y: "lb of grout", b: 25, what: "tile grout" },
+      { x: "gallons of water", a: 5, y: "bags of concrete mix", b: 4, what: "bagged concrete" }
+    ];
+    const rc = pick(RECIPES), t = ri(1, 9), c = rc.b * t / 2 === rc.b ? rc.b * (t + 1) / 2 : rc.b * t / 2;
+    const ans = num(rc.a * c / rc.b, 3);
+    return {
+      subType: "scale_batch",
+      question: `For ${rc.what}, the instructions call for ${rc.a} ${rc.x} per ${rc.b === 1 ? "" : rc.b.toLocaleString("en-US") + " "}${rc.b === 1 ? rc.y.replace(/^gallons/, "gallon") : rc.y}. How many ${rc.x} for ${c.toLocaleString("en-US")} ${rc.y}?`,
+      answer: ans,
+      acceptableAnswers: unitForms(ans, [rc.x.split(" of ")[0], rc.x]),
+      // the rate inverted; the base amount left unscaled; half a unit off
+      options: opt4(ans, [num(rc.b * c / rc.a, 3), String(rc.a), num(rc.a * c / rc.b * 2, 3), num(rc.a * c / rc.b + rc.a / 2, 3)]),
+      explanation: `${c.toLocaleString("en-US")} ÷ ${rc.b.toLocaleString("en-US")} = ${num(c / rc.b, 3)} times the base amount, so ${rc.a} × ${num(c / rc.b, 3)} = ${ans} ${rc.x}.`
+    };
+  });
+
+  // =====================================================================
+  // M-363  Trade Formulas  (tier 6)
+  // =====================================================================
+  // Formula-rearranging bank: [question, correct, three wrong forms]. The
+  // wrong forms are the usual slips: dividing upside down, multiplying, and
+  // squaring or rooting the wrong side.
+  const REARRANGE = [
+    ["Ohm's law is V = I × R. Solve it for R.", "R = V / I", ["R = I / V", "R = V × I", "R = V − I"]],
+    ["Ohm's law is V = I × R. Solve it for I.", "I = V / R", ["I = R / V", "I = V × R", "I = V − R"]],
+    ["Power is P = V × I. Solve it for V.", "V = P / I", ["V = I / P", "V = P × I", "V = P − I"]],
+    ["Power is P = I² × R. Solve it for R.", "R = P / I²", ["R = I² / P", "R = P × I²", "R = √(P / I)"]],
+    ["Power is P = I² × R. Solve it for I.", "I = √(P / R)", ["I = P / R", "I = √(R / P)", "I = (P / R)²"]],
+    ["Power is P = V² / R. Solve it for R.", "R = V² / P", ["R = P / V²", "R = V / P²", "R = P × V²"]],
+    ["Board feet are BF = T × W × L / 12. Solve it for L.", "L = 12 × BF / (T × W)", ["L = BF / (12 × T × W)", "L = T × W / (12 × BF)", "L = 12 × T × W / BF"]],
+    ["For two belted pulleys, D1 × N1 = D2 × N2. Solve it for N2.", "N2 = D1 × N1 / D2", ["N2 = D2 × N1 / D1", "N2 = D1 × D2 / N1", "N2 = N1 / (D1 × D2)"]],
+    ["Gallons from cubic inches is G = V / 231. Solve it for V.", "V = 231 × G", ["V = G / 231", "V = 231 / G", "V = G − 231"]],
+    ["The area of a circle is A = π r². Solve it for r.", "r = √(A / π)", ["r = A / π", "r = √A / π", "r = (A / π)²"]]
+  ];
+  const APPLIANCES = [["space heater", 1500, 120], ["toaster oven", 1200, 120], ["microwave", 1080, 120], ["water heater element", 4500, 240],
+    ["range element", 2400, 240], ["clothes dryer", 5760, 240], ["shop vacuum", 960, 120], ["hair dryer", 1800, 120], ["baseboard heater", 2160, 240], ["well pump", 1200, 240]];
+
+  _addSkill(6, "Trade Formulas", "Trade Formulas", 3, {
+    goalProblem: "A 1,800 W space heater runs on 120 V. How much current does it draw?",
+    teachingSteps: [
+      { title: "Pick the formula and list what you know", explanation: "Write the formula, then write each known value with its unit under the letter it belongs to. The letter left over is what you solve for.", visual: "P = V × I    P = 1800 W, V = 120 V, I = ?" },
+      { title: "Rearrange before you substitute", explanation: "Undo what is being done to the unknown. If it is multiplied, divide both sides; if it is squared, take a square root.", visual: "P = V × I → I = P / V" },
+      { title: "Substitute and calculate", explanation: "Put the numbers in and keep the units. A sensible unit at the end is a check that you used the right formula.", visual: "I = 1800 / 120 = 15 A" },
+      { title: "The trade formulas", explanation: "<strong>Ohm's law</strong> V = I × R. <strong>Power</strong> P = V × I. <strong>Board feet</strong> = thickness (in) × width (in) × length (ft) ÷ 12. <strong>Tank</strong>: cubic inches ÷ 231 = gallons, or cubic feet × 7.48. <strong>Pulleys and gears</strong>: D1 × N1 = D2 × N2.", visual: "V = IR   P = VI   BF = T×W×L/12   gal = in³/231   D1N1 = D2N2" },
+      { title: "Check it makes sense", explanation: "A bigger driven pulley turns <strong>slower</strong>. A bigger resistance on the same voltage draws <strong>less</strong> current. If your answer goes the other way, you divided upside down.", visual: "6 in pulley at 1750 RPM drives 14 in → 750 RPM (slower)" }
+    ],
+    finalAnswer: "15 A",
+    answerExplanation: "P = V × I, so I = P / V = 1800 / 120 = 15 amps.",
+    example: { problem: "How many board feet are in eight 2×6 boards, each 12 ft long?", steps: [
+      { text: "One board", math: "2 × 6 × 12 ÷ 12 = 12 BF" },
+      { text: "Eight boards", math: "8 × 12 = 96 BF" }
+    ]},
+    keyPoints: [
+      "Write the formula and the knowns with units before calculating",
+      "Rearrange for the unknown first, then substitute",
+      "Board feet use thickness and width in inches, length in feet",
+      "231 cubic inches = 1 gallon; 1 cubic foot ≈ 7.48 gallons",
+      "Driver × speed = driven × speed for pulleys and gears"
+    ],
+    mistakes: [
+      { wrong: "I = V / P for a heater (120 / 1800 = 0.067 A)", why: "From P = V × I, divide both sides by V: I = P / V = 15 A." },
+      { wrong: "Board feet of a 2×6×12 = 2 × 6 × 144 ÷ 12", why: "Length goes in feet, not inches: 2 × 6 × 12 ÷ 12 = 12 BF." },
+      { wrong: "Tank radius taken as the full diameter", why: "r is half the diameter; using the diameter makes the volume four times too big." }
+    ],
+    guided: { problem: "A 6 in motor pulley turning 1,750 RPM drives a 14 in pulley. How fast does the 14 in pulley turn?", steps: [
+      { label: "Formula", value: "D1 × N1 = D2 × N2" },
+      { label: "Driver side", value: "6 × 1750 = 10500" },
+      { label: "Driven speed", value: "10500 ÷ 14 = 750" }
+    ], answer: "750", answerLabel: "Driven RPM =",
+    interactiveSteps: [
+      { prompt: "Multiply the driver pulley's diameter by its speed: 6 × 1750.", hint: "D1 × N1", answer: "10500", acceptableAnswers: ["10500", "10,500"], formatHint: "Enter a number" },
+      { prompt: "That product equals 14 × N2. What is N2, in RPM?", hint: "Divide 10500 by 14.", answer: "750", acceptableAnswers: ["750", "750 rpm", "750 RPM"], formatHint: "Enter a number" },
+      { prompt: "Should a bigger driven pulley turn faster or slower than the motor? Type the motor's RPM minus the driven RPM to see the drop.", hint: "1750 − 750", answer: "1000", acceptableAnswers: ["1000", "1,000"], formatHint: "Enter a number" }
+    ] }
+  }, function(){
+    const mode = pick(["ohms_law", "power", "board_feet", "tank", "pulley_gear", "rearrange"]);
+
+    if (mode === "ohms_law") {
+      const ctx = pick(["heating element", "lamp", "solenoid coil", "relay coil", "resistor in a control circuit"]);
+      const find = pick(["I", "R", "V"]);
+      if (find === "V") {
+        const I = pick([0.5, 1.5, 2, 2.5, 3, 4, 6, 8, 10]), R_ = pick([2, 4, 6, 8, 10, 12, 16, 20, 24, 48]);
+        const ans = num(I * R_, 2);
+        return {
+          subType: "ohms_law",
+          question: `A current of ${I} A flows through a ${ctx} with a resistance of ${R_} Ω. What voltage is across it?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["V", "volts", "volt"]),
+          // divided instead of multiplied, both ways; added
+          options: opt4(ans, [num(R_ / I, 3), num(I / R_, 3), num(I + R_, 2), num(2 * I * R_, 2)]),
+          explanation: `Ohm's law: V = I × R = ${I} × ${R_} = ${ans} V.`
+        };
+      }
+      let V, R_, I;
+      do { V = pick([12, 24, 48, 120, 208, 240]); R_ = pick([2, 3, 4, 5, 6, 8, 10, 12, 15, 16, 20, 24, 30, 40, 48, 60, 80, 96]); I = V / R_; }
+      while (Math.abs(Math.round(I * 100) - I * 100) > 1e-9 || I < 0.25 || I > 60);
+      if (find === "I") {
+        const ans = num(I, 2);
+        return {
+          subType: "ohms_law",
+          question: `A ${ctx} with a resistance of ${R_} Ω is connected to ${V} V. How much current does it draw, in amps?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["A", "amps", "amp", "amperes"]),
+          // upside down; multiplied; subtracted
+          options: opt4(ans, [num(R_ / V, 3), String(V * R_), String(Math.abs(V - R_)), num(2 * I, 2)]),
+          explanation: `Ohm's law V = I × R, so I = V / R = ${V} / ${R_} = ${ans} A.`
+        };
+      }
+      const ans = String(R_);
+      return {
+        subType: "ohms_law",
+        question: `A ${ctx} on a ${V} V supply draws ${num(I, 2)} A. What is its resistance, in ohms?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["Ω", "ohms", "ohm"]),
+        options: opt4(ans, [num(I / V, 4), num(V * I, 2), num(V - I, 2), String(2 * R_)]),
+        explanation: `Ohm's law V = I × R, so R = V / I = ${V} / ${num(I, 2)} = ${ans} Ω.`
+      };
+    }
+
+    if (mode === "power") {
+      const v = ri(0, 2);
+      if (v === 0) {
+        const V = pick([12, 120, 240]), I = pick([0.5, 1.5, 2, 2.5, 4, 5, 8, 10, 12.5, 15, 20]), ans = num(V * I, 2);
+        return {
+          subType: "power",
+          question: `A ${pick(["motor", "light fixture", "pump", "heater", "compressor"])} on ${V} V draws ${I} A. How much power does it use, in watts?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["W", "watts", "watt"]),
+          options: opt4(ans, [num(V / I, 2), num(I / V, 4), num(V + I, 2), num(2 * V * I, 2)]),
+          explanation: `P = V × I = ${V} × ${I} = ${ans} W.`
+        };
+      }
+      if (v === 1) {
+        const [name, P, V] = pick(APPLIANCES), ans = num(P / V, 2);
+        return {
+          subType: "power",
+          question: `A ${P.toLocaleString("en-US")} W ${name} runs on ${V} V. How much current does it draw, in amps?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["A", "amps", "amp", "amperes"]),
+          // upside down; multiplied; voltage swapped (120 vs 240)
+          options: opt4(ans, [num(V / P, 4), String(P * V), num(P / (V === 120 ? 240 : 120), 2), num(P / V * 2, 2)]),
+          explanation: `P = V × I, so I = P / V = ${P} / ${V} = ${ans} A.`
+        };
+      }
+      const [V, P] = pick([[240, 1200], [240, 2400], [240, 2880], [240, 3600], [240, 4800], [240, 5760], [120, 600], [120, 900], [120, 1200], [120, 1440], [120, 1800]]);
+      const ans = String(V * V / P);
+      return {
+        subType: "power",
+        question: `A ${P.toLocaleString("en-US")} W heating element is rated for ${V} V. Using P = V² / R, what is its resistance in ohms?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["Ω", "ohms", "ohm"]),
+        // P / V (the current); V / P; forgot to square V
+        options: opt4(ans, [num(P / V, 2), num(V / P, 4), num(P / (V * V), 4), num(V * V / P * 2, 2)]),
+        explanation: `P = V² / R, so R = V² / P = ${V}² / ${P} = ${V * V} / ${P} = ${ans} Ω.`
+      };
+    }
+
+    if (mode === "board_feet") {
+      const T = pick([1, 1, 2, 2, 4]), W = pick([4, 6, 8, 10, 12]), L = pick([6, 8, 10, 12, 14, 16]), n = ri(1, 12);
+      const N = T * W * L * n, exact = N % 12 === 0 || (N * 10) % 12 === 0;
+      const ans = exact ? num(N / 12, 1) : (Math.round(N * 10 / 12) / 10).toFixed(1);
+      return {
+        subType: "board_feet",
+        question: `How many board feet are in ${WORDS[n]} ${T}×${W} board${n === 1 ? "" : "s"}, each ${L} ft long?${exact ? "" : " Round to the nearest tenth."} (BF = T × W × L ÷ 12, with T and W in inches and L in feet)`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["BF", "bf", "board feet", "bd ft"]),
+        // forgot ÷ 12 (the same number as putting the length in inches); the
+        // count left out; ÷ 144 as if every dimension were in inches
+        options: opt4(ans, [String(N), num(T * W * L / 12, 1), num(N / 144, 2), num(2 * N / 12, 1)]),
+        explanation: `One board: ${T} × ${W} × ${L} ÷ 12 = ${num(T * W * L / 12, 3)} BF. ${n === 1 ? "" : `Times ${n} boards: ${num(N / 12, 3)} BF. `}` +
+          (exact ? `Answer: ${ans} BF.` : `Rounded to the nearest tenth: ${ans} BF.`)
+      };
+    }
+
+    if (mode === "tank") {
+      if (pick([true, false])) {
+        const D = pick([12, 18, 20, 24, 30, 36, 48]), H = pick([24, 30, 36, 48, 60, 72]), r = D / 2;
+        const gal = p => (Math.round(p * r * r * H / 231 * 10) / 10).toFixed(1);
+        const ans = gal(3.1416);
+        // A calculator's π button and 3.14159 are equally right; both rounded
+        // values are accepted alongside the one the question asks for.
+        const alts = [...new Set([ans, gal(Math.PI), gal(3.14159)])];
+        return {
+          subType: "tank",
+          question: `A cylindrical ${pick(["water tank", "fuel tank", "rain barrel", "pressure tank"])} has an inside diameter of ${D} in and a height of ${H} in. What is its capacity in gallons, to the nearest tenth? (V = π r² h, use π ≈ 3.1416; 231 cubic inches = 1 gallon)`,
+          answer: ans,
+          acceptableAnswers: alts.reduce((acc, a) => acc.concat(unitForms(a, ["gal", "gallons"])), []),
+          // diameter used as the radius; left in cubic inches; π r h (radius not squared)
+          options: opt4(ans, [(Math.round(3.1416 * D * D * H / 231 * 10) / 10).toFixed(1), (Math.round(3.1416 * r * r * H * 10) / 10).toFixed(1), (Math.round(3.1416 * r * H / 231 * 10) / 10).toFixed(1)]),
+          explanation: `r = ${D} ÷ 2 = ${r} in. V = 3.1416 × ${r}² × ${H} = ${num(3.1416 * r * r * H, 1)} cubic inches. ÷ 231 = ${ans} gallons.`
+        };
+      }
+      const L = ri(2, 8), W = ri(2, 6), H = ri(1, 4), ft3 = L * W * H;
+      const ans = (Math.round(ft3 * 748 / 10) / 10).toFixed(1);
+      return {
+        subType: "tank",
+        question: `A rectangular ${pick(["water trough", "holding tank", "concrete cistern", "fish tank"])} is ${L} ft long, ${W} ft wide and ${H} ft deep. How many gallons does it hold, to the nearest tenth? (1 cubic foot = 7.48 gallons)`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, ["gal", "gallons"]),
+        // left in cubic feet; divided by 7.48; one dimension dropped
+        options: opt4(ans, [String(ft3), num(ft3 / 7.48, 1), (Math.round(L * W * 748 / 10) / 10).toFixed(1), (Math.round((L + W + H) * 748 / 10) / 10).toFixed(1)]),
+        explanation: `Volume = ${L} × ${W} × ${H} = ${ft3} cubic feet. ${ft3} × 7.48 = ${num(ft3 * 7.48, 2)} gallons, which is ${ans} to the nearest tenth.`
+      };
+    }
+
+    if (mode === "pulley_gear") {
+      const gear = pick([true, false]);
+      if (gear && pick([true, false])) {
+        // Gear ratio as turns of the driver per turn of the driven gear.
+        let T1, T2; do { T1 = ri(10, 40); T2 = ri(12, 80); } while (T1 === T2 || (T2 * 100) % T1 !== 0);
+        const ans = num(T2 / T1, 2);
+        return {
+          subType: "pulley_gear",
+          question: `${cap(an(T1))}-tooth drive gear turns a ${T2}-tooth driven gear. How many turns does the drive gear make for one turn of the driven gear?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["turns", "turn"]),
+          options: opt4(ans, [num(T1 / T2, 3), String(T2 - T1), String(T1 * T2), num(T2 / T1 + 1, 2)]),
+          explanation: `Teeth that mesh must pass at the same rate: one turn of the driven gear moves ${T2} teeth, which is ${T2} ÷ ${T1} = ${ans} turns of the drive gear.`
+        };
+      }
+      const sizes = gear ? [12, 15, 16, 18, 20, 24, 25, 30, 32, 36, 40, 45, 48, 60] : [2, 2.5, 3, 4, 5, 6, 8, 9, 10, 12, 14, 15, 16, 18];
+      const speeds = [1725, 1750, 3450, 1140, 850, 900, 1200];
+      // Real drives: ratio within 4:1 either way and a driven speed a shop
+      // machine could actually run at.
+      let D1, N1, D2, N2;
+      do { D1 = pick(sizes); D2 = pick(sizes); N1 = pick(speeds); N2 = D1 * N1 / D2; }
+      while (D1 === D2 || N2 !== Math.round(N2) || D1 / D2 > 4 || D2 / D1 > 4 || N2 > 6000 || N2 < 250);
+      const sizeWord = gear ? (d => d + "-tooth gear") : (d => d + " in pulley");
+      if (pick([true, false])) {
+        const ans = String(N2);
+        return {
+          subType: "pulley_gear",
+          question: `${cap(an(sizeWord(D1)))} on a motor turning ${N1.toLocaleString("en-US")} RPM drives ${an(sizeWord(D2))}. How fast does the driven ${gear ? "gear" : "pulley"} turn, in RPM?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, ["RPM", "rpm"]),
+          // ratio upside down; speed unchanged; sizes multiplied
+          options: opt4(ans, [num(D2 * N1 / D1, 1), String(N1), num(N1 * D1 * D2 / 100, 1), num(N2 * 2, 1)]),
+          explanation: `D1 × N1 = D2 × N2, so N2 = ${D1} × ${N1} ÷ ${D2} = ${ans} RPM. ${D2 > D1 ? "The driven side is bigger, so it turns slower." : "The driven side is smaller, so it turns faster."}`
+        };
+      }
+      const ans = num(D2);
+      return {
+        subType: "pulley_gear",
+        question: `${cap(an(sizeWord(D1)))} on a motor turning ${N1.toLocaleString("en-US")} RPM must drive a ${gear ? "gear" : "pulley"} at ${N2.toLocaleString("en-US")} RPM. What size driven ${gear ? "gear (number of teeth)" : "pulley (diameter in inches)"} is needed?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, gear ? ["teeth", "tooth"] : ["in", "inches", '"']),
+        // ratio upside down; difference of speeds used
+        options: opt4(ans, [num(D1 * N2 / N1, 2), num(N1 / N2, 2), String(D1), num(D2 * 2, 1)]),
+        explanation: `D1 × N1 = D2 × N2, so D2 = ${D1} × ${N1} ÷ ${N2} = ${ans}.`
+      };
+    }
+
+    // rearrange (selection: the answer is a formula, not a computed value)
+    const [q, ans, wrong] = pick(REARRANGE);
+    return {
+      subType: "rearrange",
+      question: q,
+      answer: ans,
+      options: sh([ans].concat(wrong)),
+      forceChoice: true,
+      explanation: `Undo what is being done to the unknown on both sides of the equation: ${ans}. Check by putting it back into the original formula.`
+    };
+  });
+
+  // =====================================================================
+  // M-364  Error and Tolerance  (tier 6)
+  // =====================================================================
+  _addSkill(6, "Error and Tolerance", "Error and Tolerance", 3, {
+    goalProblem: "A 50.00 mm gauge block measures 49.80 mm on a caliper. What is the percent error?",
+    teachingSteps: [
+      { title: "Absolute error", explanation: "<strong>Absolute error</strong> = |measured − true|. It is always positive and has the same unit as the measurement.", visual: "|49.80 − 50.00| = 0.20 mm" },
+      { title: "Relative error", explanation: "<strong>Relative error</strong> = absolute error ÷ true value. It has no unit, so you can compare errors on big and small parts. Divide by the TRUE value, not the measured one.", visual: "0.20 ÷ 50.00 = 0.004" },
+      { title: "Percent error", explanation: "<strong>Percent error</strong> = relative error × 100.", visual: "0.004 × 100 = 0.4%" },
+      { title: "Greatest possible error", explanation: "A measurement is only as good as its smallest unit. The <strong>greatest possible error</strong> is <strong>half</strong> of that unit, because anything within half a unit rounds to the same reading.", visual: "14.6 cm (to the nearest 0.1) → GPE 0.05 cm → true length 14.55 to 14.65 cm" },
+      { title: "Acceptable or not", explanation: "Compare the error with the allowed limit. If a scale must read within 0.5% and its percent error is 0.6%, it fails calibration.", visual: "0.4% ≤ 0.5% → acceptable" }
+    ],
+    finalAnswer: "0.4%",
+    answerExplanation: "Absolute error = |49.80 − 50.00| = 0.20 mm. Relative error = 0.20 ÷ 50.00 = 0.004. Percent error = 0.4%.",
+    example: { problem: "A length is recorded as 3 1/4 in, measured to the nearest 1/4 in. What is the greatest possible error, and what range could the true length be in?", steps: [
+      { text: "Smallest unit", math: "1/4 in" },
+      { text: "Half of it", math: "1/8 in" },
+      { text: "Range", math: "3 1/4 − 1/8 = 3 1/8   to   3 1/4 + 1/8 = 3 3/8 in" }
+    ]},
+    keyPoints: [
+      "Absolute error = |measured − true|, in the measurement's unit",
+      "Relative error = absolute error ÷ TRUE value",
+      "Percent error = relative error × 100",
+      "Greatest possible error = half the smallest unit measured",
+      "Acceptable means the error is within the stated limit"
+    ],
+    mistakes: [
+      { wrong: "Dividing by the measured value: 0.20 ÷ 49.80", why: "Relative and percent error are always taken against the true (accepted) value." },
+      { wrong: "Greatest possible error of 14.6 cm is 0.1 cm", why: "It is half the smallest unit: 0.1 ÷ 2 = 0.05 cm." },
+      { wrong: "Forgetting to multiply by 100 for percent error", why: "0.004 is the relative error; as a percent it is 0.4%." }
+    ],
+    guided: { problem: "A scale must read within 1% of true. A 20.00 kg test weight reads 20.30 kg. Is the scale acceptable?", steps: [
+      { label: "Absolute error", value: "|20.30 − 20.00| = 0.30" },
+      { label: "Relative error", value: "0.30 ÷ 20.00 = 0.015" },
+      { label: "Percent error", value: "1.5" },
+      { label: "Compare with 1%", value: "1.5% is over the limit" }
+    ], answer: "1.5%", answerLabel: "Percent error =",
+    interactiveSteps: [
+      { prompt: "What is the absolute error, in kg?", hint: "Subtract the true weight from the reading.", answer: "0.3", acceptableAnswers: ["0.3", "0.30", ".3", "0.3 kg", "0.30 kg"], formatHint: "e.g., 0.25" },
+      { prompt: "What is the relative error? (absolute error ÷ true value)", hint: "0.30 ÷ 20.00", answer: "0.015", acceptableAnswers: ["0.015", ".015"], formatHint: "e.g., 0.02" },
+      { prompt: "What is the percent error?", hint: "Multiply the relative error by 100.", answer: "1.5%", acceptableAnswers: ["1.5%", "1.5", "1.5 %"], formatHint: "e.g., 2%" },
+      { prompt: "The limit is 1%. How many percentage points over the limit is the scale?", hint: "1.5 − 1", answer: "0.5", acceptableAnswers: ["0.5", ".5", "0.5%"], formatHint: "e.g., 0.2" }
+    ] }
+  }, function(){
+    const mode = pick(["absolute_error", "relative_error", "percent_error", "gpe", "acceptable"]);
+    const SETUPS = [
+      { thing: "gauge block", unit: "mm", dp: 2 }, { thing: "steel shim", unit: "mm", dp: 2 },
+      { thing: "test weight", unit: "kg", dp: 2 }, { thing: "reference rod", unit: "in", dp: 3 }, { thing: "setting standard", unit: "in", dp: 3 }
+    ];
+
+    if (mode === "absolute_error") {
+      const su = pick(SETUPS), sc = Math.pow(10, su.dp);
+      const t = ri(5, 300) * sc / (su.dp === 3 ? 4 : 1), e = ri(1, su.dp === 3 ? 40 : 60) * (pick([true, false]) ? 1 : -1);
+      const tv = Math.round(t), mv = tv + e, f = v => (v / sc).toFixed(su.dp), ans = f(Math.abs(e));
+      return {
+        subType: "absolute_error",
+        question: `A ${su.thing} with a true size of ${f(tv)} ${su.unit} is measured as ${f(mv)} ${su.unit}. What is the absolute error?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, [su.unit]),
+        // measured + true; a place-value slip; twice the error
+        options: opt4(ans, [f(tv + mv), f(Math.abs(e) * 10), f(Math.abs(e) * 2), f(Math.abs(e) + 1)]),
+        explanation: `Absolute error = |measured − true| = |${f(mv)} − ${f(tv)}| = ${ans} ${su.unit}.`
+      };
+    }
+
+    if (mode === "relative_error") {
+      // Relative error kept between 0.02 and 0.2: below 0.02, dividing by the
+      // MEASURED value lands within the grader's 0.0001 tolerance of the right
+      // answer and the main mistake this question tests would be marked right.
+      const T = pick([20, 25, 40, 50, 80, 100, 125, 200, 250, 400, 500]);
+      let E; do { E = ri(1, Math.ceil(T / 5)); } while (E / T < 0.02 || E / T > 0.2 || (E * 10000) % T !== 0);
+      const over = pick([true, false]), M = over ? T + E : T - E, ans = num(E / T, 4);
+      const ctx = pick([["estimated a run of conduit at", "ft", "measured"], ["estimated a wall at", "ft", "measured"], ["guessed a load of gravel at", "lb", "weighed"], ["estimated a tank's fill at", "gal", "metered"]]);
+      return {
+        subType: "relative_error",
+        question: `A crew ${ctx[0]} ${M} ${ctx[1]}; it actually ${ctx[2]} ${T} ${ctx[1]}. What is the relative error, as a decimal?`,
+        answer: ans,
+        acceptableAnswers: [ans, frac(E, T)],
+        // divided by the estimate; left as the absolute error; already × 100
+        options: opt4(ans, [num(E / M, 4), String(E), num(100 * E / T, 2)]),
+        explanation: `Absolute error = |${M} − ${T}| = ${E} ${ctx[1]}. Relative error = ${E} ÷ ${T} (the true value) = ${ans}.`
+      };
+    }
+
+    if (mode === "percent_error") {
+      const su = pick(SETUPS), sc = Math.pow(10, su.dp);
+      const tv = ri(10, 200) * sc / (su.dp === 3 ? 10 : 1), e = ri(1, Math.max(2, Math.floor(tv / 25)));
+      const mv = tv + (pick([true, false]) ? e : -e), f = v => (v / sc).toFixed(su.dp);
+      const p = Math.round(1000 * e / tv) / 10, ans = p.toFixed(1) + "%";
+      return {
+        subType: "percent_error",
+        question: `A ${su.thing} with a true size of ${f(tv)} ${su.unit} measures ${f(mv)} ${su.unit}. What is the percent error, to the nearest tenth of a percent?`,
+        answer: ans,
+        acceptableAnswers: [p.toFixed(1), p.toFixed(1) + " %", p.toFixed(1) + " percent", num(p) + "%", num(p)],
+        // divided by the measured value; not multiplied by 100 (shown as %);
+        // doubled; halved. (The absolute error with a % sign is NOT used: for
+        // a true size near 100 it is numerically the right answer.)
+        options: opt4(ans, [(Math.round(1000 * e / mv) / 10).toFixed(1) + "%", num(e / tv, 4) + "%", (p * 2).toFixed(1) + "%", num(p / 2, 2) + "%"]),
+        explanation: `Absolute error = |${f(mv)} − ${f(tv)}| = ${f(e)} ${su.unit}. Percent error = ${f(e)} ÷ ${f(tv)} × 100 = ${num(100 * e / tv, 4)}%, which is ${ans} to the nearest tenth.`
+      };
+    }
+
+    if (mode === "gpe") {
+      const v = ri(0, 2);
+      if (v === 0) {
+        // Decimal readings: the last written place is the precision.
+        const dp = pick([1, 2, 3]), unit = dp === 3 ? "in" : pick(["cm", "mm", "m"]), sc = Math.pow(10, dp);
+        let n = ri(sc + 1, 60 * sc); if (n % 10 === 0) n += 1;
+        const reading = (n / sc).toFixed(dp), unitStep = (1 / sc).toFixed(dp), gpe = (0.5 / sc).toFixed(dp + 1);
+        const which = pick(["gpe", "min", "max"]);
+        const ans = which === "gpe" ? gpe : which === "min" ? ((2*n - 1) / (2*sc)).toFixed(dp + 1) : ((2*n + 1) / (2*sc)).toFixed(dp + 1);
+        return {
+          subType: "gpe",
+          question: which === "gpe"
+            ? `A length is recorded as ${reading} ${unit}. What is the greatest possible error of this measurement?`
+            : `A length is recorded as ${reading} ${unit}. What is the ${which === "min" ? "smallest" : "largest"} the true length could be?`,
+          answer: ans,
+          acceptableAnswers: unitForms(ans, [unit]),
+          options: which === "gpe"
+            ? opt4(ans, [unitStep, (0.25 / sc).toFixed(dp + 2), (5 / sc).toFixed(dp)])        // full unit; a quarter unit; a place too coarse
+            : opt4(ans, [((which === "min" ? n - 1 : n + 1) / sc).toFixed(dp), ((2*n + (which === "min" ? 1 : -1)) / (2*sc)).toFixed(dp + 1), reading]),
+          explanation: `${reading} is written to the nearest ${unitStep} ${unit}, so the greatest possible error is half of that: ${gpe} ${unit}. ` +
+            `The true length is between ${((2*n - 1) / (2*sc)).toFixed(dp + 1)} and ${((2*n + 1) / (2*sc)).toFixed(dp + 1)} ${unit}.`
+        };
+      }
+      if (v === 1) {
+        // Fractional readings to a stated precision.
+        const d = pick([2, 4, 8, 16]), W = ri(1, 30), k = ri(1, d - 1), reading = R(W * d + k, d);
+        const half = R(1, 2 * d), which = pick(["gpe", "min", "max"]);
+        const val = which === "gpe" ? half : which === "min" ? rSub(reading, half) : rAdd(reading, half), ans = mixed(val);
+        return {
+          subType: "gpe",
+          question: which === "gpe"
+            ? `A board is measured as ${mixed(reading)} in, to the nearest 1/${d} in. What is the greatest possible error?`
+            : `A board is measured as ${mixed(reading)} in, to the nearest 1/${d} in. What is the ${which === "min" ? "shortest" : "longest"} it could really be?`,
+          answer: ans,
+          acceptableAnswers: inchForms(val),
+          options: which === "gpe"
+            ? opt4(ans, [mixed(R(1, d)), mixed(R(1, 4 * d)), mixed(R(2, d))])     // full unit; a quarter unit; two units
+            : opt4(ans, [mixed(which === "min" ? rSub(reading, R(1, d)) : rAdd(reading, R(1, d))), mixed(which === "min" ? rAdd(reading, half) : rSub(reading, half)), mixed(reading)]),
+          explanation: `The smallest unit is 1/${d} in, so the greatest possible error is half of it: 1/${2 * d} in. ` +
+            `The true length is between ${mixed(rSub(reading, half))} and ${mixed(rAdd(reading, half))} in.`
+        };
+      }
+      // Whole-number readings rounded to a stated unit.
+      const u = pick([2, 5, 10, 50, 100]), unit = pick(["ft", "lb", "gal"]), reading = u * ri(3, 60), ans = num(u / 2);
+      return {
+        subType: "gpe",
+        question: `A ${unit === "ft" ? "trench" : unit === "lb" ? "load of rebar" : "tank fill"} is recorded as ${reading} ${unit}, measured to the nearest ${u} ${unit}. What is the greatest possible error?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, [unit]),
+        options: opt4(ans, [String(u), num(u / 4), String(u * 2)]),
+        explanation: `The measuring unit is ${u} ${unit}, so the greatest possible error is half of it: ${ans} ${unit}. The true value is between ${num(reading - u / 2)} and ${num(reading + u / 2)} ${unit}.`
+      };
+    }
+
+    // acceptable: a calibration check against a percent limit. The error is
+    // kept at least 0.1 percentage point away from the limit so no reading is
+    // a judgement call.
+    const L = pick([0.5, 1, 2, 5]), T = pick([10, 20, 25, 50, 100, 200]);
+    let p; do { p = ri(1, Math.round(L * 30)) / 10; } while (Math.abs(p - L) < 0.1);
+    const M = num(T * (1 + p / 100 * (pick([true, false]) ? 1 : -1)), 3);
+    const pe = Math.abs(+M - T) / T * 100, over = pe > L;
+    const OPTS = ["Acceptable: within the limit", "Not acceptable: over the limit"];
+    const [inst, std, u] = pick([["scale", "test weight", "kg"], ["pressure gauge", "reference pressure", "psi"],
+                                 ["flow meter", "metered flow", "L/min"], ["torque wrench", "torque tester setting", "ft-lb"]]);
+    if (pick([true, false, false])) {
+      // Numeric twin: the largest reading that still passes.
+      const ans = num(T * (1 + L / 100), 3);
+      return {
+        subType: "acceptable",
+        question: `A ${inst} passes calibration if it reads within ${L}% of true. Tested against a ${T} ${u} ${std}, what is the HIGHEST reading that still passes?`,
+        answer: ans,
+        acceptableAnswers: unitForms(ans, [u]),
+        // the percent added as a raw amount; the lowest passing reading; a tenfold slip
+        options: opt4(ans, [num(T + L, 3), num(T * (1 - L / 100), 3), num(T * (1 + L / 10), 3)]),
+        explanation: `${L}% of ${T} is ${num(T * L / 100, 4)}. The highest passing reading is ${T} + ${num(T * L / 100, 4)} = ${ans}.`
+      };
+    }
+    return {
+      subType: "acceptable",
+      question: `A ${inst} must read within ${L}% of true. Against a ${T} ${u} ${std} it reads ${M} ${u}. Is it acceptable?`,
+      answer: over ? OPTS[1] : OPTS[0],
+      options: OPTS.slice(),
+      forceChoice: true,
+      explanation: `Absolute error = |${M} − ${T}| = ${num(Math.abs(+M - T), 4)}. Percent error = ${num(Math.abs(+M - T), 4)} ÷ ${T} × 100 = ${num(pe, 3)}%, which is ${over ? "more" : "less"} than the ${L}% limit, so it is ${over ? "not acceptable" : "acceptable"}.`
+    };
+  });
+
+  // =====================================================================
+  // M-365  Significant Figures  (tier 6)
+  // =====================================================================
+  // Decimal strings handled as digits, never floats, so trailing zeros (which
+  // ARE the lesson) survive: {d: significant digits, p: exponent with
+  // value = 0.d × 10^p}.
+  function sfParse(str) {
+    const s = String(str).replace(/,/g, ""), dot = s.indexOf(".");
+    const intLen = dot < 0 ? s.length : dot, all = s.replace(".", "");
+    let i = 0; while (i < all.length - 1 && all[i] === "0") i++;
+    return { d: all.slice(i), p: intLen - i };
+  }
+  function sfFormat(o) {
+    const d = o.d, p = o.p;
+    if (p <= 0) return "0." + "0".repeat(-p) + d;
+    if (p >= d.length) return d + "0".repeat(p - d.length);
+    return d.slice(0, p) + "." + d.slice(p);
+  }
+  // Round a decimal string to n significant figures, keeping significant
+  // trailing zeros: roundSig("2.4996", 3) = "2.50".
+  function roundSig(str, n, truncate) {
+    const o = sfParse(str);
+    let d = o.d, p = o.p;
+    if (d.length <= n) return sfFormat({ d: d + "0".repeat(n - d.length), p });
+    let keep = d.slice(0, n);
+    if (!truncate && d[n] >= "5") {
+      const arr = keep.split("").map(Number);
+      let k = arr.length - 1;
+      while (k >= 0) { if (arr[k] === 9) { arr[k] = 0; k--; } else { arr[k]++; break; } }
+      if (k < 0) { arr.unshift(1); arr.pop(); p++; }
+      keep = arr.join("");
+    }
+    return sfFormat({ d: keep, p });
+  }
+  // Float to a clean decimal string with enough digits to round correctly.
+  const fstr = v => String(parseFloat(Number(v).toPrecision(12)));
+  const sciOf = o => o.d[0] + (o.d.length > 1 ? "." + o.d.slice(1) : "") + " × 10^" + (o.p - 1);
+  // A measurement string with exactly n significant figures, written so the
+  // count is unambiguous (no integers ending in zero).
+  function measWithSF(n, maxInt) {
+    for (;;) {
+      let d = String(ri(1, 9)); for (let i = 1; i < n; i++) d += String(ri(0, 9));
+      const p = ri(-1, Math.min(n, maxInt || 3));
+      if (p >= d.length && d[d.length - 1] === "0") continue;
+      if (p > d.length) continue;
+      return sfFormat({ d, p });
+    }
+  }
+  const sfOf = s => sfParse(s).d.length;
+  const dpOf = s => { const i = String(s).indexOf("."); return i < 0 ? 0 : String(s).length - i - 1; };
+
+  _addSkill(6, "Significant Figures", "Significant Figures", 3, {
+    goalProblem: "How many significant figures are in the measurement 0.004050 m?",
+    teachingSteps: [
+      { title: "Which digits count", explanation: "All <strong>nonzero</strong> digits are significant. Zeros <strong>between</strong> nonzero digits are significant (3006 has 4).", visual: "3006 → 4 sig figs" },
+      { title: "Leading zeros never count", explanation: "Zeros in front of the first nonzero digit only place the decimal point. They are not significant.", visual: "0.004050 → the 0.00 in front does not count" },
+      { title: "Trailing zeros after a decimal point count", explanation: "A zero at the end, <strong>after</strong> a decimal point, was measured on purpose. 12.300 has 5 sig figs; 0.004050 has 4 (4, 0, 5, 0). In scientific notation every digit in the front number counts.", visual: "12.300 → 5    0.004050 → 4    6.020 × 10^5 → 4" },
+      { title: "Rounding to n sig figs", explanation: "Count n digits from the first nonzero digit, look at the next digit, and round. Keep any zeros needed to show the precision or hold the place.", visual: "0.0068472 → 3 s.f. → 0.00685    2.4996 → 3 s.f. → 2.50" },
+      { title: "× and ÷: fewest sig figs", explanation: "A product or quotient keeps as many significant figures as the <strong>least</strong> precise measurement.", visual: "12.5 × 4.2 = 52.5 → 2 s.f. → 53" },
+      { title: "+ and −: fewest decimal places", explanation: "A sum or difference keeps as many <strong>decimal places</strong> as the measurement with the fewest decimal places.", visual: "12.52 + 3.1 + 0.456 = 16.076 → 1 d.p. → 16.1" }
+    ],
+    finalAnswer: "4",
+    answerExplanation: "The leading zeros (0.00) only place the decimal point. 4, 0, 5 and the trailing 0 after the decimal point are significant: 4 sig figs.",
+    example: { problem: "A steel plate measures 12.5 cm by 4.2 cm. Report its area to the correct number of significant figures.", steps: [
+      { text: "Multiply", math: "12.5 × 4.2 = 52.5 cm²" },
+      { text: "Fewest sig figs in the measurements", math: "12.5 has 3, 4.2 has 2 → 2" },
+      { text: "Round to 2 sig figs", math: "53 cm²" }
+    ]},
+    keyPoints: [
+      "Nonzero digits and zeros between them are significant",
+      "Leading zeros are never significant",
+      "Trailing zeros after a decimal point are significant",
+      "× and ÷: round to the fewest significant figures",
+      "+ and −: round to the fewest decimal places"
+    ],
+    mistakes: [
+      { wrong: "0.004050 has 7 significant figures", why: "Leading zeros only place the decimal point. Count from the 4: 4, 0, 5, 0 is 4 sig figs." },
+      { wrong: "Reporting 12.5 × 4.2 as 52.5", why: "4.2 only has 2 sig figs, so the product is reported to 2: 53." },
+      { wrong: "12.52 + 3.1 + 0.456 reported to 2 sig figs as 16", why: "Addition uses decimal places, not sig figs. 3.1 has 1 decimal place, so 16.1." }
+    ],
+    guided: { problem: "A wire is 3.25 m long and a second piece 1.6 m long is spliced on. Report the total length correctly.", steps: [
+      { label: "Add", value: "3.25 + 1.6 = 4.85" },
+      { label: "Fewest decimal places", value: "1.6 has 1" },
+      { label: "Round to 1 decimal place", value: "4.9" }
+    ], answer: "4.9", answerLabel: "Total length (m) =",
+    interactiveSteps: [
+      { prompt: "Add the two lengths: 3.25 + 1.6.", hint: "Line up the decimal points.", answer: "4.85", acceptableAnswers: ["4.85", "4.85 m"], formatHint: "e.g., 3.75" },
+      { prompt: "Addition keeps the fewest decimal places. How many decimal places does 1.6 have?", hint: "Count the digits after the point.", answer: "1", acceptableAnswers: ["1", "one"], formatHint: "Enter a number" },
+      { prompt: "Round 4.85 to 1 decimal place. What is the total length in metres?", hint: "The digit after the tenths place is 5, so round up.", answer: "4.9", acceptableAnswers: ["4.9", "4.9 m"], formatHint: "e.g., 3.8" }
+    ] }
+  }, function(){
+    const mode = pick(["count", "count", "round_n", "mult_div", "add_sub", "sci_notation"]);
+
+    if (mode === "count") {
+      if (pick([true, false, false])) {
+        // Scientific notation: every digit in the front number counts.
+        const n = ri(2, 5); let d = String(ri(1, 9)); for (let i = 1; i < n; i++) d += String(ri(0, 9));
+        const e = pick([-6, -5, -4, -3, 3, 4, 5, 6, 7, 8]), s = d[0] + "." + d.slice(1) + " × 10^" + e;
+        return {
+          subType: "count",
+          question: `How many significant figures are in ${s}?`,
+          answer: String(n),
+          options: opt4(String(n), [String(n + 1), String(n - 1), String(Math.abs(e)), String(n + Math.abs(e))]),
+          explanation: `In scientific notation every digit of the front number is significant: ${d.split("").join(", ")}. That is ${n}; the power of ten only places the decimal point.`
+        };
+      }
+      const n = ri(2, 6), s = measWithSF(n, 4), o = sfParse(s);
+      const lead = s.startsWith("0") ? (s.replace(".", "").match(/^0+/) || [""])[0].length : 0;
+      const trail = s.indexOf(".") >= 0 && /0$/.test(s);
+      const why = [];
+      if (lead) why.push("the leading zeros only place the decimal point");
+      if (/[1-9]0+[1-9]/.test(o.d)) why.push("zeros between nonzero digits count");
+      if (trail) why.push("trailing zeros after the decimal point count");
+      return {
+        subType: "count",
+        question: `How many significant figures are in the measurement ${s} ${pick(["mm", "in", "g", "m", "L", "kg"])}?`,
+        answer: String(n),
+        options: opt4(String(n), [String(s.replace(".", "").length), String(o.d.replace(/0+$/, "").length), String(o.d.replace(/0/g, "").length), String(n + 1), String(n - 1)]),
+        explanation: `Significant digits: ${o.d.split("").join(", ")}, so ${n}.` + (why.length ? ` Remember: ${why.join("; ")}.` : "")
+      };
+    }
+
+    if (mode === "round_n") {
+      // Selection: typed, 2.5 would pass for 2.50 and 0.0068 for 0.00685.
+      const n = ri(2, 4), src = measWithSF(n + ri(2, 3), 4), ans = roundSig(src, n);
+      return {
+        subType: "round_n",
+        question: `Round ${src} to ${n} significant figures.`,
+        answer: ans,
+        // truncated; one figure too many; one too few; n decimal places instead
+        options: opt4(ans, [roundSig(src, n, true), roundSig(src, n + 1), roundSig(src, n - 1), Number(src).toFixed(n)]),
+        forceChoice: true,
+        explanation: `Count ${n} significant digits from the first nonzero digit of ${src}, look at the next digit and round: ${ans}.`
+      };
+    }
+
+    if (mode === "mult_div") {
+      const kind = pick(["area", "density", "speed", "rate"]);
+      let a, b, val, q, u;
+      for (;;) {
+        a = measWithSF(ri(2, 4), 2); b = measWithSF(ri(2, 4), 2);
+        if (+a === 0 || +b === 0 || sfOf(a) === sfOf(b)) continue;
+        val = kind === "area" ? +a * +b : +a / +b;
+        if (val < 0.01 || val > 99999) continue;     // keeps fstr out of exponent notation
+        const r = roundSig(fstr(val), Math.min(sfOf(a), sfOf(b)));
+        // A rounded product ending in placeholder zeros ("50") has an
+        // ambiguous count of its own; draw again.
+        if (r.indexOf(".") < 0 && /0$/.test(r)) continue;
+        break;
+      }
+      const n = Math.min(sfOf(a), sfOf(b)), ans = roundSig(fstr(val), n);
+      if (kind === "area") { q = `A steel plate measures ${a} cm by ${b} cm. What is its area`; u = "cm²"; }
+      else if (kind === "density") { q = `A part has a mass of ${a} g and a volume of ${b} cm³. What is its density`; u = "g/cm³"; }
+      else if (kind === "speed") { q = `A conveyor moves ${a} m in ${b} s. What is its speed`; u = "m/s"; }
+      else { q = `A pump moves ${a} L in ${b} min. What is its flow rate`; u = "L/min"; }
+      return {
+        subType: "mult_div",
+        question: `${q}, rounded to the correct number of significant figures (in ${u})?`,
+        answer: ans,
+        // calculator display; the larger sig-fig count; the decimal-places rule; one too few
+        options: opt4(ans, [String(parseFloat(val.toPrecision(7))), roundSig(fstr(val), Math.max(sfOf(a), sfOf(b))),
+                            Number(val).toFixed(Math.min(dpOf(a), dpOf(b))), n > 1 ? roundSig(fstr(val), n - 1) : null]),
+        forceChoice: true,
+        explanation: `${a} ${kind === "area" ? "×" : "÷"} ${b} = ${fstr(val)}. ${a} has ${sfOf(a)} significant figures and ${b} has ${sfOf(b)}, so the answer keeps ${n}: ${ans} ${u}.`
+      };
+    }
+
+    if (mode === "add_sub") {
+      // Worked in integer thousandths so the sum is exact.
+      // Values with different numbers of decimal places (otherwise there is
+      // nothing to decide), and no whole number ending in 0, whose precision
+      // would be ambiguous.
+      const k = ri(2, 3); let vals;
+      do {
+        vals = [];
+        while (vals.length < k) {
+          const dp = ri(0, 3), s = (ri(10, 9999) / Math.pow(10, dp)).toFixed(dp);
+          if (dp === 0 && /0$/.test(s)) continue;
+          if (!vals.includes(s)) vals.push(s);
+        }
+      } while (new Set(vals.map(dpOf)).size === 1);
+      const subtract = k === 2 && pick([true, false]) && +vals[0] !== +vals[1];
+      if (subtract && +vals[0] < +vals[1]) vals.reverse();
+      const th = s => Math.round(+s * 1000);
+      const totalTh = subtract ? th(vals[0]) - th(vals[1]) : vals.reduce((p, c) => p + th(c), 0);
+      const minDp = Math.min(...vals.map(dpOf)), step = Math.pow(10, 3 - minDp);
+      const ans = (Math.round(totalTh / step) * step / 1000).toFixed(minDp);
+      const exact = (totalTh / 1000).toFixed(3).replace(/\.?0+$/, "");
+      const minSf = Math.min(...vals.map(sfOf));
+      return {
+        subType: "add_sub",
+        question: subtract
+          ? `A tank holds ${vals[0]} L and ${vals[1]} L is drained off. How much is left, rounded to the correct precision?`
+          : k === 3
+            ? `Three loads weighing ${vals[0]} kg, ${vals[1]} kg and ${vals[2]} kg go on one truck. What is the total weight, rounded to the correct precision?`
+            : `Two loads weighing ${vals[0]} kg and ${vals[1]} kg go on one truck. What is the total weight, rounded to the correct precision?`,
+        answer: ans,
+        // full calculator value; the sig-fig rule used instead; truncated
+        // instead of rounded; one decimal place too many; one too few; an
+        // arithmetic slip of one in the last kept place
+        options: opt4(ans, [exact, roundSig(exact, minSf), (Math.floor(totalTh / step) * step / 1000).toFixed(minDp),
+                            minDp < 3 ? (Math.round(totalTh / (step / 10)) * (step / 10) / 1000).toFixed(minDp + 1) : null,
+                            (Math.round(totalTh / (step * 10)) * step * 10 / 1000).toFixed(Math.max(0, minDp - 1)),
+                            ((Math.round(totalTh / step) + 1) * step / 1000).toFixed(minDp)]),
+        forceChoice: true,
+        explanation: `${subtract ? vals.join(" − ") : vals.join(" + ")} = ${exact}. For ${subtract ? "subtraction" : "addition"} keep the fewest decimal places; the least precise value has ${minDp}, so the answer is ${ans}.`
+      };
+    }
+
+    // sci_notation (selection: typed, 4.05 × 10^-4 passes for 4.050 × 10^-4)
+    let s, o;
+    if (pick([true, false])) {
+      const n = ri(2, 4); let d = String(ri(1, 9)); for (let i = 1; i < n; i++) d += String(ri(0, 9));
+      if (pick([true, false])) d += "0";
+      o = { d, p: -ri(1, 4) }; s = sfFormat(o);
+      const ans = sciOf(o);
+      return {
+        subType: "sci_notation",
+        question: `Write ${s} in scientific notation, keeping every significant figure (no rounding).`,
+        answer: ans,
+        // trailing zero dropped; exponent sign flipped; exponent off by one; not normalised
+        options: opt4(ans, [o.d.length > 1 && /0$/.test(o.d) ? sciOf({ d: o.d.replace(/0+$/, ""), p: o.p }) : null,
+                            ans.replace("^-", "^"), sciOf({ d: o.d, p: o.p + 1 }), o.d.slice(0, 2) + (o.d.length > 2 ? "." + o.d.slice(2) : "") + " × 10^" + (o.p - 2)]),
+        forceChoice: true,
+        explanation: `Move the decimal point to just after the first nonzero digit, ${-o.p + 1} place${-o.p + 1 === 1 ? "" : "s"} to the right, so the exponent is ${o.p - 1}. Every digit of ${o.d} is significant and stays: ${ans}.`
+      };
+    }
+    const n = ri(2, 4); let d = String(ri(1, 9)); for (let i = 1; i < n; i++) d += String(ri(0, 9));
+    if (d[d.length - 1] !== "0" && pick([true, false])) d = d.slice(0, -1) + "0";
+    const p = n + ri(2, 4); o = { d, p };
+    const big = sfFormat(o).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    const ans = sciOf(o);
+    return {
+      subType: "sci_notation",
+      question: `A measurement of ${big} ${pick(["m", "L", "g", "Pa"])} is good to ${n} significant figures. Write it in scientific notation.`,
+      answer: ans,
+      // every placeholder zero kept as significant; trailing measured zero dropped; exponent off by one
+      options: opt4(ans, [sciOf({ d: sfParse(sfFormat(o)).d, p }), /0$/.test(d) ? sciOf({ d: d.replace(/0+$/, ""), p }) : sciOf({ d: d.slice(0, -1), p }),
+                          sciOf({ d, p: p + 1 }), sciOf({ d, p: p - 1 })]),
+      forceChoice: true,
+      explanation: `${n} significant figures means the front number has ${n} digits: ${d[0]}.${d.slice(1)}. The decimal point moves ${p - 1} places, so ${ans}.`
+    };
+  });
+})();
 // ==== END GRADUATION PLAN CONTENT: TRADES-TECHNICAL ====
 </script>
 
