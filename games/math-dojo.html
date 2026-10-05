@@ -65936,6 +65936,1353 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: TRADES-GEOMETRY ====
+// Trades branch, plan group 9C "Applied Geometry" (codes 76C-86C; 82C Circles
+// & Arcs reuses existing skills). Ten skills, all tier 7, every one a job-site
+// calculation: dimensions arrive in feet and inches, answers leave in the unit
+// the supplier sells (sq ft, sq yd, cu yd, gallons, whole sheets and bags).
+//
+// Same preamble as V2 CONTENT GROUP E: this block is its own <script>, so the
+// helpers are redefined here rather than borrowed.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors.
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+  const pt = (x,y) => "(" + x + ", " + y + ")";
+  // "an 8 ft board", "an 18.4° angle", "an access road", but "a 110 ft lot":
+  // numbers read aloud as eight-, eleven- or eighteen- take "an".
+  const an = v => (/^(?:8|11(?!\d)|18(?!\d))/.test(String(v)) || /^[aeiou]/i.test(String(v)) ? "an " : "a ") + v;
+  const An = v => { const s = an(v); return s.charAt(0).toUpperCase() + s.slice(1); };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- rounding and formatting -------------------------------------------
+  // The nudge keeps 2.675 rounding to 2.68 the way a calculator shows it,
+  // instead of 2.67 from its binary representation.
+  const rnd = (v, d) => { const p = Math.pow(10, d); return Math.round(v * p + (v >= 0 ? 1e-7 : -1e-7)) / p; };
+  const fmt = (v, d) => String(rnd(v, d));
+  const deg = r => r * 180 / Math.PI;
+  const rad = d => d * Math.PI / 180;
+  const up = v => Math.ceil(v - 1e-9);      // whole purchasable units; 12.0000001 is 12
+  const down = v => Math.floor(v + 1e-9);
+  // Inches to the nearest 1/den as a tape measure reads: "5", "5 3/4", "3/8".
+  const mixed = (v, den) => {
+    const n = Math.round(v * den + 1e-7), w = Math.floor(n / den), r = n - w * den;
+    if (!r) return String(w);
+    const k = g(r, den);
+    return (w ? w + " " : "") + (r / k) + "/" + (den / k);
+  };
+  // Inches to feet-and-inches to the nearest inch: 171 -> "14 ft 3 in".
+  const ftIn = inches => { const n = Math.round(inches), f = Math.floor(n / 12), i = n - f * 12;
+    return i ? f + " ft " + i + " in" : f + " ft"; };
+
+  // ---- typed answers -----------------------------------------------------
+  // Tier 7 is typed, and tradespeople write units. AnswerInterpreter only
+  // half-handles them: "12 ft" against an answer of "12" is rejected, "34°"
+  // against "34" is rejected, and its feet parser reads "7.5 ft" and "12.5 ft"
+  // as the same length (it keeps only the digits before the unit). So every
+  // numeric question carries a validate() that reads the number, accepts the
+  // question's own unit in any common spelling, converts feet <-> inches, and
+  // still demands the exact rounded value. acceptableAnswers holds only the
+  // spellings that are safe in the string matcher (no decimal ft/in, no
+  // "squares", which it files as the shape word and matches against anything).
+  const UNIT = {
+    ft:   ["ft","feet","foot","'","lf","linear ft","linear feet"],
+    in:   ["in","inch","inches","\"","''"],
+    sqin: ["sq in","square inches","square inch","in²","in2","in^2"],
+    sqft: ["sq ft","square feet","square foot","ft²","ft2","ft^2","sf"],
+    sqyd: ["sq yd","square yards","square yard","yd²","yd2","yd^2","sy"],
+    cuft: ["cu ft","cubic feet","cubic foot","ft³","ft3","ft^3","cf"],
+    cuyd: ["cu yd","cubic yards","cubic yard","yd³","yd3","yd^3","yards","yard","yds","yd","cy"],
+    gal:  ["gal","gals","gallon","gallons"],
+    deg:  ["°","deg","degs","degree","degrees"],
+    pct:  ["%","percent","pct"],
+    inft: ["in/ft","in per ft","inches per foot","inch per foot","in per foot","inches/ft","\"/ft","in/foot",
+           // "0.15 in" is how most people say it out loud
+           "in","inch","inches","\""],
+    squares: ["squares","square","sq","roofing squares"],
+    none: []
+  };
+  const SAFE_LABEL = { sqin:"sq in", sqft:"sq ft", sqyd:"sq yd", cuft:"cu ft", cuyd:"cu yd", gal:"gallons", pct:"%" };
+  const ukey = s => String(s).toLowerCase().replace(/[\s.]/g, "");
+  function readNum(raw){
+    const s = String(raw).trim().toLowerCase()
+      .replace(/^(?:about|approx(?:imately)?\.?|≈|~)\s*/, "")
+      .replace(/^[a-z]\s*=\s*/, "")
+      .replace(/(\d),(?=\d{3}(?!\d))/g, "$1");
+    const m = s.match(/^(\d+(?:\.\d+)?|\.\d+)(?:\s+(\d+)\s*\/\s*(\d+)|\s*\/\s*(\d+))?\s*(.*)$/);
+    if (!m) return null;
+    let v = parseFloat(m[1]);
+    if (m[2] !== undefined) { if (+m[3] === 0) return null; v += +m[2] / +m[3]; }
+    else if (m[4] !== undefined) { if (+m[4] === 0) return null; v /= +m[4]; }
+    return { v, rest: ukey(m[5]) };
+  }
+  // 14' 3", 14 ft 3 in, 14 ft 3 1/2 in, 14'-3"  ->  total inches
+  function readFtIn(raw){
+    const s = String(raw).trim().toLowerCase();
+    const m = s.match(/^(\d+)\s*(?:'|ft\.?|feet|foot)\s*[-,]?\s*(?:(\d+(?:\.\d+)?)(?:\s+(\d+)\s*\/\s*(\d+))?|(\d+)\s*\/\s*(\d+))\s*(?:"|''|in\.?|inch|inches)?$/);
+    if (!m) return null;
+    let inches = +m[1] * 12;
+    if (m[2] !== undefined) {
+      inches += parseFloat(m[2]);
+      if (m[3] !== undefined) { if (+m[4] === 0) return null; inches += +m[3] / +m[4]; }
+    } else { if (+m[6] === 0) return null; inches += +m[5] / +m[6]; }
+    return inches;
+  }
+  function typedOk(target, unit, nouns){
+    const allowed = new Set((UNIT[unit] || []).concat(nouns || []).map(ukey));
+    const ftSet = new Set(UNIT.ft.map(ukey)), inSet = new Set(UNIT.in.map(ukey));
+    return function(typed){
+      const close = v => Math.abs(v - target) < 1e-6;
+      if (unit === "ft" || unit === "in") {
+        const fi = readFtIn(typed);
+        if (fi !== null) return close(unit === "ft" ? fi / 12 : fi);
+      }
+      const r = readNum(typed);
+      if (!r) return false;
+      if (r.rest === "" || allowed.has(r.rest)) return close(r.v);
+      if (unit === "ft" && inSet.has(r.rest)) return close(r.v / 12);
+      if (unit === "in" && ftSet.has(r.rest)) return close(r.v * 12);
+      return false;
+    };
+  }
+
+  // One numeric question. `wrong` lists the values a named mistake produces
+  // (each generator says which mistake in a comment); near misses of the same
+  // size only top the board up when two mistakes happen to coincide.
+  //   o = { subType, question, value, d, unit, nouns, wrong, explanation, show }
+  // `show` formats a value for the board (default: rounded to d places).
+  function numQ(o){
+    const show = o.show || (v => fmt(v, o.d));
+    const ans = show(o.value);
+    const cands = [];
+    for (const w of (o.wrong || [])) if (Number.isFinite(w) && w > 0) cands.push(show(w));
+    const step = o.step || (o.d > 0 ? Math.pow(10, -o.d) : 1);
+    for (const k of [1.1, 0.9, 1.2, 0.8]) cands.push(show(o.value * k));
+    for (const k of [1, -1, 2, -2, 3]) { const v = o.value + k * step; if (v > 0) cands.push(show(v)); }
+    const target = o.target !== undefined ? o.target : +ans;
+    const acc = [ans];
+    if (o.unit === "pct") acc.push(ans + "%");
+    else if (SAFE_LABEL[o.unit]) acc.push(ans + " " + SAFE_LABEL[o.unit]);
+    // A whole number of feet or inches is safe in the string matcher.
+    if ((o.unit === "ft" || o.unit === "in") && /^\d+$/.test(ans)) acc.push(ans + " " + o.unit);
+    for (const n of (o.nouns || [])) acc.push(ans + " " + n);
+    return {
+      subType: o.subType, question: o.question, answer: ans,
+      acceptableAnswers: acc,
+      validate: o.alsoOk
+        ? (s => typedOk(target, o.unit, o.nouns)(s) || o.alsoOk(String(s)))
+        : typedOk(target, o.unit, o.nouns),
+      options: opt4(ans, cands), explanation: o.explanation
+    };
+  }
+  // Roofers write a pitch as "6/12" or "6:12". Kept out of acceptableAnswers
+  // because the string matcher reads "6/12" as the number 0.5 and would then
+  // accept the slope-as-decimal distractor too.
+  const pitchForm = x => s => {
+    const m = String(s).trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(?:in(?:ches)?\s*)?(?:\/|:|in|per)\s*12(?:\s*in(?:ches)?)?$/);
+    return !!m && Math.abs(parseFloat(m[1]) - x) < 1e-9;
+  };
+  // A coordinate answer, with coordinate-shaped distractors.
+  function ptQ(o){
+    const ans = pt(o.x, o.y);
+    const cands = o.wrong.map(w => pt(w[0], w[1]))
+      .concat([pt(o.x + 1, o.y), pt(o.x, o.y + 1), pt(o.y, o.x), pt(o.x - 1, o.y - 1)]);
+    return { subType: o.subType, question: o.question, answer: ans,
+      acceptableAnswers: [ans, o.x + ", " + o.y],
+      options: opt4(ans, cands), explanation: o.explanation };
+  }
+  // A guided step: plain number answer plus the unit spellings the string
+  // matcher handles safely (guided steps have no validate()).
+  const step = (prompt, hint, answer, unitWord, formatHint, mistakes) => {
+    const a = String(answer), acc = [a];
+    if (unitWord) acc.push(a + " " + unitWord);
+    return { prompt, hint, answer: a, acceptableAnswers: acc,
+      formatHint: formatHint || "Enter a number", commonMistakes: mistakes || {} };
+  };
+
+  // =====================================================================
+  // M-366  Applied Area  (76C Advanced Area)
+  // =====================================================================
+  _addSkill(7, "Applied Area", "Applied Area", 3, {
+    goalProblem: "A 12 ft × 14 ft room has 8 ft walls, one 3 ft × 7 ft door and two 3 ft × 4 ft windows. How many square feet of wall get painted?",
+    teachingSteps: [
+      { title: "Walls unroll into one rectangle", explanation: "Walk around a room and the four walls make one long strip. Its length is the <strong>perimeter</strong> of the room and its height is the ceiling height, so the total wall area is <strong>perimeter × height</strong>.", visual: "perimeter = 2(12 + 14) = 52 ft<br>52 ft × 8 ft = 416 sq ft" },
+      { title: "Take out what you will not cover", explanation: "Doors and windows get no paint, drywall or siding. Find each opening's area and <strong>subtract</strong> it from the gross area. This is the composite-area idea: whole shape minus the holes.", visual: "door 3 × 7 = 21 · windows 2 × (3 × 4) = 24<br>416 − 21 − 24 = 371 sq ft" },
+      { title: "Square units convert by the square", explanation: "1 ft = 12 in, so 1 sq ft = 12 × 12 = <strong>144 sq in</strong>. 1 yd = 3 ft, so 1 sq yd = 3 × 3 = <strong>9 sq ft</strong>. Multiply the dimensions first, then divide by 144 or 9 — or convert each dimension before multiplying.", visual: "24 in × 36 in = 864 sq in ÷ 144 = 6 sq ft<br>15 ft × 18 ft = 270 sq ft ÷ 9 = 30 sq yd" },
+      { title: "Coverage is area per unit", explanation: "Paint is labelled in square feet per gallon; tile and flooring boxes say how many square feet they cover. A box's coverage is the number of pieces times the area of one piece.", visual: "10 tiles of 12 in × 24 in = 10 × 2 sq ft = 20 sq ft per box" },
+      { title: "Roofs are sold in squares", explanation: "One roofing <strong>square</strong> is 100 sq ft. Each plane of a gable roof is a rectangle: <strong>rafter length × ridge length</strong>. Add both planes and divide by 100.", visual: "2 planes × 16 ft × 40 ft = 1280 sq ft = 12.8 squares" },
+      { title: "Gable ends add a triangle", explanation: "The end wall of a gable house is a rectangle up to the eaves with a triangle on top. Triangle area is <strong>½ × base × height</strong>, where the height is how far the peak rises above the eaves.", visual: "30 ft wide, 8 ft to eaves, peak 6 ft higher<br>30 × 8 + ½ × 30 × 6 = 240 + 90 = 330 sq ft" }
+    ],
+    finalAnswer: "371 sq ft",
+    answerExplanation: "Perimeter 2(12 + 14) = 52 ft, so the walls are 52 × 8 = 416 sq ft. Subtract the door (21) and the windows (2 × 12 = 24): 416 − 45 = 371 sq ft.",
+    example: { problem: "Carpet is sold by the square yard. How many square yards cover a 15 ft × 18 ft floor?", steps: [
+      { text: "Area in square feet", math: "15 × 18 = 270 sq ft" },
+      { text: "A square yard is 3 ft × 3 ft", math: "1 sq yd = 9 sq ft" },
+      { text: "Divide by 9, not by 3", math: "270 ÷ 9 = 30 sq yd" }
+    ]},
+    keyPoints: [
+      "Wall area = perimeter × wall height, then subtract every door and window",
+      "144 sq in = 1 sq ft and 9 sq ft = 1 sq yd — square the length conversion",
+      "Coverage per box = pieces × area of one piece",
+      "1 roofing square = 100 sq ft; a gable roof has two rectangular planes"
+    ],
+    mistakes: [
+      { wrong: "864 sq in ÷ 12 = 72 sq ft", why: "12 converts inches to feet for a length. An area needs 12 × 12 = 144: 864 ÷ 144 = 6 sq ft." },
+      { wrong: "270 sq ft ÷ 3 = 90 sq yd", why: "A square yard is 3 ft by 3 ft = 9 sq ft. 270 ÷ 9 = 30 sq yd." },
+      { wrong: "Ordering paint for the full 416 sq ft", why: "Doors and windows are not painted. Subtract their areas before working out how much material to buy." }
+    ],
+    guided: {
+      problem: "A 10 ft × 16 ft room has 8 ft walls, one 3 ft × 7 ft door and one 3 ft × 5 ft window. How many square feet of wall need drywall?",
+      steps: [
+        { label: "Perimeter of the room (ft)", value: "2 × (10 + 16) = 52" },
+        { label: "Gross wall area (sq ft)", value: "52 × 8 = 416" },
+        { label: "Area of the openings (sq ft)", value: "21 + 15 = 36" },
+        { label: "Net wall area (sq ft)", value: "416 − 36 = 380" }
+      ],
+      answer: "380",
+      answerLabel: "Net wall area (sq ft) =",
+      interactiveSteps: [
+        step("Perimeter of the 10 ft × 16 ft room, in feet?", "Perimeter = 2 × (length + width).", 52, "ft", "Enter a number of feet", { "26": "That is one length plus one width. Go all the way round: 2 × (10 + 16).", "160": "160 is the floor AREA. The walls need the distance around the room." }),
+        step("Gross wall area: perimeter × 8 ft wall height, in square feet?", "52 × 8", 416, "sq ft", "Enter square feet"),
+        step("Total area of the openings: door 3 × 7 plus window 3 × 5, in square feet?", "21 + 15", 36, "sq ft", "Enter square feet"),
+        step("Net wall area to cover, in square feet?", "Gross area minus openings: 416 − 36.", 380, "sq ft", "Enter square feet", { "416": "That still includes the door and window. Subtract the 36 sq ft of openings." })
+      ]
+    }
+  }, function(){
+    const t = pick(["wall_openings","sq_in_to_sq_ft","sq_ft_to_sq_yd","coverage_per_box","roof_squares","gable_wall"]);
+    if (t === "wall_openings") {
+      const L = ri(10,24), W = ri(9,18), H = pick([8,9,10]);
+      const doors = ri(1,2), nw = ri(1,3), win = pick([[3,4],[2,3],[4,5],[3,5],[2,4]]);
+      const gross = 2*(L+W)*H, open = doors*21 + nw*win[0]*win[1], net = gross - open;
+      return numQ({ subType: t, d: 0, unit: "sqft", value: net,
+        question: `${An(L)} ft × ${W} ft room has ${H} ft walls, ${doors === 1 ? "one 3 ft × 7 ft door" : "two 3 ft × 7 ft doors"} and ${nw === 1 ? "one window" : nw + " windows"} measuring ${win[0]} ft × ${win[1]} ft${nw === 1 ? "" : " each"}. How many square feet of wall need paint?`,
+        // gross: openings never subtracted · door only: windows forgotten ·
+        // two walls: (L + W) × H instead of the full perimeter
+        wrong: [gross, gross - doors*21, (L+W)*H - open, L*W],
+        explanation: `Perimeter = 2(${L} + ${W}) = ${2*(L+W)} ft, so the walls total ${2*(L+W)} × ${H} = ${gross} sq ft. Openings: ${doors} × 21 + ${nw} × ${win[0]*win[1]} = ${open} sq ft. Net: ${gross} − ${open} = ${net} sq ft.` });
+    }
+    if (t === "sq_in_to_sq_ft") {
+      const A = pick([12,16,18,20,24,30,36]), B = pick([25,30,36,42,48,60,72,96]);
+      const piece = pick(["countertop piece","sheet of plywood underlayment","panel","glass shelf","backsplash panel"]);
+      const sqin = A*B;
+      return numQ({ subType: t, d: 1, unit: "sqft", value: sqin/144,
+        question: `${An(piece)} measures ${A} in by ${B} in. What is its area in square feet? Round to the nearest tenth.`,
+        // ÷12: length conversion used on an area · ÷1296: square yards ·
+        // (A + B)/12: added the sides instead of multiplying
+        wrong: [sqin/12, sqin/1296, (A+B)/12, sqin/100],
+        explanation: `${A} × ${B} = ${sqin} sq in. One square foot is 12 × 12 = 144 sq in, so ${sqin} ÷ 144 = ${fmt(sqin/144,1)} sq ft.` });
+    }
+    if (t === "sq_ft_to_sq_yd") {
+      const L = ri(10,26), W = ri(9,18), A = L*W;
+      return numQ({ subType: t, d: 1, unit: "sqyd", value: A/9,
+        question: `Carpet is sold by the square yard. How many square yards cover ${an(L)} ft × ${W} ft floor? Round to the nearest tenth.`,
+        // ÷3: yards-to-feet length factor used on an area · A: never converted ·
+        // ÷27: cubic-yard factor
+        wrong: [A/3, A, A/27],
+        explanation: `Area = ${L} × ${W} = ${A} sq ft. A square yard is 3 ft × 3 ft = 9 sq ft, so ${A} ÷ 9 = ${fmt(A/9,1)} sq yd.` });
+    }
+    if (t === "coverage_per_box") {
+      const tile = pick([[12,12],[12,24],[6,24],[18,18],[24,24],[6,36],[8,48],[3,6]]);
+      const n = tile[0]*tile[1] <= 18 ? pick([40,48,60,80]) : ri(4,16);
+      const sqin = n*tile[0]*tile[1];
+      return numQ({ subType: t, d: 2, unit: "sqft", value: sqin/144,
+        question: `A box holds ${n} tiles, each ${tile[0]} in × ${tile[1]} in. How many square feet does one box cover? Round to the nearest hundredth.`,
+        // ÷12 on an area · one tile only · n × (a + b) ÷ 12: perimeter, not area
+        wrong: [sqin/12, tile[0]*tile[1]/144, n*(tile[0]+tile[1])/12],
+        explanation: `One tile is ${tile[0]} × ${tile[1]} = ${tile[0]*tile[1]} sq in. ${n} tiles = ${sqin} sq in, and ${sqin} ÷ 144 = ${fmt(sqin/144,2)} sq ft per box.` });
+    }
+    if (t === "roof_squares") {
+      const R = pick([12,13,14,15,16,17,18,19,20,21,22]) + pick([0,0.5]), L = ri(24,60);
+      const area = 2*R*L;
+      return numQ({ subType: t, d: 1, unit: "squares", value: area/100,
+        question: `A gable roof has two planes. Each plane measures ${R} ft along the rafter by ${L} ft along the ridge. How many roofing squares (100 sq ft each) does it need, before waste? Round to the nearest tenth.`,
+        // one plane only · square feet never converted to squares ·
+        // ÷144: square-inch factor used on square feet
+        wrong: [R*L/100, area/144, area/10],
+        explanation: `Each plane is ${R} × ${L} = ${fmt(R*L,1)} sq ft, so both are ${fmt(area,1)} sq ft. ${fmt(area,1)} ÷ 100 = ${fmt(area/100,1)} squares.` });
+    }
+    // gable_wall
+    const W = pick([20,22,24,26,28,30,32,36]), H = pick([8,9,10]), P = ri(4,10), win = pick([[3,4],[2,3],[3,5]]);
+    const wa = win[0]*win[1], area = W*H + W*P/2 - wa;
+    return numQ({ subType: "gable_wall", d: 0, unit: "sqft", value: area,
+      question: `A gable end wall is ${W} ft wide and ${H} ft tall to the eaves, and the peak is ${P} ft above the eaves. It has one ${win[0]} ft × ${win[1]} ft window. How many square feet of siding does it need, before waste?`,
+      // forgot the ½ on the triangle · window not subtracted ·
+      // whole wall treated as one rectangle W × (H + P)
+      wrong: [W*H + W*P - wa, W*H + W*P/2, W*(H+P) - wa, W*H - wa],
+      explanation: `Rectangle: ${W} × ${H} = ${W*H} sq ft. Triangle: ½ × ${W} × ${P} = ${W*P/2} sq ft. Minus the window ${wa} sq ft: ${W*H} + ${W*P/2} − ${wa} = ${area} sq ft.` });
+  });
+
+  // =====================================================================
+  // M-367  Applied Volume  (77C Advanced Volume)
+  // =====================================================================
+  _addSkill(7, "Applied Volume", "Applied Volume", 3, {
+    goalProblem: "A patio slab is 12 ft × 18 ft and 4 in thick. How many cubic yards of concrete does it take?",
+    teachingSteps: [
+      { title: "Every dimension in feet first", explanation: "Slab thickness is given in inches but length and width are in feet. Convert the thickness to feet <strong>before</strong> multiplying: divide inches by 12.", visual: "4 in ÷ 12 = 1/3 ft  (6 in = 0.5 ft)" },
+      { title: "Volume of a box", explanation: "A slab, footing or trench is a rectangular prism: <strong>V = length × width × depth</strong>. With every measurement in feet the answer is in cubic feet.", visual: "12 × 18 × 1/3 = 72 cu ft" },
+      { title: "27 cubic feet in a cubic yard", explanation: "Concrete and dirt are sold by the cubic yard. A cubic yard is 3 ft × 3 ft × 3 ft = <strong>27 cu ft</strong> — not 3, not 9.", visual: "72 ÷ 27 = 2.67 cu yd" },
+      { title: "Round things are cylinders", explanation: "Columns, sonotubes, tanks and pipes use <strong>V = π r² h</strong>. The radius is half the diameter, and it must be in the same unit as the height.", visual: "12 in column → r = 0.5 ft<br>π × 0.5² × 4 = 3.14 cu ft" },
+      { title: "Gallons from volume", explanation: "Water volume: <strong>1 cu ft ≈ 7.48 gallons</strong>, and <strong>1 gallon = 231 cu in</strong>. Use cubic feet for tanks and cubic inches for pipes measured in inches.", visual: "50 cu ft × 7.48 = 374 gal<br>2310 cu in ÷ 231 = 10 gal" },
+      { title: "Combined solids add", explanation: "A pier on a footing, or a slab with a thickened edge, is two simple solids. Find each volume in the same unit and add.", visual: "footing 2 × 2 × 1 = 4 cu ft + column 3.14 cu ft = 7.14 cu ft" }
+    ],
+    finalAnswer: "2.7 cu yd",
+    answerExplanation: "4 in = 1/3 ft. 12 × 18 × 1/3 = 72 cu ft, and 72 ÷ 27 = 2.67, about 2.7 cubic yards.",
+    example: { problem: "A cylindrical tank is 4 ft across and 6 ft tall. How many gallons does it hold?", steps: [
+      { text: "Radius is half the diameter", math: "r = 2 ft" },
+      { text: "Volume of the cylinder", math: "π × 2² × 6 = 75.40 cu ft" },
+      { text: "Convert to gallons", math: "75.40 × 7.48 ≈ 564 gal" }
+    ]},
+    keyPoints: [
+      "Convert inches to feet before multiplying (4 in = 1/3 ft)",
+      "1 cu yd = 27 cu ft",
+      "Cylinder: V = π r² h, with r = diameter ÷ 2",
+      "1 cu ft ≈ 7.48 gal; 1 gal = 231 cu in"
+    ],
+    mistakes: [
+      { wrong: "12 × 18 × 4 = 864, so 864 ÷ 27 = 32 cu yd", why: "The 4 is inches. Convert it to feet (1/3 ft) first: 12 × 18 × 1/3 = 72 cu ft = 2.67 cu yd." },
+      { wrong: "72 cu ft ÷ 9 = 8 cu yd", why: "9 converts square feet to square yards. A cubic yard holds 3 × 3 × 3 = 27 cu ft." },
+      { wrong: "Using the diameter in π r² h", why: "That makes the volume four times too big. Halve the diameter first." }
+    ],
+    guided: {
+      problem: "A garage slab is 20 ft × 24 ft and 6 in thick. How many cubic yards of concrete, to the nearest tenth?",
+      steps: [
+        { label: "Thickness in feet", value: "6 ÷ 12 = 0.5" },
+        { label: "Volume in cubic feet", value: "20 × 24 × 0.5 = 240" },
+        { label: "Volume in cubic yards", value: "240 ÷ 27 = 8.9" }
+      ],
+      answer: "8.9",
+      answerLabel: "Cubic yards =",
+      interactiveSteps: [
+        step("The slab is 6 in thick. What is that in feet?", "Divide inches by 12.", 0.5, "ft", "e.g., 0.25", { "6": "That is still inches. 6 in ÷ 12 = 0.5 ft.", "2": "Divide 6 by 12, not 12 by 6." }),
+        step("Volume of the 20 ft × 24 ft × 0.5 ft slab, in cubic feet?", "20 × 24 × 0.5", 240, "cu ft", "Enter cubic feet"),
+        step("Convert 240 cu ft to cubic yards, to the nearest tenth.", "A cubic yard is 27 cubic feet.", 8.9, "cu yd", "e.g., 3.5", { "26.7": "9 is the square-yard factor. A cubic yard is 27 cu ft: 240 ÷ 27 = 8.9.", "80": "3 is a length factor. A cubic yard is 3 × 3 × 3 = 27 cu ft." })
+      ]
+    }
+  }, function(){
+    const t = pick(["slab_cy","footing_cy","column_cy","tank_gal","pipe_gal","pier_combined","excavation"]);
+    if (t === "slab_cy") {
+      const L = ri(10,30), W = ri(8,24), T = pick([4,5,6]);
+      const cf = L*W*T/12;
+      return numQ({ subType: t, d: 1, unit: "cuyd", value: cf/27,
+        question: `A concrete slab is ${L} ft × ${W} ft and ${T} in thick. How many cubic yards of concrete does it need? Round to the nearest tenth.`,
+        // cubic feet left unconverted · thickness left in inches ·
+        // ÷9 (square-yard factor)
+        wrong: [cf, L*W*T/27, cf/9],
+        explanation: `${T} in = ${T}/12 ft. Volume = ${L} × ${W} × ${T}/12 = ${fmt(cf,2)} cu ft. ${fmt(cf,2)} ÷ 27 = ${fmt(cf/27,1)} cu yd.` });
+    }
+    if (t === "footing_cy") {
+      const L = ri(20,50), W = ri(20,40), w = pick([16,20,24]), d = pick([8,10,12]);
+      const P = 2*(L+W), cf = P*(w/12)*(d/12);
+      return numQ({ subType: t, d: 1, unit: "cuyd", value: cf/27,
+        question: `${An(L)} ft × ${W} ft building sits on a continuous footing ${w} in wide and ${d} in deep. Using the building's perimeter as the footing length, how many cubic yards of concrete does the footing need? Round to the nearest tenth.`,
+        // used half the perimeter (L + W) · cubic feet unconverted ·
+        // floor area L × W in place of the footing length
+        wrong: [(L+W)*(w/12)*(d/12)/27, cf, L*W*(w/12)*(d/12)/27],
+        explanation: `Footing length = 2(${L} + ${W}) = ${P} ft. Cross-section = ${w}/12 × ${d}/12 = ${fmt((w/12)*(d/12),4)} sq ft. Volume = ${P} × ${fmt((w/12)*(d/12),4)} = ${fmt(cf,2)} cu ft ÷ 27 = ${fmt(cf/27,1)} cu yd.` });
+    }
+    if (t === "column_cy") {
+      const N = ri(4,12), D = pick([8,10,12,16,18]), H = pick([3,4,5,6,8]);
+      const r = D/24, each = Math.PI*r*r*H, total = N*each;
+      return numQ({ subType: t, d: 2, unit: "cuyd", value: total/27,
+        question: `${N} round concrete columns are each ${D} in in diameter and ${H} ft tall. How many cubic yards of concrete fill all of them? Round to the nearest hundredth.`,
+        // diameter used as radius (×4) · one column only · cubic feet unconverted
+        wrong: [4*total/27, each/27, total],
+        explanation: `Radius = ${D}/2 = ${D/2} in = ${fmt(r,4)} ft. One column: π × ${fmt(r,4)}² × ${H} = ${fmt(each,3)} cu ft. All ${N}: ${fmt(total,3)} cu ft ÷ 27 = ${fmt(total/27,2)} cu yd.` });
+    }
+    if (t === "tank_gal") {
+      if (pick([true,false])) {
+        const D = ri(3,8), H = ri(4,12), cf = Math.PI*(D/2)*(D/2)*H;
+        return numQ({ subType: t, d: 0, unit: "gal", value: cf*7.48,
+          question: `A cylindrical water tank is ${D} ft in diameter and ${H} ft tall. How many gallons does it hold? Use 1 cu ft = 7.48 gal and round to the nearest gallon.`,
+          // diameter as radius · cubic feet unconverted · D × D × H (a square box)
+          wrong: [4*cf*7.48, cf, D*D*H*7.48],
+          explanation: `r = ${D}/2 = ${D/2} ft. V = π × ${D/2}² × ${H} = ${fmt(cf,2)} cu ft. ${fmt(cf,2)} × 7.48 = ${fmt(cf*7.48,0)} gal.` });
+      }
+      const L = ri(3,10), W = ri(2,6), H = ri(2,6), cf = L*W*H;
+      return numQ({ subType: t, d: 0, unit: "gal", value: cf*7.48,
+        question: `A rectangular tank is ${L} ft long, ${W} ft wide and ${H} ft deep. How many gallons does it hold when full? Use 1 cu ft = 7.48 gal and round to the nearest gallon.`,
+        // cubic feet unconverted · divided by 7.48 instead of multiplying ·
+        // surface area of the bottom only, times 7.48
+        wrong: [cf, cf/7.48, L*W*7.48],
+        explanation: `V = ${L} × ${W} × ${H} = ${cf} cu ft. ${cf} × 7.48 = ${fmt(cf*7.48,0)} gal.` });
+    }
+    if (t === "pipe_gal") {
+      const d = pick([0.5,0.75,1,1.5,2,3,4,6]), L = ri(20,200);
+      const ci = Math.PI*(d/2)*(d/2)*L*12;
+      return numQ({ subType: t, d: 1, unit: "gal", value: ci/231,
+        question: `A pipe has an inside diameter of ${d} in and runs ${L} ft. How many gallons of water fill it? Use 1 gal = 231 cu in and round to the nearest tenth.`,
+        // diameter as radius · length left in feet (forgot × 12) · forgot π
+        wrong: [4*ci/231, ci/12/231, (d/2)*(d/2)*L*12/231],
+        explanation: `r = ${d/2} in, length = ${L} × 12 = ${L*12} in. V = π × ${d/2}² × ${L*12} = ${fmt(ci,1)} cu in. ${fmt(ci,1)} ÷ 231 = ${fmt(ci/231,1)} gal.` });
+    }
+    if (t === "pier_combined") {
+      const a = pick([2,2.5,3]), c = pick([1,1.5]), D = pick([10,12,16]), H = ri(3,6);
+      const foot = a*a*c, r = D/24, col = Math.PI*r*r*H;
+      return numQ({ subType: t, d: 1, unit: "cuft", value: foot + col,
+        question: `A pier is a round column ${D} in in diameter and ${H} ft tall sitting on a square footing ${a} ft × ${a} ft × ${c} ft thick. How many cubic feet of concrete is the whole pier? Round to the nearest tenth.`,
+        // footing only · column only · column with the diameter used as radius
+        wrong: [foot, col, foot + 4*col],
+        explanation: `Footing: ${a} × ${a} × ${c} = ${fmt(foot,2)} cu ft. Column: r = ${D/2} in = ${fmt(r,4)} ft, π × ${fmt(r,4)}² × ${H} = ${fmt(col,2)} cu ft. Total ${fmt(foot+col,1)} cu ft.` });
+    }
+    // excavation
+    const L = ri(20,50), W = ri(20,40), Dp = pick([3,4,6,8,9]), cf = L*W*Dp;
+    return numQ({ subType: "excavation", d: 1, unit: "cuyd", value: cf/27,
+      question: `A basement hole is dug ${L} ft × ${W} ft and ${Dp} ft deep. How many cubic yards of soil come out (before any swell)? Round to the nearest tenth.`,
+      // cubic feet unconverted · ÷9 (square-yard factor) · ÷3 (length factor)
+      wrong: [cf, cf/9, cf/3],
+      explanation: `V = ${L} × ${W} × ${Dp} = ${cf} cu ft. ${cf} ÷ 27 = ${fmt(cf/27,1)} cu yd.` });
+  });
+
+  // =====================================================================
+  // M-368  Pythagorean Layout  (78C Applied Pythagorean Theorem)
+  // =====================================================================
+  _addSkill(7, "Pythagorean Layout", "Pythagorean Layout", 3, {
+    goalProblem: "You mark 6 ft along one wall and 8 ft along the other. What must the diagonal between the marks measure for the corner to be square?",
+    teachingSteps: [
+      { title: "A square corner is a right angle", explanation: "Two walls that meet at 90° and the diagonal between them form a right triangle. The walls are the <strong>legs</strong> and the diagonal is the <strong>hypotenuse</strong>.", visual: "a² + b² = c²" },
+      { title: "The 3-4-5 rule", explanation: "3² + 4² = 9 + 16 = 25 = 5². So if one leg is 3 and the other is 4, the diagonal is exactly 5. Any <strong>multiple</strong> works too, and bigger is more accurate on a job site.", visual: "3-4-5 · 6-8-10 · 9-12-15 · 12-16-20" },
+      { title: "Checking a rectangle", explanation: "A rectangular foundation is square when its two <strong>diagonals are equal</strong>. Each should measure √(L² + W²).", visual: "24 ft × 32 ft → √(576 + 1024) = √1600 = 40 ft" },
+      { title: "Rafters, stringers and braces", explanation: "A rafter spans the <strong>run</strong> (horizontal) and climbs the <strong>rise</strong> (vertical); its length is the hypotenuse. A stair stringer is the same triangle using total rise and total run.", visual: "run 12 ft, rise 5 ft → √(144 + 25) = 13 ft" },
+      { title: "Finding a leg", explanation: "When you know the hypotenuse (a ladder, a guy wire) and one leg, subtract: <strong>b = √(c² − a²)</strong>.", visual: "20 ft ladder, base 5 ft out → √(400 − 25) = 19.4 ft up" }
+    ],
+    finalAnswer: "10 ft",
+    answerExplanation: "6-8-10 is the 3-4-5 triangle doubled: √(6² + 8²) = √(36 + 64) = √100 = 10 ft.",
+    example: { problem: "A deck is 12 ft × 16 ft. What should each diagonal measure?", steps: [
+      { text: "Square both sides", math: "12² + 16² = 144 + 256 = 400" },
+      { text: "Take the square root", math: "√400 = 20 ft" },
+      { text: "It is 3-4-5 times 4", math: "12-16-20" }
+    ]},
+    keyPoints: [
+      "Legs squared and added, then square-rooted, give the diagonal",
+      "3-4-5 and its multiples square a corner without a calculator",
+      "A rectangle is square when both diagonals are equal",
+      "To find a leg: √(hypotenuse² − other leg²)"
+    ],
+    mistakes: [
+      { wrong: "Diagonal of 6 and 8 is 14", why: "You cannot add the legs. Square, add, and root: √(36 + 64) = 10." },
+      { wrong: "Forgetting the square root: 6² + 8² = 100 ft", why: "100 is c². The diagonal is √100 = 10 ft." },
+      { wrong: "Adding when finding a leg", why: "The hypotenuse is the longest side. For a leg, subtract the squares: √(c² − a²)." }
+    ],
+    guided: {
+      problem: "A rafter has a run of 9 ft and a rise of 4 ft. How long is the rafter, to the nearest tenth of a foot?",
+      steps: [
+        { label: "Run squared", value: "9² = 81" },
+        { label: "Rise squared", value: "4² = 16" },
+        { label: "Sum of the squares", value: "81 + 16 = 97" },
+        { label: "Square root", value: "√97 = 9.8" }
+      ],
+      answer: "9.8",
+      answerLabel: "Rafter length (ft) =",
+      interactiveSteps: [
+        step("Square the run: 9² = ?", "9 × 9", 81, "", "Enter a number", { "18": "Squaring is 9 × 9, not 9 × 2." }),
+        step("Square the rise: 4² = ?", "4 × 4", 16, "", "Enter a number", { "8": "Squaring is 4 × 4, not 4 × 2." }),
+        step("Add the squares.", "81 + 16", 97, "", "Enter a number"),
+        step("Take the square root of 97, to the nearest tenth of a foot.", "√97 is a little under 10.", 9.8, "ft", "e.g., 12.3", { "97": "97 is the rafter length squared. Take its square root.", "13": "Adding run and rise (9 + 4) is not how a diagonal works. √97 = 9.8." })
+      ]
+    }
+  }, function(){
+    const t = pick(["triple_345","square_check","rafter_length","stair_stringer","ladder","missing_leg"]);
+    if (t === "triple_345") {
+      const k = ri(1,6), a = 3*k, b = 4*k, c = 5*k;
+      if (pick([true,false])) {
+        return numQ({ subType: t, d: 0, unit: "ft", value: c,
+          question: `To check a corner, you measure ${a} ft along one wall and ${b} ft along the other and make a mark at each. For the corner to be square, what should the diagonal between the two marks measure, in feet?`,
+          // added the legs · c² never square-rooted · one more than a leg
+          wrong: [a+b, c*c, b+1, c+2],
+          explanation: `${k === 1 ? "This is the 3-4-5 triangle itself" : `${a}-${b}-${c} is the 3-4-5 triangle times ${k}`}: √(${a}² + ${b}²) = √(${a*a} + ${b*b}) = √${c*c} = ${c} ft.` });
+      }
+      return numQ({ subType: t, d: 0, unit: "ft", value: b,
+        question: `A layout crew uses ${an(c)} ft diagonal to square a corner. They measured ${a} ft along the first line. How far along the second line should the other mark be, in feet?`,
+        // c − a (subtracted lengths, not squares) · c + a · √(c² + a²)
+        wrong: [c-a, c+a, Math.round(Math.sqrt(c*c+a*a)), b+1],
+        explanation: `√(${c}² − ${a}²) = √(${c*c} − ${a*a}) = √${b*b} = ${b} ft — ${k === 1 ? "the 3-4-5 triangle itself" : `the 3-4-5 triangle times ${k}`}.` });
+    }
+    if (t === "square_check") {
+      const L = ri(16,60), W = ri(12,Math.min(40,L-2)), dgl = Math.sqrt(L*L+W*W);
+      const what = pick(["foundation","deck","slab form","shed floor","garage footing"]);
+      return numQ({ subType: t, d: 1, unit: "ft", value: dgl,
+        question: `A rectangular ${what} is ${L} ft × ${W} ft. For it to be square, what should each diagonal measure? Round to the nearest tenth of a foot.`,
+        // added the sides · subtracted the squares · treated as a square (L√2)
+        wrong: [L+W, Math.sqrt(L*L-W*W), L*Math.SQRT2],
+        explanation: `√(${L}² + ${W}²) = √(${L*L} + ${W*W}) = √${L*L+W*W} = ${fmt(dgl,1)} ft. Both diagonals should read this; if they differ, the ${what} is out of square.` });
+    }
+    if (t === "rafter_length") {
+      const R = ri(8,16) + pick([0,0.5]), r = ri(3,8), len = Math.sqrt(R*R + r*r);
+      return numQ({ subType: t, d: 1, unit: "ft", value: len,
+        question: `A rafter has a horizontal run of ${R} ft and a rise of ${r} ft. How long is the rafter from plate to ridge, not counting overhang? Round to the nearest tenth of a foot.`,
+        // added run and rise · subtracted the squares · forgot the square root
+        wrong: [R+r, Math.sqrt(R*R - r*r), R*R + r*r],
+        explanation: `√(${R}² + ${r}²) = √(${fmt(R*R,2)} + ${r*r}) = √${fmt(R*R+r*r,2)} = ${fmt(len,1)} ft.` });
+    }
+    if (t === "stair_stringer") {
+      const rise = ri(84,118), run = ri(110,170), len = Math.sqrt(rise*rise + run*run);
+      return numQ({ subType: t, d: 0, unit: "in", value: len,
+        question: `A stair has a total rise of ${rise} in and a total run of ${run} in. How long must the stringer be along its slope? Round to the nearest inch and give the answer in inches.`,
+        // added rise and run · subtracted the squares · used the run alone
+        wrong: [rise+run, Math.sqrt(run*run - rise*rise), run, len/12],
+        explanation: `√(${rise}² + ${run}²) = √(${rise*rise} + ${run*run}) = √${rise*rise+run*run} = ${fmt(len,1)} in, about ${Math.round(len)} in (${ftIn(len)}).` });
+    }
+    if (t === "ladder") {
+      if (pick([true,false])) {
+        const L = pick([16,20,24,28,32]), d = ri(3,8), h = Math.sqrt(L*L - d*d);
+        return numQ({ subType: t, d: 1, unit: "ft", value: h,
+          question: `${An(L)} ft ladder leans against a wall with its feet ${d} ft out from the wall. How high up the wall does it reach? Round to the nearest tenth of a foot.`,
+          // added the squares (ladder treated as a leg) · L − d · the ladder length itself
+          wrong: [Math.sqrt(L*L + d*d), L - d, L],
+          explanation: `The ladder is the hypotenuse: √(${L}² − ${d}²) = √(${L*L} − ${d*d}) = √${L*L-d*d} = ${fmt(h,1)} ft.` });
+      }
+      const h = ri(12,28), base = h/4, L = Math.sqrt(h*h + base*base);
+      return numQ({ subType: t, d: 1, unit: "ft", value: L,
+        question: `Using the 4-to-1 rule, a ladder touching a wall ${h} ft up has its feet ${fmt(base,2)} ft out. How long is the ladder from feet to top contact point? Round to the nearest tenth of a foot.`,
+        // added height and base · used the height alone · subtracted the squares
+        wrong: [h + base, h, Math.sqrt(h*h - base*base)],
+        explanation: `Base = ${h} ÷ 4 = ${fmt(base,2)} ft. √(${h}² + ${fmt(base,2)}²) = √${fmt(h*h + base*base,4)} = ${fmt(L,1)} ft.` });
+    }
+    // missing_leg
+    const tri = pick([[5,12,13],[8,15,17],[7,24,25],[20,21,29],[9,12,15],[12,16,20],[10,24,26],[15,20,25],[9,40,41],[12,35,37]]);
+    const swap = pick([true,false]), a = swap ? tri[1] : tri[0], b = swap ? tri[0] : tri[1], c = tri[2];
+    const ctx = pick([
+      [`${An(c)} ft guy wire runs from the top of a pole to a stake ${a} ft from the base. How tall is the pole, in feet?`, "pole height"],
+      [`${An(c)} in diagonal brace on a gate runs corner to corner. The gate is ${a} in wide. How tall is the gate, in inches?`, "gate height"],
+      [`${An(c)} ft conduit run goes diagonally across a room that is ${a} ft wide. How long is the room, in feet?`, "room length"]
+    ]);
+    const unit = ctx[0].includes(" in diagonal") ? "in" : "ft";
+    return numQ({ subType: "missing_leg", d: 0, unit, value: b,
+      question: ctx[0],
+      // c − a (subtracted lengths) · c + a · √(c² + a²) rounded
+      wrong: [c - a, c + a, Math.round(Math.sqrt(c*c + a*a)), b + 2],
+      explanation: `The ${unit === "in" ? "brace" : "diagonal"} is the hypotenuse, so the ${ctx[1]} = √(${c}² − ${a}²) = √(${c*c} − ${a*a}) = √${b*b} = ${b} ${unit}.` });
+  });
+
+  // =====================================================================
+  // M-369  Applied Trigonometry  (79C Applied Trigonometry)
+  // =====================================================================
+  _addSkill(7, "Applied Trigonometry", "Applied Trigonometry", 4, {
+    goalProblem: "Standing 60 ft from a building, you sight its roof at a 35° angle of elevation with an instrument 5 ft off the ground. How tall is the building?",
+    teachingSteps: [
+      { title: "Name the sides from the angle", explanation: "In the right triangle, the side across from your angle is <strong>opposite</strong>, the side along the ground next to it is <strong>adjacent</strong>, and the slanted side is the <strong>hypotenuse</strong>.", visual: "SOH · CAH · TOA" },
+      { title: "Elevation looks up, depression looks down", explanation: "The <strong>angle of elevation</strong> is measured up from horizontal; the <strong>angle of depression</strong> is measured down from horizontal. Both are measured from a level line, so a depression angle at the top equals the elevation angle at the bottom.", visual: "depression from the roof = elevation from the ground" },
+      { title: "Height and distance use tangent", explanation: "When you know the level distance and want the height (or the reverse), the two sides are opposite and adjacent, so use <strong>tan θ = opposite ÷ adjacent</strong>.", visual: "height = distance × tan θ<br>distance = height ÷ tan θ" },
+      { title: "Add the instrument height", explanation: "The angle is measured from your eye or the transit, not the ground. Add that height back on at the end.", visual: "60 × tan 35° = 42.0 ft, + 5 ft = 47.0 ft" },
+      { title: "Ladders and ramps use sine and cosine", explanation: "A ladder or ramp is the hypotenuse. Height reached = <strong>L × sin θ</strong>; distance out = <strong>L × cos θ</strong>. To find the angle, use the inverse: θ = cos⁻¹(base ÷ length).", visual: "16 ft ladder, base 4 ft out → cos⁻¹(4/16) = 75.5°" },
+      { title: "Calculator in degree mode", explanation: "Every answer here is in degrees. A calculator in radian mode gives nonsense like tan 35 = 0.47.", visual: "tan 35° = 0.700" }
+    ],
+    finalAnswer: "47.0 ft",
+    answerExplanation: "Height above the instrument = 60 × tan 35° = 60 × 0.7002 = 42.0 ft. Add the 5 ft instrument height: 47.0 ft.",
+    example: { problem: "From a 40 ft roof, the angle of depression to a truck is 25°. How far is the truck from the building?", steps: [
+      { text: "Depression from the roof equals elevation from the truck", math: "θ = 25°" },
+      { text: "Height is opposite, distance is adjacent", math: "tan 25° = 40 ÷ d" },
+      { text: "Solve for d", math: "d = 40 ÷ 0.4663 = 85.8 ft" }
+    ]},
+    keyPoints: [
+      "tan connects height and level distance; sin and cos involve the slanted side",
+      "Angles of elevation and depression are measured from horizontal",
+      "Add instrument or eye height to a sighted height",
+      "Inverse trig (sin⁻¹, cos⁻¹, tan⁻¹) turns a ratio into an angle"
+    ],
+    mistakes: [
+      { wrong: "Height = 60 × sin 35°", why: "60 ft is the level distance (adjacent), not the slanted line of sight. Opposite and adjacent go with tangent." },
+      { wrong: "Leaving off the 5 ft instrument height", why: "The 35° was measured from 5 ft up. The triangle only reaches from there to the roof." },
+      { wrong: "Distance = 40 × tan 25° for an angle of depression", why: "Here the height is known and the distance is wanted: d = 40 ÷ tan 25°." }
+    ],
+    guided: {
+      problem: "A 20 ft ladder makes a 70° angle with the ground. How high up the wall does it reach, to the nearest tenth of a foot?",
+      steps: [
+        { label: "Which ratio", value: "sin, because the ladder is the hypotenuse" },
+        { label: "sin 70°", value: "0.9397" },
+        { label: "Height", value: "20 × 0.9397 = 18.8" }
+      ],
+      answer: "18.8",
+      answerLabel: "Height (ft) =",
+      interactiveSteps: [
+        step("sin 70° to four decimal places?", "Use a calculator in degree mode.", 0.9397, "", "e.g., 0.5000", { "0.342": "That is cos 70°. The height is opposite the 70° angle, so use sine." }),
+        step("Height reached = 20 × sin 70°, to the nearest tenth of a foot.", "20 × 0.9397", 18.8, "ft", "e.g., 12.5", { "6.8": "20 × cos 70° is how far out the feet are, not the height.", "54.9": "That used tangent. The ladder is the hypotenuse, so use sine." })
+      ]
+    }
+  }, function(){
+    const t = pick(["elevation_height","elevation_angle","depression_distance","ladder_angle","ramp_angle","across_obstacle","ladder_reach"]);
+    if (t === "elevation_height") {
+      const d = ri(40,200), th = ri(20,65), e = pick([5,5.5,6]);
+      const h = d*Math.tan(rad(th));
+      const obj = pick(["building","tree","cell tower","grain silo","flagpole"]);
+      return numQ({ subType: t, d: 1, unit: "ft", value: h + e,
+        question: `A surveyor stands ${d} ft from ${an(obj)}. With an instrument ${e} ft above the ground, the angle of elevation to the top is ${th}°. How tall is the ${obj}? Round to the nearest tenth of a foot.`,
+        // instrument height left off · sine in place of tangent · d ÷ tan θ
+        wrong: [h, d*Math.sin(rad(th)) + e, d/Math.tan(rad(th)) + e],
+        explanation: `Height above the instrument = ${d} × tan ${th}° = ${d} × ${fmt(Math.tan(rad(th)),4)} = ${fmt(h,2)} ft. Add ${e} ft: ${fmt(h+e,1)} ft.` });
+    }
+    if (t === "elevation_angle") {
+      const h = ri(20,150), d = ri(30,250), a = deg(Math.atan(h/d));
+      return numQ({ subType: t, d: 0, unit: "deg", value: a,
+        question: `${An(h)} ft wall is ${d} ft away across level ground. What is the angle of elevation from the ground to the top of the wall? Round to the nearest degree.`,
+        // ratio inverted (tan⁻¹ of d/h, the angle at the top) · the ratio as a
+        // percent read as degrees · the ratio itself read as degrees x 10
+        wrong: [deg(Math.atan(d/h)), h/d*100 < 90 ? h/d*100 : NaN, h/d*10],
+        explanation: `tan θ = opposite ÷ adjacent = ${h} ÷ ${d} = ${fmt(h/d,4)}. θ = tan⁻¹(${fmt(h/d,4)}) = ${fmt(a,1)}°, about ${Math.round(a)}°.` });
+    }
+    if (t === "depression_distance") {
+      const h = ri(20,120), th = ri(10,60), dist = h/Math.tan(rad(th));
+      const from = pick(["the top of a building","a fire lookout","a crane cab","a bridge deck","a water tower walkway"]);
+      return numQ({ subType: t, d: 1, unit: "ft", value: dist,
+        question: `From ${from} ${h} ft above level ground, the angle of depression to a parked truck is ${th}°. How far is the truck from the base, measured along the ground? Round to the nearest tenth of a foot.`,
+        // height × tan θ · height ÷ sin θ (line-of-sight length) · height × sin θ
+        wrong: [h*Math.tan(rad(th)), h/Math.sin(rad(th)), h*Math.sin(rad(th))],
+        explanation: `The depression angle equals the elevation angle from the truck. tan ${th}° = ${h} ÷ d, so d = ${h} ÷ ${fmt(Math.tan(rad(th)),4)} = ${fmt(dist,1)} ft.` });
+    }
+    if (t === "ladder_angle") {
+      const L = pick([12,16,20,24,28]), d = ri(3, Math.floor(L/3)), a = deg(Math.acos(d/L));
+      return numQ({ subType: t, d: 0, unit: "deg", value: a,
+        question: `${An(L)} ft ladder stands with its feet ${d} ft from the wall. What angle does it make with the ground? Round to the nearest degree.`,
+        // sin⁻¹(d/L): the angle with the wall · tan⁻¹(L/d) · tan⁻¹(d/L)
+        wrong: [deg(Math.asin(d/L)), deg(Math.atan(L/d)), deg(Math.atan(d/L))],
+        explanation: `The base is adjacent to the ground angle and the ladder is the hypotenuse: cos θ = ${d} ÷ ${L} = ${fmt(d/L,4)}. θ = cos⁻¹(${fmt(d/L,4)}) = ${fmt(a,1)}°, about ${Math.round(a)}°.` });
+    }
+    if (t === "ramp_angle") {
+      const r = ri(12,36), R = ri(12,40), a = deg(Math.atan(r/(12*R)));
+      return numQ({ subType: t, d: 1, unit: "deg", value: a,
+        question: `A ramp rises ${r} in over a horizontal run of ${R} ft. What angle does it make with the ground? Round to the nearest tenth of a degree.`,
+        // inches not converted to feet · the percent grade read as degrees ·
+        // run over rise (the angle from vertical)
+        wrong: [deg(Math.atan(r/R)), r/(12*R)*100, deg(Math.atan(12*R/r))],
+        explanation: `Rise = ${r} ÷ 12 = ${fmt(r/12,3)} ft. tan θ = ${fmt(r/12,3)} ÷ ${R} = ${fmt(r/(12*R),4)}. θ = tan⁻¹(${fmt(r/(12*R),4)}) = ${fmt(a,1)}°.` });
+    }
+    if (t === "across_obstacle") {
+      const b = ri(50,300), th = ri(25,70), w = b*Math.tan(rad(th));
+      const obs = pick(["a river","a ravine","a pond","a highway cut","a canal"]);
+      return numQ({ subType: t, d: 0, unit: "ft", value: w,
+        question: `To find the width of ${obs}, you pick a tree directly across from point A, walk ${b} ft along the bank to point B at a right angle to the line A-tree, and measure ${an(th)}° angle at B between A and the tree. How wide is it? Round to the nearest foot.`,
+        // sin, cos and the inverted tangent, each the wrong side pairing
+        wrong: [b*Math.sin(rad(th)), b*Math.cos(rad(th)), b/Math.tan(rad(th))],
+        explanation: `The width is opposite the ${th}° angle and the ${b} ft baseline is adjacent: width = ${b} × tan ${th}° = ${b} × ${fmt(Math.tan(rad(th)),4)} = ${fmt(w,1)}, about ${Math.round(w)} ft.` });
+    }
+    // ladder_reach
+    const L = pick([14,16,20,24,28,32]), th = ri(60,80), h = L*Math.sin(rad(th));
+    return numQ({ subType: "ladder_reach", d: 1, unit: "ft", value: h,
+      question: `${An(L)} ft ladder leans at ${th}° to the ground. How high up the wall does it reach? Round to the nearest tenth of a foot.`,
+      // cos (distance out) · the ladder length itself · L × tan θ
+      wrong: [L*Math.cos(rad(th)), L, L*Math.tan(rad(th))],
+      explanation: `The ladder is the hypotenuse and the height is opposite the ${th}° angle: ${L} × sin ${th}° = ${L} × ${fmt(Math.sin(rad(th)),4)} = ${fmt(h,1)} ft.` });
+  });
+
+  // =====================================================================
+  // M-370  Roof Pitch and Angles  (80C Angles & Slopes)
+  // =====================================================================
+  _addSkill(7, "Roof Pitch and Angles", "Roof Pitch and Angles", 3, {
+    goalProblem: "A roof has a 6 in 12 pitch. What angle does it make with horizontal?",
+    teachingSteps: [
+      { title: "Pitch is rise per 12 inches of run", explanation: "Roofers describe slope as <strong>x in 12</strong>: the roof climbs x inches for every 12 inches it runs level. A 6 in 12 roof rises 6 in per foot of run.", visual: "6 in 12 → rise 6, run 12" },
+      { title: "Pitch is a slope", explanation: "Slope is rise ÷ run, so an x in 12 pitch is the slope <strong>x/12</strong>. Times 100 makes it a percent.", visual: "6/12 = 1/2 = 0.5 = 50%" },
+      { title: "Pitch is not an angle", explanation: "A 6 in 12 roof is <strong>not</strong> 6° and not 50°. The angle comes from the inverse tangent of the slope.", visual: "θ = tan⁻¹(6/12) = 26.6°" },
+      { title: "Back from an angle", explanation: "Going the other way, the rise per 12 in of run is <strong>12 × tan θ</strong>.", visual: "33.7° → 12 × tan 33.7° = 8.0 → 8 in 12" },
+      { title: "Rise and rafter from the run", explanation: "Total rise in inches = run in feet × pitch, because the roof climbs x inches every foot. The rafter length is the hypotenuse of run and rise, or run × √(x² + 144) ÷ 12.", visual: "run 14 ft, 6/12 → rise 84 in = 7 ft<br>rafter = √(14² + 7²) = 15.7 ft" }
+    ],
+    finalAnswer: "26.6°",
+    answerExplanation: "Slope = 6/12 = 0.5. θ = tan⁻¹(0.5) = 26.57°, so about 26.6°.",
+    example: { problem: "A shed roof runs 10 ft at a 4 in 12 pitch. How much does it rise, and how long is the rafter?", steps: [
+      { text: "Rise in inches = run in feet × pitch", math: "10 × 4 = 40 in = 3.33 ft" },
+      { text: "Rafter is the hypotenuse", math: "√(10² + 3.33²) = √111.1" },
+      { text: "Rafter length", math: "10.5 ft" }
+    ]},
+    keyPoints: [
+      "x in 12 means slope x/12",
+      "Percent = x/12 × 100",
+      "Angle = tan⁻¹(x/12); pitch = 12 × tan(angle)",
+      "Total rise (in) = run (ft) × pitch; rafter = √(run² + rise²)"
+    ],
+    mistakes: [
+      { wrong: "A 6 in 12 roof is 6°", why: "Pitch is a ratio, not an angle. tan⁻¹(6/12) = 26.6°." },
+      { wrong: "Angle = tan⁻¹(12/6) = 63.4°", why: "That puts run over rise. Slope is rise over run: 6/12." },
+      { wrong: "Percent = 6%", why: "6/12 = 0.5 = 50%. The pitch number is not the percent." }
+    ],
+    guided: {
+      problem: "A roof has an 8 in 12 pitch. What is its angle to the nearest tenth of a degree?",
+      steps: [
+        { label: "Slope as a decimal (nearest thousandth)", value: "8 ÷ 12 = 0.667" },
+        { label: "Angle", value: "tan⁻¹(8/12) = 33.7" }
+      ],
+      answer: "33.7",
+      answerLabel: "Angle (degrees) =",
+      interactiveSteps: [
+        step("Write the 8 in 12 pitch as a slope fraction in simplest form.", "rise ÷ run = 8/12, then simplify.", "2/3", "", "e.g., 1/2", { "3/2":"That is run over rise. Slope is rise over run." }),
+        step("Angle = tan⁻¹(2/3), to the nearest tenth of a degree.", "Inverse tangent in degree mode.", 33.7, "degrees", "e.g., 26.6", { "8": "The pitch number is not an angle.", "56.3": "That is tan⁻¹(3/2), the angle from vertical." })
+      ]
+    }
+  }, function(){
+    const t = pick(["pitch_to_angle","pitch_to_percent","rise_from_pitch","rafter_from_pitch","angle_to_pitch","pitch_from_rise_run","slope_fraction"]);
+    // Low-slope 2/12 through steep 16/12, the range a framer actually meets.
+    const x = pick([2,3,4,5,6,7,8,9,10,11,12,14,16]);
+    if (t === "pitch_to_angle") {
+      const a = deg(Math.atan(x/12));
+      return numQ({ subType: t, d: 1, unit: "deg", value: a,
+        question: `A roof has ${an(x)} in 12 pitch. What angle does it make with horizontal? Round to the nearest tenth of a degree.`,
+        // pitch read as degrees · run over rise · straight proportion of 90°
+        wrong: [x, deg(Math.atan(12/x)), x/12*90, x/12*100],
+        explanation: `Slope = ${x}/12 = ${fmt(x/12,4)}. θ = tan⁻¹(${fmt(x/12,4)}) = ${fmt(a,1)}°.` });
+    }
+    if (t === "pitch_to_percent") {
+      const p = x/12*100;
+      return numQ({ subType: t, d: 1, unit: "pct", value: p,
+        question: `Express ${an(x)} in 12 roof pitch as a percent slope. Round to the nearest tenth of a percent.`,
+        // pitch number as the percent · run over rise · the angle in degrees
+        wrong: [x, 12/x*100, deg(Math.atan(x/12)), x*12],
+        explanation: `Slope = rise ÷ run = ${x} ÷ 12 = ${fmt(x/12,4)}. × 100 = ${fmt(p,1)}%.` });
+    }
+    if (t === "rise_from_pitch") {
+      const R = ri(6,18) + pick([0,0.5]), rise = R*x;
+      return numQ({ subType: t, d: 1, unit: "in", value: rise,
+        question: `A roof with ${an(x)} in 12 pitch has a horizontal run of ${R} ft. How many inches does it rise over that run?`,
+        // the feet value (R·x/12) reported as inches · run in inches with no
+        // pitch · run × 12 ÷ pitch (ratio upside down)
+        wrong: [R*x/12, R*12, R*12/x],
+        explanation: `It rises ${x} in for every foot of run, so ${R} ft × ${x} in = ${fmt(rise,1)} in (${fmt(rise/12,2)} ft).` });
+    }
+    if (t === "rafter_from_pitch") {
+      const R = ri(8,18), len = R*Math.sqrt(x*x + 144)/12;
+      return numQ({ subType: t, d: 1, unit: "ft", value: len,
+        question: `A rafter covers a horizontal run of ${R} ft on ${an(x)} in 12 roof. How long is the rafter, not counting overhang? Round to the nearest tenth of a foot.`,
+        // the run alone · run + rise · pitch number used as a rise in feet
+        wrong: [R, R + R*x/12, Math.sqrt(R*R + x*x)],
+        explanation: `Rise = ${R} × ${x} = ${R*x} in = ${fmt(R*x/12,3)} ft. Rafter = √(${R}² + ${fmt(R*x/12,3)}²) = ${fmt(len,1)} ft (or ${R} × √(${x}² + 144) ÷ 12).` });
+    }
+    if (t === "angle_to_pitch") {
+      const xa = pick([2,3,4,5,6,7,8,9,10,11,12,14]), a = rnd(deg(Math.atan(xa/12)), 1);
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["in 12","in/12","in","inches"], alsoOk: pitchForm(xa), value: xa,
+        question: `A roof makes ${an(a)}° angle with horizontal. What is its pitch, written as inches of rise per 12 inches of run? Round to the nearest whole inch and give just the rise.`,
+        // straight proportion of 90° · 12 ÷ tan θ (run over rise) · 12 × sin θ ·
+        // the angle divided by 12 as if the pitch were degrees per inch
+        wrong: [a/90*12, 12/Math.tan(rad(a)), 12*Math.sin(rad(a)), a/12],
+        explanation: `Rise per 12 = 12 × tan ${a}° = 12 × ${fmt(Math.tan(rad(a)),4)} = ${fmt(12*Math.tan(rad(a)),2)}, so the pitch is ${xa} in 12.` });
+    }
+    if (t === "pitch_from_rise_run") {
+      const R = ri(6,16), rise = x*R;
+      return numQ({ subType: t, d: 2, unit: "none", nouns: ["in 12","in/12","in","inches"], alsoOk: pitchForm(x), value: x,
+        question: `A roof rises ${rise} in over a horizontal run of ${R} ft. What is its pitch, as inches of rise per 12 inches of run? Give just the rise number.`,
+        // slope as a decimal · run over rise × 12 · total rise in feet
+        wrong: [x/12, 144/x, rise/12],
+        explanation: `Rise per foot of run = ${rise} ÷ ${R} = ${x} in, so the pitch is ${x} in 12.` });
+    }
+    // slope_fraction
+    const xs = pick([2,3,4,5,6,7,8,9,10,11,14,16]), ans = frac(xs,12);
+    return {
+      subType: "slope_fraction",
+      question: `Write the slope of ${an(xs)} in 12 roof as a fraction in simplest form.`,
+      answer: ans,
+      acceptableAnswers: [ans, String(rnd(xs/12, 4))],
+      // run over rise · rise over the full span (24) · rise over 144 (squared run)
+      options: opt4(ans, [frac(12,xs), frac(xs,24), frac(xs,144), frac(xs+12,12)]),
+      explanation: `Slope = rise ÷ run = ${xs}/12` + (ans === `${xs}/12` ? `, already in simplest form.` : `, which simplifies to ${ans}.`)
+    };
+  });
+
+  // =====================================================================
+  // M-371  Rise, Run and Grade  (81C Rise, Run & Grade)
+  // =====================================================================
+  _addSkill(7, "Rise, Run and Grade", "Rise, Run and Grade", 3, {
+    goalProblem: "A driveway climbs 4.5 ft over 60 ft of horizontal distance. What is its percent grade?",
+    teachingSteps: [
+      { title: "Grade is slope as a percent", explanation: "<strong>Percent grade = rise ÷ run × 100</strong>. Rise and run must be in the same unit, and run is the <em>horizontal</em> distance.", visual: "4.5 ÷ 60 = 0.075 → 7.5%" },
+      { title: "Elevation change from a grade", explanation: "Turn the percent back into a decimal and multiply by the horizontal distance: <strong>rise = grade ÷ 100 × run</strong>.", visual: "2% over 350 ft → 0.02 × 350 = 7 ft" },
+      { title: "Drains slope in inches per foot", explanation: "Plumbing code asks for <strong>¼ in per foot</strong> on small drain lines (⅛ in per foot on larger ones). Total drop = length in feet × the rate.", visual: "38 ft × ¼ in = 9.5 in = 9 1/2 in" },
+      { title: "ADA ramps are 1:12", explanation: "A ramp may rise at most <strong>1 unit for every 12 units of run</strong>. Every inch of rise needs 12 in — one foot — of run.", visual: "rise 24 in → run 24 × 12 = 288 in = 24 ft" },
+      { title: "Stairs split the rise evenly", explanation: "Divide the total rise by the largest riser allowed (7¾ in in residential code) and <strong>round up</strong> to get the number of risers. Then every riser is total rise ÷ risers. There is one fewer tread than risers.", visual: "105 in ÷ 7.75 = 13.5 → 14 risers<br>105 ÷ 14 = 7.5 in each · 13 treads" }
+    ],
+    finalAnswer: "7.5%",
+    answerExplanation: "Rise ÷ run = 4.5 ÷ 60 = 0.075, and 0.075 × 100 = 7.5%.",
+    example: { problem: "A 42 ft drain line slopes ¼ in per foot. How much lower is the far end?", steps: [
+      { text: "Total drop = length × rate", math: "42 × 1/4" },
+      { text: "Multiply", math: "42/4 = 10.5 in" },
+      { text: "As a tape reads", math: "10 1/2 in" }
+    ]},
+    keyPoints: [
+      "Grade % = rise ÷ horizontal run × 100, same units top and bottom",
+      "Rise = grade % ÷ 100 × run",
+      "Drain drop = feet of pipe × inches per foot",
+      "ADA 1:12 — each inch of rise needs one foot of run",
+      "Risers = total rise ÷ max riser, rounded UP; treads = risers − 1"
+    ],
+    mistakes: [
+      { wrong: "4.5 ÷ 60 = 0.075%", why: "0.075 is the slope as a decimal. Multiply by 100 for percent: 7.5%." },
+      { wrong: "2% grade over 350 ft rises 700 ft", why: "2% is 0.02, not 2. Rise = 0.02 × 350 = 7 ft." },
+      { wrong: "Rounding 13.5 risers down to 13", why: "13 risers would each be 105 ÷ 13 = 8.1 in, taller than code allows. Always round risers up." }
+    ],
+    guided: {
+      problem: "A stair has a total rise of 100 in and the maximum riser height is 7.75 in. How many risers does it need, and how tall is each to the nearest hundredth of an inch?",
+      steps: [
+        { label: "Total rise ÷ max riser", value: "100 ÷ 7.75 = 12.9" },
+        { label: "Risers, rounded up", value: "13" },
+        { label: "Height of each riser", value: "100 ÷ 13 = 7.69" }
+      ],
+      answer: "7.69",
+      answerLabel: "Each riser (in) =",
+      interactiveSteps: [
+        step("Divide the total rise by the maximum riser: 100 ÷ 7.75, to the nearest tenth.", "100 ÷ 7.75", 12.9, "", "e.g., 12.5"),
+        step("How many risers? (Never taller than 7.75 in.)", "Round 12.9 UP to a whole number.", 13, "risers", "Enter a whole number", { "12": "12 risers would each be 8.33 in — too tall. Round up." }),
+        step("Height of each riser: 100 ÷ 13, to the nearest hundredth of an inch.", "100 ÷ 13", 7.69, "in", "e.g., 7.25", { "7.75": "7.75 in is the maximum, not the actual height. Divide the total rise evenly: 100 ÷ 13." })
+      ]
+    }
+  }, function(){
+    const t = pick(["percent_grade","elevation_change","drain_drop","ada_ramp","stair_risers","stair_run","slope_per_foot"]);
+    if (t === "percent_grade") {
+      const run = ri(5,50)*10, rise = ri(2, Math.max(3, Math.floor(run/8)));
+      const what = pick(["driveway","access road","trail","parking lot","swale"]);
+      return numQ({ subType: t, d: 1, unit: "pct", value: rise/run*100,
+        question: `${An(what)} rises ${rise} ft over a horizontal distance of ${run} ft. What is its percent grade? Round to the nearest tenth of a percent.`,
+        // decimal slope moved one place instead of two · run over rise ·
+        // divided by the run plus the rise
+        wrong: [rise/run*10, run/rise, rise/(run+rise)*100, rise/run*1000],
+        explanation: `Grade = rise ÷ run × 100 = ${rise} ÷ ${run} × 100 = ${fmt(rise/run*100,1)}%.` });
+    }
+    if (t === "elevation_change") {
+      const gr = pick([1.5,2,2.5,3,4,5,6,8]), D = ri(10,150)*10, ch = gr*D/100;
+      return numQ({ subType: t, d: 1, unit: "ft", value: ch,
+        question: `A road climbs at ${an(gr)}% grade for ${D} ft of horizontal distance. How many feet does it gain in elevation? Round to the nearest tenth of a foot.`,
+        // percent used as a decimal moved one place · distance ÷ grade ·
+        // percent never converted (×gr)
+        wrong: [gr*D/10, D/gr, gr*D],
+        explanation: `${gr}% = ${gr/100}. Rise = ${gr/100} × ${D} = ${fmt(ch,1)} ft.` });
+    }
+    if (t === "drain_drop") {
+      const L = ri(8,60), rate = pick([0.25,0.25,0.125]), drop = L*rate;
+      const rs = rate === 0.25 ? "1/4" : "1/8";
+      return numQ({ subType: t, d: 3, unit: "in", value: drop, target: drop, step: 0.25,
+        show: v => mixed(v, 8),
+        question: `${An(L)} ft drain line is laid at ${rs} in per foot. How many inches lower is the far end? Give your answer in inches as a mixed number or decimal.`,
+        // the other code rate · the drop converted to feet but read as inches ·
+        // multiplied by the 4 (or 8) instead of by 1/4 (or 1/8)
+        wrong: [L*(rate === 0.25 ? 0.125 : 0.25), drop/12, L/rate],
+        explanation: `Drop = ${L} ft × ${rs} in per ft = ${L}/${rate === 0.25 ? 4 : 8} = ${fmt(drop,3)} in, which is ${mixed(drop,8)} in.` });
+    }
+    if (t === "ada_ramp") {
+      if (pick([true,false])) {
+        const r = ri(6,30) + pick([0,0,0.5]);
+        return numQ({ subType: t, d: 1, unit: "ft", value: r,
+          question: `An entrance is ${r} in above the sidewalk. At the ADA maximum slope of 1:12, what is the shortest horizontal run the ramp can have, in feet?`,
+          // the run in inches reported as feet · rise ÷ 12 · rise × 12 ÷ 10
+          wrong: [r*12, r/12, r*12/10],
+          explanation: `1:12 means 12 in of run for each inch of rise: ${r} × 12 = ${fmt(r*12,1)} in = ${fmt(r,1)} ft.` });
+      }
+      const R = ri(8,40);
+      return numQ({ subType: t, d: 1, unit: "in", value: R,
+        question: `There is room for a ramp with ${R} ft of horizontal run. At the ADA maximum slope of 1:12, how many inches of rise can it climb?`,
+        // run in inches with no division · run ÷ 12 (feet treated as inches) ·
+        // run × 12 ÷ 10
+        wrong: [R*12, R/12, R*12/10],
+        explanation: `${R} ft = ${R*12} in of run. At 1:12 the rise is ${R*12} ÷ 12 = ${R} in.` });
+    }
+    if (t === "stair_risers") {
+      const TR = ri(80,120) + pick([0,0.25,0.5,0.75]);
+      const n = up(TR/7.75), h = TR/n;
+      if (pick([true,false])) {
+        return numQ({ subType: t, d: 0, unit: "none", nouns: ["risers","riser"], value: n,
+          question: `A stair has a total rise of ${TR} in. The maximum riser height allowed is 7.75 in. What is the fewest risers it can have?`,
+          // rounded down (risers too tall) · divided by a 7 in riser ·
+          // divided by 8 in, a riser taller than code allows
+          wrong: [down(TR/7.75), up(TR/7), up(TR/8)],
+          explanation: `${TR} ÷ 7.75 = ${fmt(TR/7.75,2)}. Rounding down would make each riser taller than 7.75 in, so round up: ${n} risers.` });
+      }
+      return numQ({ subType: t, d: 2, unit: "in", value: h,
+        question: `A stair with a total rise of ${TR} in uses the fewest risers that keep each one at or under 7.75 in. How tall is each riser? Round to the nearest hundredth of an inch.`,
+        // one riser too few (over code) · one riser too many · the code
+        // maximum taken as the answer
+        wrong: [TR/(n-1), TR/(n+1), 7.75],
+        explanation: `${TR} ÷ 7.75 = ${fmt(TR/7.75,2)}, rounded up to ${n} risers. Each riser = ${TR} ÷ ${n} = ${fmt(h,2)} in.` });
+    }
+    if (t === "stair_run") {
+      const n = ri(8,16), tr = pick([10,10.25,10.5,11]), run = (n-1)*tr;
+      return numQ({ subType: t, d: 2, unit: "in", value: run,
+        question: `A stair has ${n} risers and every tread is ${tr} in deep. What is the total horizontal run of the stair, in inches?`,
+        // a tread per riser (one too many) · two fewer · riser count × 12
+        wrong: [n*tr, (n-2)*tr, (n+1)*tr],
+        explanation: `There is one fewer tread than risers: ${n} − 1 = ${n-1} treads. ${n-1} × ${tr} = ${fmt(run,2)} in.` });
+    }
+    // slope_per_foot
+    const L = ri(10,60), Dr = ri(5,40)/4, sp = Dr/L;
+    return numQ({ subType: "slope_per_foot", d: 2, unit: "inft", value: sp,
+      question: `A drain pipe drops ${Dr} in over ${an(L)} ft run. What is its slope in inches per foot? Round to the nearest hundredth.`,
+      // run over drop · drop × length · slope as a percent of inches
+      wrong: [L/Dr, Dr/L*12, Dr/L*100],
+      explanation: `Slope = drop ÷ run = ${Dr} in ÷ ${L} ft = ${fmt(sp,4)} in per ft, about ${fmt(sp,2)} in/ft.` });
+  });
+
+  // =====================================================================
+  // M-372  Irregular Shapes  (83C Irregular Shapes)
+  // =====================================================================
+  _addSkill(7, "Irregular Shapes", "Irregular Shapes", 3, {
+    goalProblem: "An L-shaped room is 24 ft × 18 ft overall with an 8 ft × 6 ft rectangle missing from one corner. What is its floor area?",
+    teachingSteps: [
+      { title: "Cut it into shapes you know", explanation: "Any straight-sided outline can be split into <strong>rectangles, triangles and trapezoids</strong>. Find each area and add.", visual: "L-shape = big rectangle + small rectangle" },
+      { title: "Or take away what is missing", explanation: "Often it is faster to draw the <strong>overall rectangle</strong> and subtract the notch.", visual: "24 × 18 − 8 × 6 = 432 − 48 = 384 sq ft" },
+      { title: "Triangles and trapezoids", explanation: "Triangle: <strong>½ × base × height</strong>. Trapezoid (two parallel sides a and b, distance h apart): <strong>(a + b) ÷ 2 × h</strong> — the average width times the depth.", visual: "lot with fronts 80 ft and 110 ft, 150 ft deep:<br>(80 + 110) ÷ 2 × 150 = 14,250 sq ft" },
+      { title: "A curved end is a half circle", explanation: "A rounded end as wide as the rectangle is a <strong>semicircle</strong> with radius = width ÷ 2. Its area is ½ π r².", visual: "12 ft wide → r = 6 → ½ × π × 36 = 56.5 sq ft" },
+      { title: "Offsets for a wandering edge", explanation: "For a curved boundary, lay a straight <strong>baseline</strong>, measure <strong>offsets</strong> to the edge at equal spacing s, and treat each strip as a trapezoid: <strong>area = s × (first ÷ 2 + middle offsets + last ÷ 2)</strong>.", visual: "s = 10, offsets 12, 15, 18, 14<br>10 × (6 + 15 + 18 + 7) = 460 sq ft" },
+      { title: "Average width for a rough estimate", explanation: "Measure the width in several places, average them, and multiply by the length. It is quick and close enough for ordering mulch or sod.", visual: "widths 14, 18, 16 ft → 16 ft avg × 40 ft = 640 sq ft" }
+    ],
+    finalAnswer: "384 sq ft",
+    answerExplanation: "Overall rectangle 24 × 18 = 432 sq ft, minus the 8 × 6 = 48 sq ft notch: 384 sq ft.",
+    example: { problem: "A patio is a 16 ft × 10 ft rectangle with a semicircle on one 10 ft end. What is its area?", steps: [
+      { text: "Rectangle", math: "16 × 10 = 160 sq ft" },
+      { text: "Semicircle, r = 5", math: "½ × π × 5² = 39.3 sq ft" },
+      { text: "Add", math: "160 + 39.3 = 199.3 sq ft" }
+    ]},
+    keyPoints: [
+      "Split into rectangles, triangles, trapezoids and half circles — or subtract a notch",
+      "Trapezoid = average of the parallel sides × the distance between them",
+      "Semicircle = ½ π r², with r = half the straight edge",
+      "Offsets: s × (half the end offsets + all the middle ones)"
+    ],
+    mistakes: [
+      { wrong: "Using the overall 24 × 18 for an L-shaped room", why: "The notch is not floor. Subtract it: 432 − 48 = 384." },
+      { wrong: "Triangle area = base × height", why: "A triangle is half of a rectangle: ½ × base × height." },
+      { wrong: "Using the full width as the radius of the curved end", why: "The width is the diameter. r = width ÷ 2, and a half circle is ½ π r²." }
+    ],
+    guided: {
+      problem: "Offsets are measured every 10 ft along a 40 ft baseline to a curved garden edge: 12 ft, 15 ft, 18 ft, 16 ft and 10 ft. Estimate the area with the offsets (trapezoid) rule.",
+      steps: [
+        { label: "Half of the two end offsets", value: "6 + 5 = 11" },
+        { label: "Sum of the middle offsets", value: "15 + 18 + 16 = 49" },
+        { label: "Multiply by the spacing", value: "10 × (11 + 49) = 600" }
+      ],
+      answer: "600",
+      answerLabel: "Area (sq ft) =",
+      interactiveSteps: [
+        step("Half of each end offset, added together: 12 ÷ 2 + 10 ÷ 2 = ?", "End offsets count half because each touches only one strip.", 11, "", "Enter a number", { "22": "The end offsets count HALF. 6 + 5 = 11." }),
+        step("Add the three middle offsets.", "15 + 18 + 16", 49, "", "Enter a number"),
+        step("Area = spacing × (11 + 49), in square feet.", "10 × 60", 600, "sq ft", "Enter square feet", { "710": "That used every offset at full value. The ends count half: 10 × (11 + 49) = 600." })
+      ]
+    }
+  }, function(){
+    const t = pick(["l_shape","trapezoid_lot","rect_triangle","semicircle_end","offsets","average_width"]);
+    if (t === "l_shape") {
+      const A = ri(20,40), B = ri(16,30), c = ri(6, Math.floor(A/2)), d = ri(5, Math.floor(B/2));
+      return numQ({ subType: t, d: 0, unit: "sqft", value: A*B - c*d,
+        question: `An L-shaped room measures ${A} ft × ${B} ft overall, with ${an(c)} ft × ${d} ft rectangle missing from one corner. What is its floor area in square feet?`,
+        // the notch never removed · the notch added · only the leftover small
+        // rectangle (A − c)(B − d)
+        wrong: [A*B, A*B + c*d, (A-c)*(B-d), A*B - c - d],
+        explanation: `Overall ${A} × ${B} = ${A*B} sq ft. Notch ${c} × ${d} = ${c*d} sq ft. Floor = ${A*B} − ${c*d} = ${A*B - c*d} sq ft.` });
+    }
+    if (t === "trapezoid_lot") {
+      const a = ri(40,120), b = a + ri(10,80), h = ri(60,200);
+      return numQ({ subType: t, d: 1, unit: "sqft", value: (a+b)/2*h,
+        question: `A lot has two parallel property lines, ${a} ft and ${b} ft long, that are ${h} ft apart. The other two sides are slanted. What is the lot's area in square feet?`,
+        // forgot to halve the sum · used only the longer side · used only the shorter side
+        wrong: [(a+b)*h, b*h, a*h],
+        explanation: `A trapezoid: average width × depth = (${a} + ${b}) ÷ 2 × ${h} = ${(a+b)/2} × ${h} = ${fmt((a+b)/2*h,1)} sq ft.` });
+    }
+    if (t === "rect_triangle") {
+      const L = ri(10,24), W = ri(8,16), tt = ri(4,10), area = L*W + W*tt/2;
+      return numQ({ subType: t, d: 1, unit: "sqft", value: area,
+        question: `A patio is ${an(L)} ft × ${W} ft rectangle with a triangle added on one ${W} ft end. The triangle's point is ${tt} ft beyond that end. What is the total area in square feet?`,
+        // triangle without the ½ · triangle left out · one big rectangle (L + t) × W
+        wrong: [L*W + W*tt, L*W, (L+tt)*W],
+        explanation: `Rectangle ${L} × ${W} = ${L*W} sq ft. Triangle ½ × ${W} × ${tt} = ${W*tt/2} sq ft. Total ${fmt(area,1)} sq ft.` });
+    }
+    if (t === "semicircle_end") {
+      const L = ri(12,30), W = pick([6,8,10,12,14,16]), r = W/2, semi = Math.PI*r*r/2;
+      const what = pick(["patio","pool deck","garden bed","stage","driveway turnaround"]);
+      return numQ({ subType: t, d: 1, unit: "sqft", value: L*W + semi,
+        question: `${An(what)} is ${an(L)} ft × ${W} ft rectangle with a semicircle on one ${W} ft end. What is its total area? Round to the nearest tenth of a square foot.`,
+        // full circle instead of half · width used as the radius · curve left out
+        wrong: [L*W + 2*semi, L*W + 4*semi, L*W],
+        explanation: `Rectangle ${L} × ${W} = ${L*W} sq ft. Semicircle: r = ${r} ft, ½ × π × ${r}² = ${fmt(semi,2)} sq ft. Total ${fmt(L*W + semi,1)} sq ft.` });
+    }
+    if (t === "offsets") {
+      const s = pick([5,10,20,25]), n = ri(4,6), y = [];
+      for (let i = 0; i <= n; i++) y.push(ri(8,40));
+      const ends = (y[0] + y[n])/2, mid = y.slice(1,n).reduce((p,q)=>p+q,0), all = y.reduce((p,q)=>p+q,0);
+      const area = s*(ends + mid);
+      return numQ({ subType: t, d: 1, unit: "sqft", value: area,
+        question: `Offsets from a straight ${s*n} ft baseline to a curved edge are measured every ${s} ft: ${y.join(" ft, ")} ft. Estimate the area between the baseline and the edge with the offsets (trapezoid) rule, in square feet.`,
+        // every offset at full weight · the end offsets dropped entirely ·
+        // the full-weight sum halved
+        wrong: [s*all, s*mid, s*all/2],
+        explanation: `Ends count half: (${y[0]} + ${y[n]}) ÷ 2 = ${ends}. Middle offsets sum to ${mid}. Area = ${s} × (${ends} + ${mid}) = ${fmt(area,1)} sq ft.` });
+    }
+    // average_width
+    const L = ri(30,90), k = ri(3,5), w = [];
+    for (let i = 0; i < k; i++) w.push(ri(10,30));
+    const sum = w.reduce((p,q)=>p+q,0), area = sum/k*L;
+    return numQ({ subType: "average_width", d: 0, unit: "sqft", value: area,
+      question: `${An(L)} ft long strip of lawn has a wavy edge. Its width measured at ${k} evenly spaced places is ${w.join(" ft, ")} ft. Estimate its area from the average width, to the nearest square foot.`,
+      // widest place only · narrowest place only · widths added but never averaged
+      wrong: [Math.max(...w)*L, Math.min(...w)*L, sum*L],
+      explanation: `Average width = (${w.join(" + ")}) ÷ ${k} = ${fmt(sum/k,3)} ft. Area ≈ ${fmt(sum/k,3)} × ${L} = ${fmt(area,0)} sq ft.` });
+  });
+
+  // =====================================================================
+  // M-373  Coordinate Layout  (84C Coordinate Layout)
+  // =====================================================================
+  _addSkill(7, "Coordinate Layout", "Coordinate Layout", 3, {
+    goalProblem: "A building's southwest corner is staked 15 ft east and 20 ft north of the datum. The building is 40 ft east-west and 30 ft north-south. Where is its northeast corner?",
+    teachingSteps: [
+      { title: "Everything is measured from a datum", explanation: "A site plan picks one fixed point — the <strong>datum</strong> or control point — as (0, 0). Positions are written as <strong>(east, north)</strong> in feet, exactly like (x, y) on a graph.", visual: "15 ft east, 20 ft north → (15, 20)" },
+      { title: "Corners come from adding dimensions", explanation: "A building square to the grid has corners you get by adding its length to the east coordinate and its width to the north coordinate.", visual: "SW (15, 20) · SE (55, 20) · NE (55, 50) · NW (15, 50)" },
+      { title: "Offsets move a point", explanation: "Moving east adds to x, west subtracts; north adds to y, south subtracts.", visual: "(42, 18) moved 6 ft west and 9 ft north → (36, 27)" },
+      { title: "Distance between two stakes", explanation: "The east and north differences are the legs of a right triangle, so the straight-line distance is <strong>√(Δx² + Δy²)</strong> — the distance formula. Diagonals between opposite corners check that a layout is square.", visual: "(15, 20) to (55, 50): Δx = 40, Δy = 30 → 50 ft" },
+      { title: "Elevations from a benchmark", explanation: "Heights work the same way from a <strong>benchmark</strong> of known elevation. With a level: height of instrument = benchmark + backsight; a point's elevation = height of instrument − foresight.", visual: "BM 100.00 + BS 4.25 = 104.25<br>104.25 − FS 6.10 = 98.15 ft" }
+    ],
+    finalAnswer: "(55, 50)",
+    answerExplanation: "Add the 40 ft length to the east coordinate and the 30 ft width to the north coordinate: (15 + 40, 20 + 30) = (55, 50).",
+    example: { problem: "Two pier centers are at (12, 8) and (36, 26). How far apart are they?", steps: [
+      { text: "East difference", math: "36 − 12 = 24 ft" },
+      { text: "North difference", math: "26 − 8 = 18 ft" },
+      { text: "Distance", math: "√(24² + 18²) = √900 = 30 ft" }
+    ]},
+    keyPoints: [
+      "(east, north) from the datum, like (x, y)",
+      "East and north add; west and south subtract",
+      "Distance between stakes = √(Δx² + Δy²)",
+      "Elevation = benchmark + backsight − foresight"
+    ],
+    mistakes: [
+      { wrong: "Northeast corner at (15 + 30, 20 + 40)", why: "The east-west length goes on the east (x) coordinate: (15 + 40, 20 + 30)." },
+      { wrong: "Distance = Δx + Δy", why: "That walks around two sides of the triangle. The straight line is √(Δx² + Δy²)." },
+      { wrong: "Elevation = benchmark − backsight + foresight", why: "A backsight reading is added to get the instrument height; a foresight is subtracted from it." }
+    ],
+    guided: {
+      problem: "Stake A is at (10, 14) and stake B is at (34, 21), in feet from the datum. How far apart are they?",
+      steps: [
+        { label: "East difference Δx", value: "34 − 10 = 24" },
+        { label: "North difference Δy", value: "21 − 14 = 7" },
+        { label: "Distance", value: "√(24² + 7²) = √625 = 25" }
+      ],
+      answer: "25",
+      answerLabel: "Distance (ft) =",
+      interactiveSteps: [
+        step("East difference: 34 − 10 = ?", "Subtract the x-coordinates.", 24, "ft", "Enter feet"),
+        step("North difference: 21 − 14 = ?", "Subtract the y-coordinates.", 7, "ft", "Enter feet"),
+        step("Straight-line distance √(24² + 7²), in feet.", "576 + 49 = 625", 25, "ft", "Enter feet", { "31": "Adding 24 + 7 walks along the grid. The straight line is √(24² + 7²)." })
+      ]
+    }
+  }, function(){
+    const t = pick(["corner_coords","offset_point","stake_distance","diagonal_check","benchmark_elev","midpoint"]);
+    if (t === "corner_coords") {
+      const x0 = ri(10,40), y0 = ri(10,40), L = ri(24,60), W = ri(20,40);
+      const c = pick(["northeast","northwest","southeast"]);
+      const ans = c === "northeast" ? [x0+L, y0+W] : c === "northwest" ? [x0, y0+W] : [x0+L, y0];
+      // L and W swapped onto the wrong axes · dimensions without the corner's
+      // offset from the datum · moved the wrong way on one axis
+      const wrong = c === "northeast" ? [[x0+W, y0+L], [L, W], [x0+L, y0-W]]
+                  : c === "northwest" ? [[x0+W, y0], [x0, W], [x0-L, y0+W]]
+                  :                     [[x0, y0+L], [L, y0], [x0+L, y0-W]];
+      return ptQ({ subType: t, x: ans[0], y: ans[1], wrong,
+        question: `On a site plan, the southwest corner of a building is ${x0} ft east and ${y0} ft north of the datum, so it is at (${x0}, ${y0}). The building is ${L} ft east-west and ${W} ft north-south, square to the grid. What are the coordinates of its ${c} corner?`,
+        explanation: `${c === "southeast" ? "" : `North adds the ${W} ft width: y = ${y0} + ${W} = ${y0+W}. `}${c === "northwest" ? "" : `East adds the ${L} ft length: x = ${x0} + ${L} = ${x0+L}. `}The ${c} corner is ${pt(ans[0], ans[1])}.` });
+    }
+    if (t === "offset_point") {
+      const x = ri(30,90), y = ri(30,90), dx = ri(3,25), dy = ri(3,25);
+      const east = pick([true,false]), north = pick([true,false]);
+      const nx = east ? x + dx : x - dx, ny = north ? y + dy : y - dy;
+      return ptQ({ subType: t, x: nx, y: ny,
+        // both directions reversed · distances swapped between the axes ·
+        // only the east-west direction reversed
+        wrong: [[east ? x - dx : x + dx, north ? y - dy : y + dy],
+                [east ? x + dy : x - dy, north ? y + dx : y - dx],
+                [east ? x - dx : x + dx, ny]],
+        question: `A control stake is at (${x}, ${y}), in feet east and north of the datum. A new stake goes ${dx} ft ${east ? "east" : "west"} and ${dy} ft ${north ? "north" : "south"} of it. What are the new stake's coordinates?`,
+        explanation: `${east ? "East adds" : "West subtracts"}: x = ${x} ${east ? "+" : "−"} ${dx} = ${nx}. ${north ? "North adds" : "South subtracts"}: y = ${y} ${north ? "+" : "−"} ${dy} = ${ny}. New stake ${pt(nx, ny)}.` });
+    }
+    if (t === "stake_distance") {
+      let x1 = ri(0,60), y1 = ri(0,60), x2 = ri(0,90), y2 = ri(0,90);
+      if (Math.abs(x2-x1) < 3) x2 = x1 + ri(3,30);
+      if (Math.abs(y2-y1) < 3) y2 = y1 + ri(3,30);
+      const dx = Math.abs(x2-x1), dy = Math.abs(y2-y1), dist = Math.sqrt(dx*dx + dy*dy);
+      return numQ({ subType: t, d: 1, unit: "ft", value: dist,
+        question: `Layout point A is at (${x1}, ${y1}) and point B is at (${x2}, ${y2}), in feet east and north of the datum. What is the straight-line distance between them? Round to the nearest tenth of a foot.`,
+        // walked the grid (Δx + Δy) · never took the root · subtracted the squares
+        wrong: [dx + dy, dx*dx + dy*dy, Math.sqrt(Math.abs(dx*dx - dy*dy))],
+        explanation: `Δx = ${dx} ft, Δy = ${dy} ft. Distance = √(${dx}² + ${dy}²) = √${dx*dx + dy*dy} = ${fmt(dist,1)} ft.` });
+    }
+    if (t === "diagonal_check") {
+      const a = ri(5,30), b = ri(5,30), L = ri(24,70), W = ri(18,50), c = a + L, d = b + W;
+      const dgl = Math.sqrt(L*L + W*W);
+      return numQ({ subType: t, d: 1, unit: "ft", value: dgl,
+        question: `A foundation is laid out with corners at (${a}, ${b}), (${c}, ${b}), (${c}, ${d}) and (${a}, ${d}), in feet from the datum. What should each diagonal measure if the layout is square? Round to the nearest tenth of a foot.`,
+        // added the side lengths · used a corner's coordinates as if they were
+        // the side lengths · forgot the square root
+        wrong: [L + W, Math.sqrt(c*c + d*d), L*L + W*W],
+        explanation: `Sides: ${c} − ${a} = ${L} ft and ${d} − ${b} = ${W} ft. Diagonal = √(${L}² + ${W}²) = √${L*L + W*W} = ${fmt(dgl,1)} ft.` });
+    }
+    if (t === "benchmark_elev") {
+      const BM = ri(9000,60000)/100, BS = ri(200,800)/100, FS = ri(150,1100)/100;
+      const el = BM + BS - FS;
+      return numQ({ subType: t, d: 2, unit: "ft", value: el,
+        question: `A benchmark has an elevation of ${BM.toFixed(2)} ft. The level rod reads ${BS.toFixed(2)} ft on the benchmark (backsight) and ${FS.toFixed(2)} ft on a footing form (foresight). What is the elevation of the form? Round to the nearest hundredth of a foot.`,
+        // signs reversed · both readings added · both readings subtracted
+        wrong: [BM - BS + FS, BM + BS + FS, BM - BS - FS],
+        explanation: `Height of instrument = ${BM.toFixed(2)} + ${BS.toFixed(2)} = ${(BM+BS).toFixed(2)} ft. Form = ${(BM+BS).toFixed(2)} − ${FS.toFixed(2)} = ${el.toFixed(2)} ft.` });
+    }
+    // midpoint
+    const x1 = ri(0,40)*2, y1 = ri(0,40)*2, x2 = x1 + ri(5,40), y2 = y1 + ri(5,40);
+    const mx = (x1+x2)/2, my = (y1+y2)/2;
+    return ptQ({ subType: "midpoint", x: mx, y: my,
+      // added but never halved · halved the differences (distance from A,
+      // not a position) · coordinates swapped
+      wrong: [[x1+x2, y1+y2], [(x2-x1)/2, (y2-y1)/2], [my, mx]],
+      question: `A post goes exactly halfway between corner stakes at (${x1}, ${y1}) and (${x2}, ${y2}), in feet from the datum. What are the post's coordinates?`,
+      explanation: `Average each coordinate: x = (${x1} + ${x2}) ÷ 2 = ${mx}, y = (${y1} + ${y2}) ÷ 2 = ${my}. The post is at ${pt(mx, my)}.` });
+  });
+
+  // =====================================================================
+  // M-374  Material Estimation  (85C Material Estimation)
+  // =====================================================================
+  _addSkill(7, "Material Estimation", "Material Estimation", 3, {
+    goalProblem: "A wall is 14 ft long. How many studs does it need at 16 in on center, with a stud at each end?",
+    teachingSteps: [
+      { title: "You buy whole units", explanation: "Suppliers sell whole sheets, boxes, bags and gallons. Work out the exact amount, then <strong>round UP</strong> — 11.2 sheets means buying 12, even though 11.2 would round to 11.", visual: "11.2 sheets → 12 sheets" },
+      { title: "Studs on center", explanation: "\"16 in on center\" (o.c.) means the centers of neighboring studs are 16 in apart. Divide the wall length in inches by 16 to count the <strong>spaces</strong>, round up, then add <strong>one</strong> for the stud that closes the last space.", visual: "14 ft = 168 in ÷ 16 = 10.5 → 11 spaces → 12 studs" },
+      { title: "Sheets cover area", explanation: "A 4 ft × 8 ft sheet of drywall or plywood covers <strong>32 sq ft</strong> (a 4 × 12 sheet covers 48). Divide the area by the sheet area and round up.", visual: "400 sq ft ÷ 32 = 12.5 → 13 sheets" },
+      { title: "Boxes, gallons and bags", explanation: "Same move every time: <strong>amount needed ÷ amount per unit</strong>, then round up. Paint: area × coats ÷ coverage per gallon. Concrete: cubic feet ÷ bag yield (an 80 lb bag makes about 0.6 cu ft).", visual: "2 coats × 380 sq ft ÷ 350 = 2.17 → 3 gallons" },
+      { title: "Block walls", explanation: "A standard 8 in × 16 in concrete block face is 128 sq in, so it takes <strong>1.125 blocks per square foot</strong> of wall.", visual: "40 ft × 6 ft = 240 sq ft × 1.125 = 270 blocks" }
+    ],
+    finalAnswer: "12 studs",
+    answerExplanation: "168 in ÷ 16 in = 10.5 spaces, rounded up to 11. Eleven spaces need 11 + 1 = 12 studs.",
+    example: { problem: "A 12 ft × 15 ft room gets flooring that comes 20 sq ft to a box. How many boxes?", steps: [
+      { text: "Floor area", math: "12 × 15 = 180 sq ft" },
+      { text: "Divide by coverage", math: "180 ÷ 20 = 9 boxes exactly" },
+      { text: "Exact — no rounding needed", math: "9 boxes" }
+    ]},
+    keyPoints: [
+      "Exact amount first, then round UP to whole units",
+      "Studs = (length in inches ÷ spacing, rounded up) + 1",
+      "4 × 8 sheet = 32 sq ft",
+      "Paint gallons = area × coats ÷ coverage; concrete bags = cu ft ÷ bag yield",
+      "1.125 blocks per square foot of block wall"
+    ],
+    mistakes: [
+      { wrong: "12.5 sheets rounds to 12", why: "Twelve sheets leave a gap. Material always rounds up: 13 sheets." },
+      { wrong: "14 ft wall at 16 in o.c. needs 168 ÷ 16 = 10.5 → 11 studs", why: "That counts spaces. Round the spaces up (11) and add the closing stud: 12." },
+      { wrong: "Painting 2 coats with gallons for one", why: "Each coat covers the whole area again. Multiply the area by the number of coats first." }
+    ],
+    guided: {
+      problem: "A 20 ft × 12 ft room has 8 ft walls. Ignoring openings and waste, how many 4 ft × 8 ft drywall sheets cover the walls?",
+      steps: [
+        { label: "Perimeter", value: "2 × (20 + 12) = 64" },
+        { label: "Wall area", value: "64 × 8 = 512" },
+        { label: "Sheets", value: "512 ÷ 32 = 16" }
+      ],
+      answer: "16",
+      answerLabel: "Sheets =",
+      interactiveSteps: [
+        step("Perimeter of the room, in feet?", "2 × (20 + 12)", 64, "ft", "Enter feet"),
+        step("Wall area = perimeter × 8 ft, in square feet?", "64 × 8", 512, "sq ft", "Enter square feet"),
+        step("Area of one 4 ft × 8 ft sheet, in square feet?", "4 × 8", 32, "sq ft", "Enter square feet"),
+        step("Sheets needed (whole sheets): 512 ÷ 32 = ?", "Divide, then round up if it is not exact.", 16, "sheets", "Enter a whole number", { "64": "That divided by 8, the sheet length. Divide by the sheet AREA, 32 sq ft." })
+      ]
+    }
+  }, function(){
+    const t = pick(["studs_oc","drywall_sheets","flooring_boxes","concrete_bags","paint_gallons","cmu_blocks"]);
+    if (t === "studs_oc") {
+      const L = ri(8,40), s = pick([16,16,24]), spaces = up(12*L/s), n = spaces + 1;
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["studs","stud"], value: n,
+        question: `${An(L)} ft wall is framed with studs ${s} in on center, with a stud at each end. How many studs does it need (not counting extras for corners or openings)?`,
+        // counted spaces, not studs · one stud per foot · spaces rounded down
+        // before adding the end stud
+        wrong: [spaces, L, down(12*L/s) + 1, up(L*s/12)],
+        explanation: `${L} ft = ${12*L} in. ${12*L} ÷ ${s} = ${fmt(12*L/s,2)} spaces, rounded up to ${spaces}. Add the closing stud: ${spaces} + 1 = ${n} studs.` });
+    }
+    if (t === "drywall_sheets") {
+      if (pick([true,false])) {
+        const L = ri(10,20), W = ri(10,16), H = pick([8,9]), area = 2*(L+W)*H, n = up(area/32);
+        return numQ({ subType: t, d: 0, unit: "none", nouns: ["sheets","sheet"], value: n,
+          question: `${An(L)} ft × ${W} ft room has ${H} ft walls. Ignoring openings and waste, how many 4 ft × 8 ft drywall sheets cover the walls?`,
+          // rounded down · 4 × 12 sheet area · floor area instead of wall area
+          wrong: [down(area/32), up(area/48), up(L*W/32), up(area/8)],
+          explanation: `Wall area = 2(${L} + ${W}) × ${H} = ${area} sq ft. ${area} ÷ 32 = ${fmt(area/32,2)}, so ${n} sheets.` });
+      }
+      const L = ri(10,24), W = ri(10,18), area = L*W, n = up(area/32);
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["sheets","sheet"], value: n,
+        question: `How many 4 ft × 8 ft sheets of plywood subfloor cover ${an(L)} ft × ${W} ft floor, ignoring waste?`,
+        // rounded down · divided by the 8 ft length only · divided by 12 × 4 = 48
+        wrong: [down(area/32), up(area/8), up(area/48)],
+        explanation: `Area = ${L} × ${W} = ${area} sq ft. ${area} ÷ 32 = ${fmt(area/32,2)}, so ${n} sheets.` });
+    }
+    if (t === "flooring_boxes") {
+      const L = ri(10,22), W = ri(9,16), C = pick([16,18.5,20,22.4,23.8,24.5]), area = L*W, n = up(area/C);
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["boxes","box"], value: n,
+        question: `Flooring comes ${C} sq ft to a box. How many boxes cover ${an(L)} ft × ${W} ft room, before any waste allowance?`,
+        // rounded down · perimeter instead of area · divided by 10 sq ft
+        wrong: [down(area/C), up(2*(L+W)/C), up(area/10)],
+        explanation: `Area = ${L} × ${W} = ${area} sq ft. ${area} ÷ ${C} = ${fmt(area/C,2)}, so ${n} boxes.` });
+    }
+    if (t === "concrete_bags") {
+      const bag = pick([[80,0.6],[60,0.45],[40,0.3]]);
+      if (pick([true,false])) {
+        const L = ri(3,8), W = ri(3,8), T = pick([3.5,4]), V = L*W*T/12, n = up(V/bag[1]);
+        return numQ({ subType: t, d: 0, unit: "none", nouns: ["bags","bag"], value: n,
+          question: `${An(L)} ft × ${W} ft pad is poured ${T} in thick using ${bag[0]} lb bags that each make ${bag[1]} cu ft. How many bags are needed?`,
+          // rounded down · one bag per cubic foot · thickness left in inches
+          wrong: [down(V/bag[1]), up(V), up(L*W*T/bag[1])],
+          explanation: `V = ${L} × ${W} × ${T}/12 = ${fmt(V,3)} cu ft. ${fmt(V,3)} ÷ ${bag[1]} = ${fmt(V/bag[1],2)}, so ${n} bags.` });
+      }
+      const N = ri(4,12), D = pick([8,10,12]), dp = pick([24,30,36]);
+      const V = N*Math.PI*(D/24)*(D/24)*(dp/12), n = up(V/bag[1]);
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["bags","bag"], value: n,
+        question: `${N} fence-post holes are each ${D} in across and ${dp} in deep. Filling them with ${bag[0]} lb bags of concrete that make ${bag[1]} cu ft each, how many bags are needed? (Ignore the posts.)`,
+        // rounded down · diameter used as radius · one bag per cubic foot
+        wrong: [down(V/bag[1]), up(4*V/bag[1]), up(V)],
+        explanation: `One hole: π × (${D/2}/12)² × ${dp}/12 = ${fmt(V/N,3)} cu ft. ${N} holes = ${fmt(V,3)} cu ft. ${fmt(V,3)} ÷ ${bag[1]} = ${fmt(V/bag[1],2)}, so ${n} bags.` });
+    }
+    if (t === "paint_gallons") {
+      const L = ri(10,24), W = ri(10,18), H = pick([8,9]), nw = ri(1,4), cov = pick([350,400]);
+      const gross = 2*(L+W)*H, net = gross - 21 - nw*12, n = up(net*2/cov);
+      return numQ({ subType: t, d: 0, unit: "gal", nouns: ["gallons","gallon"], value: n,
+        question: `${An(L)} ft × ${W} ft room with ${H} ft walls has one 3 ft × 7 ft door and ${nw} window${nw > 1 ? "s" : ""} of 3 ft × 4 ft. The walls get 2 coats of paint that covers ${cov} sq ft per gallon. How many whole gallons should you buy?`,
+        // one coat · openings not subtracted · rounded down
+        wrong: [up(net/cov), up(gross*2/cov), down(net*2/cov)],
+        explanation: `Walls ${gross} sq ft − door 21 − windows ${nw*12} = ${net} sq ft. Two coats: ${net*2} sq ft ÷ ${cov} = ${fmt(net*2/cov,2)}, so buy ${n} gallons.` });
+    }
+    // cmu_blocks
+    const L = ri(10,60), H = pick([4,6,8]), n = up(L*H*1.125);
+    return numQ({ subType: "cmu_blocks", d: 0, unit: "none", nouns: ["blocks","block"], value: n,
+      question: `A concrete block wall is ${L} ft long and ${H} ft high, built from standard 8 in × 16 in blocks (1.125 blocks per square foot). How many blocks does it take, before waste?`,
+      // one block per square foot · divided by 1.125 · one course only
+      wrong: [up(L*H), up(L*H/1.125), up(L*12/16)],
+      explanation: `Wall area = ${L} × ${H} = ${L*H} sq ft. ${L*H} × 1.125 = ${fmt(L*H*1.125,3)}, so ${n} blocks.` });
+  });
+
+  // =====================================================================
+  // M-375  Waste Factors  (86C Waste Calculations)
+  // =====================================================================
+  _addSkill(7, "Waste Factors", "Waste Factors", 3, {
+    goalProblem: "A floor needs 420 sq ft of tile and you add 10% for waste. How many square feet should you order?",
+    teachingSteps: [
+      { title: "Why add waste", explanation: "Cuts at walls, broken pieces and pattern matching all use up material. Estimators add a <strong>waste factor</strong> — usually 5–10% for simple layouts and 15% or more for diagonal patterns.", visual: "straight lay 10% · diagonal 15%" },
+      { title: "Multiply by 1 + the waste", explanation: "Adding 10% is the same as multiplying by <strong>1.10</strong>; adding 15% is multiplying by 1.15. This is percent increase from the prerequisite skill.", visual: "420 × 1.10 = 462 sq ft" },
+      { title: "Then round up to units", explanation: "Add waste <strong>before</strong> dividing into boxes or sheets, then round up once at the end.", visual: "462 ÷ 20 sq ft per box = 23.1 → 24 boxes" },
+      { title: "Pieces from a board", explanation: "A board of length L gives <strong>L ÷ piece length</strong> pieces, rounded <strong>DOWN</strong> — a short leftover is not a piece. Each saw cut also eats about ⅛ in (the <strong>kerf</strong>).", visual: "8 ft = 96 in ÷ 22 in = 4.36 → 4 pieces" },
+      { title: "Boards for a cut list", explanation: "Find pieces per board first, then boards = pieces needed ÷ pieces per board, rounded up. Dividing total length by board length ignores the offcuts and comes up short.", visual: "need 18 pieces at 4 per board → 18 ÷ 4 = 4.5 → 5 boards" },
+      { title: "Measuring overage", explanation: "Overage percent = (ordered − needed) ÷ needed × 100.", visual: "ordered 550, needed 500 → 50 ÷ 500 = 10%" }
+    ],
+    finalAnswer: "462 sq ft",
+    answerExplanation: "Adding 10% means multiplying by 1.10: 420 × 1.10 = 462 sq ft.",
+    example: { problem: "You need 14 pieces 30 in long from 10 ft boards. How many boards?", steps: [
+      { text: "Board length in inches", math: "10 ft = 120 in" },
+      { text: "Pieces per board, rounded down", math: "120 ÷ 30 = 4 pieces" },
+      { text: "Boards, rounded up", math: "14 ÷ 4 = 3.5 → 4 boards" }
+    ]},
+    keyPoints: [
+      "Order = needed × (1 + waste %), e.g. × 1.10 for 10%",
+      "Add waste first, round to whole units last",
+      "Pieces per board round DOWN; boards needed round UP",
+      "Each saw cut removes about 1/8 in (kerf)",
+      "Overage % = (ordered − needed) ÷ needed × 100"
+    ],
+    mistakes: [
+      { wrong: "420 + 10 = 430 sq ft", why: "10% of 420 is 42, not 10. Multiply: 420 × 1.10 = 462." },
+      { wrong: "96 in ÷ 22 in = 4.36 → 5 pieces", why: "The fifth piece would be only 8 in long. Pieces from a board round down." },
+      { wrong: "Boards = total length ÷ board length", why: "That pretends offcuts can be glued together. Count whole pieces per board first." }
+    ],
+    guided: {
+      problem: "A deck needs 310 sq ft of decking area. Add 15% waste, and the boards cover 28 sq ft per bundle. How many bundles?",
+      steps: [
+        { label: "Area with waste", value: "310 × 1.15 = 356.5" },
+        { label: "Bundles exact", value: "356.5 ÷ 28 = 12.7" },
+        { label: "Bundles to buy", value: "13" }
+      ],
+      answer: "13",
+      answerLabel: "Bundles =",
+      interactiveSteps: [
+        step("Area with 15% waste: 310 × 1.15 = ?", "Adding 15% means multiplying by 1.15.", 356.5, "sq ft", "e.g., 240.5", { "325": "That added 15 sq ft, not 15%. 310 × 1.15 = 356.5.", "46.5": "That is just the waste. Add it to the 310." }),
+        step("Divide by 28 sq ft per bundle, to the nearest tenth.", "356.5 ÷ 28", 12.7, "", "e.g., 9.4"),
+        step("How many whole bundles do you buy?", "Material rounds up.", 13, "bundles", "Enter a whole number", { "12": "Twelve bundles fall short. Round up to 13." })
+      ]
+    }
+  }, function(){
+    const t = pick(["add_waste","boxes_with_waste","pieces_per_board","boards_needed","offcut","overage_percent","trim_pieces"]);
+    if (t === "add_waste") {
+      const A = ri(150,1200), w = pick([5,10,12,15]), order = Math.floor((A*(100+w) + 99)/100);
+      const mat = pick(["tile","sheet vinyl","carpet pad","sod","roof underlayment"]);
+      return numQ({ subType: t, d: 0, unit: "sqft", value: order,
+        question: `A job needs ${A} sq ft of ${mat}. Adding ${an(w)}% waste factor, how many square feet should you order? Round up to a whole square foot.`,
+        // no waste added · added w square feet instead of w percent ·
+        // ordered only the waste
+        wrong: [A, A + w, Math.ceil(A*w/100)],
+        explanation: `${w}% more means × ${(100+w)/100}: ${A} × ${(100+w)/100} = ${fmt(A*(100+w)/100,2)}, rounded up to ${order} sq ft.` });
+    }
+    if (t === "boxes_with_waste") {
+      const A = ri(120,900), w = pick([10,12,15]), C = pick([16,18.5,20,22.4,23.8,24.5]);
+      const need = A*(100+w)/100, n = up(need/C);
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["boxes","box"], value: n,
+        question: `A floor is ${A} sq ft. With ${an(w)}% waste allowance and flooring that covers ${C} sq ft per box, how many boxes should you buy?`,
+        // waste left out · rounded down · waste added as w square feet
+        wrong: [up(A/C), down(need/C), up((A + w)/C)],
+        explanation: `${A} × ${(100+w)/100} = ${fmt(need,2)} sq ft. ${fmt(need,2)} ÷ ${C} = ${fmt(need/C,2)}, so ${n} boxes.` });
+    }
+    if (t === "pieces_per_board") {
+      const S = pick([8,10,12,16]), p = pick([14,16,18,20,22.5,27,30,32,40]), kerf = pick([0,0.125]);
+      const n = down((12*S + kerf)/(p + kerf));
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["pieces","piece"], value: n,
+        question: `How many ${p} in pieces can you cut from ${an(S)} ft board${kerf ? ", if each saw cut removes 1/8 in" : ""}?`,
+        // rounded up (counted the short offcut as a piece) · kerf ignored (the
+        // same as n when there is no kerf) · rounded to nearest · one per foot
+        wrong: [up(12*S/p), down(12*S/p), Math.round(12*S/p), S],
+        explanation: kerf
+          ? `${S} ft = ${12*S} in. n pieces need n × ${p} in plus (n − 1) cuts of 1/8 in: (${12*S} + 0.125) ÷ (${p} + 0.125) = ${fmt((12*S + kerf)/(p + kerf),3)}, so ${n} whole pieces.`
+          : `${S} ft = ${12*S} in. ${12*S} ÷ ${p} = ${fmt(12*S/p,3)}. A partial piece is scrap, so ${n} pieces.` });
+    }
+    if (t === "boards_needed") {
+      const S = pick([8,10,12]), p = pick([18,20,22,26,30,34,38,44]), N = ri(6,40);
+      const per = down(12*S/p), n = up(N/per);
+      return numQ({ subType: t, d: 0, unit: "none", nouns: ["boards","board"], value: n,
+        question: `A cut list calls for ${N} pieces, each ${p} in long, cut from ${S} ft boards (ignore saw kerf). How many boards do you need?`,
+        // total length ÷ board length (ignores offcuts) · rounded down ·
+        // one board per piece
+        wrong: [up(N*p/(12*S)), down(N/per), N],
+        explanation: `${S} ft = ${12*S} in. ${12*S} ÷ ${p} = ${fmt(12*S/p,2)}, so ${per} pieces per board. ${N} ÷ ${per} = ${fmt(N/per,2)}, so ${n} boards.` });
+    }
+    if (t === "offcut") {
+      const S = pick([8,10,12,16]), p = pick([14,15,17,19,21,23,25,29,31]) + pick([0,0.5,0.25]);
+      let k = down((12*S)/(p + 0.125));
+      if (12*S - k*(p + 0.125) < 0.75) k -= 1;
+      if (k < 1) k = 1;
+      const left = 12*S - k*p - k*0.125;
+      return numQ({ subType: t, d: 3, unit: "in", value: left, target: left, step: 0.5,
+        show: v => mixed(v, 8),
+        question: `You cut ${k} pieces, each ${mixed(p,8)} in long, from ${an(S)} ft board. Each saw cut removes 1/8 in. How long is the leftover piece, in inches?`,
+        // kerf ignored · one kerf too few · only one piece subtracted
+        wrong: [12*S - k*p, 12*S - k*p - (k-1)*0.125, 12*S - p - 0.125],
+        explanation: `${S} ft = ${12*S} in. ${k} pieces use ${k} × ${mixed(p,8)} = ${mixed(k*p,8)} in, and ${k} cuts use ${k} × 1/8 = ${mixed(k*0.125,8)} in. Leftover = ${12*S} − ${mixed(k*p,8)} − ${mixed(k*0.125,8)} = ${mixed(left,8)} in.` });
+    }
+    if (t === "overage_percent") {
+      const U = ri(20,100)*10, B = U + ri(2, Math.floor(U/50))*10;
+      return numQ({ subType: t, d: 1, unit: "pct", value: (B-U)/U*100,
+        question: `A job needed ${U} sq ft of siding, and ${B} sq ft was ordered. What overage percentage was ordered, based on the amount needed? Round to the nearest tenth of a percent.`,
+        // divided by the ordered amount · the overage in square feet ·
+        // ordered as a percent of needed
+        wrong: [(B-U)/B*100, B-U, B/U*100],
+        explanation: `Overage = ${B} − ${U} = ${B-U} sq ft. ${B-U} ÷ ${U} × 100 = ${fmt((B-U)/U*100,1)}%.` });
+    }
+    // trim_pieces
+    const L = ri(10,22), W = ri(9,16), doors = ri(1,2), len = pick([8,12,16]);
+    const feet = 2*(L+W) - 3*doors, n = up(feet*1.1/len);
+    return numQ({ subType: "trim_pieces", d: 0, unit: "none", nouns: ["pieces","piece","lengths","boards"], value: n,
+      question: `Baseboard runs around ${an(L)} ft × ${W} ft room except across ${doors === 1 ? "one 3 ft doorway" : "two 3 ft doorways"}. Adding 10% waste, how many ${len} ft lengths of baseboard should you buy?`,
+      // waste left out · doorways not subtracted · rounded down
+      wrong: [up(feet/len), up(2*(L+W)*1.1/len), down(feet*1.1/len)],
+      explanation: `Perimeter 2(${L} + ${W}) = ${2*(L+W)} ft, minus ${3*doors} ft of doorway = ${feet} ft. With 10% waste: ${feet} × 1.1 = ${fmt(feet*1.1,2)} ft ÷ ${len} = ${fmt(feet*1.1/len,2)}, so ${n} lengths.` });
+  });
+
+})();
 // ==== END GRADUATION PLAN CONTENT: TRADES-GEOMETRY ====
 </script>
 
