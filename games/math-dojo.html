@@ -52248,6 +52248,1962 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: STEM ====
+// The STEM / College branch's thin spots: plan items 72A Advanced Radical
+// Equations, 80A Advanced Modeling, 86A Trig Equations, 92A Advanced Growth
+// Models, 107A Differential Equations Introduction and 108A Calculus Modeling.
+// Each skill is registered under its exact curriculum title (nodes with
+// "provenance": "graduation_plan" in data/math_curriculum_v2.json) at that
+// node's dojo_tier.
+//
+// Rules this block keeps, all learned from the typed-answer path (tier 5+
+// students type, and AnswerInterpreter grades what they type):
+//   * Answers are shapes AnswerInterpreter reads: bare numbers, fractions,
+//     "kπ", and comma lists. Negatives use ASCII "-", because
+//     answerIsTypeable does not read "−" as a number and would fall back to
+//     multiple choice.
+//   * Never "x = 4" as an acceptableAnswer. It detects as an algebraic
+//     expression whose constant term is dropped, so "x = 7" would match it.
+//     checkAnswer already accepts "x = 4" when the answer is the number 4.
+//   * Never "30°, 150°" as an answer or alternate. Anything containing "°"
+//     detects as ONE angle and only its first number is compared, so a student
+//     who typed just "30°" would be marked right. Degree lists are written
+//     without the symbol, and validate() accepts them with or without it.
+//   * A question with several solutions grades the SET through validate():
+//     any order, π or pi, "x = a or x = b". The canonical answer still
+//     round-trips on its own, so validate() is only ever a widening.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (generateQuestion then tops
+  // the board up itself). Never pads with whitespace variants of the answer.
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---------------------------------------------------------------------
+  // Shared helpers for this block
+  // ---------------------------------------------------------------------
+  // One number formatter for answers AND distractors, so two candidates that
+  // are the same value are also the same string and opt4 drops the twin.
+  const fmt = x => { const v = parseFloat(Number(x).toFixed(4)); return String(Object.is(v, -0) ? 0 : v); };
+  // Round to d decimal places and SHOW d places ("8.10" when asked for the
+  // nearest hundredth), so the answer reads the way the question asked for it.
+  // AnswerInterpreter compares values, so a typed "8.1" still matches.
+  const rnd = (x, d) => { const s = Number(x).toFixed(d); return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s; };
+  const money = x => Number(x).toFixed(2);
+  // Display a signed term for equations: "+ 3" / "− 3" (display only, never an answer).
+  const sgn = n => (n < 0 ? "− " + Math.abs(n) : "+ " + n);
+  const neg = s => String(s).replace(/^-/, "−");   // display a negative with a real minus sign
+
+  // Read one typed number, tolerating "t = 23", "$1,250.40", "22 years", "4.6%".
+  function readNum(s){
+    const t = String(s).toLowerCase().replace(/−/g, '-').replace(/[\s,$]/g, '').replace(/^[a-zθ]=/, '');
+    const m = t.match(/^(-?\d*\.?\d+)([a-z%°]*)$/);
+    return m ? parseFloat(m[1]) : NaN;
+  }
+  // A rounded answer. A student who rounded an intermediate step can land one
+  // unit off in the last place; that is a rounding habit, not a wrong method,
+  // so ±1 unit of the requested precision is accepted. Nothing wider.
+  const nearValidate = (target, unit) => typed => {
+    const v = readNum(typed);
+    return Number.isFinite(v) && Math.abs(v - target) <= unit + 1e-9;
+  };
+
+  // Read one typed angle in radians: "5π/6", "5pi/6", "(5/6)π", "π", "2.62".
+  function readRad(s){
+    let t = String(s).toLowerCase().replace(/−/g, '-').replace(/\s+/g, '')
+      .replace(/^[a-zθ]=/, '').replace(/pi/g, 'π');
+    let m;
+    if ((m = t.match(/^(-?\d*)π(?:\/(\d+))?$/))) {
+      const c = m[1] === '' ? 1 : m[1] === '-' ? -1 : +m[1];
+      return c * Math.PI / (m[2] ? +m[2] : 1);
+    }
+    if ((m = t.match(/^\(?(-?\d+)\/(\d+)\)?π$/))) return (+m[1] / +m[2]) * Math.PI;
+    if (/^-?\d*\.?\d+$/.test(t)) return +t;
+    return NaN;
+  }
+  // Read one typed angle in degrees: "150", "150°", "150 deg", "x = 150".
+  function readDeg(s){
+    const t = String(s).toLowerCase().replace(/−/g, '-').replace(/\s+/g, '')
+      .replace(/^[a-zθ]=/, '').replace(/(°|degrees?|deg)$/, '');
+    return /^-?\d*\.?\d+$/.test(t) ? +t : NaN;
+  }
+  // Grade a typed solution SET: split on commas, semicolons, "or", "and";
+  // every expected value must appear exactly once and nothing else may.
+  const setValidate = (expected, reader, tol) => typed => {
+    const parts = String(typed).replace(/[{}\[\]]/g, '')
+      .split(/\s*(?:,|;|\bor\b|\band\b)\s*/i).map(p => p.trim()).filter(Boolean);
+    if (parts.length !== expected.length) return false;
+    const got = parts.map(reader);
+    if (got.some(v => !Number.isFinite(v))) return false;
+    const a = got.slice().sort((p, q) => p - q), b = expected.slice().sort((p, q) => p - q);
+    return a.every((v, i) => Math.abs(v - b[i]) <= tol + 1e-9);
+  };
+
+  // ======================================================================
+  // M-325  Radical Equations  (tier 7)
+  // ======================================================================
+  // Prerequisites: Simplifying Radicals and Radical Operations (T7) and
+  // Multi-Step Equations (T5). Every root offered as an answer is checked by
+  // substituting it back into the ORIGINAL equation in code (radOk), which is
+  // exactly the habit the skill exists to teach.
+  const radOk = (lhs, rhs, x) => { const L = lhs(x), R = rhs(x);
+    return Number.isFinite(L) && Number.isFinite(R) && Math.abs(L - R) < 1e-9; };
+  const lin = (a, b) => (a === 1 ? "" : a === -1 ? "−" : a) + "x" + (b ? " " + sgn(b) : "");
+
+  // generateQuestion dereferences whatever a generator returns, so a draw that
+  // fails its own self-check (returns null) is simply redrawn.
+  const retrying = fn => function(){
+    for (let i = 0; i < 200; i++) { const q = fn(); if (q) return q; }
+    throw new Error("STEM generator could not build a checked question");
+  };
+
+  _addSkill(7, "Radical Equations", "Radical Equations", 4, {
+    goalProblem: "Solve √(x + 7) = x − 5.",
+    teachingSteps: [
+      { title: "Isolate the radical first", explanation: "Get the radical <strong>alone</strong> on one side before you do anything to undo it. Squaring a sum like √(x + 3) + 2 does <em>not</em> remove the root.", visual: "√(2x + 1) + 4 = 9  →  √(2x + 1) = 5" },
+      { title: "Undo the root with the matching power", explanation: "Square both sides to undo a square root, cube both sides to undo a cube root. Then solve the equation that is left with the steps you already know from multi-step equations.", visual: "√(2x + 1) = 5  →  2x + 1 = 25  →  x = 12\n∛(x − 4) = 3  →  x − 4 = 27  →  x = 31" },
+      { title: "Why squaring can create fake solutions", explanation: "A square root is <strong>never negative</strong>. Squaring throws that information away: both 5 = 5 and −5 = 5 become 25 = 25. So squaring can produce an <strong>extraneous</strong> solution that fits the squared equation but not the original.", visual: "√(x + 7) = x − 5\nsquare: x + 7 = x² − 10x + 25\nx² − 11x + 18 = 0  →  x = 2 or x = 9" },
+      { title: "Check every candidate in the ORIGINAL equation", explanation: "Substitute each answer back into the equation you started with. Keep the ones that work; reject the ones that do not. Cube roots can be negative, so cubing never creates extraneous roots — but checking is still good practice.", visual: "x = 9: √16 = 4 and 9 − 5 = 4  ✓\nx = 2: √9 = 3 but 2 − 5 = −3  ✗ (extraneous)" },
+      { title: "Two radicals: isolate one, square, repeat", explanation: "If a radical is still left after squaring once, isolate <strong>it</strong> and square again. Then check — two rounds of squaring means two chances to create a fake root.", visual: "√(x + 9) = √x + 1\nx + 9 = x + 2√x + 1  →  √x = 4  →  x = 16" }
+    ],
+    finalAnswer: "x = 9",
+    answerExplanation: "Squaring gives x + 7 = x² − 10x + 25, so x² − 11x + 18 = 0 and x = 2 or x = 9. Checking: x = 9 gives √16 = 4 = 9 − 5 ✓, but x = 2 gives √9 = 3 while 2 − 5 = −3 ✗. Only x = 9 is a solution.",
+    example: { problem: "Solve 3√(x − 2) − 4 = 8.", steps: [
+      { text: "Isolate the radical: add 4, then divide by 3", math: "3√(x − 2) = 12  →  √(x − 2) = 4" },
+      { text: "Square both sides", math: "x − 2 = 16" },
+      { text: "Solve", math: "x = 18" },
+      { text: "Check in the original", math: "3√16 − 4 = 12 − 4 = 8 ✓  so <strong>x = 18</strong>" }
+    ]},
+    keyPoints: [
+      "Isolate the radical before squaring or cubing",
+      "Square to undo √, cube to undo ∛",
+      "A square root is never negative — that is where extraneous solutions come from",
+      "Check every candidate in the ORIGINAL equation and reject the ones that fail"
+    ],
+    mistakes: [
+      { wrong: "Squaring √(x + 3) + 2 = 7 term by term to get x + 3 + 4 = 49", why: "(a + b)² is not a² + b². Isolate first: √(x + 3) = 5, so x + 3 = 25 and x = 22." },
+      { wrong: "Reporting both roots of the squared equation, x = 2 and x = 9", why: "x = 2 makes the right side −3 while √9 = 3. It is extraneous; only x = 9 solves the original." },
+      { wrong: "Solving ∛(x + 1) = −2 as 'no solution'", why: "Cube roots CAN be negative: (−2)³ = −8, so x + 1 = −8 and x = −9." }
+    ],
+    guided: {
+      problem: "Solve √(2x + 3) = x.",
+      steps: [
+        { label: "Square both sides", value: "2x + 3 = x²" },
+        { label: "Standard form", value: "x² − 2x − 3 = 0" },
+        { label: "Factor: (x − 3)(x + 1) = 0, candidates", value: "3 and −1" },
+        { label: "Check each in the original", value: "?" }
+      ],
+      answer: "3",
+      answerLabel: "x =",
+      interactiveSteps: [
+        { prompt: "Square both sides of √(2x + 3) = x to get 2x + 3 = x². Move everything to the right: x² − 2x − c = 0. What number is c?", hint: "x² = 2x + 3, so x² − 2x − 3 = 0.", answer: "3", acceptableAnswers: ["3"], formatHint: "Enter a number" },
+        { prompt: "x² − 2x − 3 = (x − 3)(x + 1). The positive candidate is x = 3. What is the other candidate?", hint: "Set x + 1 = 0.", answer: "-1", acceptableAnswers: ["-1"], formatHint: "Enter a number" },
+        { prompt: "Check x = −1 in the original: √(2(−1) + 3) = √1 = 1, but the right side is x = −1. Does it work? Enter 1 for yes, 0 for no.", hint: "1 is not equal to −1.", answer: "0", acceptableAnswers: ["0"], formatHint: "1 = yes, 0 = no" },
+        { prompt: "So what is the only solution of √(2x + 3) = x?", hint: "x = 3: √9 = 3 ✓", answer: "3", acceptableAnswers: ["3"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying(function(){
+    const mode = pick(["isolate", "cube", "extraneous", "check", "twice", "applied"]);
+
+    if (mode === "isolate") {
+      // k√(ax + b) + d = e with the root value r chosen first, so x is an integer.
+      const a = pick([1, 2, 3, 4, 5]), r = ri(2, 9), k = pick([1, 1, 2, 3]), d = ri(-9, 9);
+      const x = ri(-6, 15), b = r * r - a * x, e = k * r + d;
+      const lhs = t => k * Math.sqrt(a * t + b) + d;
+      if (!radOk(lhs, () => e, x)) return null;                 // never ships an unchecked root
+      const rad = `√(${lin(a, b)})`;
+      const eq = `${k === 1 ? "" : k}${rad}${d ? " " + sgn(d) : ""} = ${neg(e)}`;
+      const iso = (e - d) / k;                                  // = r
+      // Mistakes: squaring before isolating (e² − b)/a; forgetting to square ((iso − b)/a);
+      // isolating with the wrong sign on d.
+      const sqFirst = (e * e - b) / a, noSquare = (iso - b) / a, badSign = (((e + d) / k) ** 2 - b) / a;
+      return {
+        subType: "isolate",
+        question: `Solve for x: ${eq}`,
+        answer: fmt(x),
+        options: opt4(fmt(x), [fmt(sqFirst), fmt(noSquare), fmt(badSign), fmt(x + r), fmt(-x)]),
+        explanation: `Isolate the radical: ${k === 1 ? "" : k}${rad} = ${neg(e - d)}${k === 1 ? "" : `, so ${rad} = ${iso}`}. ` +
+                     `Square: ${lin(a, b)} = ${iso * iso}. Solve: ${a === 1 ? "" : `${a}x = ${neg(iso * iso - b)}, so `}x = ${neg(x)}. ` +
+                     `Check: √(${a * x + b}) = ${r}, and ${k === 1 ? "" : k + "·"}${r}${d ? " " + sgn(d) : ""} = ${neg(e)} ✓.`
+      };
+    }
+
+    if (mode === "cube") {
+      // ∛(ax + b) + d = e; cube roots may be negative, so r ranges below zero too.
+      const a = pick([1, 2, 3]), r = pick([-4, -3, -2, -1, 1, 2, 3, 4, 5]), d = pick([0, 0, ri(-8, 8)]);
+      const x = ri(-8, 12), b = r * r * r - a * x, e = r + d;
+      const lhs = t => Math.cbrt(a * t + b) + d;
+      if (!radOk(lhs, () => e, x)) return null;
+      const eq = `∛(${lin(a, b)})${d ? " " + sgn(d) : ""} = ${neg(e)}`;
+      // Mistakes: squaring instead of cubing; treating a negative cube root as impossible
+      // (sign flipped); multiplying by 3 instead of cubing.
+      const squared = (r * r - b) / a, flipped = (-(r * r * r) - b) / a, times3 = (3 * r - b) / a;
+      return {
+        subType: "cube",
+        question: `Solve for x: ${eq}`,
+        answer: fmt(x),
+        options: opt4(fmt(x), [fmt(squared), fmt(flipped), fmt(times3), fmt(x + 1)]),
+        explanation: `${d ? `Isolate the cube root: ∛(${lin(a, b)}) = ${neg(r)}. ` : ""}Cube both sides: ${lin(a, b)} = ${neg(r * r * r)}. ` +
+                     `Solve: x = ${neg(x)}. Cube roots can be negative, so there is nothing extraneous to reject — but check anyway: ∛(${neg(a * x + b)}) = ${neg(r)} ✓.`
+      };
+    }
+
+    if (mode === "extraneous" || mode === "check") {
+      // √(ax + b) = x + c. Squaring gives x² + (2c − a)x + (c² − b) = 0, so the
+      // roots p, q fix a = p + q + 2c and b = c² − pq. A root is real exactly when
+      // x + c ≥ 0 (the square root's value). Choose which roots survive.
+      const want = mode === "extraneous" ? "one" : pick(["one", "one", "both", "none"]);
+      for (let tries = 0; tries < 60; tries++) {
+        const c = ri(-6, 4), p = ri(-6, 12), q = ri(-8, 12);
+        if (p === q) continue;
+        const a = p + q + 2 * c, b = c * c - p * q;
+        if (a < 1 || a > 12) continue;
+        const lhs = t => Math.sqrt(a * t + b), rhs = t => t + c;
+        const okP = radOk(lhs, rhs, p), okQ = radOk(lhs, rhs, q);
+        const kind = okP && okQ ? "both" : (okP || okQ) ? "one" : "none";
+        if (kind !== want) continue;
+        const eq = `√(${lin(a, b)}) = ${lin(1, c)}`;
+        const sq = `${lin(a, b)} = (${lin(1, c)})²`;
+        const quad = `x² ${sgn(2 * c - a)}x ${sgn(c * c - b)} = 0`.replace(/([+−]) 1x/, "$1 x").replace(/ [+−] 0x/, "").replace(/ [+−] 0 = 0/, " = 0");
+        const [lo, hi] = [Math.min(p, q), Math.max(p, q)];
+        const chk = t => `x = ${neg(t)}: √(${a * t + b}) = ${Math.sqrt(Math.max(a * t + b, 0))} and ${neg(t)} ${sgn(c)} = ${neg(t + c)} ${radOk(lhs, rhs, t) ? "✓" : "✗"}`;
+        const work = `Square: ${sq}, which rearranges to ${quad}, so x = ${neg(lo)} or x = ${neg(hi)}. Check each in the original — ${chk(lo)}; ${chk(hi)}.`;
+        if (mode === "extraneous") {
+          const good = okP ? p : q, bad = okP ? q : p;
+          return {
+            subType: "extraneous",
+            question: `Solve for x: ${eq}`,
+            answer: fmt(good),
+            // The extraneous root is THE distractor: it is what a student who skips the check reports.
+            options: opt4(fmt(good), [fmt(bad), fmt(-good), fmt(good + bad), fmt(-bad)]),
+            explanation: `${work} So x = ${neg(bad)} is extraneous and the only solution is x = ${neg(good)}.`
+          };
+        }
+        const A = `x = ${neg(lo)} only`, B = `x = ${neg(hi)} only`, both = `both x = ${neg(lo)} and x = ${neg(hi)}`, none = "neither, so there is no solution";
+        const answer = kind === "both" ? both : kind === "none" ? none : (radOk(lhs, rhs, lo) ? A : B);
+        return {
+          subType: "check",
+          forceChoice: true,      // judging candidates is a selection task by nature
+          question: `Squaring both sides of ${eq} gives the candidates x = ${neg(lo)} and x = ${neg(hi)}. Which of them actually solve the original equation?`,
+          answer,
+          options: sh([A, B, both, none]),
+          explanation: `${work} ${kind === "both" ? "Both check, so both are solutions." : kind === "none" ? "Both fail, so the equation has no solution." : `Only ${answer.replace(" only", "")} checks; the other is extraneous.`}`
+        };
+      }
+      return null;
+    }
+
+    if (mode === "twice") {
+      // √(x + k) = √x + n. Squaring once leaves k = 2n√x + n², so √x = (k − n²)/(2n).
+      // Pick √x = m first so the answer x = m² is exact.
+      const n = pick([1, 1, 2, 3]), m = ri(1, 9), k = 2 * n * m + n * n, x = m * m;
+      if (!radOk(t => Math.sqrt(t + k), t => Math.sqrt(t) + n, x)) return null;
+      return {
+        subType: "twice",
+        question: `Solve for x: √(x + ${k}) = √x + ${n}`,
+        answer: fmt(x),
+        // Mistakes: stopping at √x = m; squaring the right side as x + n² (dropping 2n√x);
+        // forgetting to divide by 2n.
+        options: opt4(fmt(x), [fmt(m), fmt((k - n * n) * (k - n * n)), fmt(2 * m * m), fmt(x + n)]),
+        explanation: `Square both sides: x + ${k} = x + ${2 * n === 1 ? "" : 2 * n}√x + ${n * n}. The x cancels: ${k - n * n} = ${2 * n}√x, so √x = ${m}. ` +
+                     `Square again: x = ${x}. Check: √${x + k} = ${m + n} and √${x} + ${n} = ${m + n} ✓. (Squaring the right side as x + ${n * n} forgets the middle term 2·${n}·√x.)`
+      };
+    }
+
+    // applied: a science formula with a root in it, solved backwards.
+    const ctx = pick(["fall", "horizon", "skid"]);
+    if (ctx === "fall") {
+      // v = √(2gh) with g = 32 ft/s², i.e. v = 8√h.
+      const s = ri(2, 12), v = 8 * s, h = s * s;
+      return {
+        subType: "applied",
+        question: `An object dropped from height h feet hits the ground at speed v = √(64h) feet per second. From what height, in feet, must it fall to hit at ${v} ft/s?`,
+        answer: fmt(h),
+        options: opt4(fmt(h), [fmt(v * v), fmt(v / 64), fmt(s), fmt(v * v / 8)]),
+        explanation: `${v} = √(64h). Square both sides: ${v * v} = 64h, so h = ${v * v} ÷ 64 = ${h} ft. Check: √(64·${h}) = √${64 * h} = ${v} ✓.`
+      };
+    }
+    if (ctx === "horizon") {
+      // d = √(1.5h) miles for an eye height of h feet: d = 3s → h = 6s².
+      const s = ri(1, 8), d = 3 * s, h = 6 * s * s;
+      return {
+        subType: "applied",
+        question: `From a height of h feet you can see about d = √(1.5h) miles to the horizon. How high, in feet, must a lookout be to see ${d} miles?`,
+        answer: fmt(h),
+        options: opt4(fmt(h), [fmt(d * d), fmt(1.5 * d * d), fmt(d / 1.5), fmt(d * d / 3)]),
+        explanation: `${d} = √(1.5h). Square: ${d * d} = 1.5h, so h = ${d * d} ÷ 1.5 = ${h} ft. Check: √(1.5·${h}) = √${1.5 * h} = ${d} ✓.`
+      };
+    }
+    // Skid marks: s = √(30·f·d) mph with drag factor f = 0.75, so s = √(22.5d).
+    const s = 15 * ri(1, 5), d = s * s / 22.5;
+    return {
+      subType: "applied",
+      question: `Police estimate a car's speed from its skid marks with s = √(22.5d), where s is in mph and d is the skid length in feet. How long, in feet, are the skid marks of a car going ${s} mph?`,
+      answer: fmt(d),
+      options: opt4(fmt(d), [fmt(s * s), fmt(s / 22.5 * s / 2), fmt(22.5 * s), fmt(s * s / 2.25)]),
+      explanation: `${s} = √(22.5d). Square: ${s * s} = 22.5d, so d = ${s * s} ÷ 22.5 = ${fmt(d)} ft. Check: √(22.5·${fmt(d)}) = √${s * s} = ${s} ✓.`
+    };
+  }));
+
+  // ======================================================================
+  // M-326  Advanced Modeling  (tier 7)
+  // ======================================================================
+  // Prerequisites: Modeling with Functions (T5: linear / exponential /
+  // quadratic), Logarithms (T7) and Comparing Function Families (T7). This adds
+  // the cubic, logarithmic and rational families, building a model's
+  // parameters from a description or a small table, reading what a parameter
+  // MEANS, and judging a model by its residuals.
+  //
+  // For each family, the families students most often mistake it for, in
+  // order: a constant ratio read as a constant step, inverse variation read as
+  // decay, logarithmic growth read as linear because its outputs step evenly.
+  const CONFUSE = {
+    linear: ["exponential", "quadratic", "logarithmic", "rational"],
+    quadratic: ["exponential", "cubic", "linear", "rational"],
+    cubic: ["quadratic", "exponential", "linear", "logarithmic"],
+    exponential: ["quadratic", "rational", "linear", "logarithmic"],
+    logarithmic: ["linear", "exponential", "rational", "quadratic"],
+    rational: ["exponential", "linear", "logarithmic", "quadratic"]
+  };
+  const SCENARIOS = [
+    () => { const p = ri(2, 9); return { fam: "exponential", text: `A town's population grows by ${p}% every year.`, why: `A fixed PERCENT each year multiplies by the same factor, ${fmt(1 + p / 100)}, every year: exponential, P = P0(${fmt(1 + p / 100)})^t.` }; },
+    () => { const h = ri(2, 6); return { fam: "exponential", text: `A bacteria culture triples every ${h} hours.`, why: `Multiplying by 3 over every equal stretch of time is exponential: N = N0·3^(t/${h}).` }; },
+    () => { const h = ri(3, 12); return { fam: "exponential", text: `The amount of a medicine in the bloodstream halves every ${h} hours.`, why: `Halving over each equal stretch of time is exponential decay: A = A0(1/2)^(t/${h}).` }; },
+    () => { const r = ri(3, 15); return { fam: "linear", text: `A tank drains at a steady ${r} liters per minute.`, why: `A constant RATE (${r} L less every minute) is linear: V = V0 − ${r}t.` }; },
+    () => { const b = ri(2, 5), m = money(1.5 + ri(0, 10) / 4); return { fam: "linear", text: `A taxi charges $${b} plus $${m} per mile.`, why: `The same $${m} is added for every mile: linear, C = ${b} + ${m}m.` }; },
+    () => { const v = ri(10, 30); return { fam: "quadratic", text: `A ball is thrown straight up at ${v} m/s and you want its height over time.`, why: `Gravity puts a t² term in the height: h = −4.9t² + ${v}t + h0, a quadratic.` }; },
+    () => { const P = ri(20, 60), n = ri(5, 30); return { fam: "quadratic", text: `Tickets cost $${P}, and every $1 price cut sells ${n} more tickets. You want revenue as a function of the price cut.`, why: `Revenue = price × tickets = (${P} − x)(N + ${n}x). Two linear factors multiply to a quadratic.` }; },
+    () => { const L = 2 * ri(10, 25); return { fam: "cubic", text: `An open box is made by cutting x-by-x squares from the corners of a ${L} cm square sheet and folding up the sides. You want its volume as a function of x.`, why: `V = x(${L} − 2x)²: three length factors multiply to a cubic polynomial.` }; },
+    () => ({ fam: "cubic", text: `A cube-shaped water tank is being designed and you want its volume as a function of its edge length.`, why: `V = s³ is a cubic polynomial.` }),
+    () => ({ fam: "logarithmic", text: `Each time the intensity of a sound is multiplied by 10, its decibel reading rises by exactly 10.`, why: `Equal steps in output for equal MULTIPLES of input is the signature of a logarithm: L = 10·log(I/I0).` }),
+    () => { const pts = ri(3, 8); return { fam: "logarithmic", text: `A student's test score rises by about ${pts} points every time their practice time doubles.`, why: `The same increase for each doubling of the input is logarithmic: S = a + ${pts}·log2(t).` }; },
+    () => { const T = ri(6, 20); return { fam: "rational", text: `A job takes one worker ${T} hours. You want the time it takes n equally fast workers.`, why: `The total work is fixed, so time = ${T}/n: inverse variation, a rational function.` }; },
+    () => { const F = 100 * ri(5, 30), v = ri(2, 12); return { fam: "rational", text: `A workshop pays $${F} to set up, then $${v} per item. You want the AVERAGE cost per item when x items are made.`, why: `Average cost = (${F} + ${v}x)/x, a ratio of polynomials, so rational. It levels off toward $${v} as x grows.` }; },
+    () => ({ fam: "rational", text: `A gas is kept at a constant temperature and you want its pressure as a function of its volume (Boyle's law).`, why: `PV = k, so P = k/V: inverse variation, a rational function.` })
+  ];
+  const row = a => a.map(neg).join(", ");
+  // "2x² − 3x + 1", "−x² + 5", "x²" — display only.
+  const quadStr = (a, b, c, v = "x") => {
+    const lead = (a === 1 ? "" : a === -1 ? "−" : neg(a)) + v + "²";
+    const mid = b === 0 ? "" : ` ${b < 0 ? "−" : "+"} ${Math.abs(b) === 1 ? "" : Math.abs(b)}${v}`;
+    const end = c === 0 ? "" : " " + sgn(c);
+    return lead + mid + end;
+  };
+
+  _addSkill(7, "Advanced Modeling", "Advanced Modeling", 4, {
+    goalProblem: "A table shows x = 0, 1, 2, 3 and y = 5, 15, 45, 135. Build a model and predict y when x = 5.",
+    teachingSteps: [
+      { title: "Read the pattern in a table", explanation: "With equally spaced x: <strong>constant differences</strong> mean linear, <strong>constant second differences</strong> mean quadratic, a <strong>constant ratio</strong> means exponential. (Constant third differences mean cubic.)", visual: "y: 5, 15, 45, 135\ndifferences: 10, 30, 90 (not constant)\nratios: 3, 3, 3  →  exponential" },
+      { title: "Two more families", explanation: "<strong>Logarithmic:</strong> each time x is <em>multiplied</em> by the same number, y goes up by the same amount. <strong>Rational (inverse variation):</strong> x · y stays the same, so doubling x halves y.", visual: "x: 1, 2, 4, 8 → y: 3, 5, 7, 9   (log: +2 per doubling)\nx: 1, 2, 3, 6 → y: 12, 6, 4, 2   (rational: xy = 12)" },
+      { title: "Choose from a description", explanation: "Match the wording to a family: a steady amount per unit → linear; a percent or a 'triples every...' → exponential; gravity or area → quadratic; volume of a box → cubic; 'every time it doubles, it rises by...' → logarithmic; a fixed total shared out, or an average with a setup cost → rational.", visual: "\"grows 4% a year\" → exponential\n\"$500 setup + $8 each, average cost\" → rational" },
+      { title: "Build the model: find the parameters", explanation: "Use the data to pin the numbers down. For y = a·bˣ, a is the value at x = 0 and b is the ratio. For a quadratic, the second difference is 2a. For y = k/x, k is any x times its y.", visual: "y = 5·3ˣ  →  y(5) = 5·243 = 1215" },
+      { title: "Interpret each parameter", explanation: "Every number in a model means something. In P = 250(1.04)ᵗ, 250 is the starting value and 1.04 means <strong>+4% per year</strong>. In h = −4.9t² + 12t + 2, 2 is the starting height and 12 the starting upward speed.", visual: "growth factor 1.04 → +4% per period\ndecay factor 0.85 → −15% per period" },
+      { title: "Judge the fit with residuals", explanation: "A <strong>residual</strong> is observed − predicted. Good models have <strong>small residuals with no pattern</strong>. A U-shaped or steadily drifting pattern means you chose the wrong family, even if the residuals are small.", visual: "residuals 0.3, −0.2, 0.1, −0.4 → good fit\nresiduals 6, 1, −3, −4, −2, 2, 7 → U shape: try a curve" }
+    ],
+    finalAnswer: "1215",
+    answerExplanation: "The ratios are all 3 and y = 5 at x = 0, so y = 5·3ˣ. Then y(5) = 5·3⁵ = 5·243 = 1215.",
+    example: { problem: "x: 1, 2, 3, 4, 6 and y: 24, 12, 8, 6, 4. Choose and build a model, then predict y at x = 8.", steps: [
+      { text: "Differences 12, 4, 2, 2 and ratios 1/2, 2/3, 3/4 are not constant", math: "not linear, not exponential" },
+      { text: "Try x · y", math: "24, 24, 24, 24, 24 — constant" },
+      { text: "So the model is rational (inverse variation)", math: "y = 24/x" },
+      { text: "Predict", math: "y(8) = 24/8 = <strong>3</strong>" }
+    ]},
+    keyPoints: [
+      "Constant differences → linear; constant second differences → quadratic; constant ratios → exponential",
+      "Multiply x, add to y → logarithmic; x·y constant → rational",
+      "Find parameters from the data: a = y at x = 0, b = the ratio, 2a = the second difference, k = xy",
+      "Say what each parameter means in the situation, with units",
+      "Residual = observed − predicted; small and patternless is a good fit"
+    ],
+    mistakes: [
+      { wrong: "Calling 5, 15, 45, 135 quadratic because it curves upward", why: "Check the ratios before the second differences. A constant ratio of 3 is exponential; the second differences here (20, 60) are not constant." },
+      { wrong: "Reading 1.04 in 250(1.04)ᵗ as 'grows by 1.04 each year'", why: "1.04 is a growth FACTOR. It means each year is 104% of the year before: +4% per year." },
+      { wrong: "Accepting a model because its residuals are small", why: "Look for a pattern too. Residuals that go +, −, −, −, + form a U, which means a curved model would fit better." }
+    ],
+    guided: {
+      problem: "x: 0, 1, 2, 3 and y: 3, 5, 11, 21. Build a quadratic model y = ax² + bx + c and predict y at x = 4.",
+      steps: [
+        { label: "First differences", value: "2, 6, 10" },
+        { label: "Second difference", value: "4" },
+        { label: "a = second difference ÷ 2", value: "2" },
+        { label: "c = y at x = 0", value: "3" },
+        { label: "From x = 1: 2 + b + 3 = 5", value: "b = 0" },
+        { label: "Predict y(4)", value: "?" }
+      ],
+      answer: "35",
+      answerLabel: "y(4) =",
+      interactiveSteps: [
+        { prompt: "The first differences of 3, 5, 11, 21 are 2, 6, 10. What is the (constant) second difference?", hint: "6 − 2 and 10 − 6.", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" },
+        { prompt: "For y = ax² + bx + c the second difference is 2a. What is a?", hint: "Halve the second difference.", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number" },
+        { prompt: "c is the value of y at x = 0, which is 3. At x = 1, 2(1)² + b(1) + 3 = 5. What is b?", hint: "2 + b + 3 = 5.", answer: "0", acceptableAnswers: ["0"], formatHint: "Enter a number" },
+        { prompt: "The model is y = 2x² + 3. What does it predict at x = 4?", hint: "2·16 + 3.", answer: "35", acceptableAnswers: ["35"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying(function(){
+    const mode = pick(["describe", "table", "exponential", "quadratic", "rational", "logarithmic", "interpret", "residual", "fit"]);
+
+    if (mode === "describe") {
+      const s = pick(SCENARIOS)();
+      return {
+        subType: "choose_family", forceChoice: true,
+        question: `${s.text} Which type of model fits best?`,
+        answer: s.fam,
+        options: opt4(s.fam, CONFUSE[s.fam]),
+        explanation: s.why
+      };
+    }
+
+    if (mode === "table") {
+      const fam = pick(["linear", "quadratic", "exponential", "logarithmic", "rational"]);
+      let xs = [1, 2, 3, 4, 5], ys, why, traps;
+      if (fam === "linear") {
+        const m = pick([-4, -3, -2, 2, 3, 4, 5, 6]), b = ri(-5, 12);
+        ys = xs.map(x => m * x + b);
+        why = `Every first difference is ${neg(m)}, a constant step, so the model is linear: y = ${neg(m)}x${b ? " " + sgn(b) : ""}.`;
+        traps = ["exponential", "quadratic", "logarithmic"];
+      } else if (fam === "quadratic") {
+        const a = pick([-2, -1, 1, 2, 3]), b = ri(-4, 4), c = ri(-3, 9);
+        ys = xs.map(x => a * x * x + b * x + c);
+        const d1 = ys.slice(1).map((y, i) => y - ys[i]);
+        why = `First differences ${row(d1)} are not constant, but the second differences are all ${neg(2 * a)}, so the model is quadratic (with a = ${neg(a)}).`;
+        traps = ["exponential", "linear", "cubic"];
+      } else if (fam === "exponential") {
+        const r = pick([2, 3, 0.5]);
+        const a = r === 0.5 ? 16 * ri(2, 6) : ri(1, 6);
+        xs = [0, 1, 2, 3, 4];
+        ys = xs.map(x => a * Math.pow(r, x));
+        why = `Each y is ${r === 0.5 ? "half" : r === 2 ? "double" : "triple"} the one before — a constant ratio of ${r === 0.5 ? "1/2" : r} — so the model is exponential: y = ${a}·(${r === 0.5 ? "1/2" : r})^x.`;
+        traps = r === 0.5 ? ["rational", "linear", "quadratic"] : ["quadratic", "cubic", "linear"];
+      } else if (fam === "logarithmic") {
+        const a = ri(1, 9), b = pick([2, 3, 4, 5]);
+        xs = [1, 2, 4, 8, 16];
+        ys = xs.map(x => a + b * Math.log2(x));
+        why = `x doubles each time and y rises by ${b} each time. Equal steps in y for equal MULTIPLES of x is logarithmic: y = ${a} + ${b}·log2(x). (It is not linear: the x-values are not evenly spaced.)`;
+        traps = ["linear", "exponential", "quadratic"];
+      } else {
+        const k = 12 * ri(1, 5);
+        xs = [1, 2, 3, 4, 6];
+        ys = xs.map(x => k / x);
+        why = `x · y = ${k} every time, so y = ${k}/x: inverse variation, a rational model. (The ratios ${row(ys.slice(1).map((y, i) => frac(y, ys[i])))} are not constant, so it is not exponential decay.)`;
+        traps = ["exponential", "linear", "logarithmic"];
+      }
+      return {
+        subType: "table_family", forceChoice: true,
+        question: `x: ${row(xs)}   y: ${row(ys.map(fmt))}. Which type of model fits this table exactly?`,
+        answer: fam,
+        options: opt4(fam, traps),
+        explanation: why
+      };
+    }
+
+    if (mode === "exponential") {
+      const v = pick(["predict", "ratio", "start"]);
+      if (v === "predict") {
+        const b = pick([2, 3, 0.5]), n = ri(3, b === 3 ? 5 : 6);
+        const a = b === 0.5 ? Math.pow(2, n) * ri(1, 5) : ri(2, 9);
+        const ans = a * Math.pow(b, n), bs = b === 0.5 ? "1/2" : String(b);
+        return {
+          subType: "build_exponential",
+          question: `A model y = a·b^x fits two measurements: y = ${a} when x = 0 and y = ${fmt(a * b)} when x = 1. Build the model and predict y when x = ${n}.`,
+          answer: fmt(ans),
+          // Mistakes: a constant STEP instead of a constant ratio (linear); one factor too few.
+          options: opt4(fmt(ans), [fmt(a + n * (a * b - a)), fmt(a * Math.pow(b, n - 1)), fmt(a * b * n), fmt(a * Math.pow(b, n + 1))]),
+          explanation: `a is the value at x = 0, so a = ${a}. b is the ratio ${fmt(a * b)} ÷ ${a} = ${bs}. The model is y = ${a}·(${bs})^x, so y(${n}) = ${a}·(${bs})^${n} = ${fmt(ans)}.`
+        };
+      }
+      if (v === "ratio") {
+        const b = pick([2, 3, 4, 5]), a = ri(1, 6), y1 = a * b, y3 = a * b * b * b;
+        return {
+          subType: "build_exponential",
+          question: `An exponential model y = a·b^x (b > 0) gives y = ${y1} at x = 1 and y = ${y3} at x = 3. What is b?`,
+          answer: fmt(b),
+          // Mistakes: forgetting the square root (b² read as b); the linear slope between the points.
+          options: opt4(fmt(b), [fmt(b * b), fmt((y3 - y1) / 2), fmt(y3 / y1 / 2), fmt(b + 1)]),
+          explanation: `Divide the two equations: ${y3} ÷ ${y1} = b^(3 − 1) = b², so b² = ${b * b} and b = ${b}.`
+        };
+      }
+      const b = pick([2, 3, 4]), a = ri(2, 9), y2 = a * b * b, y3 = y2 * b;
+      return {
+        subType: "build_exponential",
+        question: `An exponential model y = a·b^x gives y = ${y2} at x = 2 and y = ${y3} at x = 3. What is the starting value a?`,
+        answer: fmt(a),
+        // Mistakes: dividing by b only once; subtracting the step instead of dividing.
+        options: opt4(fmt(a), [fmt(y2 / b), fmt(y2 - 2 * (y3 - y2)), fmt(y3 / (b * b)), fmt(a * b * b * b)]),
+        explanation: `The ratio is b = ${y3} ÷ ${y2} = ${b}. Undo two factors of ${b} from x = 2 back to x = 0: a = ${y2} ÷ ${b}² = ${y2} ÷ ${b * b} = ${a}.`
+      };
+    }
+
+    if (mode === "quadratic") {
+      const a = pick([-3, -2, -1, 1, 2, 3, 4]), b = ri(-5, 5), c = ri(-4, 10);
+      const f = x => a * x * x + b * x + c, xs = [0, 1, 2, 3], ys = xs.map(f);
+      const d1 = ys.slice(1).map((y, i) => y - ys[i]);
+      if (pick([true, false])) {
+        return {
+          subType: "build_quadratic",
+          question: `x: 0, 1, 2, 3   y: ${row(ys)}. The data fit y = ax² + bx + c exactly. What is a?`,
+          answer: fmt(a),
+          // Mistakes: reporting the second difference itself (it is 2a); reading a first difference.
+          options: opt4(fmt(a), [fmt(2 * a), fmt(d1[0]), fmt(-a), fmt(d1[1])]),
+          explanation: `First differences: ${row(d1)}. Second differences: ${neg(2 * a)}, ${neg(2 * a)}. For a quadratic the second difference is 2a, so a = ${neg(2 * a)} ÷ 2 = ${neg(a)}.`
+        };
+      }
+      const n = pick([5, 6]), ans = f(n);
+      // Linear extrapolation from the last step is the mistake that ignores the curve.
+      const linGuess = ys[3] + (n - 3) * d1[2];
+      return {
+        subType: "build_quadratic",
+        question: `x: 0, 1, 2, 3   y: ${row(ys)}. Build the quadratic model that fits exactly and predict y at x = ${n}.`,
+        answer: fmt(ans),
+        options: opt4(fmt(ans), [fmt(linGuess), fmt(ans + 2 * a), fmt(f(n - 1)), fmt(ans - 2 * a)]),
+        explanation: `Second differences are ${neg(2 * a)}, so a = ${neg(a)}; c = y(0) = ${neg(c)}; and from x = 1, ${neg(a)} + b ${sgn(c)} = ${neg(ys[1])} gives b = ${neg(b)}. ` +
+                     `So y = ${quadStr(a, b, c)} and y(${n}) = ${neg(ans)}. (Continuing the last step of ${neg(d1[2])} in a straight line would give ${neg(linGuess)} — that ignores the curve.)`
+      };
+    }
+
+    if (mode === "rational") {
+      if (pick([true, false])) {
+        // y = k/x through one point, predict at another x that divides k.
+        const k = pick([24, 36, 48, 60, 72, 120]);
+        const divs = []; for (let d = 1; d <= k; d++) if (k % d === 0) divs.push(d);
+        const x1 = pick(divs.filter(d => d > 1 && d < 13)), x2 = pick(divs.filter(d => d !== x1 && d > 1 && d < 25));
+        const y1 = k / x1, ans = k / x2;
+        const ctx = pick([
+          [`A pool is filled by identical hoses. With ${x1} hoses it takes ${y1} hours.`, `How many hours does it take with ${x2} hoses?`],
+          [`At constant temperature a gas has pressure ${y1} kPa when its volume is ${x1} L.`, `What is its pressure, in kPa, at ${x2} L?`],
+          [`Driving a fixed route takes ${y1} hours at an average of ${x1 * 10} km/h.`, null]
+        ]);
+        if (ctx[1] === null) {
+          const tAns = (k * 10) / (x2 * 10);
+          return {
+            subType: "build_rational",
+            question: `${ctx[0]} Time varies inversely with speed. How many hours does it take at ${x2 * 10} km/h?`,
+            answer: fmt(tAns),
+            // Mistake: direct variation (faster → longer).
+            options: opt4(fmt(tAns), [fmt(y1 * x2 / x1), fmt(y1 + (x1 - x2)), fmt(k * x2), fmt(tAns * 2)]),
+            explanation: `Distance = ${x1 * 10} × ${y1} = ${k * 10} km is fixed, so t = ${k * 10}/v. At ${x2 * 10} km/h, t = ${k * 10} ÷ ${x2 * 10} = ${fmt(tAns)} hours.`
+          };
+        }
+        return {
+          subType: "build_rational",
+          question: `${ctx[0]} The quantities vary inversely (y = k/x). ${ctx[1]}`,
+          answer: fmt(ans),
+          // Mistake: treating it as direct variation, y1·x2/x1.
+          options: opt4(fmt(ans), [fmt(y1 * x2 / x1), fmt(k * x2), fmt(Math.abs(y1 - (x2 - x1))), fmt(ans * 2)]),
+          explanation: `k = x · y = ${x1} × ${y1} = ${k}. So y = ${k}/x, and at x = ${x2}, y = ${k} ÷ ${x2} = ${fmt(ans)}.`
+        };
+      }
+      // Average cost C(x) = (F + v·x)/x hits a target T when x = F/(T − v).
+      const v = ri(2, 15), d = ri(1, 10), x = pick([20, 25, 40, 50, 80, 100, 125, 200]);
+      const F = x * d, T = v + d;
+      return {
+        subType: "build_rational",
+        question: `A print shop pays $${F} to set up a job, then $${v} per poster. Its average cost per poster is C(x) = (${F} + ${v}x)/x. How many posters must it print for the average cost to fall to $${T}?`,
+        answer: fmt(x),
+        // Mistakes: ignoring the per-item cost (F/T); dividing by the per-item cost (F/v).
+        options: opt4(fmt(x), [fmt(F / T), fmt(F / v), fmt((F + v) / T), fmt(2 * x)]),
+        explanation: `Set (${F} + ${v}x)/x = ${T}. Multiply by x: ${F} + ${v}x = ${T}x, so ${F} = ${d}x and x = ${x} posters.`
+      };
+    }
+
+    if (mode === "logarithmic") {
+      const b = ri(2, 9), a = ri(-3, 12), n = ri(3, 5);
+      const y1 = a + b, y2 = a + 2 * b, ans = a + b * n;
+      return {
+        subType: "build_log",
+        question: `A model y = a + b·log(x) (base 10) gives y = ${neg(y1)} at x = 10 and y = ${neg(y2)} at x = 100. Predict y at x = ${Math.pow(10, n).toLocaleString("en-US")}.`,
+        answer: fmt(ans),
+        // Mistakes: forgetting a; one multiple of 10 too few; treating y as proportional to the number of zeros of y2.
+        options: opt4(fmt(ans), [fmt(b * n), fmt(a + b * (n - 1)), fmt(y2 * n / 2 + 1), fmt(a + b * (n + 1))]),
+        explanation: `log(10) = 1 and log(100) = 2, so a + b = ${neg(y1)} and a + 2b = ${neg(y2)}: b = ${b}, a = ${neg(a)}. ` +
+                     `log(${Math.pow(10, n).toLocaleString("en-US")}) = ${n}, so y = ${neg(a)} + ${b}·${n} = ${neg(ans)}. Each extra factor of 10 in x adds ${b} to y.`
+      };
+    }
+
+    if (mode === "interpret") {
+      const t = pick(["growth", "decay", "start", "speed", "avgcost", "log"]);
+      let q, ans, wrong, why;
+      if (t === "growth") {
+        const P0 = 50 * ri(4, 40), p = ri(2, 9), gf = fmt(1 + p / 100);
+        q = `A town's population is modeled by P(t) = ${P0}(${gf})^t, with t in years. What does ${gf} tell you?`;
+        ans = `the population grows ${p}% each year`;
+        wrong = [`the population grows by ${gf} people each year`, `the population grows ${fmt(100 * (1 + p / 100))}% each year`, `the population starts at ${gf}`];
+        why = `${gf} is a growth FACTOR: each year is ${fmt(100 + p)}% of the year before, which is +${p}% a year. The starting population is ${P0}.`;
+      } else if (t === "decay") {
+        const keep = pick([75, 80, 85, 88, 90, 92]), V0 = 1000 * ri(12, 45), df = fmt(keep / 100);
+        q = `A car's value is modeled by V(t) = ${V0}(${df})^t, with t in years. What does ${df} tell you?`;
+        ans = `the car loses ${100 - keep}% of its value each year`;
+        wrong = [`the car loses ${keep}% of its value each year`, `the car loses $${df} each year`, `the car keeps ${100 - keep}% of its value each year`];
+        why = `${df} means each year the car keeps ${keep}% of the previous year's value, so it LOSES ${100 - keep}% a year.`;
+      } else if (t === "start" || t === "speed") {
+        const v = ri(8, 25), h0 = ri(1, 30);
+        q = `A ball's height in meters is h(t) = −4.9t² + ${v}t + ${h0}, with t in seconds. What does ${t === "start" ? h0 : v} represent?`;
+        const H = `the height the ball starts from, in meters`, S = `the ball's starting upward speed, in m/s`;
+        ans = t === "start" ? H : S;
+        wrong = [t === "start" ? S : H, `the greatest height the ball reaches`, `the time when the ball hits the ground`];
+        why = t === "start" ? `At t = 0 every other term is 0, so h(0) = ${h0}: the starting height.` : `${v} is the coefficient of t: the velocity at t = 0 (h′(0) = ${v}), the speed it was thrown up with.`;
+      } else if (t === "avgcost") {
+        const F = 100 * ri(5, 40), v = ri(3, 20);
+        q = `The average cost per item is C(x) = (${F} + ${v}x)/x. As x gets very large, C(x) gets close to ${v}. What does that mean?`;
+        ans = `the setup cost spreads out, so the average cost per item approaches $${v}`;
+        wrong = [`the total cost approaches $${v}`, `the setup cost is $${v}`, `the average cost keeps falling toward $0`];
+        why = `C(x) = ${F}/x + ${v}. The ${F}/x part shrinks toward 0 as the $${F} setup is shared by more items, leaving the $${v} each item really costs.`;
+      } else {
+        const a = ri(20, 60), b = ri(3, 9);
+        q = `A skill score after t hours of practice is modeled by S(t) = ${a} + ${b}·log2(t). What does ${b} mean?`;
+        ans = `the score rises ${b} points each time practice time doubles`;
+        wrong = [`the score rises ${b} points each hour`, `the score starts at ${b}`, `the score can never go above ${b}`];
+        why = `log2(t) goes up by 1 each time t doubles, so S goes up by ${b} each doubling — not each hour.`;
+      }
+      return { subType: "interpret_param", forceChoice: true, question: q, answer: ans, options: opt4(ans, wrong), explanation: why };
+    }
+
+    if (mode === "residual") {
+      const isLinear = pick([true, false]);
+      let model, x, pred;
+      if (isLinear) { const m = ri(2, 9), c = ri(-5, 20); x = ri(2, 12); pred = m * x + c; model = `ŷ = ${m}x ${sgn(c)}`; }
+      else { const a = ri(2, 6), b = pick([2, 3]); x = ri(2, b === 3 ? 4 : 6); pred = a * Math.pow(b, x); model = `ŷ = ${a}·${b}^x`; }
+      const e = pick([-1, 1]) * ri(1, 9), obs = pred + e;
+      return {
+        subType: "residual",
+        question: `The model ${model} is fitted to data. At x = ${x} the observed value is ${obs}. What is the residual (observed − predicted)?`,
+        answer: fmt(e),
+        // Mistake: predicted − observed (the sign flips), or reporting a value instead of the gap.
+        options: opt4(fmt(e), [fmt(-e), fmt(pred), fmt(obs), fmt(Math.abs(e) + 1)]),
+        explanation: `Predicted: ${model.replace("ŷ = ", "")} at x = ${x} gives ${pred}. Residual = observed − predicted = ${obs} − ${pred} = ${neg(e)}. ` +
+                     `${e > 0 ? "Positive: the model under-predicts here." : "Negative: the model over-predicts here."}`
+      };
+    }
+
+    // fit: compare two residual lists, or read the shape of one.
+    if (pick([true, false])) {
+      const small = Array.from({ length: 5 }, () => pick([-1, 1]) * ri(1, 6) / 10);
+      const big = Array.from({ length: 5 }, () => pick([-1, 1]) * ri(12, 35) / 10);
+      const aBetter = pick([true, false]);
+      const A = aBetter ? small : big, B = aBetter ? big : small;
+      const sse = r => fmt(r.reduce((s, v) => s + v * v, 0));
+      const ans = aBetter ? "Model A" : "Model B";
+      return {
+        subType: "compare_fit", forceChoice: true,
+        question: `Two models are fitted to the same 5 data points. Model A residuals: ${row(A.map(fmt))}. Model B residuals: ${row(B.map(fmt))}. Which model fits better?`,
+        answer: ans,
+        options: opt4(ans, [aBetter ? "Model B" : "Model A", "both fit equally well", "residuals cannot compare two models"]),
+        explanation: `Smaller residuals mean predictions closer to the data. Sum of squared residuals: A = ${sse(A)}, B = ${sse(B)}. Neither list shows a pattern, so ${ans} fits better.`
+      };
+    }
+    const curved = pick([true, false]);
+    const res = curved
+      ? [6, 2, -1, -3, -3, -1, 2, 6].map(v => v + pick([-1, 0, 1]))
+      : Array.from({ length: 8 }, () => pick([-1, 1]) * ri(1, 5) / 10);
+    const C = "a curved model, such as a quadratic, would fit better", G = "the linear model fits well";
+    const ans = curved ? C : G;
+    return {
+      subType: "residual_pattern", forceChoice: true,
+      question: `A linear model is fitted to 8 data points (in order of x). Its residuals are ${row(res.map(fmt))}. What do the residuals suggest?`,
+      answer: ans,
+      options: opt4(ans, [curved ? G : C, "the data must contain a measurement error", "an exponential model can never fit this data"]),
+      explanation: curved
+        ? `The residuals go positive, then negative, then positive again — a U shape. A straight line is missing a curve in the data, so a curved model should fit better even though some residuals are small.`
+        : `The residuals are small and bounce between positive and negative with no pattern, which is what a good fit looks like.`
+    };
+  }));
+
+  // ======================================================================
+  // M-327  Trig Equations  (tier 8)
+  // ======================================================================
+  // Prerequisites: Unit Circle, Inverse Trig and Trig Identities (all T8).
+  // Notation follows the T8 generators: exact radians as "π/6", "5π/6".
+  //
+  // The answer key is computed from the equation the student SEES, not from a
+  // hand table: every exact solution in this skill is a multiple of π/72 (the
+  // special angles, and those divided by 2 or 3 for multiple-angle equations),
+  // so scanning that grid for points where the equation's residual is ~0
+  // finds every solution in [0, 2π) and nothing else.
+  const TRIG = { sin: Math.sin, cos: Math.cos, tan: Math.tan };
+  const GRID = 72;
+  const trigRoots = F => {
+    const ks = [];
+    for (let k = 0; k < 2 * GRID; k++) { const v = F(k * Math.PI / GRID); if (Number.isFinite(v) && Math.abs(v) < 1e-9) ks.push(k); }
+    return ks;
+  };
+  const piStr = k => { if (k === 0) return "0"; const c = g(k, GRID), n = k / c, d = GRID / c;
+    return (n === 1 ? "" : n) + "π" + (d === 1 ? "" : "/" + d); };
+  const degStr = k => fmt(k * 180 / GRID);
+  const QUAD = { sin: ["I and II", "III and IV"], cos: ["I and IV", "II and III"], tan: ["I and III", "II and IV"] };
+  // Signed polynomial display: [[coef, "sin²x"], [coef, "sin x"], [coef, ""]] → "2sin²x − sin x − 1".
+  const terms = list => {
+    let s = "";
+    for (const [c, t] of list) {
+      if (!c) continue;
+      const mag = Math.abs(c) === 1 && t ? "" : String(Math.abs(c));
+      s += s ? ` ${c < 0 ? "−" : "+"} ${mag}${t}` : `${c < 0 ? "−" : ""}${mag}${t}`;
+    }
+    return s || "0";
+  };
+  const vNum = s => { const neg1 = s.startsWith("-") ? -1 : 1, t = s.replace(/^-/, "");
+    const m = { "0": 0, "1/2": 0.5, "1": 1, "√2/2": Math.SQRT2 / 2, "√3/2": Math.sqrt(3) / 2, "√3": Math.sqrt(3), "√3/3": Math.sqrt(3) / 3 }[t];
+    return neg1 * m; };
+
+  // A linear equation in one trig function, built backwards from its isolated value.
+  function linearTrig(fn){
+    const f = TRIG[fn], s = pick([1, -1]), mn = s < 0 ? "−" : "";
+    if (fn === "tan") {
+      const kind = pick(["one", "root3", "inv3"]);
+      if (kind === "one") {
+        const m = ri(1, 4), q = ri(-6, 6), r = q + m * s;
+        return { text: `${m === 1 ? "" : m}tan x${q ? " " + sgn(q) : ""} = ${neg(r)}`, F: x => m * f(x) + q - r, v: s, vStr: s > 0 ? "1" : "-1" };
+      }
+      if (kind === "root3") return { text: `tan x ${s > 0 ? "−" : "+"} √3 = 0`, F: x => f(x) - s * Math.sqrt(3), v: s * Math.sqrt(3), vStr: (s < 0 ? "-" : "") + "√3" };
+      return pick([true, false])
+        ? { text: `√3 tan x ${s > 0 ? "−" : "+"} 1 = 0`, F: x => Math.sqrt(3) * f(x) - s, v: s * Math.sqrt(3) / 3, vStr: (s < 0 ? "-" : "") + "√3/3" }
+        : { text: `3tan x ${s > 0 ? "−" : "+"} √3 = 0`, F: x => 3 * f(x) - s * Math.sqrt(3), v: s * Math.sqrt(3) / 3, vStr: (s < 0 ? "-" : "") + "√3/3" };
+    }
+    const kind = pick(["half", "half", "root2", "root3", "unit"]);
+    if (kind === "half" || kind === "unit") {
+      const n = kind === "half" ? s : pick([-2, 0, 2]), m = ri(1, 3), p = 2 * m, q = ri(-6, 6), r = q + m * n;
+      return { text: `${p}${fn} x${q ? " " + sgn(q) : ""} = ${neg(r)}`, F: x => p * f(x) + q - r, v: n / 2, vStr: frac(n, 2) };
+    }
+    if (kind === "root2") {
+      return pick([true, false])
+        ? { text: `2${fn} x ${s > 0 ? "−" : "+"} √2 = 0`, F: x => 2 * f(x) - s * Math.SQRT2, v: s * Math.SQRT2 / 2, vStr: (s < 0 ? "-" : "") + "√2/2" }
+        : { text: `√2 ${fn} x ${s > 0 ? "−" : "+"} 1 = 0`, F: x => Math.SQRT2 * f(x) - s, v: s * Math.SQRT2 / 2, vStr: (s < 0 ? "-" : "") + "√2/2" };
+    }
+    return { text: `2${fn} x ${s > 0 ? "−" : "+"} √3 = 0`, F: x => 2 * f(x) - s * Math.sqrt(3), v: s * Math.sqrt(3) / 2, vStr: (s < 0 ? "-" : "") + "√3/2" };
+  }
+  // The board for a solution-set question: the real mistakes, each as a set.
+  //   * stopping at the first angle (the missed second-quadrant solution)
+  //   * a sign slip when isolating (solving f(x) = −v)
+  //   * using the other function's angles (sin and cos values swapped)
+  //   * the calculator's principal value alone, even when it is negative
+  function trigSetOptions(fn, v, ks, show, principal){
+    const other = fn === "sin" ? "cos" : fn === "cos" ? "sin" : "tan";
+    const flip = trigRoots(x => TRIG[fn](x) - (-v));
+    // For tan the swap is the complementary angle (tan x = 1/v: π/6 read as π/3).
+    const swap = fn === "tan" ? trigRoots(x => Math.tan(x) - 1 / v) : trigRoots(x => TRIG[other](x) - v);
+    const S = list => list.map(show).join(", ");
+    const ans = S(ks);
+    return opt4(ans, [ks.length > 1 ? S(ks.slice(0, 1)) : null, S(flip), S(swap), principal,
+      S(ks.map(k => (k + GRID) % (2 * GRID)).sort((a, b) => a - b)), S(overInclude(ks))].filter(x => x && x !== ""));
+  }
+  // The solution set plus one angle that is not a solution (the reflection a
+  // student adds by applying the wrong quadrant rule). Always differs from ks.
+  const overInclude = ks => {
+    const extra = [ks[0] + GRID, 2 * GRID - ks[0], GRID - ks[0], ks[0] + GRID / 2].map(k => ((k % (2 * GRID)) + 2 * GRID) % (2 * GRID)).find(k => !ks.includes(k));
+    return ks.concat(extra).sort((a, b) => a - b);
+  };
+  // Solution sets are answered in roster notation, "{π/6, 5π/6}". Braces are
+  // what makes answerIsTypeable accept a list of any length (a bare list of
+  // three degree values detects as plain text and would fall back to multiple
+  // choice); validate() still accepts the list without them, in any order.
+  const asSet = q => {
+    if (q && q.validate) {
+      q.answer = "{" + q.answer + "}";
+      if (q.options) q.options = q.options.map(o => "{" + o + "}");
+    }
+    return q;
+  };
+  const describeLinear = (fn, vStr, v, ks, show, unit) => {
+    const vs = neg(vStr);
+    const listed = ks.map(show).join(", ");
+    if (Math.abs(Math.abs(v) - 1) < 1e-12 && fn !== "tan" || Math.abs(v) < 1e-12)
+      return `Isolate the trig function: ${fn} x = ${vs}. That value is on an axis of the unit circle, so the solutions in the interval are just ${listed}.`;
+    const ref = Math.min(...ks.map(k => Math.min(k, Math.abs(GRID - k), 2 * GRID - k)));
+    return `Isolate the trig function: ${fn} x = ${vs}. The reference angle is ${show(ref)}${unit}. ${fn} is ${v > 0 ? "positive" : "negative"} in Quadrants ${QUAD[fn][v > 0 ? 0 : 1]}, so the solutions in the interval are ${listed}.`;
+  };
+  const QROOTS = [[-1, 1], [-1, 2], [0, 1], [1, 2], [1, 1]], QBAD = [[2, 1], [-2, 1], [3, 2], [-3, 2]];
+  const fac = (r, fn) => r[0] === 0 ? `${fn} x` : `${r[1] === 1 ? "" : r[1]}${fn} x ${r[0] > 0 ? "−" : "+"} ${Math.abs(r[0])}`;
+  const DOUBLE = [
+    { text: "sin 2x = sin x", F: x => Math.sin(2 * x) - Math.sin(x), work: "Use sin 2x = 2sin x cos x: 2sin x cos x − sin x = 0, so sin x(2cos x − 1) = 0, giving sin x = 0 or cos x = 1/2." },
+    { text: "sin 2x = cos x", F: x => Math.sin(2 * x) - Math.cos(x), work: "Use sin 2x = 2sin x cos x: 2sin x cos x − cos x = 0, so cos x(2sin x − 1) = 0, giving cos x = 0 or sin x = 1/2." },
+    { text: "sin 2x + sin x = 0", F: x => Math.sin(2 * x) + Math.sin(x), work: "Use sin 2x = 2sin x cos x: sin x(2cos x + 1) = 0, giving sin x = 0 or cos x = −1/2." },
+    { text: "cos 2x = cos x", F: x => Math.cos(2 * x) - Math.cos(x), work: "Use cos 2x = 2cos²x − 1: 2cos²x − cos x − 1 = 0, so (2cos x + 1)(cos x − 1) = 0, giving cos x = −1/2 or cos x = 1." },
+    { text: "cos 2x = sin x", F: x => Math.cos(2 * x) - Math.sin(x), work: "Use cos 2x = 1 − 2sin²x: 2sin²x + sin x − 1 = 0, so (2sin x − 1)(sin x + 1) = 0, giving sin x = 1/2 or sin x = −1." },
+    { text: "cos 2x + sin x = 0", F: x => Math.cos(2 * x) + Math.sin(x), work: "Use cos 2x = 1 − 2sin²x: 1 − 2sin²x + sin x = 0, so 2sin²x − sin x − 1 = 0 = (2sin x + 1)(sin x − 1), giving sin x = −1/2 or sin x = 1." },
+    { text: "cos 2x + 3cos x + 2 = 0", F: x => Math.cos(2 * x) + 3 * Math.cos(x) + 2, work: "Use cos 2x = 2cos²x − 1: 2cos²x + 3cos x + 1 = 0, so (2cos x + 1)(cos x + 1) = 0, giving cos x = −1/2 or cos x = −1." }
+  ];
+  // `half` is the set a student gets from only ONE of the two values (taking
+  // the square root and keeping just the positive sign, or keeping one factor).
+  const SQUARES = [
+    { text: "2sin²x − 1 = 0", F: x => 2 * Math.sin(x) ** 2 - 1, half: x => Math.sin(x) - Math.SQRT2 / 2, work: "sin²x = 1/2, so sin x = ±√2/2 — both signs." },
+    { text: "2cos²x − 1 = 0", F: x => 2 * Math.cos(x) ** 2 - 1, half: x => Math.cos(x) - Math.SQRT2 / 2, work: "cos²x = 1/2, so cos x = ±√2/2 — both signs." },
+    { text: "4sin²x − 3 = 0", F: x => 4 * Math.sin(x) ** 2 - 3, half: x => Math.sin(x) - Math.sqrt(3) / 2, work: "sin²x = 3/4, so sin x = ±√3/2 — both signs." },
+    { text: "4cos²x − 1 = 0", F: x => 4 * Math.cos(x) ** 2 - 1, half: x => Math.cos(x) - 0.5, work: "cos²x = 1/4, so cos x = ±1/2 — both signs." },
+    { text: "tan²x − 3 = 0", F: x => Math.tan(x) ** 2 - 3, half: x => Math.tan(x) - Math.sqrt(3), work: "tan²x = 3, so tan x = ±√3 — both signs." },
+    { text: "3tan²x − 1 = 0", F: x => 3 * Math.tan(x) ** 2 - 1, half: x => Math.tan(x) - Math.sqrt(3) / 3, work: "tan²x = 1/3, so tan x = ±√3/3 — both signs." },
+    { text: "tan²x − tan x = 0", F: x => Math.tan(x) ** 2 - Math.tan(x), half: x => Math.tan(x) - 1, work: "Factor: tan x(tan x − 1) = 0, so tan x = 0 or tan x = 1." }
+  ];
+
+  _addSkill(8, "Trig Equations", "Trig Equations", 5, {
+    goalProblem: "Solve 2cos x + √3 = 0 for 0 ≤ x < 2π.",
+    teachingSteps: [
+      { title: "Isolate the trig function", explanation: "Treat <strong>cos x</strong> like a single unknown and solve the linear equation for it, exactly as you would for y in 2y + √3 = 0.", visual: "2cos x + √3 = 0  →  cos x = −√3/2" },
+      { title: "Find the reference angle", explanation: "Ignore the sign and ask the unit circle which first-quadrant angle has that value. That acute angle is the <strong>reference angle</strong>.", visual: "cos(π/6) = √3/2  →  reference angle π/6" },
+      { title: "Use the signs to find EVERY solution", explanation: "Each trig value (other than ±1 and 0) happens <strong>twice</strong> in one turn. Use the quadrant signs (All Students Take Calculus: QI all, QII sin, QIII tan, QIV cos) to place the reference angle in both quadrants.", visual: "cos is negative in QII and QIII\nQII: π − π/6 = 5π/6\nQIII: π + π/6 = 7π/6" },
+      { title: "Quadratic in a trig function: factor", explanation: "If you see sin²x and sin x, let u = sin x, factor, and solve each factor. <strong>Reject</strong> any value outside −1 ≤ u ≤ 1 for sine and cosine — it has no angle.", visual: "2sin²x − sin x − 1 = 0\n(2sin x + 1)(sin x − 1) = 0\nsin x = −1/2 or sin x = 1" },
+      { title: "Use identities to get one function", explanation: "If two functions appear, rewrite with an identity so only one is left: cos²x = 1 − sin²x, sin 2x = 2sin x cos x, cos 2x = 1 − 2sin²x. Never divide by sin x or cos x — factor it out instead, or you lose the solutions where it is 0.", visual: "sin 2x = sin x\n2sin x cos x − sin x = 0\nsin x(2cos x − 1) = 0" },
+      { title: "General solutions and other intervals", explanation: "Sine and cosine repeat every 2π, tangent every π. So the general solution adds <strong>2πk</strong> (or <strong>πk</strong> for tan). In degrees, add 360°k. For sin(2x), let u = 2x: u runs over two full turns, so expect twice as many solutions.", visual: "cos x = −√3/2:  x = 5π/6 + 2πk or x = 7π/6 + 2πk\ntan x = 1:  x = π/4 + πk" }
+    ],
+    finalAnswer: "5π/6, 7π/6",
+    answerExplanation: "2cos x = −√3, so cos x = −√3/2. The reference angle is π/6, and cosine is negative in Quadrants II and III: x = π − π/6 = 5π/6 and x = π + π/6 = 7π/6.",
+    example: { problem: "Solve 2sin²x − sin x − 1 = 0 for 0 ≤ x < 2π.", steps: [
+      { text: "Let u = sin x and factor 2u² − u − 1", math: "(2sin x + 1)(sin x − 1) = 0" },
+      { text: "First factor", math: "sin x = −1/2  →  QIII and QIV: 7π/6, 11π/6" },
+      { text: "Second factor", math: "sin x = 1  →  π/2 (one angle: it is on an axis)" },
+      { text: "Collect every solution", math: "<strong>π/2, 7π/6, 11π/6</strong>" }
+    ]},
+    keyPoints: [
+      "Isolate the trig function first, then use the unit circle",
+      "Most values give TWO angles per turn — use the quadrant signs to find both",
+      "Factor quadratics in sin x or cos x, and reject values outside [−1, 1]",
+      "Factor out sin x or cos x; never divide by it",
+      "General solution: + 2πk for sin and cos, + πk for tan"
+    ],
+    mistakes: [
+      { wrong: "sin x = 1/2, so x = π/6 only", why: "Sine is also positive in Quadrant II. The second solution is π − π/6 = 5π/6." },
+      { wrong: "Dividing sin 2x = sin x by sin x to get 2cos x = 1", why: "That throws away every x where sin x = 0 (x = 0 and x = π). Factor: sin x(2cos x − 1) = 0." },
+      { wrong: "Solving sin x = 2 as x = sin⁻¹(2)", why: "Sine never exceeds 1, so that factor gives no solutions. Reject it and keep the other factor." },
+      { wrong: "Writing tan x = 1 as x = π/4 + 2πk", why: "Tangent repeats every π, so that misses 5π/4. The general solution is x = π/4 + πk." }
+    ],
+    guided: {
+      problem: "Solve 2sin x − 1 = 0 for 0° ≤ x < 360°.",
+      steps: [
+        { label: "Isolate sin x", value: "sin x = 1/2" },
+        { label: "Reference angle", value: "30" },
+        { label: "Sine is positive in QI and QII; QII angle", value: "150" },
+        { label: "All solutions", value: "?" }
+      ],
+      answer: "30, 150",
+      answerLabel: "x =",
+      interactiveSteps: [
+        { prompt: "Add 1 and divide by 2. What does sin x equal?", hint: "2sin x = 1.", answer: "1/2", acceptableAnswers: ["1/2", "0.5"], formatHint: "e.g., 3/4" },
+        { prompt: "Which acute angle, in degrees, has a sine of 1/2? This is the reference angle and the Quadrant I solution.", hint: "Think of the 30-60-90 triangle.", answer: "30", acceptableAnswers: ["30", "30°"], formatHint: "Degrees, e.g., 45" },
+        { prompt: "Sine is also positive in Quadrant II. What is the Quadrant II solution, 180° − 30°, in degrees?", hint: "180 − 30.", answer: "150", acceptableAnswers: ["150", "150°"], formatHint: "Degrees, e.g., 45" },
+        { prompt: "Sine is negative in Quadrants III and IV, so there are no more solutions. How many solutions are there in [0°, 360°)?", hint: "Count 30° and 150°.", answer: "2", acceptableAnswers: ["2", "two"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying(() => asSet(trigQuestion())));
+
+  // One Trig Equations question; asSet() puts solution sets in roster notation.
+  function trigQuestion(){
+    const mode = pick(["linear", "degrees", "quadratic", "identity", "multiple", "count", "general", "calculator"]);
+    const rad = { show: piStr, reader: readRad, tol: 0.006, interval: "0 ≤ x < 2π", how: "as exact values in radians" };
+    const deg = { show: degStr, reader: readDeg, tol: 0.06, interval: "0° ≤ x < 360°", how: "in degrees" };
+
+    if (mode === "linear" || mode === "degrees") {
+      const U = mode === "linear" ? rad : deg;
+      const fn = pick(["sin", "sin", "cos", "cos", "tan"]);
+      const L = linearTrig(fn), ks = trigRoots(L.F);
+      if (!ks.length) return null;
+      const exp = ks.map(k => k * (U === rad ? Math.PI / GRID : 180 / GRID));
+      const pv = ({ sin: Math.asin, cos: Math.acos, tan: Math.atan })[fn](L.v);
+      const principal = U === rad ? (pv < 0 ? "-" + piStr(Math.round(-pv * GRID / Math.PI)) : piStr(Math.round(pv * GRID / Math.PI))) : fmt(pv * 180 / Math.PI);
+      const answer = ks.map(U.show).join(", ");
+      return {
+        subType: mode === "linear" ? "linear_radians" : "linear_degrees",
+        question: `Solve ${L.text} for ${U.interval}. List every solution ${U.how}, separated by commas.`,
+        answer,
+        validate: setValidate(exp, U.reader, U.tol),
+        options: trigSetOptions(fn, L.v, ks, U.show, principal),
+        explanation: describeLinear(fn, L.vStr, L.v, ks, U.show, U === deg ? "°" : "")
+      };
+    }
+
+    if (mode === "quadratic" || mode === "identity") {
+      // Squares and tan² forms are quadratic too; mix them into the plain case.
+      if (mode === "quadratic" && Math.random() < 0.3) {
+        const s = pick(SQUARES), ks = trigRoots(s.F), U = pick([rad, deg]);
+        return {
+          subType: "quadratic", question: `Solve ${s.text} for ${U.interval}. List every solution ${U.how}, separated by commas.`,
+          answer: ks.map(U.show).join(", "),
+          validate: setValidate(ks.map(k => k * (U === rad ? Math.PI / GRID : 180 / GRID)), U.reader, U.tol),
+          // Mistakes: only one of the two values (the positive square root); dropping an angle.
+          options: opt4(ks.map(U.show).join(", "), [trigRoots(s.half).map(U.show).join(", "), ks.filter((k, i) => i % 2 === 0).map(U.show).join(", "), ks.slice(1).map(U.show).join(", "), overInclude(ks).map(U.show).join(", ")]),
+          explanation: `${s.work} Each value gives its angles on the unit circle, so the solutions are ${ks.map(U.show).join(", ")}.`
+        };
+      }
+      const fn = pick(["sin", "cos"]), f = TRIG[fn], co = fn === "sin" ? "cos" : "sin";
+      const r1 = pick(QROOTS);
+      let r2;
+      do { r2 = Math.random() < 0.25 ? pick(QBAD) : pick(QROOTS); } while (r2[0] * r1[1] === r1[0] * r2[1]);
+      const A = r1[1] * r2[1], B = -(r1[1] * r2[0] + r1[0] * r2[1]), C = r1[0] * r2[0];
+      let text, F, lead = "";
+      if (mode === "quadratic") {
+        text = terms([[A, `${fn}²x`], [B, `${fn} x`], [C, ""]]) + " = 0";
+        F = x => A * f(x) ** 2 + B * f(x) + C;
+      } else {
+        // A·fn² + B·fn + C = 0 with fn² = 1 − co², multiplied by −1 so it leads positive.
+        text = terms([[A, `${co}²x`], [-B, `${fn} x`], [-(A + C), ""]]) + " = 0";
+        F = x => A * TRIG[co](x) ** 2 - B * f(x) - (A + C);
+        lead = `Replace ${co}²x with 1 − ${fn}²x so only ${fn} remains, then collect terms (and multiply by −1): ${terms([[A, `${fn}²x`], [B, `${fn} x`], [C, ""]])} = 0. `;
+      }
+      const ks = trigRoots(F);
+      // Rebuild the key factor by factor and insist it agrees with the scan.
+      const vals = [r1, r2].map(r => r[0] / r[1]);
+      const byVal = vals.map(v => Math.abs(v) <= 1 ? trigRoots(x => f(x) - v) : []);
+      const union = [...new Set(byVal.flat())].sort((a, b) => a - b);
+      if (!ks.length || union.join() !== ks.join()) return null;
+      const U = pick([rad, rad, deg]);
+      const S = list => list.map(U.show).join(", ");
+      const rr = [r1, r2];
+      const parts = vals.map((v, i) => Math.abs(v) > 1
+        ? `${fn} x = ${neg(frac(rr[i][0], rr[i][1]))} is impossible (sine and cosine stay between −1 and 1), so reject it`
+        : `${fn} x = ${neg(frac(rr[i][0], rr[i][1]))} gives ${S(byVal[i])}`);
+      const answer = S(ks);
+      const firstOnly = byVal.map(b => b.slice(0, 1)).flat().sort((a, b) => a - b);
+      return {
+        subType: mode === "quadratic" ? "quadratic" : "identity",
+        question: `Solve ${text} for ${U.interval}. List every solution ${U.how}, separated by commas.`,
+        answer,
+        validate: setValidate(ks.map(k => k * (U === rad ? Math.PI / GRID : 180 / GRID)), U.reader, U.tol),
+        // Mistakes: keeping only one factor; only the first angle of each value.
+        options: opt4(answer, [S(byVal[0]), S(byVal[1]), S(firstOnly), S(ks.slice(1)), S(overInclude(ks))].filter(Boolean)),
+        explanation: `${lead}Let u = ${fn} x: ${terms([[A, "u²"], [B, "u"], [C, ""]])} = 0 factors as (${fac(r1, fn)})(${fac(r2, fn)}) = 0. ${parts.join("; ")}. All solutions: ${answer}.`
+      };
+    }
+
+    if (mode === "multiple") {
+      if (Math.random() < 0.35) {
+        const d = pick(DOUBLE), ks = trigRoots(d.F), U = pick([rad, deg]);
+        const answer = ks.map(U.show).join(", ");
+        return {
+          subType: "identity",
+          question: `Solve ${d.text} for ${U.interval}. List every solution ${U.how}, separated by commas.`,
+          answer,
+          validate: setValidate(ks.map(k => k * (U === rad ? Math.PI / GRID : 180 / GRID)), U.reader, U.tol),
+          // Mistake: dividing by sin x or cos x loses that factor's solutions.
+          options: opt4(answer, [ks.slice(0, 2).map(U.show).join(", "), ks.slice(1).map(U.show).join(", "), ks.slice(0, -1).map(U.show).join(", "), overInclude(ks).map(U.show).join(", ")]),
+          explanation: `${d.work} Collect the angles for each factor: ${answer}.`
+        };
+      }
+      const fn = pick(["sin", "cos", "tan"]), k = 2, f = TRIG[fn];
+      const vStr = fn === "tan" ? pick(["1", "-1", "√3", "-√3"]) : pick(["1/2", "-1/2", "√2/2", "-√2/2", "√3/2", "-√3/2"]);
+      const v = vNum(vStr), base = trigRoots(x => f(x) - v), ks = trigRoots(x => f(k * x) - v);
+      const answer = ks.map(piStr).join(", ");
+      // Mistake: solving for 2x and forgetting to divide (or only dividing the first turn).
+      const firstTurn = base.map(b => b / k).filter(Number.isInteger);
+      return {
+        subType: "multiple_angle",
+        question: `Solve ${fn}(2x) = ${neg(vStr)} for 0 ≤ x < 2π. List every solution as exact values in radians, separated by commas.`,
+        answer,
+        validate: setValidate(ks.map(q => q * Math.PI / GRID), readRad, 0.006),
+        // ...or solving for u and never dividing by 2 at all (u's angles over both turns).
+        options: opt4(answer, [base.map(piStr).join(", "), firstTurn.map(piStr).join(", "), ks.slice(0, 2).map(piStr).join(", "),
+          base.concat(base.map(b => b + 2 * GRID)).map(piStr).join(", ")]),
+        explanation: `Let u = 2x. As x runs over [0, 2π), u runs over [0, 4π) — two full turns. ${fn} u = ${neg(vStr)} at u = ${base.map(piStr).join(", ")} in the first turn, and those plus 2π in the second. ` +
+                     `Divide every u by 2: x = ${answer}.`
+      };
+    }
+
+    if (mode === "count") {
+      const fn = pick(["sin", "cos", "tan"]), k = pick([2, 3, 4, 5]);
+      const vStr = fn === "tan" ? pick(["1", "-1", "√3", "-√3/3"]) : pick(["1/2", "-1/2", "√2/2", "-√3/2"]);
+      const v = vNum(vStr), per = trigRoots(x => TRIG[fn](x) - v).length, ans = k * per;
+      return {
+        subType: "count_solutions",
+        question: `How many solutions does ${fn}(${k}x) = ${neg(vStr)} have on 0 ≤ x < 2π?`,
+        answer: fmt(ans),
+        // Mistakes: ignoring the k (one turn's count), one solution per turn, an extra endpoint.
+        options: opt4(fmt(ans), [fmt(per), fmt(k), fmt(ans + 1), fmt(ans / 2), fmt(2 * ans)]),
+        explanation: `Let u = ${k}x. As x covers [0, 2π), u covers [0, ${k * 2}π): ${k} full turns. ${fn} u = ${neg(vStr)} has ${per} solutions in each turn, so there are ${k} × ${per} = ${ans} solutions.`
+      };
+    }
+
+    if (mode === "general") {
+      const fn = pick(["sin", "cos", "tan"]), s = pick([1, -1]);
+      const vStr = fn === "tan" ? pick(["1", "√3", "√3/3"]) : pick(["1/2", "√2/2", "√3/2"]);
+      const sv = (s < 0 ? "-" : "") + vStr, v = vNum(sv);
+      const ks = trigRoots(x => TRIG[fn](x) - v);
+      const text = `${fn} x = ${neg(sv)}`;
+      let ans, wrong;
+      if (fn === "tan") {
+        const a = piStr(ks[0]);
+        const swapV = vStr === "1" ? "√3" : vStr === "√3" ? "√3/3" : "√3";
+        const sw = trigRoots(x => Math.tan(x) - vNum((s < 0 ? "-" : "") + swapV))[0];
+        const fl = trigRoots(x => Math.tan(x) + v)[0];
+        ans = `x = ${a} + πk`;
+        // Mistakes: tan's period taken as 2π (misses half); the sign slip; a neighbouring special angle.
+        wrong = [`x = ${a} + 2πk`, `x = ${piStr(fl)} + πk`, `x = ${piStr(sw)} + πk`];
+      } else {
+        const [a, b] = ks.map(piStr);
+        const other = trigRoots(x => TRIG[fn === "sin" ? "cos" : "sin"](x) - v).map(piStr);
+        ans = `x = ${a} + 2πk or x = ${b} + 2πk`;
+        // Mistakes: only one family; period π instead of 2π; the other function's angles.
+        wrong = [`x = ${a} + 2πk`, `x = ${a} + πk or x = ${b} + πk`, `x = ${other[0]} + 2πk or x = ${other[1]} + 2πk`];
+      }
+      return {
+        subType: "general_solution", forceChoice: true,
+        question: `Which formula gives ALL solutions of ${text}? (k is any integer)`,
+        answer: ans,
+        options: opt4(ans, wrong),
+        explanation: fn === "tan"
+          ? `In one period of tangent (length π) the only solution is ${piStr(ks[0])}. Tangent repeats every π, so x = ${piStr(ks[0])} + πk. Adding 2πk would miss ${piStr(ks[1])}.`
+          : `In [0, 2π) the solutions are ${ks.map(piStr).join(" and ")}. ${fn} repeats every 2π, so each one starts its own family: ${ans}.`
+      };
+    }
+
+    // calculator: a non-special value, degrees to the nearest tenth.
+    const fn = pick(["sin", "cos", "tan"]);
+    let n, d;
+    if (fn === "tan") { do { n = ri(1, 12); d = ri(1, 5); } while (g(n, d) !== 1 || n === d); }
+    else { do { d = pick([3, 4, 5, 10]); n = ri(1, d - 1); } while (g(n, d) !== 1 || 2 * n === d); }
+    const s = pick([1, -1]), v = s * n / d;
+    const text = d === 1 ? `tan x ${s > 0 ? "−" : "+"} ${n} = 0` : `${d}${fn} x ${s > 0 ? "−" : "+"} ${n} = 0`;
+    const P = ({ sin: Math.asin, cos: Math.acos, tan: Math.atan })[fn](v);
+    const norm = t => ((t % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    const pair = fn === "sin" ? [P, Math.PI - P] : fn === "cos" ? [P, 2 * Math.PI - P] : [P, P + Math.PI];
+    const sols = pair.map(norm).map(t => t * 180 / Math.PI).sort((a, b) => a - b);
+    const r1 = sols.map(t => Number(t.toFixed(1)));
+    const show = list => list.map(t => fmt(t)).join(", ");
+    const p = Number((P * 180 / Math.PI).toFixed(1));
+    const answer = show(r1);
+    // Mistakes: the calculator value alone (even when negative); pairing with the wrong quadrant rule.
+    const wrap = t => Number((((t % 360) + 360) % 360).toFixed(1));
+    const wrongPair = (fn === "sin" ? [p, 360 - p] : [p, 180 - p]).map(wrap).sort((a, b) => a - b);
+    const mirrored = r1.map(t => wrap(360 - t)).sort((a, b) => a - b);
+    return {
+      subType: "calculator",
+      question: `Solve ${text} for 0° ≤ x < 360°. Round each solution to the nearest tenth of a degree and separate them with commas.`,
+      answer,
+      validate: setValidate(r1, readDeg, 0.1),
+      options: opt4(answer, [fmt(p), show(wrongPair), show(mirrored), fmt(r1[0]),
+        show([wrap(180 - p), wrap(180 + p)].sort((a, b) => a - b))]),
+      explanation: `${fn} x = ${neg(frac(s * n, d))}. A calculator gives ${fn}⁻¹(${neg(frac(s * n, d))}) ≈ ${neg(fmt(p))}°. ` +
+                   `${fn} is ${s > 0 ? "positive" : "negative"} in Quadrants ${QUAD[fn][s > 0 ? 0 : 1]}, ` +
+                   `${fn === "sin" ? "and the partner angle is 180° − x" : fn === "cos" ? "and the partner angle is 360° − x" : "and tangent repeats every 180°"}` +
+                   `${p < 0 ? " (add 360° to bring a negative angle into range)" : ""}. Solutions: ${answer}.`
+    };
+  }
+
+  // ======================================================================
+  // M-328  Logarithmic and Exponential Models  (tier 8)
+  // ======================================================================
+  // Prerequisites: Solving Exponential and Logarithmic Equations (T7) and
+  // Exponential Growth and Decay (T5, a(1 ± r)^t). New here: half-life and
+  // doubling time, continuous growth A = Pe^(rt), and the three log scales
+  // students meet in science (pH, decibels, Richter). Every rounded answer
+  // states its precision and accepts ±1 unit in the last place (nearValidate).
+  const ISOTOPES = [
+    { name: "Iodine-131", h: 8, unit: "days" },
+    { name: "A medical tracer", h: 6, unit: "hours" },
+    { name: "Strontium-90", h: 29, unit: "years" },
+    { name: "Caffeine in the body", h: 5, unit: "hours" },
+    { name: "Phosphorus-32", h: 14, unit: "days" },
+    { name: "Cobalt-60", h: 5, unit: "years" }
+  ];
+  const one = u => u.replace(/s$/, "");
+  const big = n => Number(n).toLocaleString("en-US");
+
+  _addSkill(8, "Logarithmic and Exponential Models", "Logarithmic and Exponential Models", 5, {
+    goalProblem: "Carbon-14 has a half-life of 5730 years. A bone has 30% of its original carbon-14. About how old is it?",
+    teachingSteps: [
+      { title: "One model, many stories", explanation: "Repeated multiplication over equal time steps is exponential: <strong>A = A₀ · b^(t/T)</strong>. For a half-life T, b = 1/2. For a doubling time T, b = 2. For a yearly percent change r, the model is A₀(1 + r)ᵗ.", visual: "half-life 8 days: A = A₀(1/2)^(t/8)\ndoubles every 20 min: N = N₀·2^(t/20)" },
+      { title: "Whole numbers of half-lives: just halve", explanation: "If the time is a whole number of half-lives, count them and halve that many times — no logarithms needed.", visual: "24 days of iodine-131 = 3 half-lives\n800 mg → 400 → 200 → 100 mg" },
+      { title: "Solving for time: take a logarithm", explanation: "When the unknown is in the exponent, divide by A₀, then take the log of both sides and use log(bⁿ) = n·log b.", visual: "0.30 = (1/2)^(t/5730)\nt/5730 = log(0.30) / log(0.5) ≈ 1.737\nt ≈ 9950 years" },
+      { title: "Continuous growth uses e", explanation: "Growth compounded every instant is <strong>A = Pe^(rt)</strong>. The natural log undoes e: if e^(rt) = 2 then rt = ln 2. So the continuous doubling time is ln 2 ÷ r.", visual: "$1000 at 5% continuously for 10 years:\n1000·e^(0.5) ≈ $1648.72\ndoubling time: ln 2 ÷ 0.05 ≈ 13.9 years" },
+      { title: "Log scales: pH, decibels, Richter", explanation: "When a quantity spans many powers of 10, science measures its <strong>logarithm</strong> instead. pH = −log[H⁺]; sound level L = 10·log(I/I₀) dB; earthquake magnitude M = log(A/A₀).", visual: "[H⁺] = 10⁻⁴  →  pH 4\nI = 10⁶·I₀  →  60 dB" },
+      { title: "Comparing on a log scale", explanation: "A difference on a log scale is a <strong>ratio</strong> in real life. One pH unit or one Richter unit is a factor of 10; 10 dB is a factor of 10 in intensity.", visual: "pH 3 vs pH 6: 10³ = 1000 times the [H⁺]\n90 dB vs 60 dB: 10^(30/10) = 1000 times the intensity" }
+    ],
+    finalAnswer: "about 9950 years",
+    answerExplanation: "0.30 = (1/2)^(t/5730), so t = 5730 · log(0.30)/log(0.5) ≈ 5730 × 1.737 ≈ 9953, about 9950 years.",
+    example: { problem: "A $2,500 deposit earns 4% interest compounded continuously. How long until it is worth $4,000?", steps: [
+      { text: "Set up the model", math: "4000 = 2500·e^(0.04t)" },
+      { text: "Divide by 2500", math: "1.6 = e^(0.04t)" },
+      { text: "Take the natural log", math: "ln 1.6 = 0.04t  →  0.4700 = 0.04t" },
+      { text: "Solve", math: "t ≈ 11.75, so about <strong>11.8 years</strong>" }
+    ]},
+    keyPoints: [
+      "Half-life: A = A₀(1/2)^(t/T); doubling: A = A₀·2^(t/T)",
+      "Continuous growth: A = Pe^(rt), and ln undoes e",
+      "Unknown in the exponent: isolate the power, then take logs",
+      "pH = −log[H⁺], L = 10·log(I/I₀), M = log(A/A₀)",
+      "A difference of d on a log scale is a factor of 10^d (10 dB = a factor of 10)"
+    ],
+    mistakes: [
+      { wrong: "3 half-lives of 800 mg leaves 800 ÷ 6 ≈ 133 mg", why: "Each half-life HALVES what is left: 800 → 400 → 200 → 100. That is ÷ 2³ = ÷ 8, not ÷ (2 × 3)." },
+      { wrong: "Using 1000(1.05)^10 for 5% compounded continuously", why: "That is yearly compounding. Continuously compounded growth is 1000·e^(0.05·10)." },
+      { wrong: "pH 4 is twice as acidic as pH 8 because 8 ÷ 4 = 2", why: "pH is a log scale: 4 units apart is a factor of 10⁴ = 10,000 in [H⁺]." },
+      { wrong: "Thinking 80 dB is only slightly louder than 70 dB", why: "10 dB more is 10 times the intensity." }
+    ],
+    guided: {
+      problem: "$2,000 is invested at 5% compounded continuously. How long does it take to double? Round to the nearest tenth of a year.",
+      steps: [
+        { label: "Doubling means", value: "4000 = 2000·e^(0.05t), so 2 = e^(0.05t)" },
+        { label: "Take ln of both sides", value: "ln 2 = 0.05t" },
+        { label: "ln 2 ≈", value: "0.693" },
+        { label: "t = 0.693 ÷ 0.05", value: "?" }
+      ],
+      answer: "13.9",
+      answerLabel: "t ≈",
+      interactiveSteps: [
+        { prompt: "Doubling means the $2,000 becomes $4,000. Dividing 4000 = 2000·e^(0.05t) by 2000, what number does e^(0.05t) equal?", hint: "4000 ÷ 2000.", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number" },
+        { prompt: "Take the natural log of both sides: 0.05t = ln 2. What is ln 2, to three decimal places?", hint: "Use a calculator: ln 2.", answer: "0.693", acceptableAnswers: ["0.693", "0.6931", "0.69"], formatHint: "e.g., 0.123" },
+        { prompt: "Now t = 0.693 ÷ 0.05. How many years is that, to the nearest tenth?", hint: "0.693 ÷ 0.05 = 13.86.", answer: "13.9", acceptableAnswers: ["13.9", "13.86"], formatHint: "e.g., 12.3" }
+      ]
+    }
+  }, retrying(function(){
+    const mode = pick(["half_amount", "half_time", "doubling", "continuous", "continuous_solve", "ph", "decibels", "richter"]);
+
+    if (mode === "half_amount") {
+      const I = pick(ISOTOPES), n = ri(2, 5), A0 = Math.pow(2, n) * ri(3, 30) * pick([1, 5]);
+      const t = n * I.h, ans = A0 / Math.pow(2, n);
+      return {
+        subType: "half_life_amount",
+        question: `${I.name} has a half-life of ${I.h} ${I.unit}. A sample starts at ${A0} mg. How many mg remain after ${t} ${I.unit}?`,
+        answer: fmt(ans),
+        // Mistakes: reporting the amount that DECAYED; dividing by 2n instead of 2^n;
+        // one halving too few or too many.
+        options: opt4(fmt(ans), [fmt(A0 - ans), fmt(A0 / (2 * n)), fmt(A0 / Math.pow(2, n - 1)), fmt(A0 / Math.pow(2, n + 1)), fmt(A0 / n)]),
+        explanation: `${t} ÷ ${I.h} = ${n} half-lives. A = ${A0}·(1/2)^${n} = ${A0} ÷ ${Math.pow(2, n)} = ${fmt(ans)} mg.`
+      };
+    }
+
+    if (mode === "half_time") {
+      const p = pick([5, 10, 15, 20, 30, 35, 40, 60, 70, 80]);
+      const carbon = Math.random() < 0.35;
+      const I = carbon ? { name: "Carbon-14", h: 5730, unit: "years" } : pick(ISOTOPES);
+      const exact = I.h * Math.log(100 / p) / Math.LN2;
+      const unit = carbon ? 100 : 0.1;   // carbon dating to the nearest century, everything else to a tenth
+      const r = x => carbon ? fmt(Math.round(x / 100) * 100) : rnd(x, 1);
+      const ans = r(exact);
+      const q = carbon
+        ? `A bone has ${p}% of its original carbon-14 left. Carbon-14 has a half-life of 5730 years. About how old is the bone? Round to the nearest hundred years.`
+        : `${I.name} has a half-life of ${I.h} ${I.unit}. How long until only ${p}% of a sample remains? Round to the nearest tenth of ${/^(hour|[aeiou])/.test(one(I.unit)) ? "an" : "a"} ${one(I.unit)}.`;
+      return {
+        subType: "half_life_time",
+        question: q,
+        answer: ans,
+        validate: nearValidate(Number(ans), unit),
+        // Mistakes: dropping the ÷ ln 2 (ln of the ratio times T); treating decay as linear (50% per half-life);
+        // base-10 log on top with no matching log on the bottom.
+        options: opt4(ans, [r(I.h * Math.log(100 / p)), r(I.h * (100 - p) / 50), r(I.h * Math.log10(100 / p)), r(I.h * Math.LN2 / Math.log(100 / p))]),
+        explanation: `${fmt(p / 100)} = (1/2)^(t/${I.h}). Take logs: t/${I.h} = log(${fmt(p / 100)}) ÷ log(0.5) = ${fmt(exact / I.h)}. ` +
+                     `So t = ${I.h} × ${fmt(exact / I.h)} ≈ ${fmt(exact)}, about ${ans} ${I.unit}.`
+      };
+    }
+
+    if (mode === "doubling") {
+      const v = pick(["annual", "continuous", "count"]);
+      if (v === "annual") {
+        const p = ri(2, 12), exact = Math.LN2 / Math.log(1 + p / 100), ans = rnd(exact, 1);
+        return {
+          subType: "doubling",
+          question: `A city's population grows ${p}% per year. How many years does it take to double? Round to the nearest tenth of a year.`,
+          answer: ans,
+          validate: nearValidate(Number(ans), 0.1),
+          // Mistakes: the continuous formula ln 2 ÷ r; 100 ÷ p; adding p% a year with no compounding.
+          options: opt4(ans, [rnd(Math.LN2 / (p / 100), 1), rnd(100 / p, 1), rnd(Math.log(2) / Math.log10(1 + p / 100), 1), rnd(50 / p, 1)]),
+          explanation: `Solve 2 = (${fmt(1 + p / 100)})^t: t = ln 2 ÷ ln(${fmt(1 + p / 100)}) = 0.6931 ÷ ${fmt(Math.log(1 + p / 100))} ≈ ${ans} years.`
+        };
+      }
+      if (v === "continuous") {
+        const r = ri(2, 15), exact = Math.LN2 / (r / 100), ans = rnd(exact, 1);
+        return {
+          subType: "doubling",
+          question: `A colony grows continuously at ${r}% per hour (N = N0·e^(${fmt(r / 100)}t)). What is its doubling time? Round to the nearest tenth of an hour.`,
+          answer: ans,
+          validate: nearValidate(Number(ans), 0.1),
+          // Mistakes: yearly-compounding formula; 2 ÷ r; forgetting ln entirely (1 ÷ r).
+          options: opt4(ans, [rnd(Math.LN2 / Math.log(1 + r / 100), 1), rnd(2 / (r / 100), 1), rnd(1 / (r / 100), 1), rnd(Math.log10(2) / (r / 100), 1)]),
+          explanation: `Doubling: 2 = e^(${fmt(r / 100)}t). Take ln: ${fmt(r / 100)}t = ln 2 ≈ 0.6931, so t ≈ 0.6931 ÷ ${fmt(r / 100)} ≈ ${ans} hours.`
+        };
+      }
+      const d = pick([15, 20, 30]), n = ri(3, 8), N0 = 50 * ri(2, 12), t = n * d, ans = N0 * Math.pow(2, n);
+      return {
+        subType: "doubling",
+        question: `A bacteria population doubles every ${d} minutes. It starts at ${N0}. How many bacteria are there after ${t} minutes?`,
+        answer: fmt(ans),
+        // Mistakes: doubling read as "add N0 each period"; one doubling too few; 2n instead of 2^n.
+        options: opt4(fmt(ans), [fmt(N0 * (n + 1)), fmt(N0 * Math.pow(2, n - 1)), fmt(N0 * 2 * n), fmt(N0 * Math.pow(2, n + 1))]),
+        explanation: `${t} ÷ ${d} = ${n} doublings. N = ${N0}·2^${n} = ${N0} × ${Math.pow(2, n)} = ${big(ans)}.`
+      };
+    }
+
+    if (mode === "continuous") {
+      const P = 500 * ri(2, 20), r = ri(2, 8), t = ri(3, 20);
+      const A = P * Math.exp(r / 100 * t), ans = money(A);
+      return {
+        subType: "continuous",
+        question: `$${big(P)} is invested at ${r}% interest compounded continuously. What is it worth after ${t} years? Round to the nearest cent.`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.01),
+        // Mistakes: yearly compounding; simple interest; monthly compounding (close, but not continuous).
+        options: opt4(ans, [money(P * Math.pow(1 + r / 100, t)), money(P * (1 + r / 100 * t)), money(P * Math.pow(1 + r / 1200, 12 * t)), money(P * Math.exp(r / 100) * t)]),
+        explanation: `A = Pe^(rt) = ${P}·e^(${fmt(r / 100)} × ${t}) = ${P}·e^(${fmt(r / 100 * t)}) ≈ ${P} × ${fmt(Math.exp(r / 100 * t))} ≈ $${ans}.`
+      };
+    }
+
+    if (mode === "continuous_solve") {
+      if (pick([true, false])) {
+        const P = 1000 * ri(1, 9), m = pick([1.5, 2, 2.5, 3, 4]), r = ri(2, 9), exact = Math.log(m) / (r / 100), ans = rnd(exact, 1);
+        return {
+          subType: "continuous_solve",
+          question: `How many years will it take $${big(P)} to grow to $${big(P * m)} at ${r}% compounded continuously? Round to the nearest tenth of a year.`,
+          answer: ans,
+          validate: nearValidate(Number(ans), 0.1),
+          // Mistakes: simple-interest thinking (m − 1) ÷ r; log base 10 instead of ln; multiplying by r.
+          options: opt4(ans, [rnd((m - 1) / (r / 100), 1), rnd(Math.log10(m) / (r / 100), 1), rnd(Math.log(m) * r, 1), rnd(Math.log(m * P) / (r / 100) / 10, 1)]),
+          explanation: `${big(P * m)} = ${big(P)}·e^(${fmt(r / 100)}t), so e^(${fmt(r / 100)}t) = ${m}. Take ln: ${fmt(r / 100)}t = ln ${m} ≈ ${fmt(Math.log(m))}, so t ≈ ${ans} years.`
+        };
+      }
+      const N0 = 100 * ri(2, 9), m = pick([2, 3, 5, 1.5, 2.5]), t = ri(3, 12), exact = 100 * Math.log(m) / t, ans = rnd(exact, 1);
+      return {
+        subType: "continuous_solve",
+        question: `A culture grows continuously from ${N0} cells to ${fmt(N0 * m)} cells in ${t} hours. What is its continuous growth rate k, as a percent per hour? Round to the nearest tenth of a percent.`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        // Mistakes: percent change spread evenly over the hours; log base 10; ln of the difference.
+        options: opt4(ans, [rnd(100 * (m - 1) / t, 1), rnd(100 * Math.log10(m) / t, 1), rnd(100 * Math.log(N0 * (m - 1)) / t / 10, 1), rnd(Math.log(m) / t, 1)]),
+        explanation: `${fmt(N0 * m)} = ${N0}·e^(${t}k), so e^(${t}k) = ${m} and ${t}k = ln ${m} ≈ ${fmt(Math.log(m))}. k ≈ ${fmt(Math.log(m) / t)} per hour, which is about ${ans}% per hour.`
+      };
+    }
+
+    if (mode === "ph") {
+      const v = pick(["compute", "compare", "compare_half"]);
+      if (v === "compute") {
+        const c = pick([2, 2.5, 3.2, 4, 5, 6.3, 7.9]), k = ri(2, 12), exact = k - Math.log10(c), ans = rnd(exact, 2);
+        return {
+          subType: "ph",
+          question: `A solution's hydrogen-ion concentration is ${c} × 10^-${k} moles per liter. Using pH = −log[H⁺], what is its pH? Round to the nearest hundredth.`,
+          answer: ans,
+          validate: nearValidate(Number(ans), 0.01),
+          // Mistakes: sign slip (k + log c); ignoring the coefficient (k); natural log instead of log.
+          options: opt4(ans, [rnd(k + Math.log10(c), 2), fmt(k), rnd(k - Math.log(c), 2), rnd(-Math.log10(c), 2)]),
+          explanation: `pH = −log(${c} × 10^-${k}) = −(log ${c} + log 10^-${k}) = −(${fmt(Math.log10(c))} − ${k}) = ${k} − ${fmt(Math.log10(c))} ≈ ${ans}.`
+        };
+      }
+      if (v === "compare") {
+        const a = ri(2, 8), d = ri(1, 4), b = a + d, ans = Math.pow(10, d);
+        return {
+          subType: "ph",
+          question: `Solution A has pH ${a} and solution B has pH ${b}. How many times greater is A's hydrogen-ion concentration than B's?`,
+          answer: fmt(ans),
+          // Mistakes: subtracting the pH values; 10 × the difference; reading pH as a ratio.
+          options: opt4(fmt(ans), [fmt(d), fmt(10 * d), fmt(b / a), fmt(Math.pow(2, d))]),
+          explanation: `pH is −log[H⁺], so each pH unit lower is 10 times the [H⁺]. A is ${d} unit${d > 1 ? "s" : ""} lower: 10^${d} = ${big(ans)} times.`
+        };
+      }
+      const d = pick([0.5, 1.5, 2.5]), a = ri(3, 6), ans = rnd(Math.pow(10, d), 1);
+      return {
+        subType: "ph",
+        question: `Acid rain lowers a lake from pH ${a + d} to pH ${a}. How many times greater is the hydrogen-ion concentration now? Round to the nearest tenth.`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        options: opt4(ans, [fmt(d), fmt(10 * d), rnd(Math.pow(10, Math.floor(d)), 1), rnd(Math.pow(10, Math.ceil(d)), 1)]),
+        explanation: `A drop of ${d} pH units multiplies [H⁺] by 10^${d} ≈ ${ans}.`
+      };
+    }
+
+    if (mode === "decibels") {
+      const v = pick(["level", "level_coef", "compare", "multiply"]);
+      if (v === "level") {
+        const k = ri(2, 12), ans = 10 * k;
+        return {
+          subType: "decibels",
+          question: `A sound's intensity is ${big(Math.pow(10, k))} times the threshold of hearing I0. Using L = 10·log(I/I0), what is its level in decibels?`,
+          answer: fmt(ans),
+          // Mistakes: forgetting the 10 in front; using the ratio's digit count plus one.
+          options: opt4(fmt(ans), [fmt(k), fmt(100 * k), fmt(10 * (k + 1)), fmt(10 * (k - 1))]),
+          explanation: `L = 10·log(10^${k}) = 10 × ${k} = ${ans} dB.`
+        };
+      }
+      if (v === "level_coef") {
+        const c = pick([2, 3, 4, 5, 6, 8]), k = ri(3, 10), exact = 10 * (k + Math.log10(c)), ans = rnd(exact, 1);
+        return {
+          subType: "decibels",
+          question: `A machine's sound intensity is ${c} × 10^${k} times the threshold of hearing I0. What is its level, L = 10·log(I/I0), in decibels? Round to the nearest tenth.`,
+          answer: ans,
+          validate: nearValidate(Number(ans), 0.1),
+          // Mistakes: dropping the coefficient; log c without the factor 10; multiplying instead of adding logs.
+          options: opt4(ans, [fmt(10 * k), rnd(10 * k + Math.log10(c), 1), rnd(10 * k * Math.log10(c), 1), rnd(10 * (k + Math.log(c)), 1)]),
+          explanation: `L = 10·(log ${c} + log 10^${k}) = 10·(${fmt(Math.log10(c))} + ${k}) ≈ ${ans} dB.`
+        };
+      }
+      if (v === "compare") {
+        const L2 = 10 * ri(3, 7), d = 10 * ri(1, 4), L1 = L2 + d, ans = Math.pow(10, d / 10);
+        return {
+          subType: "decibels",
+          question: `A ${L1} dB sound is how many times as intense as a ${L2} dB sound?`,
+          answer: fmt(ans),
+          // Mistakes: the dB difference itself; the difference ÷ 10; reading dB as proportional.
+          options: opt4(fmt(ans), [fmt(d), fmt(d / 10), rnd(L1 / L2, 2), fmt(2 * d / 10)]),
+          explanation: `Each 10 dB is a factor of 10 in intensity. ${L1} − ${L2} = ${d} dB, so the factor is 10^(${d}/10) = ${big(ans)}.`
+        };
+      }
+      const m = pick([2, 4, 5, 8, 20, 50]), exact = 10 * Math.log10(m), ans = rnd(exact, 1);
+      return {
+        subType: "decibels",
+        question: `A sound's intensity is multiplied by ${m}. By how many decibels does its level rise? Round to the nearest tenth.`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        // Mistakes: the factor itself; 10 times the factor; natural log.
+        options: opt4(ans, [fmt(m), fmt(10 * m), rnd(10 * Math.log(m), 1), rnd(Math.log10(m), 1)]),
+        explanation: `New level − old level = 10·log(${m}I/I0) − 10·log(I/I0) = 10·log ${m} ≈ ${ans} dB. Multiplying intensity ADDS to the decibel level.`
+      };
+    }
+
+    // richter
+    const v = pick(["ratio", "ratio_half", "difference"]);
+    if (v === "ratio") {
+      const M2 = ri(3, 6), d = ri(1, 3), M1 = M2 + d, ans = Math.pow(10, d);
+      return {
+        subType: "richter",
+        question: `On the Richter scale M = log(A/A0), where A is the seismograph amplitude. How many times larger is the amplitude of a magnitude ${M1}.0 earthquake than a magnitude ${M2}.0 one?`,
+        answer: fmt(ans),
+        options: opt4(fmt(ans), [fmt(d), fmt(10 * d), rnd(M1 / M2, 2), fmt(Math.pow(2, d))]),
+        explanation: `Each whole magnitude is a factor of 10 in amplitude. ${M1} − ${M2} = ${d}, so the factor is 10^${d} = ${big(ans)}.`
+      };
+    }
+    if (v === "ratio_half") {
+      const M2 = ri(3, 6), d = pick([0.5, 1.5, 2.5]), ans = rnd(Math.pow(10, d), 1);
+      return {
+        subType: "richter",
+        question: `Using M = log(A/A0), how many times larger is the amplitude of a magnitude ${fmt(M2 + d)} earthquake than a magnitude ${M2} one? Round to the nearest tenth.`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        options: opt4(ans, [fmt(d), fmt(10 * d), rnd(Math.pow(10, Math.floor(d)), 1), rnd(Math.pow(10, Math.ceil(d)), 1)]),
+        explanation: `The magnitudes differ by ${d}, so the amplitudes differ by a factor of 10^${d} ≈ ${ans}.`
+      };
+    }
+    const R = pick([20, 30, 50, 200, 300, 500]), exact = Math.log10(R), ans = rnd(exact, 1);
+    return {
+      subType: "richter",
+      question: `One earthquake's seismograph amplitude is ${R} times another's. Using M = log(A/A0), how much larger is its magnitude? Round to the nearest tenth.`,
+      answer: ans,
+      validate: nearValidate(Number(ans), 0.1),
+      // Mistakes: the ratio ÷ 10; natural log; 10·log as for decibels.
+      options: opt4(ans, [fmt(R / 10), rnd(Math.log(R), 1), rnd(10 * Math.log10(R), 1), fmt(Math.floor(exact))]),
+      explanation: `M1 − M2 = log(A1/A0) − log(A2/A0) = log(A1/A2) = log ${R} ≈ ${ans}.`
+    };
+  }));
+
+  // ======================================================================
+  // M-329  Separable Differential Equations  (tier 9)
+  // ======================================================================
+  // Prerequisites: Differential Equations (T9: order, verifying a solution,
+  // dy/dx = ky) and U-Substitution (T9). This goes the whole way: separate,
+  // integrate both sides, solve for y, and pin C down with an initial
+  // condition — then the two classic models, growth/decay and Newton's law of
+  // cooling. Formula answers (general solutions, separations) are selections;
+  // everything numeric is typed.
+  const TRIPLES = [[3, 4, 5], [4, 3, 5], [5, 12, 13], [12, 5, 13], [6, 8, 10], [8, 6, 10], [8, 15, 17], [15, 8, 17], [7, 24, 25], [9, 12, 15], [12, 9, 15], [20, 21, 29]];
+  const cf = (a, s) => (a === 1 ? "" : a) + s;   // "3x", "x" (display)
+
+  _addSkill(9, "Separable Differential Equations", "Separable Differential Equations", 5, {
+    goalProblem: "Solve dy/dx = 2xy with y(0) = 3.",
+    teachingSteps: [
+      { title: "What makes an equation separable", explanation: "A first-order equation is <strong>separable</strong> when the right side factors into (a function of x) × (a function of y): dy/dx = f(x)·g(y).", visual: "dy/dx = 2xy  =  (2x)·(y)  ✓ separable\ndy/dx = x + y   ✗ cannot be split this way" },
+      { title: "Separate the variables", explanation: "Treat dy/dx like a fraction: move every y (with dy) to one side and every x (with dx) to the other by multiplying and dividing — never by adding.", visual: "dy/dx = 2xy  →  dy/y = 2x dx" },
+      { title: "Integrate both sides — one constant", explanation: "Integrate each side with respect to its own variable. The two constants combine, so write <strong>+ C once</strong>, on the x side. U-substitution is fair game here.", visual: "∫ dy/y = ∫ 2x dx  →  ln|y| = x² + C" },
+      { title: "Solve for y", explanation: "Undo the logarithm by exponentiating: e^(x² + C) = e^C · e^(x²). Since e^C is just another constant, rename it: <strong>y = Ce^(x²)</strong>. The C multiplies — it is not added on the end.", visual: "|y| = e^C·e^(x²)  →  y = Ce^(x²)" },
+      { title: "Use the initial condition", explanation: "Substitute the given point to find C. That turns the family of curves into the one solution that passes through the point.", visual: "y(0) = 3: 3 = Ce⁰ = C  →  y = 3e^(x²)" },
+      { title: "Two models you will meet everywhere", explanation: "<strong>Growth/decay:</strong> dy/dt = ky gives y = y₀e^(kt) — equal times multiply y by equal factors. <strong>Newton's law of cooling:</strong> dT/dt = −k(T − M) gives T = M + (T₀ − M)e^(−kt) — the GAP to room temperature M decays exponentially.", visual: "y(0) = 50, y(3) = 400: factor 8 every 3 units → y(6) = 3200\ncoffee gap 70 → 35 in 10 min → 17.5 after 20 min" }
+    ],
+    finalAnswer: "y = 3e^(x²)",
+    answerExplanation: "Separate: dy/y = 2x dx. Integrate: ln|y| = x² + C, so y = Ce^(x²). y(0) = 3 gives C = 3, so y = 3e^(x²).",
+    example: { problem: "Solve dy/dx = x/y with y(0) = 5 (y > 0), then find y(12).", steps: [
+      { text: "Separate", math: "y dy = x dx" },
+      { text: "Integrate both sides", math: "y²/2 = x²/2 + c  →  y² = x² + C" },
+      { text: "Initial condition: 25 = 0 + C", math: "C = 25, so y = √(x² + 25)" },
+      { text: "Evaluate", math: "y(12) = √(144 + 25) = √169 = <strong>13</strong>" }
+    ]},
+    keyPoints: [
+      "Separable means dy/dx = f(x)·g(y)",
+      "Separate with multiplication and division, then integrate both sides",
+      "One + C is enough; after exponentiating it becomes a multiplier",
+      "Use the initial condition to find C",
+      "dy/dt = ky → y = y₀e^(kt); cooling: T = M + (T₀ − M)e^(−kt)"
+    ],
+    mistakes: [
+      { wrong: "ln|y| = 3x + C, so y = e^(3x) + C", why: "e^(3x + C) = e^C·e^(3x). The constant MULTIPLIES: y = Ce^(3x)." },
+      { wrong: "Integrating dy/dx = 2xy as y = x²y + C", why: "y depends on x, so you cannot treat it as a constant. Separate first: dy/y = 2x dx." },
+      { wrong: "Forgetting C until the end and then adding it to y", why: "C must appear as soon as you integrate, before solving for y — otherwise the initial condition cannot fix it." },
+      { wrong: "Assuming a cooling drink loses the same number of degrees every 10 minutes", why: "The GAP to room temperature shrinks by the same FACTOR in equal times, not by the same amount." }
+    ],
+    guided: {
+      problem: "Solve dy/dx = x/y with y(0) = 4 (y > 0). What is y(3)?",
+      steps: [
+        { label: "Separate", value: "y dy = x dx" },
+        { label: "Integrate", value: "y² = x² + C" },
+        { label: "Use y(0) = 4: C =", value: "16" },
+        { label: "y(3)² = 9 + 16", value: "25" },
+        { label: "y(3)", value: "?" }
+      ],
+      answer: "5",
+      answerLabel: "y(3) =",
+      interactiveSteps: [
+        { prompt: "Separating and integrating gives y²/2 = x²/2 + c, which is y² = x² + C. Substitute the initial condition y(0) = 4. What is C?", hint: "4² = 0² + C.", answer: "16", acceptableAnswers: ["16"], formatHint: "Enter a number" },
+        { prompt: "So y² = x² + 16. What is y² when x = 3?", hint: "9 + 16.", answer: "25", acceptableAnswers: ["25"], formatHint: "Enter a number" },
+        { prompt: "y is positive. What is y(3)?", hint: "The positive square root of 25.", answer: "5", acceptableAnswers: ["5"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying(function(){
+    const mode = pick(["separate", "general", "find_C", "ivp", "growth", "cooling", "half_life"]);
+
+    if (mode === "separate") {
+      const a = ri(2, 9);
+      const forms = [
+        { eq: `dy/dx = ${a}x²y`, ans: `dy/y = ${a}x² dx`, wrong: [`y dy = ${a}x² dx`, `dy/(${a}x²) = y dx`, `dy = ${a}x² dx`] },
+        { eq: `dy/dx = ${a}x/y`, ans: `y dy = ${a}x dx`, wrong: [`dy/y = ${a}x dx`, `y dy = ${a} dx/x`, `y dx = ${a}x dy`] },
+        { eq: `dy/dx = ${a}y/x`, ans: `dy/y = ${a} dx/x`, wrong: [`y dy = ${a}x dx`, `dy/y = ${a}x dx`, `x dy = ${a}y dx`] },
+        { eq: `dy/dx = (x + ${a})y²`, ans: `dy/y² = (x + ${a}) dx`, wrong: [`y² dy = (x + ${a}) dx`, `dy/y = (x + ${a})y dx`, `dy = (x + ${a}) dx`] },
+        { eq: `dy/dx = ${a}eˣy`, ans: `dy/y = ${a}eˣ dx`, wrong: [`y dy = ${a}eˣ dx`, `dy/eˣ = ${a}y dx`, `dy = ${a}eˣ dx`] },
+        { eq: `dy/dx = y cos x`, ans: `dy/y = cos x dx`, wrong: [`y dy = cos x dx`, `dy/cos x = y dx`, `dy = cos x dx`] }
+      ];
+      const f = pick(forms);
+      return {
+        subType: "separate", forceChoice: true,
+        question: `Which shows ${f.eq} correctly separated, ready to integrate?`,
+        answer: f.ans,
+        // The wrong ones: y on the wrong side (multiplied instead of divided), y left on
+        // the x side, or y simply dropped.
+        options: opt4(f.ans, f.wrong),
+        explanation: `Multiply and divide so every y is with dy and every x is with dx: ${f.ans}. Each side now contains one variable, so each can be integrated on its own.`
+      };
+    }
+
+    if (mode === "general") {
+      const t = pick(["ky", "axy", "xy_ratio", "x2y2", "cool"]);
+      let eq, ans, wrong, why;
+      if (t === "ky") {
+        const k = pick([-4, -3, -2, 2, 3, 4, 5]), ks = k < 0 ? `−${-k}` : String(k);
+        eq = `dy/dx = ${ks}y`; ans = `y = Ce^(${ks}x)`;
+        // Mistakes: C added after exponentiating; integrating y as a constant; k in the wrong place.
+        wrong = [`y = e^(${ks}x) + C`, `y = ${ks}xy + C`, `y = Ce^(x/${Math.abs(k)})`];
+        why = `dy/y = ${ks} dx → ln|y| = ${ks}x + c → y = e^c·e^(${ks}x) = Ce^(${ks}x). The constant multiplies.`;
+      } else if (t === "axy") {
+        const h = ri(1, 4), a = 2 * h;
+        eq = `dy/dx = ${a}xy`; ans = `y = Ce^(${cf(h, "x²")})`;
+        wrong = [`y = Ce^(${a}x²)`, `y = e^(${cf(h, "x²")}) + C`, `y = ${cf(h, "x²")} + C`];
+        why = `dy/y = ${a}x dx → ln|y| = ${a}·x²/2 + c = ${cf(h, "x²")} + c → y = Ce^(${cf(h, "x²")}). Forgetting the ÷2 from ∫x dx gives e^(${a}x²).`;
+      } else if (t === "xy_ratio") {
+        const a = ri(1, 6);
+        eq = `dy/dx = ${cf(a, "x")}/y`; ans = `y² = ${cf(a, "x²")} + C`;
+        wrong = [`y = ${cf(a, "x")} + C`, `y² = ${cf(2 * a, "x²")} + C`, `y = ${cf(a, "x²")} + C`];
+        why = `y dy = ${cf(a, "x")} dx → y²/2 = ${a}·x²/2 + c → y² = ${cf(a, "x²")} + C (both sides have the same ÷2, so it cancels).`;
+      } else if (t === "x2y2") {
+        const a = ri(1, 5);
+        eq = `dy/dx = ${cf(a, "x²")}/y²`; ans = `y³ = ${cf(a, "x³")} + C`;
+        wrong = [`y³ = ${cf(3 * a, "x³")} + C`, `y = ${cf(a, "x")} + C`, `y² = ${cf(a, "x²")} + C`];
+        why = `y² dy = ${cf(a, "x²")} dx → y³/3 = ${a === 1 ? "" : a + "·"}x³/3 + c → y³ = ${cf(a, "x³")} + C.`;
+      } else {
+        const k = pick([2, 3, 4, 5]) / 100, M = ri(18, 25);
+        eq = `dT/dt = −${fmt(k)}(T − ${M})`; ans = `T = ${M} + Ce^(−${fmt(k)}t)`;
+        wrong = [`T = ${M} + e^(−${fmt(k)}t) + C`, `T = Ce^(−${fmt(k)}t)`, `T = ${M} − ${fmt(k)}t + C`];
+        why = `dT/(T − ${M}) = −${fmt(k)} dt → ln|T − ${M}| = −${fmt(k)}t + c → T − ${M} = Ce^(−${fmt(k)}t), so T = ${M} + Ce^(−${fmt(k)}t). The temperature levels off at the room's ${M}°.`;
+      }
+      return { subType: "general_solution", forceChoice: true, question: `Which is the general solution of ${eq}?`, answer: ans, options: opt4(ans, wrong), explanation: why };
+    }
+
+    if (mode === "find_C") {
+      const v = pick(["square", "cube", "exp"]);
+      if (v === "square") {
+        const x0 = ri(-5, 6), y0 = pick([-1, 1]) * ri(1, 9), C = y0 * y0 - x0 * x0;
+        return {
+          subType: "find_C",
+          question: `The general solution of dy/dx = x/y is y² = x² + C. Find C for the solution through (${x0}, ${y0}).`,
+          answer: fmt(C),
+          // Mistakes: adding the squares; forgetting to square; squaring the difference.
+          options: opt4(fmt(C), [fmt(y0 * y0 + x0 * x0), fmt(y0 - x0), fmt((y0 - x0) ** 2), fmt(-C)]),
+          explanation: `Substitute x = ${neg(x0)}, y = ${neg(y0)}: ${y0 * y0} = ${x0 * x0} + C, so C = ${y0 * y0} − ${x0 * x0} = ${neg(C)}.`
+        };
+      }
+      if (v === "cube") {
+        const x0 = ri(-3, 3), y0 = ri(-3, 4), C = y0 ** 3 - x0 ** 3;
+        return {
+          subType: "find_C",
+          question: `The general solution of dy/dx = x²/y² is y³ = x³ + C. Find C for the solution through (${x0}, ${y0}).`,
+          answer: fmt(C),
+          options: opt4(fmt(C), [fmt(y0 ** 3 + x0 ** 3), fmt(y0 - x0), fmt(3 * (y0 - x0)), fmt(y0 ** 2 - x0 ** 2), fmt(-C)]),
+          explanation: `Substitute: (${neg(y0)})³ = (${neg(x0)})³ + C, so ${neg(y0 ** 3)} = ${neg(x0 ** 3)} + C and C = ${neg(C)}.`
+        };
+      }
+      const k = ri(1, 3), C = ri(1, 12), Y = C * Math.pow(2, k);
+      return {
+        subType: "find_C",
+        question: `The general solution of dy/dx = ${k === 1 ? "" : k}y is y = Ce^(${k === 1 ? "" : k}x). Find C if y(ln 2) = ${Y}.`,
+        answer: fmt(C),
+        // Mistakes: multiplying by 2^k; dividing by k; dividing by 2 once.
+        options: opt4(fmt(C), [fmt(Y * Math.pow(2, k)), fmt(Y / k), fmt(Y / 2), fmt(Y)]),
+        explanation: `e^(${k === 1 ? "" : k}·ln 2) = (e^(ln 2))^${k} = 2^${k} = ${Math.pow(2, k)}. So ${Y} = C·${Math.pow(2, k)} and C = ${C}.`
+      };
+    }
+
+    if (mode === "ivp") {
+      const v = pick(["circle_out", "circle_in", "linear"]);
+      if (v !== "linear") {
+        const [a, b, c] = pick(TRIPLES);
+        if (v === "circle_out") {
+          return {
+            subType: "ivp",
+            question: `Solve dy/dx = x/y with y(0) = ${a} and y > 0. What is y(${b})?`,
+            answer: fmt(c),
+            // Mistakes: adding a and b; stopping at y² (forgot the square root).
+            options: opt4(fmt(c), [fmt(a + b), fmt(c * c), fmt(Math.abs(a - b)), fmt(b)]),
+            explanation: `y dy = x dx gives y² = x² + C. y(0) = ${a} makes C = ${a * a}. So y = √(x² + ${a * a}) and y(${b}) = √(${b * b} + ${a * a}) = √${c * c} = ${c}.`
+          };
+        }
+        return {
+          subType: "ivp",
+          question: `Solve dy/dx = −x/y with y(0) = ${c} and y > 0. What is y(${a})?`,
+          answer: fmt(b),
+          options: opt4(fmt(b), [fmt(c - a), fmt(b * b), fmt(c), fmt(a + c)]),
+          explanation: `y dy = −x dx gives y² = −x² + C. y(0) = ${c} makes C = ${c * c}. So y = √(${c * c} − x²) and y(${a}) = √(${c * c} − ${a * a}) = √${b * b} = ${b}.`
+        };
+      }
+      const x0 = ri(1, 4), m = ri(2, 6), y0 = m * x0, x1 = ri(x0 + 1, x0 + 6), ans = m * x1;
+      return {
+        subType: "ivp",
+        question: `Solve dy/dx = y/x (x > 0) with y(${x0}) = ${y0}. What is y(${x1})?`,
+        answer: fmt(ans),
+        // Mistakes: adding the change in x; multiplying by x1 without dividing by x0.
+        options: opt4(fmt(ans), [fmt(y0 + (x1 - x0)), fmt(y0 * x1), fmt(y0 / x0), fmt(ans + m)]),
+        explanation: `dy/y = dx/x gives ln|y| = ln|x| + c, so y = Cx. y(${x0}) = ${y0} makes C = ${m}. So y = ${m}x and y(${x1}) = ${ans}.`
+      };
+    }
+
+    if (mode === "growth") {
+      const v = pick(["ratio", "k_from_T", "T_from_k"]);
+      if (v === "ratio") {
+        const y0 = 10 * ri(2, 15), m = pick([2, 3]), t1 = ri(2, 8), n = pick([2, 3]), ans = y0 * Math.pow(m, n);
+        return {
+          subType: "growth",
+          question: `A quantity satisfies dy/dt = ky. It is ${y0} at t = 0 and ${y0 * m} at t = ${t1}. What is it at t = ${n * t1}?`,
+          answer: fmt(ans),
+          // Mistakes: linear growth (adding the same amount); one factor too few.
+          options: opt4(fmt(ans), [fmt(y0 + n * (y0 * m - y0)), fmt(y0 * Math.pow(m, n - 1)), fmt(y0 * m * n), fmt(y0 * Math.pow(m, n + 1))]),
+          explanation: `y = y0·e^(kt), so every ${t1} units of time multiply y by the same factor, ${y0 * m} ÷ ${y0} = ${m}. t = ${n * t1} is ${n} such steps: ${y0} × ${m}^${n} = ${ans}.`
+        };
+      }
+      if (v === "k_from_T") {
+        const T = pick([2, 4, 5, 8, 10, 12, 20, 25]), k = Math.LN2 / T, ans = rnd(k, 3);
+        return {
+          subType: "growth",
+          question: `A population following dP/dt = kP doubles every ${T} years. What is k? Round to three decimal places.`,
+          answer: ans,
+          validate: nearValidate(Number(ans), 0.001),
+          // Mistakes: 2 ÷ T; T ÷ ln 2 (inverted); 1 ÷ T.
+          options: opt4(ans, [rnd(2 / T, 3), rnd(T / Math.LN2, 3), rnd(1 / T, 3), rnd(Math.log10(2) / T, 3)]),
+          explanation: `P = P0·e^(kt) and doubling means e^(${T}k) = 2, so ${T}k = ln 2 and k = 0.6931 ÷ ${T} ≈ ${ans}.`
+        };
+      }
+      const kp = pick([3, 4, 5, 6, 8, 10, 12]), ans = rnd(Math.LN2 / (kp / 100), 1);
+      return {
+        subType: "growth",
+        question: `A sample grows according to dN/dt = ${fmt(kp / 100)}N, with t in hours. How long does it take to double? Round to the nearest tenth of an hour.`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        options: opt4(ans, [rnd(2 / (kp / 100), 1), rnd(1 / (kp / 100), 1), rnd(Math.LN2 * kp / 100, 3), rnd(Math.log10(2) / (kp / 100), 1)]),
+        explanation: `N = N0·e^(${fmt(kp / 100)}t). Doubling: e^(${fmt(kp / 100)}t) = 2, so t = ln 2 ÷ ${fmt(kp / 100)} ≈ ${ans} hours.`
+      };
+    }
+
+    if (mode === "cooling") {
+      const M = ri(18, 25), D0 = 8 * ri(5, 10), T0 = M + D0, t1 = pick([5, 8, 10, 12, 15]), n = pick([2, 3]);
+      const T1 = M + D0 / 2, gap = D0 / Math.pow(2, n), ans = M + gap;
+      return {
+        subType: "cooling",
+        question: `By Newton's law of cooling, dT/dt = −k(T − ${M}) for a drink in a room kept at ${M}°C. It starts at ${T0}°C and is ${T1}°C after ${t1} minutes. What is its temperature, in °C, after ${n * t1} minutes?`,
+        answer: fmt(ans),
+        // Mistakes: cooling by the same NUMBER of degrees each interval; forgetting the room
+        // temperature (reporting the gap); halving the temperature itself.
+        options: opt4(fmt(ans), [fmt(T0 - n * (T0 - T1)), fmt(gap), fmt(T0 / Math.pow(2, n)), fmt(M + D0 / (2 * n)),
+          fmt(M + D0 / Math.pow(2, n + 1)), fmt(M + D0 / Math.pow(2, n - 1))]),
+        explanation: `The solution is T = ${M} + (T0 − ${M})e^(−kt): the GAP to ${M}° decays exponentially. It went from ${D0} to ${fmt(D0 / 2)} in ${t1} minutes — halved. ` +
+                     `After ${n * t1} minutes it has halved ${n} times: gap = ${D0} ÷ ${Math.pow(2, n)} = ${fmt(gap)}, so T = ${M} + ${fmt(gap)} = ${fmt(ans)}°C.`
+      };
+    }
+
+    // half_life: dm/dt = −km.
+    const h = pick([2, 3, 4, 5, 6, 8, 10, 12, 20]);
+    const v = pick(["time", "fraction", "k"]);
+    if (v === "time") {
+      const n = ri(2, 5), ans = n * h;
+      return {
+        subType: "half_life",
+        question: `A substance decays according to dm/dt = −km and has a half-life of ${h} years. How many years until only 1/${Math.pow(2, n)} of it remains?`,
+        answer: fmt(ans),
+        // Mistakes: dividing the denominator by 2 (linear); denominator × half-life.
+        options: opt4(fmt(ans), [fmt(h * Math.pow(2, n) / 2), fmt(h * Math.pow(2, n)), fmt((n - 1) * h), fmt((n + 1) * h)]),
+        explanation: `m = m0·e^(−kt) halves every ${h} years. 1/${Math.pow(2, n)} = (1/2)^${n}, which takes ${n} half-lives: ${n} × ${h} = ${ans} years.`
+      };
+    }
+    if (v === "fraction") {
+      const n = ri(2, 5), ans = "1/" + Math.pow(2, n);
+      return {
+        subType: "half_life",
+        question: `A substance decays according to dm/dt = −km with a half-life of ${h} hours. What fraction of the original amount is left after ${n * h} hours?`,
+        answer: ans,
+        // Mistakes: 1/(2n) (linear halving count); one halving off.
+        options: opt4(ans, ["1/" + (2 * n), "1/" + Math.pow(2, n - 1), "1/" + Math.pow(2, n + 1), "1/" + n]),
+        explanation: `${n * h} ÷ ${h} = ${n} half-lives, so (1/2)^${n} = ${ans} remains.`
+      };
+    }
+    const ans = rnd(Math.LN2 / h, 3);
+    return {
+      subType: "half_life",
+      question: `A substance decays according to dm/dt = −km with a half-life of ${h} days. What is k, per day? Round to three decimal places.`,
+      answer: ans,
+      validate: nearValidate(Number(ans), 0.001),
+      options: opt4(ans, [rnd(0.5 / h, 3), rnd(h / Math.LN2, 3), rnd(1 / h, 3), rnd(Math.log10(2) / h, 3)]),
+      explanation: `m = m0·e^(−kt). At t = ${h}, e^(−${h}k) = 1/2, so ${h}k = ln 2 and k = 0.6931 ÷ ${h} ≈ ${ans}.`
+    };
+  }));
+
+  // ======================================================================
+  // M-330  Calculus Modeling  (tier 9)
+  // ======================================================================
+  // Prerequisites: Related Rates, Optimization and the Fundamental Theorem of
+  // Calculus (all T9). This is the applied layer: a RATE accumulates into an
+  // amount (net change), velocity into displacement vs distance, the average
+  // value of a changing quantity, the derivative of an accumulation, and
+  // related-rates / optimization set in science and engineering.
+  //
+  // Integrals of quadratics over integer bounds are multiples of 1/6, so the
+  // exact answers are computed in sixths with integers and reduced by frac():
+  // no floating-point answer is ever shipped as "exact".
+  const six = (A, B, C, a, b) => 2 * A * (b ** 3 - a ** 3) + 3 * B * (b * b - a * a) + 6 * C * (b - a);  // 6·∫(At²+Bt+C)dt
+  const fr6 = n => frac(n, 6);
+  // Exact answers in sixths may be typed as a fraction or as a decimal to 2 places.
+  const sixthValidate = n => typed => {
+    const v = readNum(typed);
+    if (Number.isFinite(v) && Math.abs(v - n / 6) <= 0.006) return true;
+    const m = String(typed).replace(/\s+/g, "").replace(/−/g, "-").match(/^(-?\d+)\/(\d+)$/);
+    return !!m && Math.abs(+m[1] / +m[2] - n / 6) < 1e-9;
+  };
+
+  _addSkill(9, "Calculus Modeling", "Calculus Modeling", 5, {
+    goalProblem: "Water flows into a tank at r(t) = 4t + 3 liters per minute. The tank holds 20 L at t = 0. How much does it hold at t = 5?",
+    teachingSteps: [
+      { title: "A rate accumulates into an amount", explanation: "If r(t) is a <strong>rate</strong> (liters per minute, people per year, m/s), then ∫ r(t) dt over an interval is the <strong>amount that changed</strong> in that time. Amount at the end = amount at the start + the integral of the rate.", visual: "V(5) = V(0) + ∫₀⁵ (4t + 3) dt\n= 20 + [2t² + 3t]₀⁵ = 20 + 65 = 85 L" },
+      { title: "Displacement vs. total distance", explanation: "∫ v(t) dt is the <strong>displacement</strong> — net change in position, where backward motion cancels forward motion. <strong>Distance</strong> is ∫ |v(t)| dt: split the interval where v changes sign and add the pieces as positive numbers.", visual: "v = t² − 4t on [0, 6]\ndisplacement = ∫₀⁶ v dt = 0\ndistance = 32/3 + 32/3 = 64/3" },
+      { title: "Average value", explanation: "The average value of a changing quantity over [a, b] is (1/(b − a))·∫ f(t) dt — the constant value that would accumulate the same total. It is NOT the average of the two endpoint values unless f is linear.", visual: "avg of f on [0, 4] = (1/4)·∫₀⁴ f(t) dt" },
+      { title: "The derivative of an accumulation is the rate", explanation: "By the Fundamental Theorem, if A(t) = A₀ + ∫₀ᵗ r(s) ds, then A′(t) = r(t). How fast an amount is changing right now is the rate function evaluated now.", visual: "W(t) = 50 + ∫₀ᵗ (3 + 2s) ds  →  W′(4) = 3 + 8 = 11" },
+      { title: "Related rates in science", explanation: "Write the equation that links the quantities (area, volume, Pythagoras, PV = k), differentiate BOTH sides with respect to time, then substitute the values at the moment asked about.", visual: "A = πr²  →  dA/dt = 2πr·dr/dt\nr = 10, dr/dt = 3  →  dA/dt = 60π" },
+      { title: "Optimization in engineering", explanation: "Write the quantity to maximize or minimize in one variable, set its derivative to zero, check it really is a max or min, and answer in the units asked for.", visual: "P(I) = 24I − 4I²\nP′ = 24 − 8I = 0 → I = 3 A, P = 36 W" }
+    ],
+    finalAnswer: "85 L",
+    answerExplanation: "The change in volume is ∫₀⁵ (4t + 3) dt = [2t² + 3t]₀⁵ = 50 + 15 = 65 L. Added to the starting 20 L, the tank holds 85 L at t = 5.",
+    example: { problem: "A particle moves with v(t) = t² − 4t m/s for 0 ≤ t ≤ 6. Find its displacement and total distance.", steps: [
+      { text: "Displacement: integrate v", math: "[t³/3 − 2t²]₀⁶ = 72 − 72 = 0 m" },
+      { text: "v changes sign at t = 4", math: "v < 0 on (0, 4), v > 0 on (4, 6)" },
+      { text: "Each piece", math: "∫₀⁴ v dt = −32/3,  ∫₄⁶ v dt = 32/3" },
+      { text: "Distance adds the sizes", math: "32/3 + 32/3 = <strong>64/3 m</strong> (back where it started, after 64/3 m of travel)" }
+    ]},
+    keyPoints: [
+      "Amount at the end = amount at the start + ∫ rate",
+      "∫ v dt is displacement; ∫ |v| dt is distance",
+      "Average value = (1/(b − a))·∫ f",
+      "d/dt of ∫ₐᵗ r(s) ds is r(t); with an upper limit g(t), multiply by g′(t)",
+      "Related rates: differentiate the relationship, THEN substitute"
+    ],
+    mistakes: [
+      { wrong: "Answering 65 L for the tank", why: "65 L is the CHANGE. The tank started with 20 L, so it holds 85 L." },
+      { wrong: "Using ∫ v dt as the distance traveled", why: "Backward motion cancels forward motion in ∫ v dt. Split where v = 0 and add the absolute values." },
+      { wrong: "Substituting r = 10 before differentiating A = πr²", why: "Then A is a constant and its derivative is 0. Differentiate first: dA/dt = 2πr·dr/dt, then substitute." },
+      { wrong: "Averaging the endpoint values to get the average temperature", why: "That only works for straight lines. Use (1/(b − a))·∫ f(t) dt." }
+    ],
+    guided: {
+      problem: "Water flows into a tank at 12 L/min and drains at 3t L/min. It starts with 40 L. When is the amount of water greatest, and how much is there then?",
+      steps: [
+        { label: "Net rate", value: "12 − 3t" },
+        { label: "Set the net rate to 0", value: "t = 4" },
+        { label: "Amount = 40 + ∫₀⁴ (12 − 3t) dt", value: "40 + 24" },
+        { label: "Greatest amount", value: "?" }
+      ],
+      answer: "64",
+      answerLabel: "max water (L) =",
+      interactiveSteps: [
+        { prompt: "The net rate of change is 12 − 3t liters per minute. The water stops rising when the net rate is 0. At what time t (minutes) is that?", hint: "12 − 3t = 0.", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" },
+        { prompt: "How much water flows in, net, from t = 0 to t = 4? Compute ∫₀⁴ (12 − 3t) dt.", hint: "[12t − 1.5t²] from 0 to 4 = 48 − 24.", answer: "24", acceptableAnswers: ["24"], formatHint: "Enter a number" },
+        { prompt: "The tank started with 40 L. How many liters are in it at t = 4?", hint: "40 + 24.", answer: "64", acceptableAnswers: ["64"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying(function(){
+    const mode = pick(["net_change", "motion", "average", "ftc_rate", "related", "optimize", "interpret", "in_out"]);
+
+    if (mode === "net_change") {
+      const v = pick(["linear", "quadratic", "drain"]);
+      if (v === "linear") {
+        const a = ri(1, 6), b = ri(1, 9), V0 = 5 * ri(2, 20), T = 2 * ri(1, 5);
+        const change = a * T * T / 2 + b * T, ans = V0 + change;
+        return {
+          subType: "net_change",
+          question: `Water flows into a tank at r(t) = ${cf(a, "t")} + ${b} liters per minute. The tank holds ${V0} L at t = 0. How many liters does it hold at t = ${T} minutes?`,
+          answer: fmt(ans),
+          // Mistakes: reporting only the change; rate at T × time; adding the rate at T.
+          options: opt4(fmt(ans), [fmt(change), fmt(V0 + (a * T + b) * T), fmt(V0 + a * T + b), fmt(V0 + a * T * T + b * T)]),
+          explanation: `Change = ∫₀^${T} (${cf(a, "t")} + ${b}) dt = [${a}t²/2 + ${b}t]₀^${T} = ${fmt(a * T * T / 2)} + ${b * T} = ${fmt(change)} L. Amount = ${V0} + ${fmt(change)} = ${fmt(ans)} L.`
+        };
+      }
+      if (v === "quadratic") {
+        const b = ri(1, 9), P0 = 10 * ri(2, 30), T = ri(2, 6), change = T ** 3 + b * T, ans = P0 + change;
+        return {
+          subType: "net_change",
+          question: `A bacteria population, in thousands, grows at P′(t) = 3t² + ${b} thousand per hour. P(0) = ${P0}. What is P(${T}), in thousands?`,
+          answer: fmt(ans),
+          // Mistakes: only the change; evaluating the rate instead of integrating; using P″.
+          options: opt4(fmt(ans), [fmt(change), fmt(P0 + 3 * T * T + b), fmt(P0 + 6 * T), fmt(P0 + 3 * T ** 3 + b * T)]),
+          explanation: `P(${T}) = P(0) + ∫₀^${T} (3t² + ${b}) dt = ${P0} + [t³ + ${b}t]₀^${T} = ${P0} + ${T ** 3} + ${b * T} = ${fmt(ans)} thousand.`
+        };
+      }
+      const a = ri(1, 4), b = ri(2, 10), T = 2 * ri(2, 6), change = b * T - a * T * T / 2;
+      return {
+        subType: "net_change",
+        question: `The rate at which water enters a reservoir is r(t) = ${b} − ${cf(a, "t")} million liters per day (negative means water is leaving). What is the net change in the water over the first ${T} days, in million liters?`,
+        answer: fmt(change),
+        // Mistakes: the sign lost (treating outflow as inflow); the rate at T; b·T only.
+        options: opt4(fmt(change), [fmt(-change), fmt(b - a * T), fmt(b * T), fmt(b * T - a * T * T), fmt(b * T + a * T * T / 2)]),
+        explanation: `Net change = ∫₀^${T} (${b} − ${cf(a, "t")}) dt = [${b}t − ${a}t²/2]₀^${T} = ${b * T} − ${fmt(a * T * T / 2)} = ${neg(fmt(change))}. ${change < 0 ? "Negative: more water left than arrived." : change > 0 ? "Positive: more water arrived than left." : "Zero: inflow and outflow balanced exactly."}`
+      };
+    }
+
+    if (mode === "motion") {
+      for (let tries = 0; tries < 30; tries++) {
+        const c = pick([1, 1, 3]), p = pick([0, 0, 1]), q = ri(p + 2, p + 5), T = ri(q + 1, q + 3);
+        const A = c, B = -c * (p + q), C = c * p * q;
+        const disp = six(A, B, C, 0, T);
+        const pieces = [[0, p], [p, q], [q, T]].filter(([a, b]) => b > a).map(([a, b]) => six(A, B, C, a, b));
+        const dist = pieces.reduce((s, x) => s + Math.abs(x), 0);
+        if (dist === Math.abs(disp)) continue;          // no backward motion to teach
+        const askDist = pick([true, false]);
+        // A negative FRACTION ("-91/2") does not read as a typeable answer, so the
+        // question would silently become multiple choice. Redraw those instead.
+        if (!askDist && disp < 0 && disp % 6 !== 0) continue;
+        const ans = askDist ? dist : disp;
+        const vStr = quadStr(A, B, C, "t");
+        const neg6 = pieces.find(x => x < 0);
+        return {
+          subType: askDist ? "distance" : "displacement",
+          question: `A particle moves along a line with velocity v(t) = ${vStr} m/s for 0 ≤ t ≤ ${T}. What is its ${askDist ? "total distance traveled" : "displacement"}, in meters? Give an exact answer (a fraction is fine).`,
+          answer: fr6(ans),
+          validate: sixthValidate(ans),
+          // Mistakes: the other quantity (THE classic mix-up); only the backward piece; v(T).
+          options: opt4(fr6(ans), [fr6(askDist ? disp : dist), fr6(Math.abs(neg6)), fr6(pieces[pieces.length - 1]), fmt(A * T * T + B * T + C),
+            fr6(pieces[0]), fr6(-disp), fr6(2 * ans)]),
+          explanation: `v = ${c === 1 ? "" : c}(t${p ? " − " + p : ""})(t − ${q}) is negative for ${p} < t < ${q} (moving backward). ` +
+                       `Integrating piece by piece: ${pieces.map(fr6).map(neg).join(", ")} m. ` +
+                       `Displacement adds them with signs: ${neg(fr6(disp))} m. Distance adds their sizes: ${fr6(dist)} m. So the ${askDist ? "distance" : "displacement"} is ${neg(fr6(ans))} m.`
+        };
+      }
+      return null;
+    }
+
+    if (mode === "average") {
+      const a = ri(1, 3), b = ri(2, 8), c = ri(10, 25), T = ri(2, 6);
+      const f = t => c + b * t - a * t * t;
+      // f is concave down, so its lowest point on [0, T] is an endpoint. Keep the
+      // greenhouse warm: that also keeps the answer a positive (typeable) fraction.
+      if (f(T) < 5) return null;
+      const total6 = six(-a, b, c, 0, T), ans = frac(total6, 6 * T);
+      const endAvg = (f(0) + f(T)) / 2;
+      return {
+        subType: "average_value",
+        question: `The temperature in a greenhouse t hours after sunrise is f(t) = ${c} + ${cf(b, "t")} − ${cf(a, "t²")} °C. What is the average temperature over the first ${T} hours? Give an exact answer.`,
+        answer: ans,
+        validate: sixthValidate(total6 / T),
+        // Mistakes: averaging the endpoints; the midpoint value; the integral without ÷ T.
+        options: opt4(ans, [fmt(endAvg), fmt(f(T / 2)), fr6(total6), fmt(f(T))]),
+        explanation: `Average = (1/${T})·∫₀^${T} f(t) dt = (1/${T})·[${c}t + ${b}t²/2 − ${a}t³/3]₀^${T} = (1/${T})·${fr6(total6)} = ${ans} °C. (The endpoint average ${fmt(endAvg)} is not the same — f is curved.)`
+      };
+    }
+
+    if (mode === "ftc_rate") {
+      if (pick([true, false])) {
+        const W0 = 10 * ri(3, 20), a = ri(1, 9), b = ri(1, 6), c = ri(2, 10), ans = a + b * c;
+        return {
+          subType: "ftc_rate",
+          question: `The water in a reservoir, in thousands of liters, is W(t) = ${W0} + ∫₀ᵗ (${a} + ${cf(b, "s")}) ds after t days. How fast is the water changing at t = ${c}, in thousand liters per day?`,
+          answer: fmt(ans),
+          // Mistakes: computing W(c) instead of W′(c); just the constant term; integrating then differentiating wrongly.
+          options: opt4(fmt(ans), [fmt(W0 + a * c + b * c * c / 2), fmt(a * c + b * c * c / 2), fmt(a), fmt(b * c)]),
+          explanation: `By the Fundamental Theorem, W′(t) is the integrand at t: W′(t) = ${a} + ${cf(b, "t")}. So W′(${c}) = ${a} + ${b * c} = ${ans}.`
+        };
+      }
+      const k = ri(1, 9), a = ri(1, 4), ans = (a * a + k) * 2 * a;
+      return {
+        subType: "ftc_rate",
+        question: `G(x) = ∫₀^(x²) (s + ${k}) ds. Find G′(${a}).`,
+        answer: fmt(ans),
+        // Mistakes: forgetting the chain-rule factor 2x; plugging x instead of x² into the integrand.
+        options: opt4(fmt(ans), [fmt(a * a + k), fmt((a + k) * 2 * a), fmt((a * a + k) * a), fmt(a + k)]),
+        explanation: `With upper limit x², G′(x) = (x² + ${k})·(x²)′ = (x² + ${k})·2x. At x = ${a}: (${a * a} + ${k})·${2 * a} = ${ans}.`
+      };
+    }
+
+    if (mode === "related") {
+      const v = pick(["ripple", "balloon", "ladder", "boyle"]);
+      if (v === "ripple" || v === "balloon") {
+        const rp = ri(1, 5), R = ri(2, 12);
+        const coef = v === "ripple" ? 2 * R * rp : 4 * R * R * rp;
+        const ans = coef + "π";
+        const wrong = v === "ripple"
+          ? [`${R * rp}π`, `${R * R}π`, `${2 * R}π`, `${R * R * rp}π`]      // forgot the 2; the area; dropped dr/dt
+          : [`${R * R * rp}π`, `${4 * R * rp}π`, `${4 * R * R}π`, `${fmt(4 / 3 * R ** 3)}π`];  // forgot 4; r not squared; dropped dr/dt; the volume
+        return {
+          subType: "related_rates",
+          question: v === "ripple"
+            ? `A ripple spreads in a circle whose radius grows at ${rp} cm/s. How fast is the area inside it growing when the radius is ${R} cm? Give an exact answer in terms of π (cm²/s).`
+            : `A spherical balloon's radius grows at ${rp} cm/s. How fast is its volume growing when the radius is ${R} cm? Give an exact answer in terms of π (cm³/s).`,
+          answer: ans,
+          // A decimal to two places is also a correct reading of "how fast".
+          validate: typed => { const t = readNum(typed); return Number.isFinite(t) && Math.abs(t - coef * Math.PI) <= 0.006 * Math.max(1, coef); },
+          options: opt4(ans, wrong),
+          explanation: v === "ripple"
+            ? `A = πr², so dA/dt = 2πr·dr/dt = 2π·${R}·${rp} = ${ans} cm²/s.`
+            : `V = (4/3)πr³, so dV/dt = 4πr²·dr/dt = 4π·${R * R}·${rp} = ${ans} cm³/s.`
+        };
+      }
+      if (v === "ladder") {
+        const [x0, y0, L0] = pick([[3, 4, 5], [4, 3, 5], [6, 8, 10], [8, 6, 10], [5, 12, 13], [12, 5, 13], [9, 12, 15], [12, 9, 15]]);
+        const rate = ri(1, 4), ans = frac(x0 * rate, y0);
+        return {
+          subType: "related_rates",
+          question: `A ${L0} ft ladder leans against a wall. Its foot slides away from the wall at ${rate} ft/s. How fast is the top sliding down the wall when the foot is ${x0} ft from the wall? (ft/s)`,
+          answer: ans,
+          validate: typed => { const t = readNum(typed); return Number.isFinite(t) && Math.abs(t - x0 * rate / y0) <= 0.006; },
+          // Mistakes: x and y swapped; assuming the top moves as fast as the foot; using the ladder length.
+          options: opt4(ans, [frac(y0 * rate, x0), fmt(rate), frac(L0 * rate, y0), frac(x0 * rate, L0)]),
+          explanation: `x² + y² = ${L0 * L0}. Differentiate: 2x·dx/dt + 2y·dy/dt = 0. When x = ${x0}, y = √(${L0 * L0} − ${x0 * x0}) = ${y0}, so dy/dt = −x·(dx/dt)/y = −${x0}·${rate}/${y0} = −${ans}. The top slides down at ${ans} ft/s.`
+        };
+      }
+      const V = pick([2, 4, 5, 8, 10]), P = V * ri(10, 40), dV = ri(1, 3), ans = frac(-P * dV, V);
+      return {
+        subType: "related_rates",
+        question: `A gas at constant temperature obeys PV = k. At the moment V = ${V} L and P = ${P} kPa, the volume is increasing at ${dV} L/min. How fast is the pressure changing, in kPa/min? (Negative means falling.)`,
+        answer: ans,
+        validate: typed => { const t = readNum(typed); return Number.isFinite(t) && Math.abs(t - (-P * dV / V)) <= 0.006; },
+        // Mistakes: the sign lost; V and P swapped in the ratio; ignoring the ratio.
+        options: opt4(ans, [frac(P * dV, V), frac(-V * dV, P), fmt(-dV), frac(-P, V * dV)]),
+        explanation: `Differentiate PV = k: P·dV/dt + V·dP/dt = 0, so dP/dt = −P·(dV/dt)/V = −${P}·${dV}/${V} = ${neg(ans)} kPa/min. Pressure falls as the gas expands.`
+      };
+    }
+
+    if (mode === "optimize") {
+      const v = pick(["box", "box_volume", "projectile", "power", "power_current"]);
+      if (v === "box" || v === "box_volume") {
+        const m = ri(2, 8), s = 6 * m, Vmax = 16 * m ** 3;
+        const Vat = x => x * (s - 2 * x) ** 2;
+        if (v === "box") {
+          return {
+            subType: "optimization",
+            question: `Equal squares are cut from the corners of a ${s} cm by ${s} cm sheet of metal, and the sides are folded up to make an open box. What side length x of the cut squares, in cm, gives the largest volume?`,
+            answer: fmt(m),
+            // Mistakes: s/4 and s/3 (guessing a "nice" fraction); s/2 (the root where volume is 0).
+            options: opt4(fmt(m), [fmt(s / 4), fmt(s / 3), fmt(s / 2), fmt(s / 12)]),
+            explanation: `V(x) = x(${s} − 2x)². V′(x) = (${s} − 2x)² − 4x(${s} − 2x) = (${s} − 2x)(${s} − 6x). V′ = 0 at x = ${s / 2} (no box) or x = ${m}. So x = ${m} cm, giving V = ${Vmax} cm³.`
+          };
+        }
+        return {
+          subType: "optimization",
+          question: `Equal squares are cut from the corners of a ${s} cm by ${s} cm sheet, and the sides are folded up into an open box. What is the largest possible volume, in cm³?`,
+          answer: fmt(Vmax),
+          options: opt4(fmt(Vmax), [fmt(Vat(s / 4)), fmt(Vat(s / 3)), fmt(s ** 3 / 27), fmt(m * s * s)]),
+          explanation: `V(x) = x(${s} − 2x)², V′(x) = (${s} − 2x)(${s} − 6x) = 0 at x = ${m}. V(${m}) = ${m}·${s - 2 * m}² = ${Vmax} cm³.`
+        };
+      }
+      if (v === "projectile") {
+        const k = ri(1, 4), vel = fmt(9.8 * k), h0 = ri(0, 30), ans = fmt(h0 + 4.9 * k * k);
+        return {
+          subType: "optimization",
+          question: `A ball's height is h(t) = −4.9t² + ${vel}t + ${h0} meters after t seconds. What is its maximum height, in meters?`,
+          answer: ans,
+          // Mistakes: forgetting the −4.9t² term at the peak (h0 + v·t); the time instead of the height.
+          options: opt4(ans, [fmt(h0 + 9.8 * k * k), fmt(k), fmt(h0 + 4.9 * k * k * 2), fmt(9.8 * k * k)]),
+          explanation: `h′(t) = −9.8t + ${vel} = 0 at t = ${k} s (h″ = −9.8 < 0, a maximum). h(${k}) = −4.9·${k * k} + ${vel}·${k} + ${h0} = ${ans} m.`
+        };
+      }
+      const R = pick([2, 3, 4, 5, 6, 8]), i = ri(1, 6), Vs = 2 * R * i, Pmax = R * i * i;
+      if (v === "power_current") {
+        return {
+          subType: "optimization",
+          question: `The power delivered by a circuit is P(I) = ${Vs}I − ${R}I² watts, where I is the current in amps. What current gives the maximum power?`,
+          answer: fmt(i),
+          // Mistakes: V/R (where P = 0); doubling.
+          options: opt4(fmt(i), [fmt(Vs / R), fmt(2 * i), fmt(Pmax), fmt(Vs / 2)]),
+          explanation: `P′(I) = ${Vs} − ${2 * R}I = 0 at I = ${i} A. P″ = −${2 * R} < 0, so it is a maximum.`
+        };
+      }
+      return {
+        subType: "optimization",
+        question: `The power delivered by a circuit is P(I) = ${Vs}I − ${R}I² watts, where I is the current in amps. What is the maximum power, in watts?`,
+        answer: fmt(Pmax),
+        options: opt4(fmt(Pmax), [fmt(i), fmt(Vs * i), fmt(Vs * i - 2 * R * i * i), fmt(2 * Pmax)]),
+        explanation: `P′(I) = ${Vs} − ${2 * R}I = 0 at I = ${i} A. P(${i}) = ${Vs}·${i} − ${R}·${i * i} = ${Pmax} W.`
+      };
+    }
+
+    if (mode === "interpret") {
+      const t = pick(["integral", "displacement", "units", "rate_of_rate"]);
+      let q, ans, wrong, why;
+      if (t === "integral") {
+        const a = ri(1, 5), b = a + ri(2, 8);
+        q = `r(t) is the rate, in liters per minute, at which water flows into a tank. What does ∫ from ${a} to ${b} of r(t) dt represent?`;
+        ans = `the liters of water that flow in between minute ${a} and minute ${b}`;
+        wrong = [`the flow rate at minute ${b}`, `the average flow rate between minute ${a} and minute ${b}`, `the total water in the tank at minute ${b}`];
+        why = `Integrating a rate (liters per minute) over time (minutes) gives liters: the amount that flowed in during that interval — not the amount in the tank, which also depends on what was there before.`;
+      } else if (t === "displacement") {
+        const T = ri(5, 20), D = ri(2, 15);
+        q = `v(t) is a cart's velocity in m/s. The integral of v(t) from t = 0 to t = ${T} is −${D}. What does that tell you?`;
+        ans = `the cart ends ${D} m from its start, in the negative direction`;
+        wrong = [`the cart traveled ${D} m in total`, `the cart's velocity at t = ${T} is −${D} m/s`, `the cart moved backward the whole time`];
+        why = `∫ v dt is displacement: net change in position. −${D} means it finished ${D} m on the negative side of where it began. It may have traveled much farther in total.`;
+      } else if (t === "units") {
+        q = `P(t) is a city's population, in thousands of people, t years from now. What are the units of P′(t)?`;
+        ans = `thousands of people per year`;
+        wrong = [`thousands of people`, `years per thousand people`, `thousands of people per year squared`];
+        why = `A derivative is a rate: units of the output per unit of the input, so thousands of people per year.`;
+      } else {
+        const c = ri(2, 9), k = ri(1, 6);
+        q = `R(t), in gallons per hour, is the rate at which oil leaks from a tank. R′(${c}) = −${k}. What does that mean?`;
+        ans = `at hour ${c} the leak rate is falling by ${k} gallons per hour, per hour`;
+        wrong = [`at hour ${c} the tank is losing ${k} gallons per hour`, `${k} gallons have leaked by hour ${c}`, `the leak stops after ${c} hours`];
+        why = `R′ is the rate of change of the leak RATE. Negative means the leak is slowing down, by ${k} gal/hr each hour.`;
+      }
+      return { subType: "interpret", forceChoice: true, question: q, answer: ans, options: opt4(ans, wrong), explanation: why };
+    }
+
+    // in_out: constant inflow a, outflow b·t. The amount peaks when inflow = outflow.
+    const b = ri(1, 4), tStar = ri(2, 8), a = b * tStar, V0 = 10 * ri(2, 10);
+    const gain = a * tStar - b * tStar * tStar / 2, maxV = V0 + gain;
+    if (pick([true, false])) {
+      return {
+        subType: "in_out",
+        question: `Water flows into a tank at a constant ${a} L/min and drains at ${cf(b, "t")} L/min. At what time t, in minutes, is the amount of water in the tank greatest?`,
+        answer: fmt(tStar),
+        // Mistakes: 2a/b (where the net gain returns to 0); a/(2b); the max amount instead of the time.
+        options: opt4(fmt(tStar), [fmt(2 * tStar), fmt(a / (2 * b)), fmt(a * b), fmt(tStar + 1)]),
+        explanation: `The amount rises while inflow beats outflow. Net rate ${a} − ${cf(b, "t")} = 0 at t = ${tStar}; after that it is negative, so the amount is greatest at t = ${tStar} min.`
+      };
+    }
+    return {
+      subType: "in_out",
+      question: `A tank holds ${V0} L. Water flows in at a constant ${a} L/min and drains at ${cf(b, "t")} L/min. What is the greatest amount of water the tank holds, in liters?`,
+      answer: fmt(maxV),
+      // Mistakes: ignoring the drain; forgetting the ½ in ∫t dt; leaving out the starting amount.
+      options: opt4(fmt(maxV), [fmt(V0 + a * tStar), fmt(V0 + a * tStar - b * tStar * tStar), fmt(gain), fmt(V0 + a * 2 * tStar - b * (2 * tStar) ** 2 / 2)]),
+      explanation: `The amount peaks when ${a} − ${cf(b, "t")} = 0, at t = ${tStar}. Amount = ${V0} + ∫₀^${tStar} (${a} − ${cf(b, "t")}) dt = ${V0} + ${a * tStar} − ${fmt(b * tStar * tStar / 2)} = ${fmt(maxV)} L.`
+    };
+  }));
+
+})();
 // ==== END GRADUATION PLAN CONTENT: STEM ====
 </script>
 
