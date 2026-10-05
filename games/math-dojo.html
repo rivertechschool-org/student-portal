@@ -52288,6 +52288,1840 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: CS-GAMES ====
+// Computer Science & Game Math branch, "Games & Simulations" (plan items
+// 73D-84D): eleven tier-7 skills, M-390 to M-400. Every skill is the maths a
+// game programmer actually writes - vectors, headings, dt, gravity, hitboxes,
+// lerp, drop tables, curves and prices - so the contexts are platformers,
+// shooters, RPG loot and idle games rather than abstract x and y.
+//
+// Conventions used in every lesson and question here, stated once so they
+// never drift between skills:
+//   * screen space: origin top-left, x grows RIGHT, y grows DOWN;
+//   * headings come from Math.atan2(dy, dx) on screen coordinates, so 0° points
+//     right, 90° points DOWN, and a positive angle turns CLOCKWISE on screen;
+//   * AABBs are {x, y, w, h} with (x, y) the top-left corner, and touching
+//     edges do NOT count as overlapping (strict <).
+// Tier 7 answers are typed (shouldTypeAnswer), so every pair answer carries the
+// spellings a student might type, and every answer is computed, never written
+// down by hand.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  // Prints a number without float noise (0.1 + 0.2 -> "0.3") and never as "-0".
+  const fmt = n => { const v = Math.round(n * 1e6) / 1e6; return String(v === 0 ? 0 : v); };
+  // Round half away from zero to dp places. Math.round alone sends -2.5 to -2,
+  // which would disagree with what the explanation tells a student to do.
+  const rnd = (n, dp) => { const m = Math.pow(10, dp);
+    return Math.sign(n) * Math.round(Math.abs(n) * m + 1e-9) / m; };
+  const deg = rad => rad * 180 / Math.PI;
+  const rad = d => d * Math.PI / 180;
+  // Wrap an angle into (-180, 180], the range Math.atan2 reports in.
+  const wrap = a => { let v = ((a % 360) + 360) % 360; if (v > 180) v -= 360; return v; };
+  // Working shown in explanations: a negative is bracketed before it is
+  // squared or multiplied ("(-36)²", not "-36²", which means something else),
+  // and "x + -5" is written "x − 5".
+  const par = n => n < 0 ? "(" + fmt(n) + ")" : fmt(n);
+  const sq = n => par(n) + "²";
+  const pm = n => n < 0 ? "− " + fmt(-n) : "+ " + fmt(n);
+
+  // Value of an option for de-duplication: a single number (also "45°", "35%"
+  // and "3/8"), or a pair "x|y". Two options with the same value would put a
+  // right answer on a wrong button (dojo-distractor-sweep rule 4/5).
+  const valKey = s => {
+    const t = String(s).replace(/[⟨⟩()<>\s°$]/g, '');
+    const nums = t.split(',');
+    const one = u => { const f = u.match(/^(-?\d+(?:\.\d+)?)\/(-?\d+(?:\.\d+)?)$/);
+      if (f) return +f[1] / +f[2];
+      const p = u.match(/^(-?\d+(?:\.\d+)?)%$/); if (p) return +p[1] / 100;
+      return /^-?\d+(?:\.\d+)?$/.test(u) ? +u : NaN; };
+    const vals = nums.map(one);
+    if (vals.some(v => !Number.isFinite(v))) return 's:' + String(s).trim().toLowerCase();
+    return vals.map(v => fmt(v)).join('|');
+  };
+  // Four distinct options, the answer included. Candidates that repeat the
+  // answer's VALUE or another candidate's are skipped; if the misconceptions
+  // run out, the answer's numbers are nudged so the board still has four.
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { if (v === undefined || v === null) return;
+      const s = String(v); if (/NaN|Infinity|undefined/.test(s)) return;
+      const k = valKey(s); if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { if (out.length >= 4) break; push(c); }
+    const s = String(ans), nums = [...s.matchAll(/-?\d+(?:\.\d+)?/g)];
+    for (const d of [2, -2, 3, -3, 5, -5, 10, -10, 1, -1]) {
+      for (const m of nums) {
+        if (out.length >= 4) break;
+        push(s.slice(0, m.index) + fmt(parseFloat(m[0]) + d) + s.slice(m.index + m[0].length));
+      }
+    }
+    return out.length >= 4 ? sh(out.slice(0, 4)) : (out.length >= 2 ? sh(out) : undefined);
+  };
+  // Vectors are shown in angle brackets, positions in parentheses - the same
+  // split the existing Vectors skill uses. Both grade equal when typed.
+  const V = (x, y) => "⟨" + fmt(x) + ", " + fmt(y) + "⟩";
+  const P = (x, y) => "(" + fmt(x) + ", " + fmt(y) + ")";
+  // Every spelling a student might type for a pair. ⟨3, 4⟩, (3, 4), 3, 4 and
+  // <3,4> already grade equal for whole numbers, but decimal pairs written as
+  // <0.6, 0.8> or (.6, .8) do not, so they are listed outright.
+  const pairAlts = (x, y) => { const a = fmt(x), b = fmt(y);
+    const s = v => v.replace(/^(-?)0\./, '$1.');
+    return ["(" + a + ", " + b + ")", a + ", " + b, "<" + a + ", " + b + ">", "⟨" + a + ", " + b + "⟩",
+            "(" + s(a) + ", " + s(b) + ")", "<" + s(a) + ", " + s(b) + ">", s(a) + ", " + s(b)]; };
+  // Typed "56.31" is NOT accepted for an answer written "56.31°", so angle
+  // answers are plain numbers that also accept the degree sign and the word.
+  const angAlts = a => [fmt(a) + "°", fmt(a) + " degrees", fmt(a) + " deg"];
+  // Probability answers are decimals; a percent typed with its sign grades
+  // equal already, and the bare percent is accepted only where the question
+  // asked for a percent.
+  const pctAlts = p => [fmt(rnd(p * 100, 4)) + "%"];
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // Pythagorean triples whose hypotenuse reduces to 5 or 25, so a unit vector
+  // built from them has terminating decimals (3/5 = 0.6, 7/25 = 0.28).
+  const UNIT_TRIPLES = [[3,4,5],[4,3,5],[7,24,25],[24,7,25]];
+  // Triples for lengths and distances, where only the hypotenuse must be whole.
+  const TRIPLES = [[3,4,5],[4,3,5],[6,8,10],[8,6,10],[5,12,13],[12,5,13],[9,12,15],[12,9,15],
+                   [8,15,17],[15,8,17],[12,16,20],[16,12,20],[7,24,25],[24,7,25],[15,20,25],[20,15,25],[20,21,29]];
+  const signed = (a, b) => [a * pick([1,-1]), b * pick([1,-1])];
+
+  // =====================================================================
+  // M-390  Game Vectors  (tier 7)
+  // Prereqs: Screen Coordinates (M-386), Pythagorean (M-091).
+  // =====================================================================
+  _addSkill(7, "Game Vectors", "Game Vectors", 3, {
+    goalProblem: "A player sprite stands at (120, 80) and a coin sits at (180, 160) on screen. What vector points from the player to the coin, how long is it, and what is the unit vector that points the same way?",
+    teachingSteps: [
+      { title: "Screen space and what a vector is",
+        explanation: "Games measure the screen in pixels from the <strong>top-left corner</strong>: x grows to the right and <strong>y grows downward</strong>. A <strong>position</strong> like (120, 80) is a place. A <strong>vector</strong> like ⟨60, 80⟩ is a <em>move</em>: 60 px right and 80 px <strong>down</strong>. A negative y-component means up.",
+        visual: "position (120, 80) + move ⟨60, 80⟩ = position (180, 160)" },
+      { title: "A vector from two points: target minus start",
+        explanation: "To aim from A at B, subtract <strong>start from target</strong>, one component at a time: ⟨B.x − A.x, B.y − A.y⟩. Swap the order and the arrow points backwards.",
+        visual: "const dx = coin.x - player.x;  // 180 - 120 = 60<br>const dy = coin.y - player.y;  // 160 - 80 = 80" },
+      { title: "Add, subtract and scale component by component",
+        explanation: "Velocity plus a wind push is a sum: add the x's together and the y's together. Multiplying by a number <strong>scales</strong> the vector: 2 × v is twice as fast in the same direction, 0.5 × v half as fast, −1 × v reverses it.",
+        visual: "⟨4, −2⟩ + ⟨1, 3⟩ = ⟨5, 1⟩<br>3 × ⟨4, −2⟩ = ⟨12, −6⟩" },
+      { title: "Magnitude is Pythagoras",
+        explanation: "The <strong>length</strong> (magnitude) of ⟨dx, dy⟩ is the hypotenuse of a right triangle with legs dx and dy. Signs do not matter because they are squared. In code: <code>Math.hypot(dx, dy)</code>.",
+        visual: "|⟨60, 80⟩| = √(60² + 80²) = √10000 = 100" },
+      { title: "Normalise to get a pure direction",
+        explanation: "Divide each component by the length and you get a <strong>unit vector</strong>: length 1, same direction. Guard against a length of 0 (the player is already on the coin) or you divide by zero.",
+        visual: "const len = Math.hypot(dx, dy);  // 100<br>const ux = dx / len, uy = dy / len;  // ⟨0.6, 0.8⟩" },
+      { title: "Move a sprite with a vector",
+        explanation: "Multiply the unit vector by the speed you want, then add it to the position every frame. After n frames at velocity v the sprite has moved n × v from where it started.",
+        visual: "player.x += ux * speed;<br>player.y += uy * speed;" }
+    ],
+    finalAnswer: "⟨60, 80⟩, length 100, unit vector ⟨0.6, 0.8⟩",
+    answerExplanation: "Coin minus player: ⟨180 − 120, 160 − 80⟩ = ⟨60, 80⟩. Length √(60² + 80²) = 100. Divide by 100: ⟨0.6, 0.8⟩, which points right and down, toward the coin.",
+    example: { problem: "An enemy at (40, 200) chases a player at (100, 120) at 5 px per frame. Find its velocity vector.", steps: [
+      { text: "Target minus start", math: "⟨100 − 40, 120 − 200⟩ = ⟨60, −80⟩" },
+      { text: "Length", math: "√(60² + (−80)²) = √10000 = 100" },
+      { text: "Unit vector (y is negative: the player is above)", math: "⟨60/100, −80/100⟩ = ⟨0.6, −0.8⟩" },
+      { text: "Scale by the speed", math: "5 × ⟨0.6, −0.8⟩ = ⟨3, −4⟩ px per frame" }
+    ]},
+    keyPoints: [
+      "Vector from A to B = B − A, component by component",
+      "On screen, +y is down: a negative y-component moves up",
+      "Length = √(dx² + dy²); unit vector = each component ÷ length",
+      "Velocity = unit direction × speed; position += velocity each frame"
+    ],
+    mistakes: [
+      { wrong: "Using start − target: ⟨120 − 180, 80 − 160⟩ = ⟨−60, −80⟩", why: "That arrow points from the coin back to the player. Always target minus start." },
+      { wrong: "Moving by the raw vector ⟨60, 80⟩ every frame", why: "Then a far target makes the sprite faster than a near one. Normalise first, then multiply by the speed." },
+      { wrong: "|⟨60, 80⟩| = 60 + 80 = 140", why: "Lengths do not add like that. The legs make a right triangle, so use √(60² + 80²) = 100." }
+    ],
+    guided: { problem: "A homing missile at (50, 300) targets a ship at (230, 60). It flies at 4 px per frame. Find its velocity vector.",
+      steps: [
+        { label: "dx = 230 − 50", value: "180" },
+        { label: "dy = 60 − 300", value: "-240" },
+        { label: "Length √(180² + 240²)", value: "300" },
+        { label: "Unit vector", value: "⟨0.6, -0.8⟩" },
+        { label: "Velocity = 4 × unit", value: "⟨2.4, -3.2⟩" }
+      ], answer: "⟨2.4, -3.2⟩", answerLabel: "Velocity per frame =",
+      interactiveSteps: [
+        { prompt: "dx = target x − missile x = 230 − 50 = ?", hint: "Subtract the start x from the target x.", answer: "180", acceptableAnswers: ["180"], formatHint: "Enter a number", commonMistakes: { "-180": "That is start minus target. Use target minus start: 230 − 50." } },
+        { prompt: "dy = target y − missile y = 60 − 300 = ?", hint: "The ship is higher on screen, so dy should be negative (y grows downward).", answer: "-240", acceptableAnswers: ["-240"], formatHint: "Enter a number (it can be negative)", commonMistakes: { "240": "The ship is ABOVE the missile on screen, and up is negative y. 60 − 300 = −240." } },
+        { prompt: "Length = √(180² + (−240)²) = ?", hint: "180² = 32400 and 240² = 57600. Add them and take the square root.", answer: "300", acceptableAnswers: ["300"], formatHint: "Enter a number", commonMistakes: { "420": "Lengths do not add. Square, add, then square-root: √90000 = 300." } },
+        { prompt: "Unit vector = ⟨180/300, −240/300⟩ = ?", hint: "Divide each component by the length 300.", answer: "⟨0.6, -0.8⟩", acceptableAnswers: pairAlts(0.6, -0.8), formatHint: "e.g., (0.5, -0.25)", commonMistakes: { "(0.6,0.8)": "Keep the sign: the y-component is negative because the ship is above." } },
+        { prompt: "Velocity = 4 × ⟨0.6, −0.8⟩ = ?", hint: "Multiply each component by the speed 4.", answer: "⟨2.4, -3.2⟩", acceptableAnswers: pairAlts(2.4, -3.2), formatHint: "e.g., (1.5, -2)", commonMistakes: {} }
+      ] }
+  }, function(){
+    const st = pick(["components","add_sub","scale","magnitude","normalize","speed_vector","move"]);
+    if (st === "components") {
+      const ax = ri(2, 60) * 5, ay = ri(2, 50) * 5, bx = ri(2, 60) * 5, by = ri(2, 50) * 5;
+      const dx = bx - ax, dy = by - ay;
+      const who = pick([["player","coin"],["turret","enemy"],["slime","hero"],["camera","boss"]]);
+      return { subType: st,
+        question: `On screen (y grows down), a ${who[0]} is at (${ax}, ${ay}) and a ${who[1]} is at (${bx}, ${by}). What vector points from the ${who[0]} to the ${who[1]}?`,
+        answer: V(dx, dy), acceptableAnswers: pairAlts(dx, dy),
+        // reversed (start − target); x and y swapped; the target's position itself
+        options: opt4(V(dx, dy), [V(-dx, -dy), V(dy, dx), V(bx, by), V(dx, -dy)]),
+        explanation: `Target minus start: ⟨${bx} − ${ax}, ${by} − ${ay}⟩ = ${V(dx, dy)}. ${dy < 0 ? "The y-component is negative because the " + who[1] + " is higher on screen." : dy > 0 ? "The y-component is positive because the " + who[1] + " is lower on screen." : ""}` };
+    }
+    if (st === "add_sub") {
+      const a = [ri(-9, 9), ri(-9, 9)], b = [ri(-9, 9), ri(-9, 9)];
+      const sub = pick([true, false]);
+      const r = sub ? [a[0] - b[0], a[1] - b[1]] : [a[0] + b[0], a[1] + b[1]];
+      const q = sub
+        ? `A boat's velocity is ${V(a[0], a[1])} px per frame. Subtract the current ${V(b[0], b[1])} to find its velocity relative to the water. What is ${V(a[0], a[1])} − ${V(b[0], b[1])}?`
+        : `A player runs with velocity ${V(a[0], a[1])} px per frame and a conveyor belt adds ${V(b[0], b[1])}. What is the combined velocity?`;
+      return { subType: st, question: q, answer: V(r[0], r[1]), acceptableAnswers: pairAlts(r[0], r[1]),
+        // the other operation; components mixed between vectors; sign slip on y only
+        options: opt4(V(r[0], r[1]), [sub ? V(a[0] + b[0], a[1] + b[1]) : V(a[0] - b[0], a[1] - b[1]),
+                                     V(a[0] + a[1], b[0] + b[1]), V(r[0], sub ? a[1] + b[1] : a[1] - b[1]), V(r[1], r[0])]),
+        explanation: `Work one component at a time: x: ${a[0]} ${sub ? "−" : "+"} ${par(b[0])} = ${r[0]}, y: ${a[1]} ${sub ? "−" : "+"} ${par(b[1])} = ${r[1]}. Result ${V(r[0], r[1])}.` };
+    }
+    if (st === "scale") {
+      const k = pick([2, 3, 4, 0.5, 1.5, -1, 2.5]);
+      const v = k === 0.5 || k === 1.5 || k === 2.5 ? [ri(-8, 8) * 2, ri(-8, 8) * 2] : [ri(-9, 9), ri(-9, 9)];
+      if (v[0] === 0 && v[1] === 0) v[0] = 4;
+      const r = [k * v[0], k * v[1]];
+      const why = k === -1 ? "bounces off a wall and reverses direction (multiply by -1)" : k < 1 ? `slows to ${k} times its speed in mud` : `picks up a ${k}× speed boost`;
+      return { subType: st,
+        question: `A sprite moving at ${V(v[0], v[1])} px per frame ${why}. What is its new velocity, ${fmt(k)} × ${V(v[0], v[1])}?`,
+        answer: V(r[0], r[1]), acceptableAnswers: pairAlts(r[0], r[1]),
+        // only x scaled; k added instead of multiplied; unchanged
+        options: opt4(V(r[0], r[1]), [V(r[0], v[1]), V(v[0] + k, v[1] + k), V(v[0], v[1]), V(-r[0], -r[1])]),
+        explanation: `Scaling multiplies EACH component: ⟨${fmt(k)} × ${par(v[0])}, ${fmt(k)} × ${par(v[1])}⟩ = ${V(r[0], r[1])}. ${k < 0 ? "A negative scale points the arrow the opposite way along the same line, at the same speed." : "The direction stays the same; only the speed changes."}` };
+    }
+    if (st === "magnitude") {
+      const t = pick(TRIPLES), k = pick([1, 1, 2, 3]);
+      const [x, y] = signed(t[0] * k, t[1] * k), m = t[2] * k;
+      return { subType: st,
+        question: `A dash move pushes the player by ${V(x, y)} pixels. How many pixels long is the dash (the vector's magnitude)?`,
+        answer: String(m),
+        // legs added; forgot the square root; difference of the legs
+        options: opt4(m, [Math.abs(x) + Math.abs(y), x * x + y * y, Math.abs(Math.abs(x) - Math.abs(y)), m + k]),
+        explanation: `|v| = √(${sq(x)} + ${sq(y)}) = √(${x * x} + ${y * y}) = √${x * x + y * y} = ${m}. Squaring removes the signs, so direction does not matter.` };
+    }
+    if (st === "normalize") {
+      const t = pick(UNIT_TRIPLES), k = pick([1, 2, 4, 10, 20]);
+      const [x, y] = signed(t[0] * k, t[1] * k), m = t[2] * k;
+      const ux = x / m, uy = y / m;
+      return { subType: st,
+        question: `To aim a fireball, normalise the direction ${V(x, y)}. What unit vector (length 1) points the same way?`,
+        answer: V(ux, uy), acceptableAnswers: pairAlts(ux, uy),
+        // components swapped; sign of y lost; divided by the sum of the legs instead of the length
+        options: opt4(V(ux, uy), [V(uy, ux), V(ux, -uy), V(rnd(x / (Math.abs(x) + Math.abs(y)), 2), rnd(y / (Math.abs(x) + Math.abs(y)), 2)), V(-ux, -uy)]),
+        explanation: `Length = √(${sq(x)} + ${sq(y)}) = ${m}. Divide each component by it: ⟨${x}/${m}, ${y}/${m}⟩ = ${V(ux, uy)}. Check: ${sq(ux)} + ${sq(uy)} = ${fmt(ux * ux)} + ${fmt(uy * uy)} = 1.` };
+    }
+    if (st === "speed_vector") {
+      const t = pick(UNIT_TRIPLES), k = pick([2, 5, 10, 20]);
+      const [x, y] = signed(t[0] * k, t[1] * k), m = t[2] * k;
+      const s = pick([2, 3, 4, 5, 6, 8, 10, 12, 15]);
+      const vx = s * x / m, vy = s * y / m;
+      return { subType: st,
+        question: `An arrow should fly toward the direction ${V(x, y)} at a speed of ${s} px per frame. Normalise the direction, then scale it by the speed. What is the arrow's velocity vector?`,
+        answer: V(vx, vy), acceptableAnswers: pairAlts(vx, vy),
+        // skipped normalising (raw direction times speed); unit vector without the speed; speed added
+        options: opt4(V(vx, vy), [V(s * x, s * y), V(x / m, y / m), V(vy, vx), V(x / m + s, y / m + s)]),
+        explanation: `Length of ${V(x, y)} = ${m}, so the unit vector is ${V(x / m, y / m)}. Times ${s}: ${V(vx, vy)}. Its length is exactly ${s}, the speed we wanted.` };
+    }
+    // move: position after n frames at constant velocity
+    const p = [ri(4, 60) * 5, ri(4, 60) * 5], v = [ri(-12, 12), ri(-12, 12)], n = ri(3, 20);
+    if (v[0] === 0 && v[1] === 0) v[1] = -5;
+    const r = [p[0] + n * v[0], p[1] + n * v[1]];
+    return { subType: "move",
+      question: `A bullet starts at (${p[0]}, ${p[1]}) and moves ${V(v[0], v[1])} px every frame. Where is it after ${n} frames?`,
+      answer: P(r[0], r[1]), acceptableAnswers: pairAlts(r[0], r[1]),
+      // one frame only; the displacement without the start; moved backwards; y-up sign habit
+      options: opt4(P(r[0], r[1]), [P(p[0] + v[0], p[1] + v[1]), P(n * v[0], n * v[1]), P(p[0] - n * v[0], p[1] - n * v[1]), P(r[0], p[1] - n * v[1])]),
+      explanation: `It moves ${n} × ${V(v[0], v[1])} = ${V(n * v[0], n * v[1])} in total. Add that to the start: (${p[0]} ${pm(n * v[0])}, ${p[1]} ${pm(n * v[1])}) = ${P(r[0], r[1])}.` };
+  });
+
+  // =====================================================================
+  // M-391  Direction and Rotation  (tier 7)
+  // Prereqs: Game Vectors (M-390), Trigonometry (M-198).
+  // =====================================================================
+  // Vectors whose atan2 is a whole number of degrees, plus 3-4-5 shapes for
+  // the 1-decimal case. Kept small so the arithmetic is the trig, not the sums.
+  const HEADING_VECS = [[5,0],[0,5],[-5,0],[0,-5],[4,4],[-4,4],[-4,-4],[4,-4],[3,4],[4,3],[-3,4],[-4,3],[3,-4],[4,-3],[-3,-4],[-4,-3],[6,8],[-8,6],[8,-6],[-6,-8],[5,12],[-12,5],[12,-5]];
+  _addSkill(7, "Direction and Rotation", "Direction and Rotation", 3, {
+    goalProblem: "A turret at (200, 300) must aim at an enemy at (260, 220). In screen space, what heading (angle) should it turn to?",
+    teachingSteps: [
+      { title: "Which way angles go on a screen",
+        explanation: "In maths class y points up, so angles turn <strong>counterclockwise</strong>. On a screen y points <strong>down</strong>, and if you feed screen coordinates straight into <code>Math.atan2(dy, dx)</code>, 0° points right, <strong>90° points down</strong>, −90° points up, and a positive angle turns <strong>clockwise</strong> as you look at the screen. That is the convention in every question here.",
+        visual: "0° → right   90° → down   180° → left   −90° → up" },
+      { title: "Heading from a vector: atan2",
+        explanation: "<code>Math.atan2(dy, dx)</code> takes <strong>y first</strong> and returns the angle in radians from −π to π, already in the right quadrant (plain atan(dy/dx) cannot tell ⟨3, 4⟩ from ⟨−3, −4⟩). Multiply by 180/π for degrees.",
+        visual: "const angle = Math.atan2(dy, dx) * 180 / Math.PI;" },
+      { title: "Degrees and radians",
+        explanation: "Math.cos, Math.sin and Math.atan2 all work in <strong>radians</strong>. A full turn is 360° = 2π rad, so multiply degrees by π/180 to get radians and radians by 180/π to get degrees. Passing 45 straight to Math.cos gives cos(45 radians), not cos 45°.",
+        visual: "90° = π/2 ≈ 1.57 rad   60° = π/3 ≈ 1.05 rad" },
+      { title: "A direction vector from an angle",
+        explanation: "Going the other way, the unit vector for heading θ is <strong>(cos θ, sin θ)</strong>. Multiply by the speed to get a velocity. With y down, a positive sin θ means moving down the screen.",
+        visual: "vx = speed * Math.cos(rad);<br>vy = speed * Math.sin(rad);" },
+      { title: "Turning to face a target: the short way",
+        explanation: "To rotate from the current heading to the target heading, take the difference and wrap it into −180° to 180°. A positive result means turn clockwise on screen, negative means counterclockwise. Without the wrap, turning from 170° to −170° looks like −340° instead of +20°.",
+        visual: "let turn = target - current;<br>turn = ((turn + 540) % 360) - 180;" },
+      { title: "Rotating a vector by 90°",
+        explanation: "Rotating ⟨x, y⟩ by θ gives ⟨x cos θ − y sin θ, x sin θ + y cos θ⟩. On a y-down screen a quarter turn clockwise (θ = 90°) is <strong>⟨−y, x⟩</strong>, and a quarter turn counterclockwise is <strong>⟨y, −x⟩</strong>. Check: right ⟨1, 0⟩ turned clockwise becomes down ⟨0, 1⟩.",
+        visual: "clockwise on screen: ⟨x, y⟩ → ⟨−y, x⟩" }
+    ],
+    finalAnswer: "−53.1°",
+    answerExplanation: "dx = 260 − 200 = 60, dy = 220 − 300 = −80. atan2(−80, 60) = −53.13°, about −53.1°: up and to the right, 53.1° counterclockwise from pointing right.",
+    example: { problem: "A ship flies at heading 30° (screen space) at 10 px per frame. Find its velocity.", steps: [
+      { text: "Convert to radians", math: "30 × π/180 ≈ 0.5236 rad" },
+      { text: "x-component", math: "10 × cos 30° = 10 × 0.8660 ≈ 8.66" },
+      { text: "y-component (positive = down)", math: "10 × sin 30° = 10 × 0.5 = 5" },
+      { text: "Velocity", math: "⟨8.66, 5⟩ — right and slightly down" }
+    ]},
+    keyPoints: [
+      "Math.atan2(dy, dx): y first, answer in radians, correct quadrant",
+      "Screen space: 90° is down and positive angles turn clockwise",
+      "Direction from an angle: (cos θ, sin θ), with θ in radians",
+      "Wrap a turn into −180° to 180° to rotate the short way"
+    ],
+    mistakes: [
+      { wrong: "Heading of ⟨60, −80⟩ = +53.1°", why: "That is the maths-class (y-up) answer. On screen, up is negative y, so the heading is −53.1°." },
+      { wrong: "Math.cos(30) for a 30° heading", why: "Math.cos expects radians. Use Math.cos(30 * Math.PI / 180)." },
+      { wrong: "Turning from 170° to −170° by −340°", why: "Wrap the difference into −180° to 180°: the short turn is +20°." }
+    ],
+    guided: { problem: "A guard at (100, 100) spots a thief at (40, 160). Find the heading from the guard to the thief, then the guard's velocity at 5 px per frame.",
+      steps: [
+        { label: "dx = 40 − 100", value: "-60" },
+        { label: "dy = 160 − 100", value: "60" },
+        { label: "atan2(60, −60) in degrees", value: "135" },
+        { label: "Velocity 5 × (cos 135°, sin 135°)", value: "⟨-3.54, 3.54⟩" }
+      ], answer: "⟨-3.54, 3.54⟩", answerLabel: "Velocity =",
+      interactiveSteps: [
+        { prompt: "dx = thief x − guard x = 40 − 100 = ?", hint: "Target minus start.", answer: "-60", acceptableAnswers: ["-60"], formatHint: "Enter a number (it can be negative)", commonMistakes: { "60": "The thief is to the LEFT, so dx is negative: 40 − 100 = −60." } },
+        { prompt: "dy = thief y − guard y = 160 − 100 = ?", hint: "y grows downward, and the thief is lower on screen.", answer: "60", acceptableAnswers: ["60"], formatHint: "Enter a number", commonMistakes: { "-60": "160 is further DOWN than 100, so dy is positive on screen." } },
+        { prompt: "Heading = atan2(60, −60) in degrees = ?", hint: "Left and down by equal amounts: halfway between 90° (down) and 180° (left).", answer: "135", acceptableAnswers: ["135", "135°", "135 degrees"], formatHint: "e.g., 45", commonMistakes: { "-45": "atan(60/−60) = −45° is in the wrong quadrant. atan2 knows dx is negative: 135°.", "-135": "That is up-left. Down is positive on screen, so down-left is +135°." } },
+        { prompt: "Velocity = 5 × (cos 135°, sin 135°), each to 2 decimal places = ?", hint: "cos 135° ≈ −0.7071 and sin 135° ≈ 0.7071.", answer: "⟨-3.54, 3.54⟩", acceptableAnswers: pairAlts(-3.54, 3.54), formatHint: "e.g., (-1.25, 2.5)", commonMistakes: {} }
+      ] }
+  }, function(){
+    const st = pick(["heading","dir_from_angle","angle_between","deg_rad","rotate_to_face","screen_sign","rotate90"]);
+    // Distractors for an angle answer must not be the same heading in disguise
+    // (-53.1 and 306.9 are one direction), so compare them modulo 360.
+    const angOpts = (a, cands) => opt4(fmt(a), cands.filter(c => Math.abs(wrap(c - a)) > 1e-6).map(c => fmt(rnd(wrap(c), 1))));
+    const angAccept = a => angAlts(a).concat(a < 0 ? [fmt(rnd(a + 360, 1))].concat(angAlts(rnd(a + 360, 1))) : []);
+    if (st === "heading" || st === "angle_between") {
+      const [dx0, dy0] = pick(HEADING_VECS), k = pick([1, 2, 5, 10]);
+      const dx = dx0 * k, dy = dy0 * k;
+      const a = rnd(deg(Math.atan2(dy, dx)), 1);
+      const atanOnly = dx === 0 ? (dy > 0 ? 90 : -90) : rnd(deg(Math.atan(dy / dx)), 1);
+      let q;
+      if (st === "heading") {
+        q = `A spaceship's velocity is ${V(dx, dy)} on screen (y down). Using Math.atan2(dy, dx), what is its heading in degrees? (0° = right, 90° = down, positive turns clockwise.) Give it to 1 decimal place.`;
+      } else {
+        const px = ri(10, 40) * 10, py = ri(10, 40) * 10;
+        q = `A sniper at (${px}, ${py}) aims at a target at (${px + dx}, ${py + dy}). In screen space (y down, 0° = right, 90° = down), what heading in degrees points from the sniper to the target? Give it to 1 decimal place.`;
+      }
+      return { subType: st, question: q, answer: fmt(a), acceptableAnswers: angAccept(a),
+        // y-up habit (-a); plain atan without the quadrant fix; atan2(dx, dy) argument swap; aimed from target to shooter
+        options: angOpts(a, [-a, atanOnly, 90 - a, a + 180, a + 90]),
+        explanation: `dx = ${dx}, dy = ${dy}. Math.atan2(${dy}, ${dx}) × 180/π = ${fmt(a)}°. ${dy > 0 ? "dy is positive, so it points down the screen (a positive, clockwise angle)." : dy < 0 ? "dy is negative, so it points up the screen (a negative angle)." : "dy is 0, so it points straight " + (dx > 0 ? "right." : "left.")}` };
+    }
+    if (st === "dir_from_angle") {
+      const th = pick([0, 30, 45, 60, 90, 120, 135, 150, 180, -30, -45, -60, -90, -120, -135, -150]);
+      const s = pick([2, 4, 5, 6, 8, 10, 12, 20]);
+      const vx = rnd(s * Math.cos(rad(th)), 2), vy = rnd(s * Math.sin(rad(th)), 2);
+      const bx = rnd(s * Math.cos(th), 2), by = rnd(s * Math.sin(th), 2);
+      return { subType: st,
+        question: `A bat flies at heading ${th}° in screen space (0° = right, 90° = down) at ${s} px per frame. What is its velocity (speed × cos θ, speed × sin θ)? Round each component to 2 decimal places.`,
+        answer: V(vx, vy), acceptableAnswers: pairAlts(vx, vy),
+        // sin and cos swapped; y-up sign; forgot the degrees-to-radians conversion; forgot the speed
+        options: opt4(V(vx, vy), [V(vy, vx), V(vx, -vy), V(bx, by), V(rnd(Math.cos(rad(th)), 2), rnd(Math.sin(rad(th)), 2))]),
+        explanation: `θ = ${th}° = ${fmt(rnd(rad(th), 4))} rad. vx = ${s} × cos(${th}°) = ${fmt(vx)}, vy = ${s} × sin(${th}°) = ${fmt(vy)}. Velocity ${V(vx, vy)}${vy > 0 ? " (positive y = moving down the screen)" : vy < 0 ? " (negative y = moving up the screen)" : ""}.` };
+    }
+    if (st === "deg_rad") {
+      if (pick([true, false])) {
+        const d = pick([15, 30, 45, 60, 75, 90, 120, 135, 150, 180, 210, 225, 270, 300, 330, 360]);
+        const r = rnd(rad(d), 2);
+        return { subType: "deg_rad",
+          question: `Math.sin and Math.cos need radians. A cannon is tilted ${d}°. What is that in radians, to 2 decimal places?`,
+          answer: fmt(r), acceptableAnswers: [fmt(r) + " rad", fmt(r) + " radians"],
+          // forgot π (d/180); used 360 for a half turn; divided by 100 as if radians were a percentage; doubled
+          options: opt4(fmt(r), [fmt(rnd(d / 180, 2)), fmt(rnd(d * Math.PI / 360, 2)), fmt(rnd(d / 100, 2)), fmt(rnd(2 * r, 2))]),
+          explanation: `radians = degrees × π/180 = ${d} × π/180 = ${(() => { const f = frac(d, 180).split("/"); return (f[0] === "1" ? "" : f[0]) + "π" + (f[1] ? "/" + f[1] : ""); })()} ≈ ${fmt(r)}.` };
+      }
+      const [n, dd] = pick([[1,6],[1,4],[1,3],[1,2],[2,3],[3,4],[5,6],[1,1],[3,2],[5,4],[7,4],[2,1],[1,12],[5,3]]);
+      const d = 180 * n / dd;
+      const shown = (n === 1 ? "" : n) + "π" + (dd === 1 ? "" : "/" + dd);
+      return { subType: "deg_rad",
+        question: `Math.atan2 returned ${shown} radians for an enemy's facing. How many degrees is that?`,
+        answer: fmt(d), acceptableAnswers: angAlts(d),
+        // used 360 per π; used 90 per π; the radian value itself
+        options: opt4(fmt(d), [fmt(360 * n / dd), fmt(90 * n / dd), fmt(rnd(Math.PI * n / dd, 2)), fmt(d + 30)]),
+        explanation: `degrees = radians × 180/π. ${shown} × 180/π = ${n === 1 ? "" : n + " × "}180 ÷ ${dd} = ${fmt(d)}°.` };
+    }
+    if (st === "rotate_to_face") {
+      let cur, tgt, turn;
+      do { cur = ri(-35, 36) * 5; tgt = ri(-35, 36) * 5; turn = wrap(tgt - cur); }
+      while (turn === 0 || Math.abs(turn) === 180 || Math.abs(turn) < 10);
+      const raw = tgt - cur;
+      return { subType: st,
+        question: `A tank's turret faces ${cur}° and the target is at heading ${tgt}° (screen space: positive = clockwise). What is the smallest signed turn, in degrees, that faces the target? Positive means clockwise.`,
+        answer: fmt(turn), acceptableAnswers: angAlts(turn),
+        // the long way round; the opposite direction; current minus target
+        options: opt4(fmt(turn), [fmt(turn > 0 ? turn - 360 : turn + 360), fmt(-turn), fmt(raw !== turn ? raw : turn + 180), fmt(wrap(turn + 180))]),
+        explanation: `Difference = ${tgt} − (${cur}) = ${raw}°. ${raw !== turn ? "That is more than half a turn, so wrap it into −180° to 180°: " + raw + (raw > 0 ? " − 360" : " + 360") + " = " + turn + "°." : "It is already between −180° and 180°."} ${turn > 0 ? "Positive: turn " + turn + "° clockwise." : "Negative: turn " + (-turn) + "° counterclockwise."}` };
+    }
+    if (st === "screen_sign") {
+      if (pick([true, false])) {
+        const a = pick([20, 30, 45, 60, 70, 110, 120, 135, 150, 160]);
+        const ans = -a;
+        return { subType: st,
+          question: `A level designer's notes use maths angles (y up, counterclockwise): the jump pad launches at ${a}° above the +x axis. Your engine uses screen space with Math.atan2 on y-down coordinates. What angle is that in the engine, in degrees from -180 to 180?`,
+          answer: fmt(ans), acceptableAnswers: angAccept(ans),
+          // copied unchanged; reflected across the y-axis instead of the x-axis; a quarter-turn shift
+          options: angOpts(ans, [a, 180 - a, a - 90, a - 180]),
+          explanation: `Flipping y flips the sense of rotation, so the screen angle is the negative of the maths angle: ${a}° up becomes ${ans}°. Check: up is negative y on screen, so an upward launch has a negative heading.` };
+      }
+      const th = pick([30, 45, 60, 120, 135, 150, -30, -45, -60, -120, -135, -150, 20, -160, 110, -70]);
+      const right = Math.cos(rad(th)) > 0, down = Math.sin(rad(th)) > 0;
+      const name = (down ? "down" : "up") + "-" + (right ? "right" : "left");
+      return { subType: st, forceChoice: true,
+        question: `In screen space (0° = right, 90° = down, positive turns clockwise), a projectile's heading is ${th}°. Which way is it moving across the screen?`,
+        answer: name, options: sh(["down-right", "down-left", "up-right", "up-left"]),
+        explanation: `cos ${th}° is ${right ? "positive (moving right)" : "negative (moving left)"} and sin ${th}° is ${down ? "positive, which is DOWN on screen" : "negative, which is UP on screen"}. So it moves ${name}.` };
+    }
+    // rotate90
+    const x = ri(-9, 9) || 3, y = ri(-9, 9) || -4, cw = pick([true, false]);
+    const r = cw ? [-y, x] : [y, -x];
+    return { subType: "rotate90",
+      question: `A strafing drone moves along ${V(x, y)}. Rotate this vector 90° ${cw ? "clockwise" : "counterclockwise"} as seen on a y-down screen to get its sideways direction. What is the rotated vector?`,
+      answer: V(r[0], r[1]), acceptableAnswers: pairAlts(r[0], r[1]),
+      // the other rotation; just swapped; turned 180°
+      options: opt4(V(r[0], r[1]), [cw ? V(y, -x) : V(-y, x), V(y, x), V(-x, -y), V(-y, -x)]),
+      explanation: `Rotation by θ: ⟨x cos θ − y sin θ, x sin θ + y cos θ⟩. ${cw ? "Clockwise on a y-down screen is θ = +90° (cos θ = 0, sin θ = 1), giving ⟨−y, x⟩" : "Counterclockwise on a y-down screen is θ = −90° (cos θ = 0, sin θ = −1), giving ⟨y, −x⟩"} = ${V(r[0], r[1])}.` };
+  });
+
+  // =====================================================================
+  // M-392  Velocity in Games  (tier 7)
+  // Prereqs: Game Vectors (M-390), Rates and Speed-Distance-Time (M-238).
+  // =====================================================================
+  _addSkill(7, "Velocity in Games", "Velocity in Games", 3, {
+    goalProblem: "A platformer hero runs right at 180 px/s. The hero is at x = 400 and the last frame took dt = 0.05 s. Where is the hero after this frame, and how many pixels per frame is that speed at a steady 60 fps?",
+    teachingSteps: [
+      { title: "Distance = speed × time, every frame",
+        explanation: "Velocity is how far something moves <strong>per second</strong>. A game redraws many times a second, so each frame it moves velocity × (time since the last frame). That frame time is called <strong>dt</strong> (delta time), measured in seconds.",
+        visual: "180 px/s for 0.05 s → 180 × 0.05 = 9 px" },
+      { title: "The update line: position += velocity × dt",
+        explanation: "This one line is the heart of movement code. In 2D, do it once for x and once for y. Remember y grows <strong>downward</strong>, so a negative vy moves up.",
+        visual: "hero.x += hero.vx * dt;<br>hero.y += hero.vy * dt;" },
+      { title: "Why dt matters: frame-rate independence",
+        explanation: "If you move a fixed 3 px every frame, a 144 fps monitor moves the hero 144 × 3 = 432 px/s but a 30 fps laptop only 90 px/s. Multiplying by dt makes the speed the same in pixels per <strong>second</strong> on every machine. At a steady frame rate, dt = 1 ÷ fps.",
+        visual: "60 fps → dt = 1/60 s   50 fps → dt = 0.02 s" },
+      { title: "Per frame ↔ per second",
+        explanation: "Pixels per second = pixels per frame × frames per second. Going back, pixels per frame = pixels per second ÷ fps.",
+        visual: "3 px/frame × 60 fps = 180 px/s<br>180 px/s ÷ 60 fps = 3 px/frame" },
+      { title: "Time to reach a point",
+        explanation: "Find the distance (Pythagoras if it is diagonal), then time = distance ÷ speed. Frames needed = time × fps.",
+        visual: "300 px at 150 px/s → 2 s → 120 frames at 60 fps" },
+      { title: "The diagonal speed bug",
+        explanation: "If holding right gives vx = 200 and holding down gives vy = 200, holding both gives ⟨200, 200⟩, whose length is 200√2 ≈ 282.84 px/s: <strong>41% faster</strong> diagonally. Normalise the input direction first, then multiply by the speed.",
+        visual: "|⟨200, 200⟩| = √(200² + 200²) ≈ 282.84" }
+    ],
+    finalAnswer: "x = 409, and 3 px per frame",
+    answerExplanation: "x += 180 × 0.05 = 9, so x = 400 + 9 = 409. At 60 fps: 180 ÷ 60 = 3 px per frame.",
+    example: { problem: "A goblin at (100, 50) has velocity ⟨120, −90⟩ px/s. Where is it after dt = 0.5 s, and what is its speed?", steps: [
+      { text: "x-component", math: "100 + 120 × 0.5 = 160" },
+      { text: "y-component (negative vy moves up)", math: "50 + (−90) × 0.5 = 5" },
+      { text: "New position", math: "(160, 5)" },
+      { text: "Speed is the velocity's length", math: "√(120² + 90²) = 150 px/s" }
+    ]},
+    keyPoints: [
+      "position += velocity × dt, separately for x and y",
+      "dt is in seconds; at a steady frame rate dt = 1 / fps",
+      "px/s = px/frame × fps; px/frame = px/s ÷ fps",
+      "time = distance ÷ speed; normalise diagonal input"
+    ],
+    mistakes: [
+      { wrong: "x = 400 + 180 = 580 after one frame", why: "That moves a whole second's worth in one frame. Multiply by dt: 180 × 0.05 = 9." },
+      { wrong: "Moving 3 px every frame with no dt", why: "Then the game runs faster on faster screens. Move speed × dt instead." },
+      { wrong: "Diagonal velocity ⟨200, 200⟩ for a 200 px/s character", why: "Its length is 282.84. Normalise to ⟨141.42, 141.42⟩ so the speed stays 200." }
+    ],
+    guided: { problem: "A knight moves 4 px per frame at 60 fps toward a castle 600 px away. How long does the trip take?",
+      steps: [
+        { label: "Speed in px per second = 4 × 60", value: "240" },
+        { label: "Time = 600 ÷ 240", value: "2.5" },
+        { label: "Frames = 2.5 × 60", value: "150" }
+      ], answer: "2.5", answerLabel: "Time in seconds =",
+      interactiveSteps: [
+        { prompt: "Speed in px per second = 4 px/frame × 60 fps = ?", hint: "Pixels per frame times frames per second.", answer: "240", acceptableAnswers: ["240"], formatHint: "Enter a number", commonMistakes: { "15": "That is 60 ÷ 4. Multiply: 4 × 60 = 240.", "0.07": "That divides. Each second has 60 frames, so multiply." } },
+        { prompt: "Time = distance ÷ speed = 600 ÷ 240 = ? seconds", hint: "Divide the distance by the speed in px/s.", answer: "2.5", acceptableAnswers: ["2.5", "2.5 s", "5/2"], formatHint: "Enter a number", commonMistakes: { "0.4": "That is speed ÷ distance. Time = distance ÷ speed." } },
+        { prompt: "How many frames is that at 60 fps? 2.5 × 60 = ?", hint: "Frames = seconds × frames per second.", answer: "150", acceptableAnswers: ["150"], formatHint: "Enter a number", commonMistakes: {} }
+      ] }
+  }, function(){
+    const st = pick(["pos_update","vec_update","ppf_pps","fps_dt","time_to_reach","diagonal"]);
+    if (st === "pos_update") {
+      const x = ri(10, 80) * 10, vx = pick([-1, 1]) * ri(3, 30) * 10, dt = pick([0.02, 0.05, 0.1, 0.25, 0.5]);
+      const r = x + vx * dt;
+      return { subType: st,
+        question: `A runner is at x = ${x} with velocity vx = ${vx} px/s. The last frame took dt = ${dt} s. After x += vx * dt, what is the new x?`,
+        answer: fmt(r),
+        // forgot dt; forgot the old position; moved the wrong way; divided by dt
+        options: opt4(fmt(r), [fmt(x + vx), fmt(vx * dt), fmt(x - vx * dt), fmt(x + vx / dt)]),
+        explanation: `vx × dt = ${vx} × ${dt} = ${fmt(vx * dt)} px this frame. x = ${x} ${pm(vx * dt)} = ${fmt(r)}.` };
+    }
+    if (st === "vec_update") {
+      const p = [ri(5, 60) * 10, ri(5, 40) * 10], v = [pick([-1, 1]) * ri(2, 30) * 10, pick([-1, 1]) * ri(2, 30) * 10];
+      const dt = pick([0.1, 0.2, 0.25, 0.5, 1.5, 2]);
+      const r = [p[0] + v[0] * dt, p[1] + v[1] * dt];
+      return { subType: st,
+        question: `A drone at (${p[0]}, ${p[1]}) flies with velocity ${V(v[0], v[1])} px/s on screen (y down). Where is it after ${dt} s?`,
+        answer: P(r[0], r[1]), acceptableAnswers: pairAlts(r[0], r[1]),
+        // forgot dt; displacement only; y sign flipped (y-up habit)
+        options: opt4(P(r[0], r[1]), [P(p[0] + v[0], p[1] + v[1]), P(v[0] * dt, v[1] * dt), P(r[0], p[1] - v[1] * dt), P(p[0] - v[0] * dt, p[1] - v[1] * dt)]),
+        explanation: `x: ${p[0]} ${pm(v[0] * dt)} = ${fmt(r[0])} (that is ${par(v[0])} × ${dt}); y: ${p[1]} ${pm(v[1] * dt)} = ${fmt(r[1])}. New position ${P(r[0], r[1])}.` };
+    }
+    if (st === "ppf_pps") {
+      const mode = pick(["toPps", "toPpf", "nodt"]);
+      if (mode === "toPps") {
+        const ppf = pick([2, 3, 4, 5, 6, 8, 1.5, 2.5]), fps = pick([30, 60, 120, 144]);
+        const ans = ppf * fps;
+        return { subType: st,
+          question: `An old game moves its spaceship ${ppf} px every frame and runs at ${fps} fps. How many pixels per second is that?`,
+          answer: fmt(ans),
+          // divided instead of multiplied; fps ÷ px; added
+          options: opt4(fmt(ans), [fmt(rnd(ppf / fps, 2)), fmt(rnd(fps / ppf, 2)), fmt(ppf + fps), fmt(ans / 2)]),
+          explanation: `Each second has ${fps} frames, each moving ${ppf} px: ${ppf} × ${fps} = ${fmt(ans)} px/s.` };
+      }
+      if (mode === "toPpf") {
+        const ppf = pick([2, 3, 4, 5, 6, 8, 1.5, 2.5, 0.5]), fps = pick([30, 60, 120]);
+        const pps = ppf * fps;
+        return { subType: st,
+          question: `A zombie walks at ${fmt(pps)} px/s. At a steady ${fps} fps, how many pixels does it move each frame?`,
+          answer: fmt(ppf),
+          // multiplied instead of divided; fps ÷ speed; subtracted
+          options: opt4(fmt(ppf), [fmt(pps * fps), fmt(rnd(fps / pps, 2)), fmt(pps - fps), fmt(ppf * 2)]),
+          explanation: `px per frame = px per second ÷ fps = ${fmt(pps)} ÷ ${fps} = ${fmt(ppf)}.` };
+      }
+      const k = pick([2, 3, 4, 5]), f1 = pick([30, 60]), f2 = pick([120, 144, 240]);
+      const ans = k * (f2 - f1);
+      return { subType: st,
+        question: `A buggy game moves the player ${k} px every frame with no dt. How many more pixels per second does the player move on a ${f2} fps monitor than on a ${f1} fps one?`,
+        answer: fmt(ans),
+        // just the fast machine's speed; the frame-rate gap without the step; the ratio of speeds
+        options: opt4(fmt(ans), [fmt(k * f2), fmt(f2 - f1), fmt(rnd(f2 / f1, 2)), fmt(k * f1)]),
+        explanation: `${f2} fps: ${k} × ${f2} = ${k * f2} px/s. ${f1} fps: ${k} × ${f1} = ${k * f1} px/s. Difference ${k * f2} − ${k * f1} = ${ans} px/s. Multiplying by dt removes this difference.` };
+    }
+    if (st === "fps_dt") {
+      const fps = pick([20, 25, 40, 50, 100, 125, 200]);
+      if (pick([true, false])) {
+        const dt = 1 / fps;
+        return { subType: st,
+          question: `A physics loop runs at a steady ${fps} updates per second. What is dt, the time per update, in seconds?`,
+          answer: fmt(dt), acceptableAnswers: ["1/" + fps, fmt(dt) + " s"],
+          // the frame rate itself; milliseconds given as seconds; ten times too small
+          options: opt4(fmt(dt), [fmt(fps), fmt(1000 / fps), fmt(dt / 10), fmt(dt * 2)]),
+          explanation: `dt = 1 ÷ fps = 1 ÷ ${fps} = ${fmt(dt)} s (that is ${fmt(1000 / fps)} ms).` };
+      }
+      const s = pick([100, 150, 200, 250, 300, 400, 500, 600]);
+      const ans = s / fps;
+      return { subType: st,
+        question: `A ball rolls at ${s} px/s and the game runs at a steady ${fps} fps, so dt = 1/${fps} s. How many pixels does it move per frame (speed × dt)?`,
+        answer: fmt(ans),
+        // multiplied by fps; dt read as fps/1000; one second's worth
+        options: opt4(fmt(ans), [fmt(s * fps), fmt(s * fps / 1000), fmt(s), fmt(ans * 2)]),
+        explanation: `dt = 1/${fps} = ${fmt(1 / fps)} s. ${s} × ${fmt(1 / fps)} = ${fmt(ans)} px per frame.` };
+    }
+    if (st === "time_to_reach") {
+      const mode = pick(["line", "diag", "frames"]);
+      const t = pick([0.5, 1, 1.5, 2, 2.5, 3, 4, 5]);
+      if (mode === "line") {
+        const s = pick([80, 120, 150, 200, 240, 300, 360, 400]);
+        const d = s * t;
+        return { subType: st,
+          question: `A rolling boulder moves at ${s} px/s. The hero is ${fmt(d)} px ahead and standing still. How many seconds until it reaches the hero?`,
+          answer: fmt(t),
+          // speed ÷ distance; answered in frames at 60 fps; distance ÷ 60 (speed assumed per frame)
+          options: opt4(fmt(t), [fmt(rnd(s / d, 2)), fmt(t * 60), fmt(rnd(d / 60, 2)), fmt(t + 1)]),
+          explanation: `time = distance ÷ speed = ${fmt(d)} ÷ ${s} = ${fmt(t)} s.` };
+      }
+      const tr = pick(TRIPLES), k = pick([2, 5, 10]);
+      const dx = tr[0] * k, dy = tr[1] * k, dist = tr[2] * k;
+      const ax = ri(5, 30) * 10, ay = ri(5, 30) * 10, sx = pick([1, -1]), sy = pick([1, -1]);
+      if (mode === "diag") {
+        const s = dist / t;
+        return { subType: st,
+          question: `A homing orb at (${ax}, ${ay}) flies straight at a target at (${ax + sx * dx}, ${ay + sy * dy}) at ${fmt(s)} px/s. How many seconds does it take to arrive?`,
+          answer: fmt(t),
+          // used dx + dy as the distance; speed ÷ distance; used only the x gap
+          options: opt4(fmt(t), [fmt(rnd((dx + dy) / s, 2)), fmt(rnd(s / dist, 2)), fmt(rnd(dx / s, 2)), fmt(t * 2)]),
+          explanation: `Distance = √(${dx}² + ${dy}²) = ${dist} px. time = ${dist} ÷ ${fmt(s)} = ${fmt(t)} s.` };
+      }
+      const fps = pick([30, 60]), s = dist / t;
+      return { subType: st,
+        question: `A courier walks ${fmt(s)} px/s from (${ax}, ${ay}) to (${ax + sx * dx}, ${ay + sy * dy}). At ${fps} fps, how many frames does the walk take?`,
+        answer: fmt(t * fps),
+        // seconds, not frames; used dx + dy; divided by fps
+        options: opt4(fmt(t * fps), [fmt(t), fmt(rnd((dx + dy) / s * fps, 2)), fmt(rnd(t / fps, 3)), fmt(t * fps + fps)]),
+        explanation: `Distance = √(${dx}² + ${dy}²) = ${dist} px. Time = ${dist} ÷ ${fmt(s)} = ${fmt(t)} s. Frames = ${fmt(t)} × ${fps} = ${fmt(t * fps)}.` };
+    }
+    // diagonal
+    const s = pick([100, 120, 150, 180, 200, 240, 250, 300]);
+    const mode = pick(["speed", "fixed", "extra"]);
+    if (mode === "speed") {
+      const ans = rnd(s * Math.SQRT2, 2);
+      return { subType: "diagonal",
+        question: `Holding right sets vx = ${s} and holding down sets vy = ${s} (px/s), and nobody normalised the input. How fast does the player actually move when holding both? Round to 2 decimal places.`,
+        answer: fmt(ans),
+        // components added; the intended speed; squared sum without the root
+        options: opt4(fmt(ans), [fmt(2 * s), fmt(s), fmt(2 * s * s), fmt(rnd(s * 1.5, 2))]),
+        explanation: `Speed = |⟨${s}, ${s}⟩| = √(${s}² + ${s}²) = ${s}√2 ≈ ${fmt(ans)} px/s, about 41% faster than ${s}.` };
+    }
+    if (mode === "fixed") {
+      const ans = rnd(s / Math.SQRT2, 2);
+      return { subType: "diagonal",
+        question: `To fix diagonal speed, the input ⟨1, 1⟩ is normalised before multiplying by the speed ${s} px/s. What is vx after the fix? Round to 2 decimal places.`,
+        answer: fmt(ans),
+        // halved instead of normalised; unchanged; multiplied by √2
+        options: opt4(fmt(ans), [fmt(s / 2), fmt(s), fmt(rnd(s * Math.SQRT2, 2)), fmt(rnd(s / 1.5, 2))]),
+        explanation: `|⟨1, 1⟩| = √2, so the unit vector is ⟨1/√2, 1/√2⟩ ≈ ⟨0.7071, 0.7071⟩. vx = ${s} × 0.7071... ≈ ${fmt(ans)} px/s. Check: √(${fmt(ans)}² × 2) ≈ ${s}.` };
+    }
+    const T = pick([2, 3, 4, 5, 10]);
+    const ans = rnd((Math.SQRT2 - 1) * s * T, 2);
+    return { subType: "diagonal",
+      question: `Two racers move at ${s} px/s per axis. One holds only right; the other holds right and down with no normalising. After ${T} s, how many pixels further has the diagonal racer travelled? Round to 2 decimal places.`,
+      answer: fmt(ans),
+      // counted the whole diagonal distance; doubled; used 1.5 as the factor
+      options: opt4(fmt(ans), [fmt(rnd(Math.SQRT2 * s * T, 2)), fmt(s * T), fmt(rnd(0.5 * s * T, 2)), fmt(rnd(0.41 * s, 2))]),
+      explanation: `Straight: ${s} × ${T} = ${s * T} px. Diagonal: ${s}√2 × ${T} ≈ ${fmt(rnd(Math.SQRT2 * s * T, 2))} px. Difference ≈ ${fmt(ans)} px, because √2 − 1 ≈ 0.4142 of the straight distance is extra.` };
+  });
+
+  // =====================================================================
+  // M-393  Acceleration in Games  (tier 7)
+  // Prereqs: Velocity in Games (M-392).
+  // =====================================================================
+  _addSkill(7, "Acceleration in Games", "Acceleration in Games", 3, {
+    goalProblem: "A player jumps with vy = −600 px/s (negative is up on screen) and gravity pulls down at 1500 px/s². How long until the top of the jump, and how many pixels high does the player rise?",
+    teachingSteps: [
+      { title: "Acceleration changes velocity",
+        explanation: "Velocity changes position; <strong>acceleration changes velocity</strong>. It is measured in px/s per second (px/s²). The update line looks the same as before, one level up.",
+        visual: "vy += gravity * dt;   // velocity first<br>y  += vy * dt;        // then position" },
+      { title: "Signs on a y-down screen",
+        explanation: "Gravity points down, which on screen is <strong>positive</strong> y. A jump starts with a <strong>negative</strong> vy (moving up). Gravity adds to vy every frame until it passes 0 (the top of the jump) and becomes positive (falling).",
+        visual: "vy: −600 → −450 → −300 → −150 → 0 → 150 …  (gravity 1500, dt 0.1)" },
+      { title: "Stepping it by hand: an Euler table",
+        explanation: "A game does not use a formula; it repeats the two update lines once per frame. Write a table: each row, update vy first, then use the <strong>new</strong> vy to update y. (This order is called semi-implicit Euler, and it is what most game loops do.)",
+        visual: "step 1: vy = −200 + 1000(0.1) = −100, y = 300 + (−100)(0.1) = 290" },
+      { title: "The top of a jump",
+        explanation: "At the apex vy = 0. Starting from jump speed J with gravity g, that takes <strong>t = J ÷ g</strong>. The average speed on the way up is J ÷ 2, so the height is (J ÷ 2) × t = <strong>J² ÷ (2g)</strong>. The stepped simulation lands close to this, not exactly on it.",
+        visual: "J = 600, g = 1500 → t = 0.4 s, height = 600² ÷ 3000 = 120 px" },
+      { title: "Friction and drag as a multiplier",
+        explanation: "Sliding on ice? Many games multiply the velocity by a number just below 1 every frame: v *= 0.9. After n frames v = v₀ × 0.9ⁿ. It shrinks fast at first, then slowly, and never quite reaches 0, so games snap tiny speeds to 0.",
+        visual: "10 → 9 → 8.1 → 7.29 → …  (× 0.9 each frame)" },
+      { title: "Terminal-ish speed",
+        explanation: "Combine a push with drag: v = v × d + a every frame. The speed climbs until the drag removes exactly what the push adds, where v = v × d + a. Solving gives the speed it settles at: <strong>v = a ÷ (1 − d)</strong>.",
+        visual: "v = v * 0.95 + 2 → settles at 2 ÷ 0.05 = 40" }
+    ],
+    finalAnswer: "0.4 s to the apex, 120 px high",
+    answerExplanation: "t = J ÷ g = 600 ÷ 1500 = 0.4 s. Height = J² ÷ (2g) = 360000 ÷ 3000 = 120 px. On screen the player's y gets SMALLER by 120.",
+    example: { problem: "y = 300, vy = −200 px/s, gravity 1000 px/s², dt = 0.1 s. Step three frames (velocity first, then position).", steps: [
+      { text: "Step 1", math: "vy = −200 + 100 = −100;  y = 300 + (−100)(0.1) = 290" },
+      { text: "Step 2", math: "vy = −100 + 100 = 0;  y = 290 + 0 = 290" },
+      { text: "Step 3", math: "vy = 0 + 100 = 100;  y = 290 + 100(0.1) = 300" },
+      { text: "Result", math: "after 3 steps: y = 300, vy = 100 (falling)" }
+    ]},
+    keyPoints: [
+      "velocity += acceleration × dt, then position += velocity × dt",
+      "On screen, gravity is positive and a jump starts with negative vy",
+      "Apex: t = J / g and height = J² / (2g)",
+      "Friction multiplier: v × fⁿ after n frames; push + drag settles at a / (1 − d)"
+    ],
+    mistakes: [
+      { wrong: "Gravity as −1500 on screen", why: "On a y-down screen, down is positive. Gravity must INCREASE vy." },
+      { wrong: "vy += gravity (no dt)", why: "That adds a whole second of gravity every frame. Multiply by dt." },
+      { wrong: "Friction 0.9 for 3 frames: 10 − 3 × 1 = 7", why: "Friction multiplies each frame: 10 × 0.9³ = 7.29. The amount lost shrinks as the speed shrinks." }
+    ],
+    guided: { problem: "A frog on the ground at y = 500 jumps with vy = −400 px/s. Gravity is 1600 px/s². What y is the top of its jump?",
+      steps: [
+        { label: "Time to apex = 400 ÷ 1600", value: "0.25" },
+        { label: "Height = 400² ÷ (2 × 1600)", value: "50" },
+        { label: "Apex y = 500 − 50", value: "450" }
+      ], answer: "450", answerLabel: "Apex y =",
+      interactiveSteps: [
+        { prompt: "Time until vy reaches 0: t = 400 ÷ 1600 = ? seconds", hint: "Gravity removes 1600 px/s of upward speed each second.", answer: "0.25", acceptableAnswers: ["0.25", "1/4", "0.25 s"], formatHint: "Enter a number", commonMistakes: { "4": "That is 1600 ÷ 400. Time = jump speed ÷ gravity." } },
+        { prompt: "Height = J² ÷ (2g) = 400² ÷ 3200 = ? px", hint: "400² = 160000.", answer: "50", acceptableAnswers: ["50"], formatHint: "Enter a number", commonMistakes: { "100": "You divided by g, not 2g. The average upward speed is only half of 400.", "-50": "Height is a distance, so it is positive. The sign comes in the next step." } },
+        { prompt: "The frog rises 50 px. On a y-down screen, what is its y at the top? (500 − 50)", hint: "Up means y gets smaller.", answer: "450", acceptableAnswers: ["450"], formatHint: "Enter a number", commonMistakes: { "550": "On screen, up is SMALLER y. 500 − 50 = 450." } }
+      ] }
+  }, function(){
+    const st = pick(["vel_step","euler_table","jump_apex","friction","drag_terminal","braking"]);
+    if (st === "vel_step") {
+      const v0 = pick([-1, 1]) * ri(0, 20) * 10, a = pick([-1, 1]) * pick([100, 200, 250, 300, 400, 500, 800]);
+      const dt = pick([0.05, 0.1, 0.2, 0.25]), n = ri(2, 8);
+      const r = v0 + a * dt * n;
+      return { subType: st,
+        question: `A rocket car has velocity ${v0} px/s and accelerates at ${a} px/s². Each frame runs v += a * dt with dt = ${dt} s. What is its velocity after ${n} frames?`,
+        answer: fmt(r),
+        // forgot dt; only one frame; a × n with the start velocity lost
+        options: opt4(fmt(r), [fmt(v0 + a * n), fmt(v0 + a * dt), fmt(a * dt * n), fmt(v0 - a * dt * n)]),
+        explanation: `Each frame adds a × dt = ${a} × ${dt} = ${fmt(a * dt)} px/s. Over ${n} frames: ${v0} ${pm(a * dt * n)} = ${fmt(r)} px/s.` };
+    }
+    if (st === "euler_table") {
+      const y0 = ri(20, 40) * 10, vy0 = -pick([100, 150, 200, 250, 300, 400]), gr = pick([500, 800, 1000, 1200]);
+      const dt = pick([0.1, 0.05, 0.2]), n = pick([2, 3, 4]);
+      let y = y0, vy = vy0, yE = y0, vE = vy0, yN = y0, vN = vy0;
+      const rows = [];
+      for (let i = 0; i < n; i++) {
+        vy += gr * dt; y += vy * dt;                 // semi-implicit: velocity first (the taught order)
+        yE += vE * dt; vE += gr * dt;                // explicit Euler: position with the OLD velocity
+        vN += gr; yN += vN * dt;                     // forgot dt on gravity
+        rows.push(`step ${i + 1}: vy = ${fmt(vy)}, y = ${fmt(y)}`);
+      }
+      const T = n * dt, yExact = y0 + vy0 * T + 0.5 * gr * T * T;
+      const askY = pick([true, false]);
+      const ans = askY ? y : vy;
+      return { subType: st,
+        question: `A jumping cat starts at y = ${y0} with vy = ${vy0} px/s. Gravity is ${gr} px/s² and dt = ${dt} s. Each step does vy += gravity * dt, THEN y += vy * dt. What is ${askY ? "y" : "vy"} after ${n} steps?`,
+        answer: fmt(ans),
+        // explicit Euler (old velocity); the exact formula y0 + v0 t + ½ g t² instead of stepping; gravity added without dt
+        options: askY ? opt4(fmt(y), [fmt(yE), fmt(yExact), fmt(yN), fmt(y0 - (y - y0))])
+                      : opt4(fmt(vy), [fmt(vy0 + gr * dt * (n - 1)), fmt(vN), fmt(vy0 - gr * dt * n), fmt(-vy)]),
+        explanation: `Gravity adds ${gr} × ${dt} = ${fmt(gr * dt)} to vy each step. ${rows.join("; ")}. So ${askY ? "y" : "vy"} = ${fmt(ans)}.` };
+    }
+    if (st === "jump_apex") {
+      const gr = pick([600, 800, 1000, 1200, 1500, 2000]), t = pick([0.25, 0.3, 0.4, 0.5, 0.6]);
+      const J = gr * t, h = gr * t * t / 2;
+      const mode = pick(["time", "height", "apexY"]);
+      if (mode === "time") {
+        return { subType: st,
+          question: `A knight jumps with vy = -${fmt(J)} px/s (up is negative) and gravity is ${gr} px/s². How many seconds until the top of the jump?`,
+          answer: fmt(t),
+          // gravity ÷ jump speed; twice as long (the whole jump); jump speed ÷ 2g
+          options: opt4(fmt(t), [fmt(rnd(gr / J, 2)), fmt(2 * t), fmt(rnd(J / (2 * gr), 3)), fmt(rnd(t + 0.1, 2))]),
+          explanation: `At the top vy = 0. Gravity removes ${gr} px/s every second, so t = ${fmt(J)} ÷ ${gr} = ${fmt(t)} s.` };
+      }
+      if (mode === "height") {
+        return { subType: st,
+          question: `A ninja jumps with vy = -${fmt(J)} px/s and gravity is ${gr} px/s². How many pixels high does the jump reach (use J² ÷ (2g))?`,
+          answer: fmt(h),
+          // forgot the 2; full speed for the whole rise; forgot to square
+          options: opt4(fmt(h), [fmt(2 * h), fmt(J * t), fmt(rnd(J / (2 * gr), 3)), fmt(h / 2)]),
+          explanation: `Height = J² ÷ (2g) = ${fmt(J)}² ÷ (2 × ${gr}) = ${fmt(J * J)} ÷ ${2 * gr} = ${fmt(h)} px. (Same as average speed ${fmt(J / 2)} × time ${fmt(t)} s.)` };
+      }
+      const y0 = ri(30, 60) * 10;
+      return { subType: st,
+        question: `A slime on the ground at y = ${y0} bounces up with vy = -${fmt(J)} px/s. Gravity is ${gr} px/s². On the y-down screen, what is its y at the top of the bounce?`,
+        answer: fmt(y0 - h),
+        // added the height (y-up habit); just the height; forgot the 2 in J² ÷ 2g
+        options: opt4(fmt(y0 - h), [fmt(y0 + h), fmt(h), fmt(y0 - 2 * h), fmt(y0 - J * t)]),
+        explanation: `Height = ${fmt(J)}² ÷ (2 × ${gr}) = ${fmt(h)} px. Up is smaller y on screen, so y = ${y0} − ${fmt(h)} = ${fmt(y0 - h)}.` };
+    }
+    if (st === "friction") {
+      const v = pick([8, 10, 12, 16, 20, 24, 30]), f = pick([0.9, 0.8, 0.95, 0.85, 0.75, 0.5]), n = ri(2, 6);
+      const ans = rnd(v * Math.pow(f, n), 2);
+      return { subType: st,
+        question: `A hockey puck slides at ${v} px/frame. Ice friction does speed *= ${f} every frame. What is its speed after ${n} frames? Round to 2 decimal places.`,
+        answer: fmt(ans),
+        // subtracted a fixed amount per frame (linear); one frame too few; only one frame
+        options: opt4(fmt(ans), [fmt(rnd(v - n * (1 - f) * v, 2)), fmt(rnd(v * Math.pow(f, n - 1), 2)), fmt(rnd(v * f, 2)), fmt(rnd(v * Math.pow(f, n + 1), 2))]),
+        explanation: `Each frame multiplies by ${f}, so after ${n} frames: ${v} × ${f}^${n} = ${v} × ${fmt(rnd(Math.pow(f, n), 6))} ≈ ${fmt(ans)} px/frame.` };
+    }
+    if (st === "drag_terminal") {
+      const d = pick([0.9, 0.95, 0.98, 0.8, 0.75, 0.5]);
+      const term = pick([10, 20, 25, 40, 50, 60, 100]);
+      const a = rnd(term * (1 - d), 4);
+      if (pick([true, false])) {
+        return { subType: st,
+          question: `A sky-diving sprite updates v = v * ${d} + ${fmt(a)} every frame. As the frames go by, what speed (px/frame) does it settle at?`,
+          answer: fmt(term),
+          // a ÷ d; a × d ÷ (1 − d); just a ÷ (1 + d)
+          options: opt4(fmt(term), [fmt(rnd(a / d, 2)), fmt(rnd(a * d / (1 - d), 2)), fmt(rnd(a / (1 + d), 2)), fmt(term * 2)]),
+          explanation: `It settles where the update leaves v unchanged: v = v × ${d} + ${fmt(a)}, so v(1 − ${d}) = ${fmt(a)} and v = ${fmt(a)} ÷ ${fmt(rnd(1 - d, 4))} = ${fmt(term)}.` };
+      }
+      const v1 = a, v2 = v1 * d + a, v3 = v2 * d + a;
+      return { subType: st,
+        question: `A sled starts at rest and updates v = v * ${d} + ${fmt(a)} every frame. What is v after 3 frames? Round to 2 decimal places.`,
+        answer: fmt(rnd(v3, 2)),
+        // no drag (3a); drag applied after the push; two frames only
+        options: opt4(fmt(rnd(v3, 2)), [fmt(rnd(3 * a, 2)), fmt(rnd((v2 + a) * d, 2)), fmt(rnd(v2, 2)), fmt(rnd(v3 * d, 2))]),
+        explanation: `Frame 1: 0 × ${d} + ${fmt(a)} = ${fmt(rnd(v1, 4))}. Frame 2: ${fmt(rnd(v1, 4))} × ${d} + ${fmt(a)} = ${fmt(rnd(v2, 4))}. Frame 3: ${fmt(rnd(v2, 4))} × ${d} + ${fmt(a)} ≈ ${fmt(rnd(v3, 2))}.` };
+    }
+    // braking: constant deceleration to a stop
+    const b = pick([200, 250, 300, 400, 500, 600, 800]), t = pick([0.5, 1, 1.5, 2, 2.5]);
+    const v0 = b * t, dist = v0 * v0 / (2 * b);
+    if (pick([true, false])) {
+      return { subType: "braking",
+        question: `A kart at ${fmt(v0)} px/s brakes with a constant deceleration of ${b} px/s². How many seconds until it stops?`,
+        answer: fmt(t),
+        // deceleration ÷ speed; speed × deceleration over 1000; half the time
+        options: opt4(fmt(t), [fmt(rnd(b / v0, 2)), fmt(t / 2), fmt(2 * t), fmt(rnd(t + 0.5, 2))]),
+        explanation: `Each second the speed drops by ${b}. ${fmt(v0)} ÷ ${b} = ${fmt(t)} s.` };
+    }
+    return { subType: "braking",
+      question: `A kart at ${fmt(v0)} px/s brakes with a constant deceleration of ${b} px/s². How many pixels does it slide before stopping (v² ÷ (2a))?`,
+      answer: fmt(dist),
+      // forgot the 2; full speed for the whole stop; one second's worth of speed
+      options: opt4(fmt(dist), [fmt(2 * dist), fmt(v0 * t), fmt(v0), fmt(dist / 2)]),
+      explanation: `Stopping time ${fmt(v0)} ÷ ${b} = ${fmt(t)} s at an average speed of ${fmt(v0 / 2)} px/s: ${fmt(v0 / 2)} × ${fmt(t)} = ${fmt(dist)} px. Same as ${fmt(v0)}² ÷ (2 × ${b}).` };
+  });
+
+  // =====================================================================
+  // M-394  Collision Detection  (tier 7)
+  // Prereqs: Screen Coordinates (M-386), Distance and Midpoint (M-234),
+  // Inequalities (M-118).
+  // =====================================================================
+  // The AABB rule exactly as the lesson states it: strict, so boxes that only
+  // touch do not collide.
+  const overlapX = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x;
+  const overlapY = (a, b) => a.y < b.y + b.h && a.y + a.h > b.y;
+  const box = o => `{x: ${o.x}, y: ${o.y}, w: ${o.w}, h: ${o.h}}`;
+  // Place b along one axis so it overlaps a's span or sits clear of it (a gap
+  // of 0 - edges touching - included, because that is where the strict
+  // inequality earns its place).
+  const placeAxis = (aStart, aLen, bLen, overlap) => overlap
+    ? ri(aStart - bLen + 1, aStart + aLen - 1)
+    : (pick([true, false]) ? aStart + aLen + pick([0, ri(1, 20)]) : aStart - bLen - pick([0, ri(1, 20)]));
+  _addSkill(7, "Collision Detection", "Collision Detection", 3, {
+    goalProblem: "The player's hitbox is {x: 100, y: 200, w: 32, h: 48} and a spike's hitbox is {x: 128, y: 240, w: 16, h: 16}. Do they overlap, and by how much on each axis?",
+    teachingSteps: [
+      { title: "Hitboxes are rectangles: AABBs",
+        explanation: "Most 2D games test collisions with <strong>axis-aligned bounding boxes</strong>: rectangles that never rotate, stored as {x, y, w, h}. (x, y) is the <strong>top-left</strong> corner, so the right edge is x + w and, because y grows downward, the bottom edge is y + h.",
+        visual: "player: left 100, right 132, top 200, bottom 248" },
+      { title: "The AABB overlap test",
+        explanation: "Two boxes overlap only if they overlap on <strong>both</strong> axes. Each axis is two inequalities: each box's left edge is left of the other's right edge. If any one fails, there is a gap and no hit. Here, edges that only <em>touch</em> do not count (strict &lt;).",
+        visual: "a.x &lt; b.x + b.w &amp;&amp; a.x + a.w &gt; b.x &amp;&amp;<br>a.y &lt; b.y + b.h &amp;&amp; a.y + a.h &gt; b.y" },
+      { title: "How deep is the overlap?",
+        explanation: "On each axis, overlap = (smaller right edge) − (bigger left edge). To push the boxes apart with the least movement, move them along the axis with the <strong>smaller</strong> overlap.",
+        visual: "x: min(132, 144) − max(100, 128) = 4<br>y: min(248, 256) − max(200, 240) = 8 → push 4 px on x" },
+      { title: "Point in a rectangle",
+        explanation: "For a mouse click or a bullet tip, test the point against the box. For clicks we count the edges as inside (≤), so clicking exactly on a button's border still presses it.",
+        visual: "px &gt;= x &amp;&amp; px &lt;= x + w &amp;&amp; py &gt;= y &amp;&amp; py &lt;= y + h" },
+      { title: "Circles: distance against r1 + r2",
+        explanation: "Two circles overlap when the distance between their centres is <strong>less than the sum of their radii</strong>. Equal means they just touch; more means a gap. Comparing the distance with just one radius is a classic bug.",
+        visual: "d = √(dx² + dy²)   hit if d &lt; r1 + r2" },
+      { title: "The squared-distance trick",
+        explanation: "Square roots are slow when you test thousands of bullets. Both sides are positive, so compare the squares instead: dx² + dy² &lt; (r1 + r2)². Same answer, no Math.sqrt.",
+        visual: "const r = a.r + b.r;<br>if (dx*dx + dy*dy &lt; r*r) { hit(); }" }
+    ],
+    finalAnswer: "Yes: they overlap by 4 px on x and 8 px on y",
+    answerExplanation: "x: 100 < 144 and 132 > 128, so the x-spans overlap; y: 200 < 256 and 248 > 240, so the y-spans overlap. Both axes overlap, so the boxes collide. Depth: x = min(132, 144) − max(100, 128) = 4, y = min(248, 256) − max(200, 240) = 8.",
+    example: { problem: "A bullet circle at (100, 100) with r = 4 and an enemy circle at (112, 116) with r = 20. Collision?", steps: [
+      { text: "Centre differences", math: "dx = 12, dy = 16" },
+      { text: "Squared distance", math: "12² + 16² = 144 + 256 = 400" },
+      { text: "Squared radius sum", math: "(4 + 20)² = 576" },
+      { text: "Compare", math: "400 &lt; 576 → they collide (d = 20 &lt; 24)" }
+    ]},
+    keyPoints: [
+      "Box right edge = x + w; bottom edge = y + h (y grows down)",
+      "AABBs collide only if they overlap on BOTH axes",
+      "Overlap on an axis = min(right edges) − max(left edges)",
+      "Circles collide when dx² + dy² &lt; (r1 + r2)²"
+    ],
+    mistakes: [
+      { wrong: "Circles collide when d &lt; r1", why: "Both circles have size. Compare with r1 + r2." },
+      { wrong: "Checking only the x-axis", why: "Boxes can line up on x while one is far above the other. Both axes must overlap." },
+      { wrong: "Comparing dx² + dy² with r1 + r2", why: "Square both sides: compare with (r1 + r2)², or take the square root first." }
+    ],
+    guided: { problem: "A coin (radius 6) is at (40, 90). The player's circle (radius 14) is at (52, 74). Do they collide?",
+      steps: [
+        { label: "dx = 52 − 40, dy = 74 − 90", value: "12, -16" },
+        { label: "dx² + dy²", value: "400" },
+        { label: "(r1 + r2)²", value: "400" },
+        { label: "Collide (strictly overlapping)?", value: "no" }
+      ], answer: "no", answerLabel: "Do they overlap?",
+      interactiveSteps: [
+        { prompt: "dx = 52 − 40 = ?", hint: "Difference of the x-coordinates.", answer: "12", acceptableAnswers: ["12", "-12"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "dy = 74 − 90 = ?", hint: "Difference of the y-coordinates (the sign will not matter once squared).", answer: "-16", acceptableAnswers: ["-16", "16"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "Squared distance dx² + dy² = 12² + 16² = ?", hint: "144 + 256.", answer: "400", acceptableAnswers: ["400"], formatHint: "Enter a number", commonMistakes: { "20": "That is the distance itself. We want the SQUARED distance: 400." } },
+        { prompt: "Squared radius sum (6 + 14)² = ?", hint: "Add the radii first, then square.", answer: "400", acceptableAnswers: ["400"], formatHint: "Enter a number", commonMistakes: { "232": "That is 6² + 14². Add first: (6 + 14)² = 20² = 400." } },
+        { prompt: "400 is not less than 400. Do the circles overlap? (yes or no)", hint: "Equal means the edges only touch.", answer: "no", acceptableAnswers: ["no", "No"], formatHint: "yes or no", commonMistakes: { "yes": "They are exactly touching: d = 20 = r1 + r2. Overlap needs strictly less." } }
+      ] }
+  }, function(){
+    const st = pick(["aabb","circle","circle_overlap","squared_trick","point_rect","overlap_depth","which_pair"]);
+    const SIZES = [16, 20, 24, 32, 40, 48, 64];
+    if (st === "aabb") {
+      const a = { x: ri(10, 40) * 10, y: ri(10, 30) * 10, w: pick(SIZES), h: pick(SIZES) };
+      const b = { w: pick(SIZES), h: pick(SIZES) };
+      const want = pick(["both", "xsep", "ysep", "nosep"]);
+      b.x = placeAxis(a.x, a.w, b.w, want === "both" || want === "ysep");
+      b.y = placeAxis(a.y, a.h, b.h, want === "both" || want === "xsep");
+      // The answer comes from the inequalities themselves, not from `want`.
+      const xo = overlapX(a, b), yo = overlapY(a, b);
+      const L = { yes: "Yes, they overlap", x: "No: separated on the x-axis only", y: "No: separated on the y-axis only", both: "No: separated on both axes" };
+      const ans = xo && yo ? L.yes : (!xo && !yo ? L.both : (!xo ? L.x : L.y));
+      const who = pick([["player", "spike"], ["hero", "lava tile"], ["car", "cone"], ["mage", "treasure chest"]]);
+      const c = (l, op, r) => `${l} ${op} ${r} ${(op === "<" ? l < r : l > r) ? "✓" : "✗"}`;
+      return { subType: st, forceChoice: true,
+        question: `The ${who[0]}'s hitbox is ${box(a)} and the ${who[1]}'s is ${box(b)} (top-left corners, y down). Using the AABB test, where touching edges do not count, do they overlap?`,
+        answer: ans, options: sh([L.yes, L.x, L.y, L.both]),
+        explanation: `x: ${c(a.x, "<", b.x + b.w)} and ${c(a.x + a.w, ">", b.x)}, so x ${xo ? "overlaps" : "is separated"}. y: ${c(a.y, "<", b.y + b.h)} and ${c(a.y + a.h, ">", b.y)}, so y ${yo ? "overlaps" : "is separated"}. ${xo && yo ? "Both axes overlap: collision." : "One failed inequality is enough for no collision."}` };
+    }
+    if (st === "circle" || st === "circle_overlap") {
+      const t = pick(TRIPLES), k = pick([1, 2, 3]);
+      const dx = t[0] * k, dy = t[1] * k, d = t[2] * k;
+      const x1 = ri(10, 50) * 5, y1 = ri(10, 50) * 5, sx = pick([1, -1]), sy = pick([1, -1]);
+      const want = st === "circle_overlap" ? "overlap" : pick(["overlap", "overlap", "touch", "apart"]);
+      let sum = want === "touch" ? d : want === "overlap" ? d + ri(1, Math.max(1, Math.floor(d / 2))) : d - ri(1, Math.max(1, Math.floor(d / 2)));
+      sum = Math.max(2, sum);
+      // Keep both radii smaller than the distance where possible, so that
+      // comparing d with one radius (the classic bug) gives the wrong verdict.
+      let lo = Math.max(1, sum - d + 1), hi = Math.min(sum - 1, d - 1);
+      if (lo > hi) { lo = 1; hi = sum - 1; }
+      const r1 = ri(lo, hi), r2 = sum - r1;
+      const d2 = dx * dx + dy * dy, s2 = (r1 + r2) * (r1 + r2);
+      const names = pick([["bullet", "asteroid"], ["fireball", "goblin"], ["ball", "bumper"], ["bomb blast", "crate"]]);
+      if (st === "circle") {
+        const L = { yes: "Yes, they overlap", touch: "No, they exactly touch", no: "No, there is a gap" };
+        const ans = d2 < s2 ? L.yes : d2 === s2 ? L.touch : L.no;
+        return { subType: st, forceChoice: true,
+          question: `A ${names[0]} (radius ${r1}) is centred at (${x1}, ${y1}) and a ${names[1]} (radius ${r2}) at (${x1 + sx * dx}, ${y1 + sy * dy}). A hit needs the circles to overlap. Do they collide?`,
+          answer: ans, options: sh([L.yes, L.touch, L.no]),
+          explanation: `dx² + dy² = ${dx}² + ${dy}² = ${d2}. (r1 + r2)² = ${r1 + r2}² = ${s2}. ${d2 < s2 ? d2 + " < " + s2 + ": overlap, a hit." : d2 === s2 ? "Equal: the edges just touch (d = " + d + " = r1 + r2), no overlap." : d2 + " > " + s2 + ": a gap, no hit."} Comparing with one radius alone would ${(d < r1) === (d < r1 + r2) ? "agree here, but only by luck" : "give the wrong answer"}.` };
+      }
+      const depth = r1 + r2 - d;
+      return { subType: st,
+        question: `A ${names[0]} (radius ${r1}) at (${x1}, ${y1}) overlaps a ${names[1]} (radius ${r2}) at (${x1 + sx * dx}, ${y1 + sy * dy}). How many pixels must they be pushed apart, along the line between centres, so they just touch?`,
+        answer: fmt(depth),
+        // distance minus one radius; squared quantities; the radius sum alone; dx + dy used as the distance
+        options: opt4(fmt(depth), [fmt(Math.abs(d - r1)), fmt(s2 - d2), fmt(r1 + r2), fmt(Math.abs(r1 + r2 - dx - dy))]),
+        explanation: `Distance = √(${dx}² + ${dy}²) = ${d}. They just touch at r1 + r2 = ${r1 + r2}. Overlap depth = ${r1 + r2} − ${d} = ${fmt(depth)} px.` };
+    }
+    if (st === "squared_trick") {
+      if (pick([true, false])) {
+        const r1 = ri(3, 30), r2 = ri(3, 30), s = (r1 + r2) * (r1 + r2);
+        return { subType: st,
+          question: `To skip Math.sqrt, a shooter compares dx*dx + dy*dy with a single number for a bullet of radius ${r1} and an enemy of radius ${r2}. What number?`,
+          answer: fmt(s),
+          // squared separately; not squared; doubled
+          options: opt4(fmt(s), [fmt(r1 * r1 + r2 * r2), fmt(r1 + r2), fmt(2 * (r1 + r2)), fmt(r1 * r2)]),
+          explanation: `The test d < r1 + r2 becomes d² < (r1 + r2)² = (${r1} + ${r2})² = ${r1 + r2}² = ${s}. Add the radii first, then square.` };
+      }
+      const x1 = ri(0, 60) * 5, y1 = ri(0, 60) * 5, dx = ri(-40, 40), dy = ri(-40, 40) || 7;
+      const s = dx * dx + dy * dy;
+      return { subType: st,
+        question: `A bullet is at (${x1}, ${y1}) and an enemy at (${x1 + dx}, ${y1 + dy}). What is the squared distance dx*dx + dy*dy the collision check uses?`,
+        answer: fmt(s),
+        // sum of the gaps; difference of squares; square of the sum
+        options: opt4(fmt(s), [fmt(Math.abs(dx) + Math.abs(dy)), fmt(Math.abs(dx * dx - dy * dy)), fmt((Math.abs(dx) + Math.abs(dy)) ** 2), fmt(s + 2 * Math.abs(dx))]),
+        explanation: `dx = ${dx}, dy = ${dy}. ${sq(dx)} + ${sq(dy)} = ${dx * dx} + ${dy * dy} = ${s}.` };
+    }
+    if (st === "point_rect") {
+      const r = { x: ri(5, 40) * 10, y: ri(5, 30) * 10, w: pick([60, 80, 100, 120, 150]), h: pick([30, 40, 50, 60]) };
+      const want = pick(["in", "in", "x", "y", "both"]);
+      // Inside picks include the border itself sometimes: edges count for clicks.
+      const inside = (s, l) => pick([s, s + l, ri(s + 1, s + l - 1), ri(s + 1, s + l - 1)]);
+      const outside = (s, l) => pick([s - ri(1, 15), s + l + ri(1, 15)]);
+      const px = want === "x" || want === "both" ? outside(r.x, r.w) : inside(r.x, r.w);
+      const py = want === "y" || want === "both" ? outside(r.y, r.h) : inside(r.y, r.h);
+      const ix = px >= r.x && px <= r.x + r.w, iy = py >= r.y && py <= r.y + r.h;
+      const L = { in: "Inside the button", x: "Outside: missed on x only", y: "Outside: missed on y only", both: "Outside: missed on both x and y" };
+      const ans = ix && iy ? L.in : (!ix && !iy ? L.both : (!ix ? L.x : L.y));
+      return { subType: st, forceChoice: true,
+        question: `A "Play" button has the box ${box(r)}. The player clicks at (${px}, ${py}). Edges count as inside. Where is the click?`,
+        answer: ans, options: sh([L.in, L.x, L.y, L.both]),
+        explanation: `x: is ${r.x} ≤ ${px} ≤ ${r.x + r.w}? ${ix ? "yes" : "no"}. y: is ${r.y} ≤ ${py} ≤ ${r.y + r.h}? ${iy ? "yes" : "no"}. ${ix && iy ? "Both hold, so the click hits the button." : "A point must pass both tests to be inside."}` };
+    }
+    if (st === "overlap_depth") {
+      const a = { x: ri(10, 40) * 10, y: ri(10, 30) * 10, w: pick(SIZES), h: pick(SIZES) };
+      const b = { w: pick(SIZES), h: pick(SIZES) };
+      b.x = placeAxis(a.x, a.w, b.w, true); b.y = placeAxis(a.y, a.h, b.h, true);
+      const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+      const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+      const mode = pick(["x", "y", "push"]);
+      const ans = mode === "x" ? ox : mode === "y" ? oy : Math.min(ox, oy);
+      const qn = mode === "x" ? "How many pixels do they overlap on the x-axis?"
+               : mode === "y" ? "How many pixels do they overlap on the y-axis?"
+               : "What is the smallest distance one box must be pushed (along x or y) to separate them?";
+      return { subType: st,
+        question: `A player box ${box(a)} has walked into a wall box ${box(b)}. ${qn}`,
+        answer: fmt(ans),
+        // the other axis; the larger overlap; distance between left edges; the sum of the widths
+        options: opt4(fmt(ans), [fmt(mode === "x" ? oy : ox), fmt(Math.max(ox, oy)), fmt(Math.abs(b.x - a.x)), fmt(Math.abs(b.y - a.y)), fmt(a.w + b.w)]),
+        explanation: `x overlap = min(${a.x + a.w}, ${b.x + b.w}) − max(${a.x}, ${b.x}) = ${ox}. y overlap = min(${a.y + a.h}, ${b.y + b.h}) − max(${a.y}, ${b.y}) = ${oy}.${mode === "push" ? " Push along the smaller one: " + Math.min(ox, oy) + " px." : ""}` };
+    }
+    // which_pair: exactly one colliding pair, or none
+    const names = pick([["Player", "Coin", "Spike"], ["Hero", "Slime", "Chest"], ["Ship", "Asteroid", "Laser"], ["Knight", "Dragon", "Gate"]]);
+    const wantNone = Math.random() < 0.2;
+    let objs, hits, tries = 0;
+    do {
+      objs = names.map(() => ({ x: ri(0, 16) * 10, y: ri(0, 12) * 10, w: pick([20, 30, 40, 50]), h: pick([20, 30, 40, 50]) }));
+      hits = [[0, 1], [0, 2], [1, 2]].filter(([i, j]) => overlapX(objs[i], objs[j]) && overlapY(objs[i], objs[j]));
+      tries++;
+    } while ((wantNone ? hits.length !== 0 : hits.length !== 1) && tries < 500);
+    if (hits.length > 1) { objs[2].x = 400; hits = hits.filter(([i, j]) => i !== 2 && j !== 2); }   // safety: move the third far away
+    const label = ([i, j]) => `${names[i]} and ${names[j]}`;
+    const NONE = "No pair collides";
+    const ans = hits.length ? label(hits[0]) : NONE;
+    return { subType: "which_pair", forceChoice: true,
+      question: `Three hitboxes (top-left corners, y down, touching edges do not count): ${names[0]} ${box(objs[0])}, ${names[1]} ${box(objs[1])}, ${names[2]} ${box(objs[2])}. Which pair collides?`,
+      answer: ans, options: sh([label([0, 1]), label([0, 2]), label([1, 2]), NONE]),
+      explanation: [[0, 1], [0, 2], [1, 2]].map(([i, j]) => { const a = objs[i], b = objs[j];
+        const xo = overlapX(a, b), yo = overlapY(a, b);
+        return `${names[i]}/${names[j]}: x ${xo ? "overlaps" : "separate"} (${a.x}–${a.x + a.w} vs ${b.x}–${b.x + b.w}), y ${yo ? "overlaps" : "separate"} (${a.y}–${a.y + a.h} vs ${b.y}–${b.y + b.h})`; }).join("; ") + `. ${hits.length ? "Only " + ans + " overlap on both axes." : "No pair overlaps on both axes."}` };
+  });
+
+  // =====================================================================
+  // M-395  Interpolation  (tier 7)
+  // Prereqs: Functions in Code (M-387), Percents (M-056).
+  // =====================================================================
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const T_STEPS = [0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9];
+  _addSkill(7, "Interpolation", "Interpolation", 3, {
+    goalProblem: "A health bar shrinks from 200 px wide to 80 px wide. How wide is it a quarter of the way through (t = 0.25)? And when it is 140 px wide, what is t?",
+    teachingSteps: [
+      { title: "lerp: start plus a fraction of the gap",
+        explanation: "<strong>Linear interpolation</strong> finds the value a fraction <strong>t</strong> of the way from a to b: lerp(a, b, t) = a + (b − a) × t. At t = 0 you are at a, at t = 1 you are at b, and t = 0.25 is 25% of the way.",
+        visual: "function lerp(a, b, t) { return a + (b - a) * t; }<br>lerp(200, 80, 0.25) = 200 + (−120)(0.25) = 170" },
+      { title: "Positions: lerp each coordinate",
+        explanation: "To slide a sprite from one point to another, lerp x and y separately with the same t.",
+        visual: "x = lerp(x1, x2, t);  y = lerp(y1, y2, t);" },
+      { title: "Colours: lerp each channel",
+        explanation: "A colour is three numbers (red, green, blue), each 0–255. Fade between two colours by lerping each channel, then <strong>round</strong>, because a channel must be a whole number.",
+        visual: "red: lerp(255, 0, 0.3) = 178.5 → 179" },
+      { title: "Time-based t, and clamping",
+        explanation: "For an animation that lasts a fixed time, t = elapsed ÷ duration. Once elapsed passes the duration, t goes above 1 and lerp <strong>overshoots</strong> past b, so clamp it: t = Math.min(1, elapsed / duration).",
+        visual: "door: y from 200 to 80 over 1.5 s; at 0.6 s, t = 0.4 → y = 152" },
+      { title: "Inverse lerp: finding t",
+        explanation: "Going backwards, if you know the value v, then t = (v − a) ÷ (b − a): how far along the gap v sits.",
+        visual: "inverseLerp(200, 80, 140) = (140 − 200) ÷ (80 − 200) = 0.5" },
+      { title: "Remap one range onto another",
+        explanation: "Inverse lerp in the first range, then lerp in the second. That turns hit points into bar width, distance into volume, or a joystick's −1 to 1 into a turret angle.",
+        visual: "t = (v − inMin) / (inMax − inMin);<br>out = outMin + (outMax − outMin) * t;" }
+    ],
+    finalAnswer: "170 px, and t = 0.5",
+    answerExplanation: "lerp(200, 80, 0.25) = 200 + (80 − 200)(0.25) = 200 − 30 = 170. For 140 px: t = (140 − 200) ÷ (80 − 200) = −60 ÷ −120 = 0.5.",
+    example: { problem: "A door slides from y = 200 to y = 80 over 1.5 s. Where is it 0.6 s in?", steps: [
+      { text: "Time fraction", math: "t = 0.6 ÷ 1.5 = 0.4" },
+      { text: "Gap", math: "80 − 200 = −120" },
+      { text: "lerp", math: "200 + (−120)(0.4) = 200 − 48 = 152" },
+      { text: "Check t is between 0 and 1", math: "0.4 is fine, no clamp needed → y = 152" }
+    ]},
+    keyPoints: [
+      "lerp(a, b, t) = a + (b − a) × t",
+      "Lerp x and y (or r, g, b) separately with the same t",
+      "Time-based t = elapsed ÷ duration, clamped to at most 1",
+      "Inverse lerp t = (v − a) ÷ (b − a); remap = inverse lerp then lerp"
+    ],
+    mistakes: [
+      { wrong: "lerp(200, 80, 0.25) = (80 − 200)(0.25) = −30", why: "That is only the step. Add it to the start: 200 + (−30) = 170." },
+      { wrong: "Letting t reach 1.2 when the animation ran long", why: "Without a clamp the value overshoots b. Use Math.min(1, elapsed / duration)." },
+      { wrong: "t = v ÷ b", why: "That ignores where the range starts. Use (v − a) ÷ (b − a)." }
+    ],
+    guided: { problem: "Footsteps fade with distance: volume is 1 at 0 px and 0 at 400 px. An enemy is 100 px away. What volume should its footsteps play at?",
+      steps: [
+        { label: "t = (100 − 0) ÷ (400 − 0)", value: "0.25" },
+        { label: "Volume gap = 0 − 1", value: "-1" },
+        { label: "volume = 1 + (−1)(0.25)", value: "0.75" }
+      ], answer: "0.75", answerLabel: "Volume =",
+      interactiveSteps: [
+        { prompt: "How far along the distance range is 100 px? t = (100 − 0) ÷ (400 − 0) = ?", hint: "Inverse lerp: (v − a) ÷ (b − a).", answer: "0.25", acceptableAnswers: ["0.25", "1/4", "25%"], formatHint: "e.g., 0.5", commonMistakes: { "4": "That is 400 ÷ 100. t is a fraction between 0 and 1: 100 ÷ 400." } },
+        { prompt: "The volume goes from 1 to 0. What is the gap (end − start)?", hint: "b − a with a = 1 and b = 0.", answer: "-1", acceptableAnswers: ["-1"], formatHint: "Enter a number (it can be negative)", commonMistakes: { "1": "End minus start: 0 − 1 = −1. The volume is going DOWN." } },
+        { prompt: "volume = 1 + (−1)(0.25) = ?", hint: "Start plus gap times t.", answer: "0.75", acceptableAnswers: ["0.75", "3/4", "75%"], formatHint: "e.g., 0.5", commonMistakes: { "0.25": "That is lerp(0, 1, 0.25), the wrong way round. Volume starts at 1 when the enemy is close." } }
+      ] }
+  }, function(){
+    const st = pick(["lerp_value","lerp_point","find_t","colour","time_t","remap"]);
+    if (st === "lerp_value") {
+      // Each context brings a range that makes sense for it: volume in 0-100,
+      // widths never negative, camera x free to go below zero.
+      const ctx = pick([["A camera pans its x", -30, 60], ["Music volume (in %) fades", 0, 10], ["A boss's health bar width animates", 0, 40], ["A moving platform's x slides", 2, 60]]);
+      let a, b; do { a = ri(ctx[1], ctx[2]) * 10; b = ri(ctx[1], ctx[2]) * 10; } while (Math.abs(a - b) < 20);
+      const t = pick(T_STEPS), r = lerp(a, b, t);
+      return { subType: st,
+        question: `${ctx[0]} from ${a} to ${b}. What is lerp(${a}, ${b}, ${t})?`,
+        answer: fmt(r),
+        // the step only (forgot + a); a + b·t (forgot to subtract a); lerp with a and b swapped; plain average
+        options: opt4(fmt(r), [fmt((b - a) * t), fmt(a + b * t), fmt(lerp(b, a, t)), fmt((a + b) / 2)]),
+        explanation: `lerp(a, b, t) = a + (b − a) × t = ${a} + (${b} − ${par(a)}) × ${t} = ${a} ${pm((b - a) * t)} = ${fmt(r)}.` };
+    }
+    if (st === "lerp_point") {
+      const p1 = [ri(0, 40) * 10, ri(0, 40) * 10], p2 = [ri(0, 40) * 10, ri(0, 40) * 10];
+      if (p1[0] === p2[0] && p1[1] === p2[1]) p2[0] += 50;
+      const t = pick(T_STEPS), r = [lerp(p1[0], p2[0], t), lerp(p1[1], p2[1], t)];
+      return { subType: st,
+        question: `A cutscene camera glides from (${p1[0]}, ${p1[1]}) to (${p2[0]}, ${p2[1]}). Where is it at t = ${t}?`,
+        answer: P(r[0], r[1]), acceptableAnswers: pairAlts(r[0], r[1]),
+        // reversed direction; step only; midpoint regardless of t
+        options: opt4(P(r[0], r[1]), [P(lerp(p2[0], p1[0], t), lerp(p2[1], p1[1], t)), P((p2[0] - p1[0]) * t, (p2[1] - p1[1]) * t), P((p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2), P(p1[0] + p2[0] * t, p1[1] + p2[1] * t)]),
+        explanation: `x: ${p1[0]} + (${p2[0]} − ${p1[0]}) × ${t} = ${fmt(r[0])}. y: ${p1[1]} + (${p2[1]} − ${p1[1]}) × ${t} = ${fmt(r[1])}. Position ${P(r[0], r[1])}.` };
+    }
+    if (st === "find_t") {
+      let a, b; do { a = ri(0, 40) * 10; b = ri(0, 40) * 10; } while (Math.abs(a - b) < 40);
+      const t = pick(T_STEPS), v = lerp(a, b, t);
+      return { subType: st,
+        question: `An elevator in a level moves from y = ${a} to y = ${b}. It is now at y = ${fmt(v)}. What fraction t of the trip has it done (inverse lerp)?`,
+        answer: fmt(t),
+        // v ÷ b; the remaining fraction; forgot to subtract a in the denominator
+        options: opt4(fmt(t), [fmt(rnd(v / b, 2)), fmt(rnd(1 - t, 2)), fmt(rnd((v - a) / b, 2)), fmt(rnd(v / a, 2))]),
+        explanation: `t = (v − a) ÷ (b − a) = (${fmt(v)} − ${a}) ÷ (${b} − ${a}) = ${fmt(v - a)} ÷ ${b - a} = ${fmt(t)}.` };
+    }
+    if (st === "colour") {
+      const c1 = [ri(0, 255), ri(0, 255), ri(0, 255)], c2 = [ri(0, 255), ri(0, 255), ri(0, 255)];
+      const ch = ri(0, 2), chName = ["red", "green", "blue"][ch];
+      let t, raw;
+      // Skip exact halves, where "round" could reasonably go either way.
+      // The channel itself is re-rolled too: if both colours share it, no t helps.
+      do { c2[ch] = ri(0, 255); t = pick(T_STEPS); raw = lerp(c1[ch], c2[ch], t); }
+      while (Math.abs(raw - Math.floor(raw) - 0.5) < 1e-9 || Math.abs(c1[ch] - c2[ch]) < 20);
+      const ans = Math.round(raw);
+      const other = (ch + 1) % 3;
+      return { subType: st,
+        question: `A damage flash fades from rgb(${c1.join(", ")}) to rgb(${c2.join(", ")}). At t = ${t}, what is the ${chName} channel, rounded to the nearest whole number?`,
+        answer: String(ans),
+        // reversed; step only; the neighbouring channel's value
+        options: opt4(ans, [Math.round(lerp(c2[ch], c1[ch], t)), Math.round(Math.abs(c2[ch] - c1[ch]) * t), Math.round(lerp(c1[other], c2[other], t)), Math.round(c1[ch] + c2[ch] * t)]),
+        explanation: `${chName}: ${c1[ch]} + (${c2[ch]} − ${c1[ch]}) × ${t} = ${c1[ch]} ${pm((c2[ch] - c1[ch]) * t)} = ${fmt(raw)}, which rounds to ${ans}.` };
+    }
+    if (st === "time_t") {
+      const D = pick([0.5, 1, 1.5, 2, 2.5, 3, 4]);
+      let a, b; do { a = ri(0, 40) * 10; b = ri(0, 40) * 10; } while (a === b);
+      const late = Math.random() < 0.3;
+      const e = late ? rnd(D * pick([1.2, 1.25, 1.5, 2]), 2) : rnd(D * pick(T_STEPS), 3);
+      const tRaw = e / D, t = Math.min(1, tRaw), r = lerp(a, b, t);
+      return { subType: st,
+        question: `A drawbridge lowers from y = ${a} to y = ${b} over ${D} s, using t = Math.min(1, elapsed / duration). Where is it ${fmt(e)} s after it started?`,
+        answer: fmt(r),
+        // unclamped (t past 1 overshoots); used elapsed as t directly; duration ÷ elapsed
+        options: opt4(fmt(r), [fmt(rnd(lerp(a, b, tRaw), 2)), fmt(rnd(lerp(a, b, e), 2)), fmt(rnd(lerp(a, b, Math.min(1, D / e)), 2)), fmt(rnd(lerp(b, a, t), 2))]),
+        explanation: `t = ${fmt(e)} ÷ ${D} = ${fmt(rnd(tRaw, 4))}${tRaw > 1 ? ", which is more than 1, so the clamp makes t = 1: the bridge has finished at y = " + b + "." : ". y = " + a + " + (" + b + " − " + a + ") × " + fmt(rnd(t, 4)) + " = " + fmt(r) + "."}` };
+    }
+    // remap
+    const kind = pick(["bar", "volume", "stick"]);
+    if (kind === "bar") {
+      const maxHp = pick([80, 120, 200, 250, 400, 500]), W = pick([100, 150, 200, 240, 300]);
+      const t = pick(T_STEPS), hp = maxHp * t, ans = W * t;
+      return { subType: st,
+        question: `A health bar is ${W} px wide at full health (${maxHp} HP) and 0 px at 0 HP. How many px wide is it when the player has ${fmt(hp)} HP?`,
+        answer: fmt(ans),
+        // HP copied straight across; the empty part of the bar; width ÷ HP mixed up
+        options: opt4(fmt(ans), [fmt(hp), fmt(W - ans), fmt(rnd(W / hp, 2)), fmt(rnd(hp / W * 100, 2))]),
+        explanation: `t = ${fmt(hp)} ÷ ${maxHp} = ${t}. Width = 0 + (${W} − 0) × ${t} = ${fmt(ans)} px.` };
+    }
+    if (kind === "volume") {
+      const maxD = pick([200, 300, 400, 500, 800, 1000]), t = pick(T_STEPS), d = maxD * t;
+      const ans = rnd(1 - t, 2);
+      return { subType: st,
+        question: `A waterfall's sound is volume 1 at distance 0 and volume 0 at ${maxD} px or more. The player is ${fmt(d)} px away. Remap the distance to a volume.`,
+        answer: fmt(ans),
+        // forgot the range runs downward (gave t); distance ÷ 100; reversed and scaled
+        options: opt4(fmt(ans), [fmt(t), fmt(rnd(d / 100, 2)), fmt(rnd(maxD / d, 2)), fmt(rnd(1 + t, 2))]),
+        explanation: `t = ${fmt(d)} ÷ ${maxD} = ${t}. Volume = 1 + (0 − 1) × ${t} = 1 − ${t} = ${fmt(ans)}.` };
+    }
+    const maxA = pick([30, 45, 60, 90]), s = pick([-0.75, -0.5, -0.25, 0.25, 0.5, 0.75, -0.8, 0.6, 0.4, -0.2]);
+    const tt = (s + 1) / 2, ans = lerp(-maxA, maxA, tt);
+    return { subType: st,
+      question: `A joystick reads from -1 to 1 and the turret angle should go from -${maxA}° to ${maxA}°. The stick reads ${s}. What angle should the turret take (in degrees)?`,
+      answer: fmt(ans), acceptableAnswers: angAlts(ans),
+      // treated the stick value as t directly; forgot the minimum; the far end
+      options: opt4(fmt(ans), [fmt(lerp(-maxA, maxA, s)), fmt(rnd(2 * maxA * tt, 2)), fmt(-ans), fmt(rnd(s * 2 * maxA, 2))]),
+      explanation: `t = (${s} − (−1)) ÷ (1 − (−1)) = ${fmt(s + 1)} ÷ 2 = ${fmt(tt)}. Angle = −${maxA} + (${maxA} − (−${maxA})) × ${fmt(tt)} = −${maxA} + ${fmt(2 * maxA * tt)} = ${fmt(ans)}°. (Here that is just ${s} × ${maxA}.)` };
+  });
+
+  // =====================================================================
+  // M-396  Probability Systems  (tier 7)
+  // Prereqs: Randomness in Code (M-388), Compound Probability (M-081).
+  // =====================================================================
+  const RATES = [0.01, 0.02, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3];
+  const pct = p => fmt(rnd(p * 100, 4)) + "%";
+  _addSkill(7, "Probability Systems", "Probability Systems", 3, {
+    goalProblem: "A boss drops a legendary sword 5% of the time. What is the chance of getting at least one sword in 20 kills, and how many kills does it take on average?",
+    teachingSteps: [
+      { title: "A roll is a comparison",
+        explanation: "<code>Math.random()</code> gives a number from 0 up to (not including) 1, so <code>Math.random() &lt; 0.05</code> is true 5% of the time. A <strong>drop table</strong> splits 100% between outcomes that cannot happen together, so the chance of one OR another is their sum.",
+        visual: "if (Math.random() &lt; 0.05) dropSword();<br>P(Rare or better) = Rare + Epic + Legendary" },
+      { title: "Independent rolls multiply",
+        explanation: "Two separate rolls do not affect each other. The chance that <strong>both</strong> happen is the product of their chances.",
+        visual: "key 30% and gem 50%: 0.3 × 0.5 = 0.15" },
+      { title: "At least one: use the complement",
+        explanation: "\"At least one success in n tries\" is everything except \"all n fail\". Each try fails with chance 1 − p, so all fail with (1 − p)ⁿ and at least one succeeds with <strong>1 − (1 − p)ⁿ</strong>. Adding n × p overcounts and can even pass 100%.",
+        visual: "5% over 20 tries: 1 − 0.95²⁰ ≈ 1 − 0.358 = 0.642" },
+      { title: "Expected number of tries",
+        explanation: "If each try succeeds with chance p, it takes <strong>1 ÷ p</strong> tries on average. That is an average, not a promise: with p = 0.05, about 36% of players still have nothing after 20 kills.",
+        visual: "5% → 1 ÷ 0.05 = 20 tries on average" },
+      { title: "Pity counters",
+        explanation: "Many games add <strong>pity</strong> so bad luck has a limit. Hard pity: the Nth try is guaranteed, so you need it only if the first N − 1 all fail, chance (1 − p)^(N − 1). Soft pity: the chance rises after each failure, so multiply the different failure chances.",
+        visual: "pity on pull 10 at 10%: P(needing it) = 0.9⁹ ≈ 0.387" }
+    ],
+    finalAnswer: "About 0.642 (64.2%), and 20 kills on average",
+    answerExplanation: "P(no sword in 20) = 0.95²⁰ ≈ 0.358, so P(at least one) ≈ 1 − 0.358 = 0.642. Expected kills = 1 ÷ 0.05 = 20.",
+    example: { problem: "A chest has a 10% chance of a rare gem. What is the chance of at least one gem in 3 chests?", steps: [
+      { text: "Chance one chest has no gem", math: "1 − 0.1 = 0.9" },
+      { text: "All three have none", math: "0.9³ = 0.729" },
+      { text: "At least one gem", math: "1 − 0.729 = 0.271" },
+      { text: "Not 3 × 10% = 30%", math: "0.271 = 27.1%" }
+    ]},
+    keyPoints: [
+      "Separate outcomes of one roll add; independent rolls multiply",
+      "P(at least one in n) = 1 − (1 − p)ⁿ",
+      "Expected tries until a success = 1 ÷ p",
+      "Hard pity on try N is needed with chance (1 − p)^(N − 1)"
+    ],
+    mistakes: [
+      { wrong: "3 chests at 10% = 30% chance", why: "Chances of repeated tries do not add. Use 1 − 0.9³ = 0.271." },
+      { wrong: "\"20 tries at 5% guarantees a drop\"", why: "20 is the AVERAGE. The chance of nothing in 20 tries is still 0.95²⁰ ≈ 0.358." },
+      { wrong: "P(both) = 0.3 + 0.5 = 0.8", why: "Both happening needs a product: 0.3 × 0.5 = 0.15." }
+    ],
+    guided: { problem: "A fishing rod hooks a golden fish 20% of the time. What is the chance of at least one golden fish in 4 casts?",
+      steps: [
+        { label: "Chance a cast misses", value: "0.8" },
+        { label: "All 4 miss = 0.8⁴", value: "0.4096" },
+        { label: "At least one = 1 − 0.4096", value: "0.5904" }
+      ], answer: "0.5904", answerLabel: "P(at least one) =",
+      interactiveSteps: [
+        { prompt: "What is the chance one cast does NOT catch a golden fish?", hint: "1 − 0.2", answer: "0.8", acceptableAnswers: ["0.8", "80%", "4/5"], formatHint: "e.g., 0.5", commonMistakes: { "0.2": "That is the chance of catching one. We want missing: 1 − 0.2." } },
+        { prompt: "Chance all 4 casts miss: 0.8⁴ = ?", hint: "0.8 × 0.8 = 0.64, then × 0.8 again, then once more.", answer: "0.4096", acceptableAnswers: ["0.4096", "40.96%"], formatHint: "e.g., 0.25", commonMistakes: { "3.2": "That is 0.8 × 4. Multiply 0.8 by itself four times." } },
+        { prompt: "Chance of at least one golden fish: 1 − 0.4096 = ?", hint: "Everything except all four missing.", answer: "0.5904", acceptableAnswers: ["0.5904", "59.04%"], formatHint: "e.g., 0.25", commonMistakes: { "0.8": "That adds 4 × 20%. Use the complement: 1 − 0.4096." } }
+      ] }
+  }, function(){
+    const st = pick(["single_drop","both_rolls","at_least_one","expected_tries","pity","tries_needed"]);
+    if (st === "single_drop") {
+      const L = pick([1, 2, 3, 5]), E = ri(4, 10), R = ri(10, 20), U = ri(20, 30), C = 100 - L - E - R - U;
+      const mode = pick(["rareplus", "notcommon", "epicplus"]);
+      const sum = mode === "rareplus" ? R + E + L : mode === "notcommon" ? 100 - C : E + L;
+      const what = mode === "rareplus" ? "Rare or better (Rare, Epic or Legendary)" : mode === "notcommon" ? "anything except Common" : "Epic or Legendary";
+      const ans = sum / 100;
+      return { subType: st,
+        question: `A loot box rolls once: Common ${C}%, Uncommon ${U}%, Rare ${R}%, Epic ${E}%, Legendary ${L}%. What is the probability of ${what}? Answer as a decimal.`,
+        answer: fmt(ans), acceptableAnswers: pctAlts(ans),
+        // the single highest tier asked about; the complement; multiplied instead of added
+        options: opt4(fmt(ans), [fmt((mode === "epicplus" ? E : R) / 100), fmt(rnd(1 - ans, 2)), fmt(rnd(mode === "epicplus" ? E * L / 10000 : R * E / 10000, 4)), fmt((sum + U) / 100)]),
+        explanation: `These are outcomes of ONE roll, so their chances add: ${mode === "rareplus" ? R + "% + " + E + "% + " + L + "%" : mode === "notcommon" ? "100% − " + C + "%" : E + "% + " + L + "%"} = ${sum}% = ${fmt(ans)}.` };
+    }
+    if (st === "both_rolls") {
+      const p1 = ri(1, 12) * 5, p2 = ri(1, 12) * 5, ans = p1 * p2 / 10000;
+      const ctx = pick([[`a slime drops a key ${p1}% of the time`, `a chest contains a gem ${p2}% of the time`],
+                        [`a crit lands ${p1}% of the time`, `the enemy fails its dodge ${p2}% of the time`],
+                        [`a fish bites ${p1}% of casts`, `you land a hooked fish ${p2}% of the time`]]);
+      return { subType: st,
+        question: `In an RPG, ${ctx[0]} and, independently, ${ctx[1]}. What is the probability that both happen? Answer as a decimal.`,
+        answer: fmt(ans), acceptableAnswers: pctAlts(ans),
+        // added instead of multiplied; the complement; the average
+        options: opt4(fmt(ans), [fmt((p1 + p2) / 100), fmt(rnd(1 - ans, 4)), fmt((p1 + p2) / 200), fmt(Math.min(p1, p2) / 100)]),
+        explanation: `Independent events multiply: ${p1 / 100} × ${p2 / 100} = ${fmt(ans)} (${pct(ans)}).` };
+    }
+    if (st === "at_least_one") {
+      const p = pick(RATES), n = ri(2, 25), none = Math.pow(1 - p, n);
+      const askNone = Math.random() < 0.3;
+      const ans = rnd(askNone ? none : 1 - none, 3);
+      const what = pick(["a rare mount drops", "a boss drops its pet", "a crafting attempt succeeds", "a gacha pull is a 5-star"]);
+      return { subType: st,
+        question: askNone
+          ? `Each try there is a ${pct(p)} chance ${what}. What is the probability it NEVER happens in ${n} tries? Give a decimal to 3 decimal places.`
+          : `Each try there is a ${pct(p)} chance ${what}. What is the probability it happens at least once in ${n} tries? Give a decimal to 3 decimal places.`,
+        answer: fmt(ans), acceptableAnswers: pctAlts(ans),
+        // added the chances (n × p); the other side of the complement; one try too few; 1 − pⁿ
+        options: opt4(fmt(ans), [fmt(rnd(n * p, 3)), fmt(rnd(askNone ? 1 - none : none, 3)),
+                                 fmt(rnd(askNone ? Math.pow(1 - p, n - 1) : 1 - Math.pow(1 - p, n - 1), 3)), fmt(rnd(1 - Math.pow(p, n), 3))]),
+        explanation: `One try fails with 1 − ${p} = ${fmt(1 - p)}. All ${n} fail: ${fmt(1 - p)}^${n} ≈ ${fmt(rnd(none, 4))}. ${askNone ? "That is the answer: ≈ " + fmt(ans) + "." : "At least once = 1 − " + fmt(rnd(none, 4)) + " ≈ " + fmt(ans) + "."} (Adding ${n} × ${p} = ${fmt(rnd(n * p, 3))} would be wrong.)` };
+    }
+    if (st === "expected_tries") {
+      const p = pick([0.5, 0.25, 0.2, 0.1, 0.05, 0.04, 0.02, 0.01, 0.125, 0.08]);
+      const ans = 1 / p;
+      return { subType: st,
+        question: `A treasure goblin drops a rare key ${pct(p)} of the time. On average, how many goblins does a player need to defeat to get one key?`,
+        answer: fmt(ans),
+        // the percent number itself; 1 ÷ (1 − p); half the average
+        options: opt4(fmt(ans), [fmt(rnd(p * 100, 2)), fmt(rnd(1 / (1 - p), 2)), fmt(ans / 2), fmt(100 - p * 100)]),
+        explanation: `Expected tries = 1 ÷ p = 1 ÷ ${p} = ${fmt(ans)}. That is an average: some players need far more, some far fewer.` };
+    }
+    if (st === "pity") {
+      if (pick([true, false])) {
+        const p = pick([0.05, 0.1, 0.02, 0.03, 0.06, 0.08]), N = pick([10, 20, 30, 50, 60, 90]);
+        const ans = rnd(Math.pow(1 - p, N - 1), 3);
+        return { subType: st,
+          question: `A gacha banner gives a 5-star with probability ${p} per pull, and pull number ${N} is guaranteed (hard pity). What is the probability a player has to rely on the pity pull? Give a decimal to 3 decimal places.`,
+          answer: fmt(ans), acceptableAnswers: pctAlts(ans),
+          // counted N fails instead of N − 1; the complement; (N − 1) × p; one fail too few
+          options: opt4(fmt(ans), [fmt(rnd(Math.pow(1 - p, N), 3)), fmt(rnd(1 - ans, 3)), fmt(rnd(Math.min(1, (N - 1) * p), 3)), fmt(rnd(Math.pow(1 - p, N - 2), 3))]),
+          explanation: `Pity is needed only if pulls 1 to ${N - 1} all miss: (1 − ${p})^${N - 1} = ${fmt(1 - p)}^${N - 1} ≈ ${fmt(ans)}.` };
+      }
+      const p0 = pick([0.05, 0.1, 0.15, 0.2]), s = pick([0.05, 0.1, 0.15]);
+      const ps = [p0, p0 + s, p0 + 2 * s];
+      const ans = rnd(1 - (1 - ps[0]) * (1 - ps[1]) * (1 - ps[2]), 3);
+      return { subType: st,
+        question: `Soft pity: a rare drop starts at ${pct(p0)} and rises by ${pct(s)} after every miss (${pct(ps[0])}, ${pct(ps[1])}, ${pct(ps[2])}). What is the probability of at least one rare in the first 3 tries? Give a decimal to 3 decimal places.`,
+        answer: fmt(ans), acceptableAnswers: pctAlts(ans),
+        // added the three chances; ignored the rise; only the last try's chance
+        options: opt4(fmt(ans), [fmt(rnd(ps[0] + ps[1] + ps[2], 3)), fmt(rnd(1 - Math.pow(1 - p0, 3), 3)), fmt(rnd(ps[2], 3)), fmt(rnd(ps[0] * ps[1] * ps[2], 3))]),
+        explanation: `All three miss: (1 − ${fmt(ps[0])})(1 − ${fmt(ps[1])})(1 − ${fmt(ps[2])}) = ${fmt(1 - ps[0])} × ${fmt(1 - ps[1])} × ${fmt(1 - ps[2])} = ${fmt(rnd((1 - ps[0]) * (1 - ps[1]) * (1 - ps[2]), 4))}. At least one rare = 1 − that ≈ ${fmt(ans)}.` };
+    }
+    // tries_needed: the smallest n with P(at least one) >= target
+    const p = pick([0.05, 0.1, 0.2, 0.25, 0.02, 0.15]), target = pick([0.5, 0.75, 0.9, 0.95]);
+    let n = 1; while (Math.pow(1 - p, n) > 1 - target + 1e-12) n++;
+    return { subType: "tries_needed",
+      question: `A ${pct(p)} drop chance per run. What is the smallest number of runs that gives at least a ${pct(target)} chance of getting the drop at least once?`,
+      answer: String(n),
+      // added chances (target ÷ p); the average 1/p; one run short
+      options: opt4(n, [Math.ceil(target / p - 1e-9), Math.round(1 / p), n - 1, n + 2]),
+      explanation: `We need 1 − ${fmt(1 - p)}ⁿ ≥ ${target}, i.e. ${fmt(1 - p)}ⁿ ≤ ${fmt(1 - target)}. ${fmt(1 - p)}^${n - 1} ≈ ${fmt(rnd(Math.pow(1 - p, n - 1), 4))} is still too big, but ${fmt(1 - p)}^${n} ≈ ${fmt(rnd(Math.pow(1 - p, n), 4))} is small enough, so n = ${n}.` };
+  });
+
+  // =====================================================================
+  // M-397  Weighted Randomness  (tier 7)
+  // Prereqs: Probability Systems (M-396).
+  // =====================================================================
+  const LOOT_SETS = [["Copper", "Silver", "Gold", "Gem"], ["Potion", "Scroll", "Shield", "Crown"],
+                     ["Slime", "Goblin", "Orc", "Dragon"], ["Wood", "Stone", "Iron", "Diamond"]];
+  // Descending-ish weights so the common item really is common.
+  const lootWeights = n => { const w = [ri(30, 60), ri(15, 35), ri(5, 15), ri(1, 6)]; return w.slice(0, n); };
+  _addSkill(7, "Weighted Randomness", "Weighted Randomness", 3, {
+    goalProblem: "A chest's loot table has weights Copper 50, Silver 30, Gold 15, Gem 5. What is the chance of Gold, and which item does a roll of r = 83.5 pick?",
+    teachingSteps: [
+      { title: "Weights are relative",
+        explanation: "A <strong>weight</strong> says how many \"tickets\" an item gets. The probability is that item's weight divided by the <strong>total</strong> weight. Weights do not have to add to 100.",
+        visual: "Gold: 15 ÷ (50 + 30 + 15 + 5) = 15 ÷ 100 = 0.15" },
+      { title: "Picking with one random number",
+        explanation: "Roll r between 0 and the total, then walk down the list, subtracting each weight until r fits inside one.",
+        visual: "let r = Math.random() * total;<br>for (const item of table) {<br>&nbsp;&nbsp;if (r &lt; item.weight) return item;<br>&nbsp;&nbsp;r -= item.weight;<br>}" },
+      { title: "Running totals give each item a range",
+        explanation: "Add the weights up in order: each item owns the range from the previous running total up to (not including) its own. The width of the range is its weight.",
+        visual: "Copper 0–50, Silver 50–80, Gold 80–95, Gem 95–100<br>r = 83.5 lands in Gold" },
+      { title: "Changing the table changes everyone's odds",
+        explanation: "Add an item and the <strong>total grows</strong>, so every other item's chance shrinks even though its weight did not change. Remove one and the others' chances grow.",
+        visual: "add Relic (weight 25): Gold = 15 ÷ 125 = 0.12" },
+      { title: "Expected value of a loot table",
+        explanation: "The average reward per roll is the sum of probability × value for each item, which is Σ(weight × value) ÷ total.",
+        visual: "weights 6, 3, 1 with 10, 50, 200 gold → (60 + 150 + 200) ÷ 10 = 41" },
+      { title: "Solving for a weight",
+        explanation: "To give an item a target chance p when the others weigh S in total, solve w ÷ (S + w) = p, which gives <strong>w = p × S ÷ (1 − p)</strong>.",
+        visual: "others 95, want 5%: w = 0.05 × 95 ÷ 0.95 = 5" }
+    ],
+    finalAnswer: "0.15, and r = 83.5 picks Gold",
+    answerExplanation: "Total = 100, so P(Gold) = 15 ÷ 100 = 0.15. Running totals: Copper below 50, Silver below 80, Gold below 95. 83.5 is at least 80 and below 95, so Gold.",
+    example: { problem: "Weights: Slime 6, Orc 3, Dragon 1. A Slime gives 10 gold, an Orc 50, a Dragon 200. What is the expected gold per spawn?", steps: [
+      { text: "Total weight", math: "6 + 3 + 1 = 10" },
+      { text: "Weight × value", math: "6 × 10 + 3 × 50 + 1 × 200 = 60 + 150 + 200 = 410" },
+      { text: "Divide by the total", math: "410 ÷ 10 = 41" },
+      { text: "Expected value", math: "41 gold per spawn" }
+    ]},
+    keyPoints: [
+      "P(item) = weight ÷ total weight",
+      "Running totals split 0 to total into one range per item",
+      "Adding or removing an item changes the total and so every probability",
+      "Expected value = Σ(weight × value) ÷ total"
+    ],
+    mistakes: [
+      { wrong: "Gold weight 15 means a 15% chance", why: "Only if the weights add to 100. Divide by the actual total." },
+      { wrong: "Adding a new item leaves the old chances alone", why: "The total grows, so every old item's share shrinks." },
+      { wrong: "Expected value = average of the item values", why: "Common items count more. Weight each value by its probability." }
+    ],
+    guided: { problem: "A monster spawner has weights Bat 12, Wolf 6, Troll 2. What is the probability of a Wolf, and which monster does r = 15.5 pick?",
+      steps: [
+        { label: "Total weight", value: "20" },
+        { label: "P(Wolf) = 6 ÷ 20", value: "0.3" },
+        { label: "Wolf's range ends at 12 + 6", value: "18" },
+        { label: "r = 15.5 picks", value: "Wolf" }
+      ], answer: "Wolf", answerLabel: "r = 15.5 picks",
+      interactiveSteps: [
+        { prompt: "Total weight = 12 + 6 + 2 = ?", hint: "Add every weight.", answer: "20", acceptableAnswers: ["20"], formatHint: "Enter a number", commonMistakes: {} },
+        { prompt: "P(Wolf) = 6 ÷ 20 = ?", hint: "Weight divided by the total.", answer: "0.3", acceptableAnswers: ["0.3", "3/10", "6/20", "30%"], formatHint: "e.g., 0.25", commonMistakes: { "0.06": "6 is a weight, not a percent. Divide by the total 20.", "0.5": "That is 6 ÷ 12. Divide by the TOTAL, 20." } },
+        { prompt: "Bat covers 0 up to 12. Wolf comes next. Where does Wolf's range end? (12 + 6)", hint: "Add Wolf's weight to the running total.", answer: "18", acceptableAnswers: ["18"], formatHint: "Enter a number", commonMistakes: { "6": "That is Wolf's weight. Its range ends at the running total 12 + 6 = 18." } },
+        { prompt: "r = 15.5 is between 12 and 18. Which monster spawns?", hint: "Find the range that contains 15.5.", answer: "Wolf", acceptableAnswers: ["Wolf", "wolf"], formatHint: "Bat, Wolf or Troll", selectOptions: [{ label: "Bat", value: "Bat" }, { label: "Wolf", value: "Wolf" }, { label: "Troll", value: "Troll" }], commonMistakes: {} }
+      ] }
+  }, function(){
+    const st = pick(["weight_to_prob","cumulative_pick","cumulative_bound","add_remove","expected_value","weight_needed"]);
+    const names = pick(LOOT_SETS);
+    const table = (ns, ws) => ns.map((n, i) => `${n} ${ws[i]}`).join(", ");
+    if (st === "weight_to_prob") {
+      const n = pick([3, 4]), ws = lootWeights(n), ns = names.slice(0, n), T = ws.reduce((s, w) => s + w, 0);
+      const k = ri(0, n - 1), other = (k + 1) % n;
+      const ans = frac(ws[k], T);
+      return { subType: st,
+        question: `A loot table has weights ${table(ns, ws)}. What is the probability of ${ns[k]}? Answer as a fraction.`,
+        answer: ans,
+        // the weight read as a percent; weight against all the others (odds); another item's chance; out of the biggest weight
+        options: opt4(ans, [frac(ws[k], 100), frac(ws[k], T - ws[k]), frac(ws[other], T), frac(ws[k], Math.max(...ws) + 1)]),
+        explanation: `Total weight = ${ws.join(" + ")} = ${T}. P(${ns[k]}) = ${ws[k]}/${T}${ans !== ws[k] + "/" + T ? " = " + ans : ""}.` };
+    }
+    if (st === "cumulative_pick" || st === "cumulative_bound") {
+      const ws = lootWeights(4), T = ws.reduce((s, w) => s + w, 0);
+      const cum = []; ws.reduce((s, w, i) => (cum[i] = s + w), 0);
+      if (st === "cumulative_pick") {
+        // Aim r at a random item first: rolling r uniformly would land on the
+        // heavy first item over half the time and the answer would be guessable.
+        const target = ri(0, 3), lo = target ? cum[target - 1] : 0;
+        // Strictly inside the range (one decimal), so r is never on a boundary.
+        const r = ri(lo * 10 + 1, cum[target] * 10 - 1) / 10;
+        // Run the same loop the lesson shows, rather than trusting the ranges.
+        let left = r, idx = 0;
+        for (; idx < ws.length; idx++) { if (left < ws[idx]) break; left -= ws[idx]; }
+        return { subType: st, forceChoice: true,
+          question: `A drop table has weights ${table(names, ws)} (in that order). The code sets r = Math.random() * ${T}, then walks the list: if r is less than the weight, pick it; otherwise subtract the weight and move on. This time r = ${fmt(r)}. Which item drops?`,
+          answer: names[idx], options: sh(names.slice()),
+          explanation: `Running totals: ${names.map((n, i) => n + " " + (i ? cum[i - 1] : 0) + " to " + cum[i]).join(", ")}. ${fmt(r)} falls in ${names[idx]}'s range (${idx ? cum[idx - 1] : 0} up to ${cum[idx]}), so ${names[idx]} drops.` };
+      }
+      const k = ri(0, 3), lower = pick([true, false]) && k > 0;
+      const ans = lower ? cum[k - 1] : cum[k];
+      return { subType: st,
+        question: `Weights in order: ${table(names, ws)}. Using running totals, ${names[k]} is picked when r is from A up to B. What is ${lower ? "A, the lower end" : "B, the upper end"}?`,
+        answer: String(ans),
+        // its own weight; the neighbouring boundary; the total
+        options: opt4(ans, [ws[k], lower ? cum[k] : (k ? cum[k - 1] : T), T, (k < 3 ? cum[k + 1] : ws[k] + 1)]),
+        explanation: `Running totals: ${names.map((n, i) => n + " ends at " + cum[i]).join(", ")}. ${names[k]} covers ${k ? cum[k - 1] : 0} up to ${cum[k]}, so ${lower ? "A" : "B"} = ${ans}.` };
+    }
+    if (st === "add_remove") {
+      const ws = lootWeights(3), ns = names.slice(0, 3), T = ws.reduce((s, w) => s + w, 0);
+      const k = ri(0, 2);
+      if (pick([true, false])) {
+        const wn = pick([5, 10, 15, 20, 25, 30]);
+        const ans = frac(ws[k], T + wn);
+        return { subType: st,
+          question: `A table has weights ${table(ns, ws)}. An update adds "${names[3]}" with weight ${wn}. What is the new probability of ${ns[k]}? Answer as a fraction.`,
+          answer: ans,
+          // old probability; new item's weight added to this one too; the new item's own chance
+          options: opt4(ans, [frac(ws[k], T), frac(ws[k] + wn, T + wn), frac(wn, T + wn), frac(ws[k], T - wn > 0 ? T - wn : T + 2 * wn)]),
+          explanation: `New total = ${T} + ${wn} = ${T + wn}. ${ns[k]} still weighs ${ws[k]}, so P = ${ws[k]}/${T + wn}${ans !== ws[k] + "/" + (T + wn) ? " = " + ans : ""}. It was ${frac(ws[k], T)} before: the new item took a share from everyone.` };
+      }
+      const rm = (k + 1) % 3, ans = frac(ws[k], T - ws[rm]);
+      return { subType: st,
+        question: `A table has weights ${table(ns, ws)}. ${ns[rm]} is removed from the game. What is the new probability of ${ns[k]}? Answer as a fraction.`,
+        answer: ans,
+        // unchanged; removed weight added on; the removed item's old chance
+        options: opt4(ans, [frac(ws[k], T), frac(ws[k] + ws[rm], T), frac(ws[rm], T), frac(ws[k], T + ws[rm])]),
+        explanation: `New total = ${T} − ${ws[rm]} = ${T - ws[rm]}. P(${ns[k]}) = ${ws[k]}/${T - ws[rm]}${ans !== ws[k] + "/" + (T - ws[rm]) ? " = " + ans : ""}, up from ${frac(ws[k], T)}.` };
+    }
+    if (st === "expected_value") {
+      const T = pick([10, 20, 25, 50, 100]), n = pick([3, 4]);
+      // Split T into n positive weights, biggest first.
+      const cuts = new Set(); while (cuts.size < n - 1) cuts.add(ri(1, T - 1));
+      const pts = [0, ...[...cuts].sort((a, b) => a - b), T];
+      const ws = pts.slice(1).map((p, i) => p - pts[i]).sort((a, b) => b - a);
+      const vals = [pick([1, 2, 5, 10]), pick([20, 25, 30, 50]), pick([75, 100, 120, 150]), pick([250, 400, 500, 1000])].slice(0, n);
+      const tot = ws.reduce((s, w, i) => s + w * vals[i], 0), ans = tot / T;
+      const ns = names.slice(0, n);
+      return { subType: st,
+        question: `A loot crate has weights ${table(ns, ws)} and pays ${ns.map((x, i) => x + " " + vals[i]).join(", ")} gold. What is the expected gold per crate? Round to 2 decimal places if needed.`,
+        answer: fmt(rnd(ans, 2)),
+        // plain average of the values; forgot to divide by the total; the most likely item's value
+        options: opt4(fmt(rnd(ans, 2)), [fmt(rnd(vals.reduce((s, v) => s + v, 0) / n, 2)), fmt(tot), fmt(vals[0]), fmt(rnd(ans * 2, 2))]),
+        explanation: `Total weight ${T}. Σ weight × value = ${ws.map((w, i) => w + " × " + vals[i]).join(" + ")} = ${tot}. Expected = ${tot} ÷ ${T} = ${fmt(rnd(ans, 2))} gold.` };
+    }
+    // weight_needed
+    const k = pick([2, 4, 5, 10, 20]), S = (k - 1) * ri(2, 12);
+    const w = S / (k - 1);
+    return { subType: "weight_needed",
+      question: `The other items in a table weigh ${S} in total. What weight should a new "${names[3]}" get so that it drops exactly ${pct(1 / k)} of the time?`,
+      answer: fmt(w),
+      // p × S (forgot the item joins the total); the percent as a weight; S ÷ (k + 1)
+      options: opt4(fmt(w), [fmt(rnd(S / k, 2)), fmt(rnd(100 / k, 2)), fmt(rnd(S / (k + 1), 2)), fmt(w * 2)]),
+      explanation: `Solve w ÷ (${S} + w) = ${fmt(1 / k)}: w = ${fmt(1 / k)} × ${S} ÷ (1 − ${fmt(1 / k)}) = ${fmt(w)}. Check: ${fmt(w)} ÷ ${fmt(S + w)} = ${fmt(1 / k)}.` };
+  });
+
+  // =====================================================================
+  // M-398  Difficulty Scaling  (tier 7)
+  // Prereqs: Functions in Code (M-387), Linear Modeling (M-308),
+  // Exponential Growth and Decay (M-309).
+  // =====================================================================
+  _addSkill(7, "Difficulty Scaling", "Difficulty Scaling", 3, {
+    goalProblem: "Two designs for enemy HP: linear 50 + 20 × (level − 1), or exponential 40 × 1.25^(level − 1). Which gives more HP at level 10, and by how much?",
+    teachingSteps: [
+      { title: "Linear scaling: the same amount each level",
+        explanation: "A linear curve adds a fixed amount per level: HP = base + increase × (level − 1). The <strong>(level − 1)</strong> makes level 1 exactly the base. It is a line, just like y = mx + b.",
+        visual: "50 + 20 × (10 − 1) = 50 + 180 = 230" },
+      { title: "Exponential scaling: the same percentage each level",
+        explanation: "An exponential curve multiplies by a growth factor each level: HP = base × r^(level − 1). +25% per level means r = 1.25. The jumps get bigger every level.",
+        visual: "40 × 1.25⁹ = 40 × 7.4506 ≈ 298" },
+      { title: "Which grows faster, and when",
+        explanation: "A linear curve can lead early, especially with a bigger base. But any exponential curve with r &gt; 1 eventually overtakes any linear one. To find the first level where it does, make a table or a loop and compare level by level.",
+        visual: "for (let n = 1; ; n++) if (expHP(n) &gt; linHP(n)) return n;" },
+      { title: "Capping and clamping",
+        explanation: "Unchecked curves break games: level-90 damage of 10 million. A <strong>cap</strong> stops growth at a ceiling with Math.min(cap, value); a clamp keeps a value between a floor and a ceiling.",
+        visual: "damage = Math.min(200, 20 + 15 * (level - 1));" },
+      { title: "Percent per wave compounds",
+        explanation: "\"+10% HP every wave\" is exponential with r = 1.1. After 5 waves the HP is 1.1⁵ ≈ 1.6105 times the start: a <strong>61.05%</strong> increase, not 50%. Percentages multiply, they do not add.",
+        visual: "1.1 × 1.1 × 1.1 × 1.1 × 1.1 ≈ 1.6105" },
+      { title: "Fitting a linear curve from two levels",
+        explanation: "If level 1 should have 60 HP and level 10 should have 240 HP, the increase per level is the change divided by the number of steps: (240 − 60) ÷ (10 − 1) = 20. There are 9 steps from level 1 to level 10, not 10.",
+        visual: "increase = (HP at m − HP at 1) ÷ (m − 1)" }
+    ],
+    finalAnswer: "Exponential, by about 68 HP (298.02 vs 230)",
+    answerExplanation: "Linear: 50 + 20 × 9 = 230. Exponential: 40 × 1.25⁹ ≈ 40 × 7.4506 = 298.02. The exponential curve is ahead by about 68 HP at level 10, even though it started lower (40 vs 50).",
+    example: { problem: "Linear A = 100 + 10(n − 1), exponential B = 50 × 1.2^(n − 1). At which level does B first beat A?", steps: [
+      { text: "Level 1", math: "A = 100, B = 50" },
+      { text: "Level 8", math: "A = 170, B = 50 × 1.2⁷ ≈ 179.16 — B is ahead" },
+      { text: "Check level 7", math: "A = 160, B = 50 × 1.2⁶ ≈ 149.30 — A still ahead" },
+      { text: "First level where B wins", math: "level 8" }
+    ]},
+    keyPoints: [
+      "Linear: base + increase × (level − 1)",
+      "Exponential: base × r^(level − 1), with r = 1 + percent",
+      "Exponential always overtakes linear eventually; find when with a table",
+      "Cap with Math.min; percentages per wave compound"
+    ],
+    mistakes: [
+      { wrong: "Level n HP = base + increase × n", why: "That gives level 1 one increase too many. Use (n − 1)." },
+      { wrong: "+10% for 5 waves = +50%", why: "Each 10% applies to an already bigger number: 1.1⁵ ≈ 1.61, so +61.05%." },
+      { wrong: "\"Linear is bigger at level 3, so it stays bigger\"", why: "Exponential growth speeds up. Keep checking later levels." }
+    ],
+    guided: { problem: "Wave 1 enemies have 200 HP and each wave adds 10%. How much HP do wave 4 enemies have?",
+      steps: [
+        { label: "Growth factor", value: "1.1" },
+        { label: "Waves of growth from 1 to 4", value: "3" },
+        { label: "1.1³", value: "1.331" },
+        { label: "HP = 200 × 1.331", value: "266.2" }
+      ], answer: "266.2", answerLabel: "Wave 4 HP =",
+      interactiveSteps: [
+        { prompt: "+10% per wave means multiplying by what each wave?", hint: "100% + 10% = 110%.", answer: "1.1", acceptableAnswers: ["1.1", "1.10", "110%"], formatHint: "e.g., 1.5", commonMistakes: { "0.1": "Multiplying by 0.1 would shrink it. Keep the original 100% too: 1.1." } },
+        { prompt: "How many times is the 10% applied between wave 1 and wave 4?", hint: "Wave 1 → 2 → 3 → 4.", answer: "3", acceptableAnswers: ["3"], formatHint: "Enter a number", commonMistakes: { "4": "Wave 1 has no growth yet. From wave 1 to 4 there are 3 steps." } },
+        { prompt: "1.1³ = ?", hint: "1.1 × 1.1 = 1.21, then × 1.1.", answer: "1.331", acceptableAnswers: ["1.331"], formatHint: "e.g., 1.5", commonMistakes: { "3.3": "That is 1.1 × 3. Multiply 1.1 by itself three times." } },
+        { prompt: "Wave 4 HP = 200 × 1.331 = ?", hint: "Multiply the base HP by the growth.", answer: "266.2", acceptableAnswers: ["266.2"], formatHint: "Enter a number", commonMistakes: { "260": "That adds 3 × 10% = 30%. Percentages compound: 200 × 1.331." } }
+      ] }
+  }, function(){
+    const st = pick(["linear","exponential","capped","crossover","percent_total","fit_linear"]);
+    if (st === "linear") {
+      const b = ri(5, 30) * 10, inc = ri(2, 15) * 5, n = ri(5, 40), ans = b + inc * (n - 1);
+      const what = pick(["Slime HP", "Archer damage", "Boss shield strength", "Golem armour"]);
+      return { subType: st,
+        question: `${what} follows base + increase × (level − 1) with base ${b} and increase ${inc}. What is it at level ${n}?`,
+        answer: String(ans),
+        // used n instead of n − 1; base × level; increase × level only
+        options: opt4(ans, [b + inc * n, b * n, inc * n, b + inc * (n - 2)]),
+        explanation: `${b} + ${inc} × (${n} − 1) = ${b} + ${inc} × ${n - 1} = ${b} + ${inc * (n - 1)} = ${ans}.` };
+    }
+    if (st === "exponential") {
+      const r = pick([1.1, 1.2, 1.25, 1.5, 2]), b = pick([10, 20, 40, 50, 100]), n = ri(3, r === 2 ? 8 : 12);
+      const ans = Math.round(b * Math.pow(r, n - 1));
+      return { subType: st,
+        question: `A tower-defence enemy has HP = ${b} × ${r}^(wave − 1). What is its HP on wave ${n}, rounded to the nearest whole number?`,
+        answer: String(ans),
+        // exponent n instead of n − 1; linear thinking (adds the same amount); r × (n − 1)
+        options: opt4(ans, [Math.round(b * Math.pow(r, n)), Math.round(b + b * (r - 1) * (n - 1)), Math.round(b * r * (n - 1)), Math.round(b * Math.pow(r, n - 2))]),
+        explanation: `${b} × ${r}^${n - 1} = ${b} × ${fmt(rnd(Math.pow(r, n - 1), 4))} ≈ ${fmt(rnd(b * Math.pow(r, n - 1), 2))}, which rounds to ${ans}.` };
+    }
+    if (st === "capped") {
+      const b = ri(2, 10) * 5, inc = ri(1, 6) * 5, cap = b + inc * ri(5, 15) + ri(0, inc - 1);
+      const raw = n => b + inc * (n - 1);
+      if (pick([true, false])) {
+        const n = ri(2, 30), ans = Math.min(cap, raw(n));
+        return { subType: st,
+          question: `Spell damage = Math.min(${cap}, ${b} + ${inc} * (level - 1)). What is the damage at level ${n}?`,
+          answer: String(ans),
+          // ignored the cap / or capped when it should not; used level instead of level − 1; the cap regardless
+          options: opt4(ans, [raw(n) !== ans ? raw(n) : cap, raw(n + 1) <= cap ? raw(n + 1) : cap - inc, cap === ans ? raw(n) - inc : cap, ans + inc]),
+          explanation: `Uncapped: ${b} + ${inc} × ${n - 1} = ${raw(n)}. Math.min picks the smaller of ${cap} and ${raw(n)}: ${ans}.${raw(n) > cap ? " The cap is doing its job." : " Still below the cap."}` };
+      }
+      const n = Math.ceil((cap - b) / inc) + 1;
+      return { subType: st,
+        question: `Enemy speed = Math.min(${cap}, ${b} + ${inc} * (level - 1)). What is the first level where the speed reaches the cap of ${cap}?`,
+        answer: String(n),
+        // forgot the + 1 for level 1; rounded down; cap ÷ increase
+        options: opt4(n, [n - 1, Math.floor((cap - b) / inc), Math.round(cap / inc), n + 1]),
+        explanation: `We need ${b} + ${inc}(n − 1) ≥ ${cap}, so n − 1 ≥ ${fmt(rnd((cap - b) / inc, 3))}. The smallest whole n − 1 is ${n - 1}, so n = ${n}. Check: level ${n - 1} gives ${raw(n - 1)}, level ${n} gives ${raw(n)} ≥ ${cap}.` };
+    }
+    if (st === "crossover") {
+      let a, i, b, r, n;
+      do {
+        a = ri(10, 30) * 10; i = ri(2, 10) * 5; b = ri(2, 10) * 5; r = pick([1.1, 1.2, 1.25, 1.5]);
+        n = 1; while (n < 80 && !(b * Math.pow(r, n - 1) > a + i * (n - 1))) n++;
+      } while (n >= 60 || n < 3);
+      const A = k => a + i * (k - 1), B = k => b * Math.pow(r, k - 1);
+      return { subType: st,
+        question: `Goblin HP is linear: ${a} + ${i}(level − 1). Troll HP is exponential: ${b} × ${r}^(level − 1). At which level does the troll first have MORE HP than the goblin?`,
+        answer: String(n),
+        // the last level the goblin is still ahead; one too late; the gap ÷ growth guess
+        options: opt4(n, [n - 1, n + 1, n + 3, Math.max(2, n - 3)]),
+        explanation: `Compare level by level. Level ${n - 1}: goblin ${A(n - 1)}, troll ≈ ${fmt(rnd(B(n - 1), 2))} (goblin ahead). Level ${n}: goblin ${A(n)}, troll ≈ ${fmt(rnd(B(n), 2))} (troll ahead). So level ${n}.` };
+    }
+    if (st === "percent_total") {
+      const p = pick([5, 10, 20, 25, 50]), k = ri(2, 8), f = Math.pow(1 + p / 100, k);
+      const ans = rnd((f - 1) * 100, 2);
+      return { subType: st,
+        question: `Each wave, enemy HP goes up ${p}%. After ${k} waves of increases, by what total percent has HP grown? Give the percent to 2 decimal places.`,
+        answer: fmt(ans), acceptableAnswers: [fmt(ans) + "%"],
+        // added the percents; forgot to subtract the original 100%; one wave too few
+        options: opt4(fmt(ans), [fmt(p * k), fmt(rnd(f * 100, 2)), fmt(rnd((Math.pow(1 + p / 100, k - 1) - 1) * 100, 2)), fmt(rnd(ans / 2, 2))]),
+        explanation: `${p}% growth means × ${fmt(1 + p / 100)} each wave. ${fmt(1 + p / 100)}^${k} ≈ ${fmt(rnd(f, 4))}, so HP is ${fmt(rnd(f * 100, 2))}% of the start: an increase of ≈ ${fmt(ans)}% (not ${p} × ${k} = ${p * k}%).` };
+    }
+    // fit_linear
+    const v1 = ri(5, 40) * 5, inc = ri(2, 20), m = ri(5, 30), vm = v1 + inc * (m - 1);
+    return { subType: "fit_linear",
+      question: `A designer wants level 1 enemies to have ${v1} HP and level ${m} enemies to have ${vm} HP, growing linearly. How much HP should each level add?`,
+      answer: String(inc),
+      // divided by m instead of m − 1; ignored the starting HP; the total change
+      options: opt4(inc, [fmt(rnd((vm - v1) / m, 2)), fmt(rnd(vm / m, 2)), vm - v1, inc + 1]),
+      explanation: `From level 1 to level ${m} there are ${m - 1} steps. (${vm} − ${v1}) ÷ ${m - 1} = ${vm - v1} ÷ ${m - 1} = ${inc} HP per level.` };
+  });
+
+  // =====================================================================
+  // M-399  Exponential Progression  (tier 7)
+  // Prereqs: Exponential Growth and Decay (M-309), Functions in Code (M-387).
+  // =====================================================================
+  // XP curves chosen so every value is a whole number: base is a multiple of
+  // `unit` and the exponent never exceeds maxE (16 × 1.5⁴ = 81, 625 × 1.2⁴ = 1296).
+  const XP_CURVES = [{ g: 2, unit: 10, k: [2, 20], maxE: 8 }, { g: 3, unit: 10, k: [2, 10], maxE: 6 },
+                     { g: 1.5, unit: 16, k: [2, 8], maxE: 4 }, { g: 1.25, unit: 256, k: [1, 2], maxE: 4 },
+                     { g: 1.2, unit: 625, k: [1, 1], maxE: 4 }];
+  const xpCurve = () => { const c = pick(XP_CURVES); return { g: c.g, base: c.unit * ri(c.k[0], c.k[1]), maxE: c.maxE }; };
+  // Total XP to go from level 1 to level 1 + e: base + base·g + ... + base·g^(e-1).
+  const xpTotal = (base, g, e) => base * (Math.pow(g, e) - 1) / (g - 1);
+  _addSkill(7, "Exponential Progression", "Exponential Progression", 3, {
+    goalProblem: "Levelling up from level L to L + 1 costs 100 × 1.5^(L − 1) XP. How much XP does level 4 → 5 cost, and how much XP in total does a new player need to reach level 5?",
+    teachingSteps: [
+      { title: "The XP curve",
+        explanation: "Most RPGs make each level cost more than the last by the same factor: XP to next = base × growth^(L − 1). Level 1 → 2 costs exactly the base.",
+        visual: "const xpToNext = L =&gt; 100 * Math.pow(1.5, L - 1);<br>1→2: 100, 2→3: 150, 3→4: 225, 4→5: 337.5" },
+      { title: "The growth factor is a ratio",
+        explanation: "Divide any level's cost by the one before it and you get the growth factor. \"Each level needs 15% more\" means growth = 1.15. Two levels apart, the ratio is growth².",
+        visual: "225 ÷ 150 = 1.5" },
+      { title: "Total XP is a geometric sum",
+        explanation: "To reach level L from level 1 you pay every level-up from 1 → 2 up to (L − 1) → L. That sum has a shortcut: <strong>total = base × (growth^(L − 1) − 1) ÷ (growth − 1)</strong>.",
+        visual: "100 + 150 + 225 + 337.5 = 812.5<br>100 × (1.5⁴ − 1) ÷ 0.5 = 812.5" },
+      { title: "Level from total XP",
+        explanation: "Going backwards, list the running totals (the XP needed to reach each level) and find the last one the player has passed.",
+        visual: "reach 2: 100, reach 3: 250, reach 4: 475 → 400 XP is level 3" },
+      { title: "Comparing growth factors",
+        explanation: "A steeper growth factor feels fine early and brutal later. After m more levels the cost has multiplied by growth^m, so 1.5 over 10 levels is ×57.67 while 1.2 is ×6.19. A curve with a smaller base but bigger growth always overtakes eventually.",
+        visual: "1.2¹⁰ ≈ 6.19   1.5¹⁰ ≈ 57.67" }
+    ],
+    finalAnswer: "337.5 XP for level 4 → 5, and 812.5 XP in total to reach level 5",
+    answerExplanation: "4 → 5: 100 × 1.5³ = 337.5. Total to reach 5 is the four level-ups 100 + 150 + 225 + 337.5 = 812.5, or 100 × (1.5⁴ − 1) ÷ (1.5 − 1) = 812.5.",
+    example: { problem: "XP to next = 50 × 2^(L − 1). What is the total XP to reach level 6?", steps: [
+      { text: "Level-ups needed", math: "1→2, 2→3, 3→4, 4→5, 5→6: five of them" },
+      { text: "Their costs", math: "50 + 100 + 200 + 400 + 800" },
+      { text: "Shortcut", math: "50 × (2⁵ − 1) ÷ (2 − 1) = 50 × 31 = 1550" },
+      { text: "Total", math: "1550 XP" }
+    ]},
+    keyPoints: [
+      "XP to next level = base × growth^(L − 1)",
+      "growth = one level's cost ÷ the previous level's cost",
+      "Total XP to reach level L = base × (growth^(L − 1) − 1) ÷ (growth − 1)",
+      "After m levels, costs have multiplied by growth^m"
+    ],
+    mistakes: [
+      { wrong: "Level 4 → 5 costs 100 × 1.5⁴", why: "Level 1 → 2 uses exponent 0. Level L → L + 1 uses L − 1, so 4 → 5 is 1.5³." },
+      { wrong: "Total XP to reach level 5 = the cost of 4 → 5", why: "The total includes every earlier level-up too." },
+      { wrong: "15% more each level means growth = 0.15", why: "The factor keeps the original 100%: growth = 1.15." }
+    ],
+    guided: { problem: "Level 3 → 4 costs 720 XP and level 4 → 5 costs 864 XP. What is the growth factor, and what does level 5 → 6 cost?",
+      steps: [
+        { label: "Growth = 864 ÷ 720", value: "1.2" },
+        { label: "As a percent increase", value: "20" },
+        { label: "Level 5 → 6 = 864 × 1.2", value: "1036.8" }
+      ], answer: "1036.8", answerLabel: "Level 5 → 6 costs",
+      interactiveSteps: [
+        { prompt: "Growth factor = 864 ÷ 720 = ?", hint: "Divide a level's cost by the one before.", answer: "1.2", acceptableAnswers: ["1.2", "6/5", "1.20"], formatHint: "e.g., 1.5", commonMistakes: { "144": "That is the difference. The growth factor is a ratio: 864 ÷ 720.", "0.83": "That is 720 ÷ 864, upside down." } },
+        { prompt: "So each level costs what percent more than the last?", hint: "1.2 = 100% + ?%", answer: "20", acceptableAnswers: ["20", "20%"], formatHint: "Enter a number", commonMistakes: { "120": "1.2 is 120% OF the last level, which is 20% MORE." } },
+        { prompt: "Level 5 → 6 costs 864 × 1.2 = ?", hint: "One more step of growth.", answer: "1036.8", acceptableAnswers: ["1036.8"], formatHint: "Enter a number", commonMistakes: { "1008": "That adds 144 again (linear). Exponential curves multiply: 864 × 1.2." } }
+      ] }
+  }, function(){
+    const st = pick(["xp_next","total_xp","level_from_xp","find_growth","compare_curves","ratio_levels"]);
+    const { g, base, maxE } = xpCurve();
+    const formula = `${base} × ${g}^(L − 1)`;
+    if (st === "xp_next") {
+      const e = ri(1, maxE), L = e + 1, ans = base * Math.pow(g, e);
+      return { subType: st,
+        question: `XP to go from level L to L + 1 is ${formula}. How much XP does the level ${L} → ${L + 1} level-up cost?`,
+        answer: fmt(ans),
+        // exponent L instead of L − 1; exponent L − 2; growth × (L − 1); linear growth
+        options: opt4(fmt(ans), [fmt(base * Math.pow(g, e + 1)), fmt(base * Math.pow(g, e - 1)), fmt(rnd(base * g * e, 2)), fmt(rnd(base + base * (g - 1) * e, 2))]),
+        explanation: `L = ${L}, so the exponent is ${L} − 1 = ${e}: ${base} × ${g}^${e} = ${base} × ${fmt(Math.pow(g, e))} = ${fmt(ans)} XP.` };
+    }
+    if (st === "total_xp") {
+      const e = ri(2, maxE + 1), L = e + 1, ans = xpTotal(base, g, e);
+      const terms = []; for (let j = 0; j < e; j++) terms.push(fmt(base * Math.pow(g, j)));
+      return { subType: st,
+        question: `XP to go from level L to L + 1 is ${formula}. A brand-new level 1 character needs how much XP in total to reach level ${L}?`,
+        answer: fmt(ans),
+        // only the last level-up; one level-up too many; the next level-up's cost
+        options: opt4(fmt(ans), [fmt(base * Math.pow(g, e - 1)), fmt(xpTotal(base, g, e + 1)), fmt(base * Math.pow(g, e)), fmt(xpTotal(base, g, e - 1))]),
+        explanation: `Reaching level ${L} takes ${e} level-ups: ${terms.join(" + ")} = ${fmt(ans)}. Shortcut: ${base} × (${g}^${e} − 1) ÷ (${g} − 1) = ${fmt(ans)}.` };
+    }
+    if (st === "level_from_xp") {
+      const e = ri(1, maxE), lo = xpTotal(base, g, e), next = base * Math.pow(g, e);
+      const X = lo + Math.floor(next * pick([0.1, 0.3, 0.5, 0.7, 0.9]));
+      const lvl = e + 1;
+      const rows = []; for (let j = 1; j <= e + 1; j++) rows.push(`reach ${j + 1}: ${fmt(xpTotal(base, g, j))}`);
+      return { subType: st,
+        question: `XP to go from level L to L + 1 is ${formula}, and players start at level 1 with 0 XP. A player has earned ${fmt(X)} XP in total. What level are they?`,
+        answer: String(lvl),
+        // number of level-ups completed; one level too high; XP ÷ base
+        options: opt4(lvl, [lvl - 1, lvl + 1, Math.floor(X / base), lvl + 2]),
+        explanation: `Running totals: ${rows.join(", ")}. ${fmt(X)} has passed ${fmt(lo)} but not ${fmt(lo + next)}, so the player is level ${lvl}.` };
+    }
+    if (st === "find_growth") {
+      const gg = pick([1.1, 1.2, 1.25, 1.5, 2, 1.15, 1.3, 1.4]);
+      const b0 = pick([100, 200, 400, 500, 1000]), e = ri(1, 4);
+      const A = rnd(b0 * Math.pow(gg, e), 4);
+      if (pick([true, false])) {
+        const B = rnd(A * gg, 4);
+        return { subType: st,
+          question: `In an RPG, level ${e + 1} → ${e + 2} costs ${fmt(A)} XP and level ${e + 2} → ${e + 3} costs ${fmt(B)} XP. What is the growth factor?`,
+          answer: fmt(gg),
+          // the difference; upside-down ratio; percent written as a decimal
+          options: opt4(fmt(gg), [fmt(rnd(B - A, 2)), fmt(rnd(A / B, 2)), fmt(rnd(gg - 1, 2)), fmt(rnd(gg + 0.5, 2))]),
+          explanation: `Growth = later ÷ earlier = ${fmt(B)} ÷ ${fmt(A)} = ${fmt(gg)} (${fmt(rnd((gg - 1) * 100, 2))}% more each level).` };
+      }
+      const C = rnd(A * gg * gg, 4);
+      return { subType: st,
+        question: `Level ${e + 1} → ${e + 2} costs ${fmt(A)} XP and level ${e + 3} → ${e + 4} costs ${fmt(C)} XP, on an exponential curve. What is the growth factor per level?`,
+        answer: fmt(gg),
+        // forgot it is two steps (gave the whole ratio); halved the ratio; the difference split in two
+        options: opt4(fmt(gg), [fmt(rnd(C / A, 4)), fmt(rnd(C / A / 2, 2)), fmt(rnd((C - A) / 2, 2)), fmt(rnd(gg + 0.1, 2))]),
+        explanation: `Two level-ups apart, the ratio is growth². ${fmt(C)} ÷ ${fmt(A)} = ${fmt(rnd(gg * gg, 4))}, so growth = √${fmt(rnd(gg * gg, 4))} = ${fmt(gg)}.` };
+    }
+    if (st === "compare_curves") {
+      let a, g1, b, g2, L;
+      do {
+        a = pick([50, 100, 150]); g1 = pick([1.3, 1.4, 1.5, 1.6]); b = a * pick([2, 3, 4, 5]); g2 = pick([1.05, 1.1, 1.15, 1.2]);
+        L = 1; while (L < 60 && !(a * Math.pow(g1, L - 1) > b * Math.pow(g2, L - 1))) L++;
+      } while (L >= 40 || L < 3);
+      const A = k => a * Math.pow(g1, k - 1), B = k => b * Math.pow(g2, k - 1);
+      return { subType: st,
+        question: `Game A's XP to next level is ${a} × ${g1}^(L − 1). Game B's is ${b} × ${g2}^(L − 1). At which level L does Game A's level-up first cost more than Game B's?`,
+        answer: String(L),
+        // last level where B is still dearer; one too late; two too late
+        options: opt4(L, [L - 1, L + 1, L + 2, Math.max(2, L - 2)]),
+        explanation: `L = ${L - 1}: A ≈ ${fmt(rnd(A(L - 1), 1))}, B ≈ ${fmt(rnd(B(L - 1), 1))} (B dearer). L = ${L}: A ≈ ${fmt(rnd(A(L), 1))}, B ≈ ${fmt(rnd(B(L), 1))} (A dearer). The bigger growth factor wins despite the smaller base.` };
+    }
+    // ratio_levels
+    const gg = pick([1.1, 1.15, 1.2, 1.25, 1.5, 2]), m = ri(2, 10), ans = rnd(Math.pow(gg, m), 2);
+    return { subType: "ratio_levels",
+      question: `With an XP growth factor of ${gg}, how many times more XP does a level-up cost ${m} levels later? Round to 2 decimal places.`,
+      answer: fmt(ans),
+      // growth × levels; one level short; linear: 1 + (g − 1)m
+      options: opt4(fmt(ans), [fmt(rnd(gg * m, 2)), fmt(rnd(Math.pow(gg, m - 1), 2)), fmt(rnd(1 + (gg - 1) * m, 2)), fmt(rnd(Math.pow(gg, m + 1), 2))]),
+      explanation: `Each level multiplies the cost by ${gg}, so ${m} levels multiply it by ${gg}^${m} ≈ ${fmt(ans)}.` };
+  });
+
+  // =====================================================================
+  // M-400  Economy Balancing  (tier 7)
+  // Prereqs: Exponential Progression (M-399), Ratios (M-073).
+  // =====================================================================
+  _addSkill(7, "Economy Balancing", "Economy Balancing", 4, {
+    goalProblem: "An idle miner earns 45 gold per minute and has 120 gold saved. A pickaxe costs 480 gold. How many minutes until the player can buy it? And if a 600-gold upgrade adds 15 gold per minute, how long until it pays for itself?",
+    teachingSteps: [
+      { title: "Everything is a rate",
+        explanation: "A game economy runs on rates: gold per minute, wood per second. Time to afford something = (what you still need) ÷ (rate). Subtract what the player already has first.",
+        visual: "(480 − 120) ÷ 45 = 360 ÷ 45 = 8 minutes" },
+      { title: "Sources and sinks",
+        explanation: "<strong>Sources</strong> add currency (quests, mining, loot). <strong>Sinks</strong> remove it (repairs, upkeep, taxes, fees). What matters for saving up is the <strong>net</strong> rate: sources − sinks. Too few sinks and gold piles up, so prices stop meaning anything (inflation).",
+        visual: "net = 120 + 30 − 45 = 105 gold/min" },
+      { title: "Cost per reward",
+        explanation: "To compare items, divide cost by what you get: gold per damage point, gold per HP. The <strong>lowest</strong> cost per unit is the best value. Designers use these ratios to stop one item making all the others pointless.",
+        visual: "Sword 300 g / +12 dmg = 25 g per dmg<br>Axe 420 g / +15 dmg = 28 g per dmg" },
+      { title: "Payback time for upgrades",
+        explanation: "An upgrade that raises income pays for itself after cost ÷ (extra income) minutes. Short payback times make upgrades feel great; very short ones break the curve.",
+        visual: "600 ÷ 15 = 40 minutes to break even" },
+      { title: "Tuning a price to a play time",
+        explanation: "Work backwards: if an item should take T minutes to earn, price = net income per minute × T. To change the time from T1 to T2 at the same income, scale the price by T2 ÷ T1.",
+        visual: "net 30/min, 10 minutes → price 300" }
+    ],
+    finalAnswer: "8 minutes for the pickaxe; the upgrade pays for itself in 40 minutes",
+    answerExplanation: "Still needed: 480 − 120 = 360 gold. 360 ÷ 45 = 8 minutes. The upgrade earns an extra 15 gold per minute, so it repays its 600-gold cost in 600 ÷ 15 = 40 minutes.",
+    example: { problem: "A farm earns 80 wheat/min, a mill 40 wheat/min, but soldiers eat 30 wheat/min. How long to save 900 wheat?", steps: [
+      { text: "Sources", math: "80 + 40 = 120 per minute" },
+      { text: "Sinks", math: "30 per minute" },
+      { text: "Net rate", math: "120 − 30 = 90 per minute" },
+      { text: "Time", math: "900 ÷ 90 = 10 minutes" }
+    ]},
+    keyPoints: [
+      "Time to afford = (cost − savings) ÷ net rate",
+      "Net rate = sources − sinks",
+      "Best value = lowest cost per unit of reward",
+      "Payback time = upgrade cost ÷ extra income; price = net rate × target time"
+    ],
+    mistakes: [
+      { wrong: "480 ÷ 45 = 10.67 minutes", why: "The player already has 120 gold. Only 360 more is needed: 8 minutes." },
+      { wrong: "Using the sources and forgetting the sinks", why: "Upkeep drains gold every minute. Use the net rate." },
+      { wrong: "Payback = 600 ÷ new total income", why: "Only the EXTRA income repays the upgrade: 600 ÷ 15." }
+    ],
+    guided: { problem: "Players earn 36 gold per minute and pay 6 gold per minute in upkeep. A designer wants a cloak to take 10 minutes of play to afford. What should it cost?",
+      steps: [
+        { label: "Net income = 36 − 6", value: "30" },
+        { label: "Price = 30 × 10", value: "300" }
+      ], answer: "300", answerLabel: "Price =",
+      interactiveSteps: [
+        { prompt: "Net income per minute = 36 − 6 = ?", hint: "Sources minus sinks.", answer: "30", acceptableAnswers: ["30"], formatHint: "Enter a number", commonMistakes: { "42": "Upkeep REMOVES gold. Subtract it: 36 − 6." } },
+        { prompt: "Price so it takes 10 minutes = 30 × 10 = ?", hint: "Net rate times the target time.", answer: "300", acceptableAnswers: ["300"], formatHint: "Enter a number", commonMistakes: { "360": "That uses the gross income. The upkeep slows saving, so use 30 per minute." } }
+      ] }
+  }, function(){
+    const st = pick(["time_to_afford","net_rate","cost_per_reward","best_value","payback","set_price"]);
+    if (st === "time_to_afford") {
+      const perSec = pick([true, false]);
+      const I = perSec ? ri(2, 25) : ri(3, 24) * 5, t = ri(2, 20), C = ri(0, 30) * 5, P = C + I * t;
+      const unit = perSec ? "second" : "minute";
+      return { subType: st,
+        question: `In an idle game you earn ${I} coins per ${unit} and have ${C} coins saved. An upgrade costs ${P} coins. How many ${unit}s until you can buy it?`,
+        answer: String(t),
+        // ignored the savings; added the savings; multiplied
+        options: opt4(t, [fmt(rnd(P / I, 2)), fmt(rnd((P + C) / I, 2)), (P - C) * I, t + 2]),
+        explanation: `Still needed: ${P} − ${C} = ${P - C}. ${P - C} ÷ ${I} = ${t} ${unit}s.` };
+    }
+    if (st === "net_rate") {
+      const s1 = ri(4, 20) * 5, s2 = ri(2, 10) * 5, k1 = ri(1, 6) * 5, k2 = pick([0, ri(1, 4) * 5]);
+      const net = s1 + s2 - k1 - k2, t = ri(3, 15), target = net * t;
+      const sinks = k2 ? `pays ${k1} gold/min in repairs and ${k2} gold/min in guild tax` : `pays ${k1} gold/min in repairs`;
+      return { subType: st,
+        question: `A player earns ${s1} gold/min from quests and ${s2} gold/min from a shop, but ${sinks}. How many minutes does it take to save ${target} gold?`,
+        answer: String(t),
+        // ignored the sinks; added the sinks; the net rate itself
+        options: opt4(t, [fmt(rnd(target / (s1 + s2), 2)), fmt(rnd(target / (s1 + s2 + k1 + k2), 2)), net, t + 3]),
+        explanation: `Net = ${s1} + ${s2} − ${k1}${k2 ? " − " + k2 : ""} = ${net} gold/min. ${target} ÷ ${net} = ${t} minutes.` };
+    }
+    if (st === "cost_per_reward") {
+      const reward = pick([8, 10, 12, 15, 16, 20, 24, 25, 40]), per = ri(5, 60) + pick([0, 0.5, 0.25]);
+      const cost = rnd(reward * per, 2);
+      const what = pick([["sword", "damage"], ["armour", "defence"], ["potion pack", "HP of healing"], ["mount", "speed"]]);
+      return { subType: st,
+        question: `A ${what[0]} costs ${fmt(cost)} gold and gives +${reward} ${what[1]}. How many gold does each point of ${what[1]} cost? Round to 2 decimal places if needed.`,
+        answer: fmt(per),
+        // reward ÷ cost upside down; the difference; cost ÷ (reward + 1)
+        options: opt4(fmt(per), [fmt(rnd(reward / cost, 2)), fmt(rnd(cost - reward, 2)), fmt(rnd(cost / (reward + 1), 2)), fmt(rnd(per * 2, 2))]),
+        explanation: `Cost per point = cost ÷ reward = ${fmt(cost)} ÷ ${reward} = ${fmt(per)} gold.` };
+    }
+    if (st === "best_value") {
+      const names = pick([["Iron Sword", "Battle Axe", "War Hammer"], ["Small Potion", "Big Potion", "Elixir"], ["Wood Shield", "Steel Shield", "Tower Shield"]]);
+      let items, ratios;
+      do {
+        items = names.map(() => { const r = pick([5, 6, 8, 10, 12, 15, 20, 25]); return { r, c: r * ri(10, 40) + pick([0, 5, 10]) }; });
+        ratios = items.map(it => it.c / it.r);
+        const sorted = ratios.slice().sort((x, y) => x - y);
+        if (sorted[1] - sorted[0] >= 0.5) break;
+      } while (true);
+      const best = ratios.indexOf(Math.min(...ratios));
+      const unit = names[0].includes("Potion") ? "HP" : names[0].includes("Shield") ? "defence" : "damage";
+      return { subType: st, forceChoice: true,
+        question: `Shop: ${names.map((n, i) => `${n} ${items[i].c} gold for +${items[i].r} ${unit}`).join("; ")}. Which is the best value (cheapest per point of ${unit})?`,
+        answer: names[best], options: sh(names.slice()),
+        explanation: `Gold per point: ${names.map((n, i) => `${n} ${items[i].c} ÷ ${items[i].r} = ${fmt(rnd(ratios[i], 2))}`).join(", ")}. The lowest is ${names[best]}.` };
+    }
+    if (st === "payback") {
+      const dI = ri(2, 20) * 5, t = ri(5, 40), U = dI * t;
+      if (pick([true, false])) {
+        return { subType: st,
+          question: `A mine upgrade costs ${U} gold and adds ${dI} gold per minute to your income. How many minutes until it has paid for itself?`,
+          answer: String(t),
+          // multiplied; half the time; cost ÷ 60
+          options: opt4(t, [U * dI, fmt(rnd(t / 2, 2)), fmt(rnd(U / 60, 2)), t + 5]),
+          explanation: `Payback time = cost ÷ extra income = ${U} ÷ ${dI} = ${t} minutes.` };
+      }
+      const i1 = ri(4, 30) * 5, i2 = i1 + dI;
+      return { subType: st,
+        question: `A bakery earns ${i1} coins/min. An oven upgrade costing ${U} coins raises that to ${i2} coins/min. How many minutes until the upgrade pays for itself?`,
+        answer: String(t),
+        // divided by the new total income; divided by the old income; ignored nothing but doubled
+        options: opt4(t, [fmt(rnd(U / i2, 2)), fmt(rnd(U / i1, 2)), t * 2, t + 3]),
+        explanation: `Extra income = ${i2} − ${i1} = ${dI} coins/min. ${U} ÷ ${dI} = ${t} minutes.` };
+    }
+    // set_price
+    if (pick([true, false])) {
+      const I = ri(6, 30) * 5, k = ri(1, 5) * 5, T = ri(4, 30);
+      const ans = (I - k) * T;
+      return { subType: "set_price",
+        question: `Players earn ${I} gold/min and lose ${k} gold/min to upkeep. A designer wants a new mount to take ${T} minutes of play to afford. What price should it have?`,
+        answer: String(ans),
+        // ignored upkeep; added upkeep; added the time
+        options: opt4(ans, [I * T, (I + k) * T, I - k + T, (I - k) * (T + 1)]),
+        explanation: `Net income = ${I} − ${k} = ${I - k} gold/min. Price = ${I - k} × ${T} = ${ans} gold.` };
+    }
+    const T1 = pick([10, 12, 15, 20, 25, 30, 40]);
+    let T2; do { T2 = pick([5, 6, 8, 9, 10, 12, 15, 18, 20, 24, 30, 36, 45, 50]); } while (T2 === T1);
+    const ans = rnd((T2 / T1 - 1) * 100, 2);
+    return { subType: "set_price",
+      question: `A sword currently takes ${T1} minutes of play to afford. The designer wants it to take ${T2} minutes at the same income. By what percent should its price change? (Use a negative number for a decrease, to 2 decimal places.)`,
+      answer: fmt(ans), acceptableAnswers: [fmt(ans) + "%"],
+      // the raw minute difference; upside-down ratio; the new/old ratio as a percent
+      options: opt4(fmt(ans), [fmt(T2 - T1), fmt(rnd((T1 / T2 - 1) * 100, 2)), fmt(rnd(T2 / T1 * 100, 2)), fmt(-ans)]),
+      explanation: `Price must scale with time: × ${T2} ÷ ${T1} = ${fmt(rnd(T2 / T1, 4))}. That is a change of (${fmt(rnd(T2 / T1, 4))} − 1) × 100 ≈ ${fmt(ans)}%.` };
+  });
+
+})();
 // ==== END GRADUATION PLAN CONTENT: CS-GAMES ====
 </script>
 
