@@ -52233,6 +52233,1669 @@ if ('speechSynthesis' in window) {
      data/math_graduation_plan.json (tools/build-graduation-plan.py). -->
 <script>
 // ==== GRADUATION PLAN CONTENT: CORE-ALGEBRA ====
+// Eight core-algebra skills from the graduation plan (data/math_graduation_plan.json
+// items 7, 21, 24, 25, 31, 33, 34, 52): percent change, rate of change, the four
+// linear representations, linear modelling, exponential growth/decay, parabolas,
+// choosing a model, and comparing function families.
+//
+// Two tiers matter here. Percent Increase and Decrease and Rate of Change are
+// tier 4, so they are always multiple choice and every distractor is a real
+// slip (named in a comment beside it). The rest are tier 5+, where students
+// TYPE: equations and models are graded by validate(), which evaluates what
+// the student wrote at several inputs, because "y = 20 + 5x" and
+// "y = 5x + 20" are the same answer and no list of spellings covers every
+// order. Word answers (growth/decay, which family) are forceChoice.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (generateQuestion then tops
+  // the set up itself).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    // No answer in this block is a negative price or a negative percent, so a
+    // slip formula that lands below zero ("-$12.00", "-20%") is not a choice
+    // anyone would make; drop it and let the next candidate in.
+    for (const c of cands) { if (/^-(\$|[\d.,]+%$)/.test(String(c))) continue; push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- helpers specific to this block ----
+  // Round to 2 dp without the 1.005 -> 1.00 float trap.
+  const r2 = v => Math.round((v + (v >= 0 ? 1e-9 : -1e-9)) * 100) / 100;
+  // A number as a student would write it: no trailing zeros, at most 4 dp.
+  const fmt = v => String(parseFloat((Math.round(v * 10000) / 10000).toFixed(4)));
+  const money = v => (v < 0 ? "-$" : "$") + Math.abs(r2(v)).toFixed(2);
+  const cash = v => Math.abs(v - Math.round(v)) < 1e-9 ? "$" + Math.round(v) : money(v); // $25 in prose, $3.50 when it has cents
+  const commas = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  // y = mx + b with an ASCII minus, so the answer is exactly what a student types.
+  const coef = m => m === 1 ? "" : m === -1 ? "-" : fmt(m);
+  const lin = (m, b, xv, yv) => {
+    xv = xv || "x"; yv = yv || "y";
+    if (m === 0) return `${yv} = ${fmt(b)}`;
+    let s = `${yv} = ${coef(m)}${xv}`;
+    if (b > 0) s += ` + ${fmt(b)}`; else if (b < 0) s += ` - ${fmt(-b)}`;
+    return s;
+  };
+  const pt = (x, y) => `(${fmt(x)}, ${fmt(y)})`;
+  // "an" before a number read aloud with a vowel sound: 8, 80, 800, 11, 18.
+  const art = n => /^(8|1[18](?!\d))/.test(String(n)) ? "an" : "a";
+  // Every generator here is wrapped so the same question never comes up twice
+  // in a row: a student who just missed one should not be handed it again.
+  const noRepeat = fn => { let last = null; return function(){
+    let q = fn();
+    for (let i = 0; i < 30 && q.question === last; i++) q = fn();
+    last = q.question; return q; }; };
+  // Picks a subType uniformly, so every part of the scope is practised.
+  const choose = table => { const k = pick(Object.keys(table)); const q = table[k](); q.subType = q.subType || k; return q; };
+
+  // Reads a typed one-variable expression ("5000(1.04)^t", "-2(x-1)^2+3",
+  // "y = 20 + 5x") into a function of that variable, or null. A small parser
+  // rather than eval/Function: no code from an input box, and it works under a
+  // strict CSP (same reasoning as AnswerInterpreter.parseArithmetic). An
+  // optional left side "y =", "P =", "f(x) =" is allowed; implicit
+  // multiplication ("3x", "2(x+1)", "500(0.8)^t") binds like *, so "2/3x" is (2/3)x.
+  function parseFn(str, v) {
+    let s = String(str).toLowerCase().replace(/[−–]/g, "-").replace(/[×·⋅]/g, "*")
+      .replace(/÷/g, "/").replace(/²/g, "^2").replace(/³/g, "^3").replace(/\s+/g, "")
+      .replace(/(\d),(?=\d{3}(?!\d))/g, (m, d) => d);
+    const sides = s.split("=");
+    if (sides.length > 2) return null;
+    if (sides.length === 2) {
+      const lhs = /^[a-z](\([a-z]\))?$/;
+      if (lhs.test(sides[0]) && sides[0][0] !== v) s = sides[1];
+      else if (lhs.test(sides[1]) && sides[1][0] !== v) s = sides[0];
+      else return null;
+    }
+    const toks = [];
+    for (let i = 0; i < s.length;) {
+      const c = s[i];
+      if (/[\d.]/.test(c)) {
+        let j = i; while (j < s.length && /[\d.]/.test(s[j])) j++;
+        const n = Number(s.slice(i, j)); if (isNaN(n)) return null;
+        toks.push({ t: "n", v: n }); i = j; continue;
+      }
+      if (c === v) { toks.push({ t: "v" }); i++; continue; }
+      if ("+-*/^()".includes(c)) { toks.push({ t: c }); i++; continue; }
+      return null;
+    }
+    let p = 0;
+    const peek = () => toks[p] && toks[p].t;
+    const expr = () => {
+      let f = term(); if (!f) return null;
+      while (peek() === "+" || peek() === "-") {
+        const op = toks[p++].t, r = term(); if (!r) return null;
+        const l = f; f = op === "+" ? (x => l(x) + r(x)) : (x => l(x) - r(x));
+      }
+      return f;
+    };
+    const term = () => {
+      let f = unary(); if (!f) return null;
+      for (;;) {
+        const k = peek();
+        if (k === "*" || k === "/") {
+          p++; const r = unary(); if (!r) return null;
+          const l = f; f = k === "*" ? (x => l(x) * r(x)) : (x => l(x) / r(x));
+        } else if (k === "n" || k === "v" || k === "(") {
+          const r = power(); if (!r) return null;
+          const l = f; f = x => l(x) * r(x);
+        } else break;
+      }
+      return f;
+    };
+    const unary = () => {
+      if (peek() === "-") { p++; const f = unary(); return f && (x => -f(x)); }
+      if (peek() === "+") { p++; return unary(); }
+      return power();
+    };
+    const power = () => {
+      const b = primary(); if (!b) return null;
+      if (peek() === "^") { p++; const e = unary(); if (!e) return null; return x => Math.pow(b(x), e(x)); }
+      return b;
+    };
+    const primary = () => {
+      const k = peek();
+      if (k === "n") { const n = toks[p++].v; return () => n; }
+      if (k === "v") { p++; return x => x; }
+      if (k === "(") { p++; const f = expr(); if (!f || peek() !== ")") return null; p++; return f; }
+      return null;
+    };
+    const f = expr();
+    return (f && p === toks.length) ? f : null;
+  }
+  // True when the typed expression agrees with target at every sample input.
+  const sameFn = (typed, target, v, xs) => {
+    const f = parseFn(typed, v); if (!f) return false;
+    return xs.every(x => { const a = f(x), b = target(x);
+      return isFinite(a) && Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b)); });
+  };
+  // "(3, -4)", "3,-4", "(3,-4)" -> [3, -4]; anything else -> null.
+  const asPoint = s => {
+    const parts = String(s).replace(/[−–]/g, "-").replace(/[()\[\]\s]/g, "").split(",");
+    if (parts.length !== 2) return null;
+    const num = t => /^[+-]?\d+(\.\d+)?$/.test(t) ? Number(t)
+      : (t.match(/^([+-]?\d+)\/(\d+)$/) ? Number(t.split("/")[0]) / Number(t.split("/")[1]) : null);
+    const x = num(parts[0]), y = num(parts[1]);
+    return (x === null || y === null) ? null : [x, y];
+  };
+  const pointIs = (x, y) => typed => { const q = asPoint(typed); return !!q && Math.abs(q[0] - x) < 1e-9 && Math.abs(q[1] - y) < 1e-9; };
+  // Every number in a typed answer, for "x = -2 or x = 5" style answers.
+  const numsIn = s => (String(s).replace(/[−–]/g, "-").match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+
+  // =====================================================================
+  // M-305  Percent Increase and Decrease  (tier 4, grade 7)
+  // Plan item 7: discounts, markups, tax, tips, increases and decreases.
+  // =====================================================================
+  _addSkill(4, "Percent Increase and Decrease", "Percent Increase and Decrease", 3, function(){
+    const bill = pick([24, 36, 48, 52, 60, 75, 84]);
+    const tp = pick([15, 18, 20]);
+    const tip = r2(bill * tp / 100), total = r2(bill + tip);
+    return {
+      goalProblem: "A $80 jacket is 25% off. What is the sale price?",
+      teachingSteps: [
+        { title: "Percent means per hundred", explanation: "<strong>p%</strong> means p out of 100, so 25% = 25/100 = <strong>0.25</strong>. To find a percent <em>of</em> a number, change the percent to a decimal and multiply.", visual: "25% of $80 = 0.25 × 80 = $20" },
+        { title: "Decreases: take the part away", explanation: "A <strong>discount</strong>, sale or markdown makes the price smaller. Find the percent of the original, then <strong>subtract</strong> it. Shortcut: 25% off leaves 75%, so multiply by <strong>1 − 0.25 = 0.75</strong>.", visual: "80 − 20 = $60   or   80 × 0.75 = $60" },
+        { title: "Increases: add the part on", explanation: "A <strong>markup</strong>, <strong>sales tax</strong> and a <strong>tip</strong> all make the amount bigger. Find the percent and <strong>add</strong> it, or multiply by <strong>1 + the rate</strong>. Tax and tip are worked out on the bill before they are added.", visual: "$40 with 8% tax: 40 × 1.08 = $43.20" },
+        { title: "Which words mean which", explanation: "Decrease: discount, % off, sale, markdown, drop, loss.<br>Increase: markup, tax, tip, raise, growth, gain.<br>When money is involved, round to the <strong>nearest cent</strong> at the end.", visual: "off / down → × (1 − r)     on / up → × (1 + r)" },
+        { title: "Percent change between two values", explanation: "To find <em>by what percent</em> something changed: find the change, <strong>divide by the original</strong> (the starting value), then multiply by 100.", visual: "60 → 75: change 15, 15 ÷ 60 = 0.25 → 25% increase" },
+        { title: "Divide by where you started", explanation: "The original is always the value <strong>before</strong> the change. 75 → 60 is a change of 15 too, but 15 ÷ 75 = 20%, so it is a 20% decrease. Going up 25% and going down 20% are the same 15.", visual: "60 → 75: +25%     75 → 60: −20%" }
+      ],
+      finalAnswer: "$60",
+      answerExplanation: "25% of $80 is 0.25 × 80 = $20. The sale price is $80 − $20 = $60 (or 80 × 0.75 = $60).",
+      example: { problem: "A bike's price rises from $250 to $290. What is the percent increase?", steps: [
+        { text: "Find the change", math: "290 − 250 = 40" },
+        { text: "Divide by the ORIGINAL price", math: "40 ÷ 250 = 0.16" },
+        { text: "Change to a percent", math: "0.16 × 100 = 16% increase" }
+      ]},
+      keyPoints: [
+        "Percent of a number: change the percent to a decimal and multiply",
+        "Discounts subtract; markups, tax and tips add",
+        "Multiply by (1 − r) for a decrease and (1 + r) for an increase",
+        "Percent change = change ÷ original × 100"
+      ],
+      mistakes: [
+        { wrong: "Giving the discount ($20) as the sale price", why: "The discount is the amount taken OFF. Subtract it from the original: $80 − $20 = $60." },
+        { wrong: "Dividing by the new value for percent change", why: "Always divide the change by the ORIGINAL value. 250 → 290 is 40 ÷ 250 = 16%, not 40 ÷ 290." },
+        { wrong: "Writing 6% tax as 0.6", why: "6% = 6/100 = 0.06. Moving the decimal one place too few makes the tax ten times too big." }
+      ],
+      guided: {
+        problem: `A meal costs $${bill}. You leave ${art(tp)} ${tp}% tip. What is the total you pay?`,
+        steps: [
+          { label: `Write ${tp}% as a decimal`, value: `${tp / 100}` },
+          { label: "Find the tip", value: `${tp / 100} × ${bill} = ${tip.toFixed(2)}` },
+          { label: "Add the tip to the bill", value: `${bill} + ${tip.toFixed(2)} = ?` }
+        ],
+        answer: total.toFixed(2), answerLabel: "Total ($) =",
+        interactiveSteps: [
+          { prompt: `Write ${tp}% as a decimal.`, hint: "Divide the percent by 100.", answer: String(tp / 100),
+            acceptableAnswers: [String(tp / 100), `${tp}/100`], formatHint: "e.g., 0.25", commonMistakes: { [String(tp / 10)]: `That is ${tp} ÷ 10. A percent is out of 100: ${tp} ÷ 100 = ${tp / 100}.` } },
+          { prompt: `How much is the ${tp}% tip on $${bill}? (in dollars)`, hint: `Multiply ${tp / 100} × ${bill}.`, answer: tip.toFixed(2),
+            acceptableAnswers: [tip.toFixed(2), fmt(tip), "$" + tip.toFixed(2)], formatHint: "e.g., 4.50", commonMistakes: {} },
+          { prompt: "What is the total, bill plus tip? (in dollars)", hint: "Add the tip to the bill.", answer: total.toFixed(2),
+            acceptableAnswers: [total.toFixed(2), fmt(total), "$" + total.toFixed(2)], formatHint: "e.g., 56.25",
+            commonMistakes: { [tip.toFixed(2)]: "That is just the tip. Add it to the bill to get the total." } }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    const items = ["jacket", "pair of shoes", "backpack", "video game", "skateboard", "lamp", "tent", "guitar", "bike helmet", "watch"];
+    return choose({
+      discount: () => {
+        const item = pick(items);
+        const P = ri(4, 60) * 5 - pick([0, 0, 0.01, 0.5]);
+        const p = pick([10, 15, 20, 25, 30, 35, 40, 50, 60, 75]);
+        const off = r2(P * p / 100), sale = r2(P - off);
+        return {
+          question: `A ${item} normally costs ${money(P)}. It is on sale for ${p}% off. What is the sale price? (Round to the nearest cent.)`,
+          answer: money(sale),
+          options: opt4(money(sale), [
+            money(off),                      // gave the discount, not the price
+            money(P + off),                  // added the discount
+            money(P - p),                    // took p dollars off instead of p%
+            money(P * (1 - p / 1000)),       // used 0.0p instead of 0.p
+            money(P / (1 + p / 100))         // divided instead of multiplying
+          ]),
+          explanation: `${p}% of ${money(P)} = ${p / 100} × ${fmt(P)} = ${money(off)}. Sale price = ${money(P)} − ${money(off)} = ${money(sale)}. (Same as ${fmt(P)} × ${fmt(1 - p / 100)}.)`
+        };
+      },
+      markup: () => {
+        const item = pick(items);
+        const C = ri(3, 40) * 5;
+        const p = pick([20, 25, 30, 40, 50, 60, 75, 80, 100]);
+        const up = r2(C * p / 100), price = r2(C + up);
+        return {
+          question: `A store pays ${money(C)} for a ${item} and marks it up ${p}%. What price does the store charge?`,
+          answer: money(price),
+          options: opt4(money(price), [
+            money(up),                       // gave the markup, not the price
+            money(C - up),                   // subtracted the markup
+            money(C + p),                    // added p dollars instead of p%
+            money(C * (1 + p / 1000))        // decimal slip on the rate
+          ]),
+          explanation: `Markup = ${p}% of ${money(C)} = ${p / 100} × ${C} = ${money(up)}. Price = ${money(C)} + ${money(up)} = ${money(price)}. (Same as ${C} × ${fmt(1 + p / 100)}.)`
+        };
+      },
+      sales_tax: () => {
+        const item = pick(items);
+        const P = ri(800, 24000) / 100;
+        const rate = pick([4, 5, 6, 6.5, 7, 7.25, 7.5, 8, 8.25, 9.5]);
+        const tax = r2(P * rate / 100), tot = r2(P + tax);
+        const askTotal = Math.random() < 0.6;
+        const ans = askTotal ? money(tot) : money(tax);
+        return {
+          subType: "sales_tax",
+          question: askTotal
+            ? `A ${item} costs ${money(P)} before tax. Sales tax is ${rate}%. What is the total cost? (Round to the nearest cent.)`
+            : `A ${item} costs ${money(P)} before tax. Sales tax is ${rate}%. How much is the tax? (Round to the nearest cent.)`,
+          answer: ans,
+          options: askTotal
+            ? opt4(ans, [money(tax),                       // the tax alone
+                         money(P - tax),                   // subtracted the tax
+                         money(P * (1 + rate / 10)),       // wrote rate% as rate/10
+                         money(P + rate)])                 // added rate dollars
+            : opt4(ans, [money(tot),                       // the total, not the tax
+                         money(P * rate / 10),             // decimal slip
+                         money(P * rate / 1000),           // decimal slip the other way
+                         money(rate)]),                    // the rate as dollars
+          explanation: `Tax = ${rate}% of ${money(P)} = ${fmt(rate / 100)} × ${fmt(P)} = ${money(tax)}` +
+            (askTotal ? `. Total = ${money(P)} + ${money(tax)} = ${money(tot)}.` : ` (rounded to the nearest cent).`)
+        };
+      },
+      tip: () => {
+        const B = ri(1800, 15000) / 100;
+        const p = pick([15, 18, 20, 22, 25]);
+        const tip = r2(B * p / 100), tot = r2(B + tip);
+        const askTotal = Math.random() < 0.5;
+        const ans = askTotal ? money(tot) : money(tip);
+        return {
+          question: askTotal
+            ? `A restaurant bill is ${money(B)}. You leave ${art(p)} ${p}% tip. What is the total, including the tip? (Round to the nearest cent.)`
+            : `A restaurant bill is ${money(B)}. How much is ${art(p)} ${p}% tip? (Round to the nearest cent.)`,
+          answer: ans,
+          options: askTotal
+            ? opt4(ans, [money(tip), money(B - tip), money(B + p), money(B * (1 + p / 1000))])   // tip only, subtracted, $p, decimal slip
+            : opt4(ans, [money(tot), money(B * p / 10), money(B * p / 1000), money(p)]),         // total, decimal slips, $p
+          explanation: `Tip = ${p}% of ${money(B)} = ${p / 100} × ${fmt(B)} = ${money(tip)}` +
+            (askTotal ? `. Total = ${money(B)} + ${money(tip)} = ${money(tot)}.` : ` (rounded to the nearest cent).`)
+        };
+      },
+      percent_increase: () => {
+        const ctx = pick([
+          ["The price of a concert ticket", "dollars", true], ["A town's population", "people", false],
+          ["A school's enrollment", "students", false], ["A video channel's subscribers", "subscribers", false],
+          ["The rent on an apartment", "dollars", true], ["A runner's weekly distance", "miles", false]]);
+        const A = ri(2, 40) * 20;
+        const p = pick([5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 100, 120, 150]);
+        const B = A + A * p / 100, ch = B - A;
+        const show = (v, unit) => ctx[2] ? "$" + commas(v) : commas(v) + (unit ? " " + ctx[1] : "");
+        return {
+          question: `${ctx[0]} went from ${show(A)} to ${show(B, true)}. What is the percent increase?`,
+          answer: p + "%",
+          options: opt4(p + "%", [
+            fmt(Math.round(ch / B * 1000) / 10) + "%",   // divided by the new value
+            fmt(B / A * 100) + "%",                      // new as a percent of old
+            commas(ch) + "%",                            // the change itself, not a percent
+            fmt(100 - p) + "%"
+          ]),
+          explanation: `Change = ${commas(B)} − ${commas(A)} = ${commas(ch)}. Divide by the original: ${commas(ch)} ÷ ${commas(A)} = ${fmt(p / 100)}. That is a ${p}% increase.`
+        };
+      },
+      percent_decrease: () => {
+        const ctx = pick([
+          ["A phone's price", "dollars", true], ["The number of fish in a pond", "fish", false],
+          ["A car's value", "dollars", true], ["A library's daily visitors", "visitors", false],
+          ["A store's weekly sales", "dollars", true], ["The water in a tank", "gallons", false]]);
+        const A = ri(3, 40) * 20;
+        const p = pick([5, 10, 15, 20, 25, 30, 40, 45, 50, 60, 75, 80, 90]);
+        const B = A - A * p / 100, ch = A - B;
+        const show = (v, unit) => ctx[2] ? "$" + commas(v) : commas(v) + (unit ? " " + ctx[1] : "");
+        return {
+          question: `${ctx[0]} went from ${show(A)} down to ${show(B, true)}. What is the percent decrease?`,
+          answer: p + "%",
+          options: opt4(p + "%", [
+            fmt(Math.round(ch / B * 1000) / 10) + "%",   // divided by the new value
+            fmt(B / A * 100) + "%",                      // what is LEFT, not what was lost
+            commas(ch) + "%",                            // the change itself, not a percent
+            fmt(p / 2) + "%"
+          ]),
+          explanation: `Change = ${commas(A)} − ${commas(B)} = ${commas(ch)}. Divide by the original: ${commas(ch)} ÷ ${commas(A)} = ${fmt(p / 100)}. That is a ${p}% decrease.`
+        };
+      },
+      apply_change: () => {
+        const up = Math.random() < 0.5;
+        const ctx = up
+          ? pick([["A town has", "people", "grows by"], ["A school has", "students", "increases by"], ["A farm has", "chickens", "grows by"], ["A team's fan club has", "members", "grows by"]])
+          : pick([["A forest has", "trees", "loses"], ["A factory has", "workers", "cuts its staff by"], ["A herd has", "deer", "shrinks by"], ["A warehouse has", "boxes", "ships out"]]);
+        const N = ri(5, 60) * 20;
+        const p = pick([5, 10, 15, 20, 25, 30, 35, 40, 45]);
+        const ch = N * p / 100, res = up ? N + ch : N - ch;
+        return {
+          question: `${ctx[0]} ${commas(N)} ${ctx[1]}. It ${ctx[2]} ${p}%. How many ${ctx[1]} are there now?`,
+          answer: commas(res),
+          options: opt4(commas(res), [
+            commas(ch),                         // the change alone
+            commas(up ? N - ch : N + ch),       // went the wrong direction
+            commas(up ? N + p : N - p),         // added/subtracted p, not p%
+            commas(up ? N + 2 * ch : N - 2 * ch)
+          ]),
+          explanation: `${p}% of ${commas(N)} = ${p / 100} × ${commas(N)} = ${commas(ch)}. ${up ? "Add" : "Subtract"} it: ${commas(N)} ${up ? "+" : "−"} ${commas(ch)} = ${commas(res)}. (Or ${commas(N)} × ${fmt(up ? 1 + p / 100 : 1 - p / 100)}.)`
+        };
+      },
+      find_original: () => {
+        const p = pick([10, 20, 25, 40, 50]);
+        const O = ri(4, 40) * (p === 25 ? 4 : p === 40 ? 5 : 10);
+        const S = O * (1 - p / 100);
+        const item = pick(items);
+        return {
+          question: `After a ${p}% discount, a ${item} costs ${money(S)}. What was the original price?`,
+          answer: money(O),
+          options: opt4(money(O), [
+            money(S * (1 + p / 100)),       // added p% of the SALE price back on
+            money(S + p),                   // added p dollars
+            money(S * (1 - p / 100)),       // took the discount off again
+            money(S / (p / 100))
+          ]),
+          explanation: `The sale price is ${100 - p}% of the original, so original × ${fmt(1 - p / 100)} = ${fmt(S)}. Original = ${fmt(S)} ÷ ${fmt(1 - p / 100)} = ${money(O)}. Check: ${p}% of ${money(O)} is ${money(O * p / 100)}, and ${money(O)} − ${money(O * p / 100)} = ${money(S)}.`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-306  Rate of Change  (tier 4, grade 8)
+  // Plan item 21: how one quantity changes relative to another — from a
+  // table, a graph, two points or a situation, and what it means.
+  // =====================================================================
+  _addSkill(4, "Rate of Change", "Rate of Change", 3, function(){
+    const x1 = ri(1, 3), dx = ri(2, 4), m = ri(2, 5), b = ri(1, 6);
+    const y1 = m * x1 + b, x2 = x1 + dx, y2 = m * x2 + b;
+    return {
+      goalProblem: "A plant is 4 cm tall in week 2 and 13 cm tall in week 5. How fast is it growing?",
+      teachingSteps: [
+        { title: "A rate compares two changes", explanation: "The <strong>rate of change</strong> tells you how much the output (y) changes for each 1 unit of the input (x).", visual: "rate of change = (change in y) ÷ (change in x)" },
+        { title: "From two points", explanation: "Subtract the y-values, subtract the x-values <strong>in the same order</strong>, and divide.", visual: "(2, 4) and (5, 13): (13 − 4) ÷ (5 − 2) = 9 ÷ 3 = 3" },
+        { title: "From a table", explanation: "Pick any two rows. If the x-values go up by more than 1, divide the change in y by the change in x — do not just read the jump in y.", visual: "x: 0, 2, 4, 6\ny: 5, 11, 17, 23\nΔy = 6, Δx = 2 → rate = 3" },
+        { title: "From a graph", explanation: "Find two points the line passes through exactly. <strong>Rise</strong> (up or down) over <strong>run</strong> (across) is the rate. Read the axis labels — they give the units.", visual: "rise 6, run 2 → 6 ÷ 2 = 3" },
+        { title: "Sign and units tell the story", explanation: "Positive: y goes up as x goes up. Negative: y goes down. Zero: no change. The units are <strong>y-units per x-unit</strong>.", visual: "−2 °F per hour → the temperature falls 2 degrees every hour" }
+      ],
+      finalAnswer: "3 cm per week",
+      answerExplanation: "Change in height = 13 − 4 = 9 cm. Change in time = 5 − 2 = 3 weeks. 9 ÷ 3 = 3 cm per week.",
+      example: { problem: "A candle is 30 cm tall. After 4 hours it is 18 cm tall. What is its rate of change?", steps: [
+        { text: "Change in height", math: "18 − 30 = −12 cm" },
+        { text: "Change in time", math: "4 − 0 = 4 hours" },
+        { text: "Divide", math: "−12 ÷ 4 = −3 cm per hour (it gets 3 cm shorter each hour)" }
+      ]},
+      keyPoints: [
+        "Rate of change = change in y ÷ change in x",
+        "Subtract in the same order on top and bottom",
+        "Negative means decreasing; the units are y per x"
+      ],
+      mistakes: [
+        { wrong: "Using the jump in y from a table as the rate when x goes up by 2", why: "Divide by the change in x too. A jump of 6 over 2 units of x is 3 per unit." },
+        { wrong: "Dividing x by y (run over rise)", why: "The output change goes on top: change in y ÷ change in x." },
+        { wrong: "Dropping the negative sign for something that decreases", why: "If the quantity goes down, the rate is negative — the sign is part of the answer." }
+      ],
+      guided: {
+        problem: `Find the rate of change between the points (${x1}, ${y1}) and (${x2}, ${y2}).`,
+        steps: [
+          { label: "Change in y", value: `${y2} − ${y1} = ${y2 - y1}` },
+          { label: "Change in x", value: `${x2} − ${x1} = ${dx}` },
+          { label: "Divide", value: `${y2 - y1} ÷ ${dx} = ?` }
+        ],
+        answer: String(m), answerLabel: "Rate of change =",
+        interactiveSteps: [
+          { prompt: `Change in y: ${y2} − ${y1} = ?`, hint: "Subtract the y-values.", answer: String(y2 - y1), acceptableAnswers: [String(y2 - y1)], formatHint: "Enter a number", commonMistakes: {} },
+          { prompt: `Change in x: ${x2} − ${x1} = ?`, hint: "Subtract the x-values in the same order.", answer: String(dx), acceptableAnswers: [String(dx)], formatHint: "Enter a number", commonMistakes: {} },
+          { prompt: "Rate of change = change in y ÷ change in x = ?", hint: `${y2 - y1} ÷ ${dx}`, answer: String(m), acceptableAnswers: [String(m)], formatHint: "Enter a number",
+            commonMistakes: { [frac(dx, y2 - y1)]: "That is change in x over change in y. Put the change in y on top." } }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    return choose({
+      two_points: () => {
+        let x1 = ri(-5, 6), dx = pick([1, 2, 3, 4, 5, 6]) * pick([1, 1, -1]);
+        let dy = ri(-12, 12); if (dy === 0) dy = 5;
+        const y1 = ri(-8, 9), x2 = x1 + dx, y2 = y1 + dy;
+        const ans = frac(dy, dx);
+        return {
+          question: `What is the rate of change of the line through (${x1}, ${y1}) and (${x2}, ${y2})? (Give a fraction in simplest form if needed.)`,
+          answer: ans,
+          options: opt4(ans, [
+            frac(dx, dy),                               // run over rise
+            frac(-dy, dx),                              // subtracted in opposite orders
+            String(dy),                                 // forgot to divide by the change in x
+            (x1 + x2) !== 0 ? frac(y1 + y2, x1 + x2) : String(dy + 1),   // added instead of subtracting
+            frac(dy + 2 * Math.sign(dy), dx)
+          ]),
+          explanation: `Rate = (y₂ − y₁) ÷ (x₂ − x₁) = (${y2} − ${y1 < 0 ? "(" + y1 + ")" : y1}) ÷ (${x2} − ${x1 < 0 ? "(" + x1 + ")" : x1}) = ${dy} ÷ ${dx} = ${ans}.`
+        };
+      },
+      table: () => {
+        const s = pick([2, 3, 4, 5, 10]);
+        let m = ri(-6, 8); if (m === 0) m = 4;
+        const x0 = pick([0, 0, 1, 2, 5]), y0 = ri(-5, 40);
+        const xs = [0, 1, 2, 3].map(i => x0 + i * s), ys = xs.map(x => y0 + m * (x - x0));
+        return {
+          question: `A table shows  x: ${xs.join(", ")}   and   y: ${ys.join(", ")}. What is the rate of change of y with respect to x?`,
+          answer: String(m),
+          options: opt4(String(m), [
+            String(m * s),          // the jump in y, not divided by the jump in x
+            String(-m),             // sign slip
+            frac(1, m),             // x over y
+            String(ys[0]),          // the first y-value
+            String(m + 1)
+          ]),
+          explanation: `Each step x goes up by ${s} and y changes by ${m * s}. Rate = ${m * s} ÷ ${s} = ${m}.`
+        };
+      },
+      graph: () => {
+        const c = pick([
+          { y: "the water in a tank (gallons)", x: "time (minutes)", u: "gallons per minute", m: [3, 4, 5, 6, 8], b: [10, 20, 40] },
+          { y: "a savings account balance (dollars)", x: "time (weeks)", u: "dollars per week", m: [15, 20, 25, 30], b: [50, 100, 150] },
+          { y: "the temperature (°F)", x: "time (hours)", u: "°F per hour", m: [-2, -3, -4, -5], b: [70, 80, 90] },
+          { y: "the height of a candle (cm)", x: "time (hours)", u: "cm per hour", m: [-1, -2, -3], b: [24, 30, 36] },
+          { y: "the distance from home (miles)", x: "time (hours)", u: "miles per hour", m: [45, 50, 55, 60], b: [10, 20, 30] }]);
+        const m = pick(c.m), b = pick(c.b);
+        const xa = ri(1, 3), xb = xa + ri(2, 4);
+        const ya = m * xa + b, yb = m * xb + b;
+        const ans = `${m} ${c.u}`;
+        return {
+          question: `On a graph of ${c.y} against ${c.x}, the straight line passes through the points (${xa}, ${ya}) and (${xb}, ${yb}). What is the rate of change?`,
+          answer: ans,
+          options: opt4(ans, [
+            `${yb - ya} ${c.u}`,                    // the rise only
+            `${-m} ${c.u}`,                         // sign slip
+            `${fmt(r2(yb / xb))} ${c.u}`,           // y ÷ x for one point
+            `${fmt(r2((xb - xa) / (yb - ya)))} ${c.u}`
+          ]),
+          explanation: `Rise = ${yb} − ${ya} = ${yb - ya}. Run = ${xb} − ${xa} = ${xb - xa}. Rate = ${yb - ya} ÷ ${xb - xa} = ${m} ${c.u}.`
+        };
+      },
+      situation: () => {
+        const c = pick([
+          { s: (a, z, t) => `A candle is ${a} cm tall. After ${t} hours it is ${z} cm tall.`, u: "cm per hour", dir: -1 },
+          { s: (a, z, t) => `A pool holds ${a} gallons. After ${t} minutes of draining it holds ${z} gallons.`, u: "gallons per minute", dir: -1 },
+          { s: (a, z, t) => `A hiker is at ${a} feet of elevation. ${t} hours later she is at ${z} feet.`, u: "feet per hour", dir: 1 },
+          { s: (a, z, t) => `A puppy weighs ${a} pounds. ${t} weeks later it weighs ${z} pounds.`, u: "pounds per week", dir: 1 },
+          { s: (a, z, t) => `A phone battery is at ${a}%. After ${t} hours of use it is at ${z}%.`, u: "percentage points per hour", dir: -1 }]);
+        const t = ri(2, 8), r = ri(2, 9) * (c.u.startsWith("gallons") ? 10 : 1);
+        const pool = c.u.startsWith("gallons"), batt = c.u.startsWith("percentage");
+        const a = c.dir < 0 ? Math.min(batt ? 100 : 1e9, r * t + ri(5, 30) * (pool ? 20 : 1)) : ri(5, 40) * (c.u.startsWith("feet") ? 100 : 1);
+        const rate = c.dir * r * (c.u.startsWith("feet") ? 100 : 1);
+        const z = a + rate * t;
+        const ans = `${rate} ${c.u}`;
+        return {
+          question: `${c.s(a, z, t)} What is the rate of change?`,
+          answer: ans,
+          options: opt4(ans, [
+            `${-rate} ${c.u}`,                      // dropped / flipped the sign
+            `${z - a} ${c.u}`,                      // total change, not per unit
+            `${fmt(r2(z / t))} ${c.u}`,             // final value ÷ time
+            `${fmt(r2(t / (z - a)))} ${c.u}`        // time ÷ change
+          ]),
+          explanation: `Change = ${z} − ${a} = ${z - a}. Time = ${t}. Rate = ${z - a} ÷ ${t} = ${rate} ${c.u}${rate < 0 ? " (negative because it is going down)" : ""}.`
+        };
+      },
+      interpret: () => {
+        const c = pick([
+          { q: "a plant's height", u1: "cm", u: "cm", x: "week", up: "grows", down: "shrinks", sgn: 1 },
+          { q: "the water level in a lake", u1: "inch", u: "inches", x: "day", up: "rises", down: "falls", sgn: -1 },
+          { q: "the cost of a taxi ride", u1: "dollar", u: "dollars", x: "mile", up: "goes up", down: "goes down", sgn: 1 },
+          { q: "a car's fuel", u1: "gallon", u: "gallons", x: "hour", up: "increases", down: "decreases", sgn: -1 },
+          { q: "a town's population", u1: "person", u: "people", x: "year", up: "grows", down: "shrinks", sgn: 1 },
+          { q: "the temperature outside", u1: "degree", u: "degrees", x: "hour", up: "rises", down: "falls", sgn: -1 }]);
+        const r = pick([1.5, 2, 2.5, 3, 4, 5, 12, 25]);
+        const rate = c.sgn * r;
+        const Q = c.q.charAt(0).toUpperCase() + c.q.slice(1);
+        const ans = `${Q} ${rate > 0 ? c.up : c.down} by ${fmt(r)} ${c.u} every ${c.x}.`;
+        return {
+          question: `The rate of change of ${c.q} is ${fmt(rate)} ${c.u} per ${c.x}. What does this mean?`,
+          answer: ans,
+          options: opt4(ans, [
+            `${Q} ${rate > 0 ? c.down : c.up} by ${fmt(r)} ${c.u} every ${c.x}.`,     // read the sign backwards
+            `${Q} is ${fmt(r)} ${c.u} right now.`,                                     // a rate is not a value
+            `${Q} changes by 1 ${c.u1} every ${fmt(r)} ${c.x}s.`,                          // flipped the ratio
+            `${Q} changes by ${fmt(r)} ${c.u} in total.`                               // a rate is per unit, not a total
+          ]),
+          explanation: `A rate of ${fmt(rate)} ${c.u} per ${c.x} means each extra ${c.x} changes ${c.q} by ${fmt(rate)} ${c.u}. ${rate > 0 ? "Positive, so it goes up." : "Negative, so it goes down."}`
+        };
+      },
+      compare: () => {
+        // Three rates given three different ways; the student converts each to
+        // "per one unit" before comparing.
+        const c = pick([
+          { n: "Printer", u: "pages", t: "minute" }, { n: "Pump", u: "gallons", t: "minute" },
+          { n: "Cyclist", u: "miles", t: "hour" }, { n: "Machine", u: "bottles", t: "minute" }]);
+        let rates;
+        do { rates = sh([ri(4, 30), ri(4, 30), ri(4, 30)]); } while (new Set(rates).size < 3);
+        const [ra, rb, rc] = rates;
+        const ta = ri(2, 5), tb0 = ri(1, 3), step = ri(2, 3);
+        const A = `${c.n} A: ${ra * ta} ${c.u} in ${ta} ${c.t}s`;
+        const B = `${c.n} B: a table shows ${tb0} ${c.t}${tb0 === 1 ? "" : "s"} → ${rb * tb0} ${c.u} and ${tb0 + step} ${c.t}s → ${rb * (tb0 + step)} ${c.u}`;
+        const C = `${c.n} C: ${c.u} = ${rc} × ${c.t}s`;
+        const most = Math.random() < 0.6;
+        const best = most ? Math.max(ra, rb, rc) : Math.min(ra, rb, rc);
+        const ans = `${c.n} ${["A", "B", "C"][rates.indexOf(best)]}`;
+        return {
+          question: `Which has the ${most ? "greatest" : "smallest"} rate?  ${A}.  ${B}.  ${C}.`,
+          answer: ans,
+          options: opt4(ans, [`${c.n} A`, `${c.n} B`, `${c.n} C`, "They are all the same"]),
+          explanation: `Per ${c.t}: A = ${ra * ta} ÷ ${ta} = ${ra}; B = (${rb * (tb0 + step)} − ${rb * tb0}) ÷ ${step} = ${rb}; C = ${rc}. The ${most ? "greatest" : "smallest"} is ${best}, so ${ans}.`
+        };
+      }
+    });
+  }));
+
+  // ---- shared context bank for the linear skills ----
+  // b = starting value, m = rate. Each context can describe itself in words so
+  // the same numbers become a situation, a table and an interpretation.
+  const LIN = [
+    { key: "gym", m: () => pick([15, 20, 25, 30, 35]), b: () => pick([25, 40, 50, 75, 99]), money: true,
+      say: (m, b) => `A gym charges a ${cash(b)} sign-up fee plus ${cash(m)} per month.`, x: "months", y: "total cost in dollars",
+      slope: (v) => `Each extra month adds ${cash(v)} to the total cost.`, inter: (v) => `The cost is ${cash(v)} before any months are paid.`,
+      total: (v) => `A year of membership costs ${cash(v)} in total.` },
+    { key: "taxi", m: () => pick([1.75, 2, 2.25, 2.5, 3]), b: () => pick([2.5, 3, 3.5, 4]), money: true,
+      say: (m, b) => `A taxi charges ${cash(b)} to start plus ${cash(m)} per mile.`, x: "miles", y: "fare in dollars",
+      slope: (v) => `Each extra mile adds ${cash(v)} to the fare.`, inter: (v) => `The fare is ${cash(v)} before any miles are driven.`,
+      total: (v) => `Every ride costs ${cash(v)} in total.` },
+    { key: "plumber", m: () => pick([40, 45, 50, 60, 75]), b: () => pick([50, 60, 75, 80, 90]), money: true,
+      say: (m, b) => `A plumber charges a ${cash(b)} call-out fee plus ${cash(m)} per hour.`, x: "hours", y: "total charge in dollars",
+      slope: (v) => `Each extra hour of work adds ${cash(v)} to the charge.`, inter: (v) => `The charge is ${cash(v)} before any work is done.`,
+      total: (v) => `The whole job costs ${cash(v)}.` },
+    { key: "savings", m: () => pick([15, 20, 25, 30, 40]), b: () => pick([50, 80, 120, 200, 350]), money: true,
+      say: (m, b) => `Maya has ${cash(b)} saved and adds ${cash(m)} every week.`, x: "weeks", y: "savings in dollars",
+      slope: (v) => `Maya's savings grow by ${cash(v)} each week.`, inter: (v) => `Maya had ${cash(v)} saved when she started.`,
+      total: (v) => `Maya will save ${cash(v)} altogether.` },
+    { key: "pool", m: () => -pick([20, 25, 30, 40, 50]), b: () => pick([600, 800, 900, 1000, 1200]), money: false,
+      say: (m, b) => `A pool holds ${commas(b)} gallons and drains at ${-m} gallons per minute.`, x: "minutes", y: "gallons left",
+      slope: (v) => `The pool loses ${fmt(Math.abs(v))} gallons every minute.`, inter: (v) => `The pool held ${commas(Math.abs(v))} gallons when draining began.`,
+      total: (v) => `The pool drains ${fmt(Math.abs(v))} gallons in total.` },
+    { key: "candle", m: () => -pick([1.5, 2, 2.5, 3]), b: () => pick([20, 24, 25, 30]), money: false,
+      say: (m, b) => `A candle is ${b} cm tall and burns down ${fmt(-m)} cm every hour.`, x: "hours", y: "height in cm",
+      slope: (v) => `The candle gets ${fmt(Math.abs(v))} cm shorter every hour.`, inter: (v) => `The candle was ${fmt(Math.abs(v))} cm tall before it was lit.`,
+      total: (v) => `The candle burns for ${fmt(Math.abs(v))} hours in total.` },
+    { key: "plant", m: () => pick([1.5, 2, 2.5, 3]), b: () => pick([3, 4, 5, 6, 8]), money: false,
+      say: (m, b) => `A seedling is ${b} cm tall and grows ${fmt(m)} cm per week.`, x: "weeks", y: "height in cm",
+      slope: (v) => `The plant grows ${fmt(v)} cm each week.`, inter: (v) => `The plant was ${fmt(v)} cm tall when the measuring started.`,
+      total: (v) => `The plant will reach ${fmt(v)} cm and stop.` },
+    { key: "giftcard", m: () => -pick([3.5, 4, 4.25, 4.5, 5]), b: () => pick([50, 75, 100]), money: true,
+      say: (m, b) => `A gift card starts with ${cash(b)}, and each coffee costs ${cash(-m)}.`, x: "coffees bought", y: "balance in dollars",
+      slope: (v) => `Each coffee lowers the balance by ${cash(Math.abs(v))}.`, inter: (v) => `The card held ${cash(Math.abs(v))} before any coffee was bought.`,
+      total: (v) => `All the coffees together cost ${cash(Math.abs(v))}.` }
+  ];
+  // Rerolled until |m| and b differ, so 'the rate' and 'the start' never share a number
+  // and an interpretation distractor can never coincide with the answer.
+  const linCtx = () => { const c = pick(LIN); let m, b; do { m = c.m(); b = c.b(); } while (Math.abs(m) === b); return { c, m, b }; };
+  const linCheck = (m, b) => typed => sameFn(typed, x => m * x + b, "x", [0, 1, 2, 5, -3]);
+
+  // =====================================================================
+  // M-307  Linear Representations  (tier 5, grades 8-9)
+  // Plan item 24: move between situations, tables, graphs and equations.
+  // =====================================================================
+  _addSkill(5, "Linear Representations", "Linear Representations", 4, function(){
+    const m = pick([3, 4, 5, 6]), b = pick([10, 15, 20, 25]);
+    return {
+      goalProblem: "A phone plan costs $20 a month plus $5 for each GB of data. Write an equation for the monthly cost y when x GB are used.",
+      teachingSteps: [
+        { title: "One relationship, four views", explanation: "A linear relationship can be shown as a <strong>situation</strong> (words), a <strong>table</strong>, a <strong>graph</strong> or an <strong>equation</strong>. They all carry the same two facts: where it <strong>starts</strong> and how fast it <strong>changes</strong>.", visual: "start value (b) and rate (m)  →  y = mx + b" },
+        { title: "Situation → equation", explanation: "The fixed amount (fee, starting value) is <strong>b</strong>: the value when x = 0. The amount <em>per</em> unit is the slope <strong>m</strong>.", visual: "$20 plus $5 per GB  →  y = 5x + 20" },
+        { title: "Equation → table", explanation: "Choose x-values and substitute each one. Every step of 1 in x adds m to y.", visual: "y = 5x + 20\nx: 0, 1, 2, 3\ny: 20, 25, 30, 35" },
+        { title: "Table → equation", explanation: "Slope = change in y ÷ change in x between two rows. Then b is the y-value when x = 0 — if the table does not show x = 0, work back from a row: b = y − m·x.", visual: "x: 2, 4 → y: 30, 40\nm = 10 ÷ 2 = 5, b = 30 − 5·2 = 20" },
+        { title: "Graph ↔ equation", explanation: "The <strong>y-intercept</strong> (0, b) is where the line crosses the y-axis. The slope is rise ÷ run between any two points on the line. The <strong>x-intercept</strong> is where y = 0.", visual: "crosses y-axis at (0, 20), rises 10 for every 2 across → y = 5x + 20" },
+        { title: "Check one view against another", explanation: "Take a point from the table or graph and substitute it into your equation. If both sides agree, the representations match.", visual: "(3, 35): 5·3 + 20 = 35 ✓" }
+      ],
+      finalAnswer: "y = 5x + 20",
+      answerExplanation: "The $20 is charged even when no data is used, so b = 20. Each GB adds $5, so m = 5. The equation is y = 5x + 20.",
+      example: { problem: "A table shows x: 1, 3, 5 and y: 7, 13, 19. Write the equation.", steps: [
+        { text: "Slope from two rows", math: "(13 − 7) ÷ (3 − 1) = 6 ÷ 2 = 3" },
+        { text: "Work back to x = 0", math: "b = 7 − 3·1 = 4" },
+        { text: "Write it and check a row", math: "y = 3x + 4; 3·5 + 4 = 19 ✓" }
+      ]},
+      keyPoints: [
+        "b is the value when x = 0; m is the change per 1 unit of x",
+        "Table: m = Δy ÷ Δx, then b = y − m·x",
+        "Graph: y-intercept (0, b); x-intercept is where y = 0",
+        "Check by substituting a point into the equation"
+      ],
+      mistakes: [
+        { wrong: "Using the first y-value in a table as b when the table starts at x = 1", why: "b is the value at x = 0. Work back one step: subtract the slope once." },
+        { wrong: "Swapping the fee and the rate (y = 20x + 5)", why: "The amount charged PER unit multiplies x. The one-time amount is added on." },
+        { wrong: "Reading the jump in y as the slope when x goes up by 2", why: "Divide by the change in x: a jump of 10 over 2 units is a slope of 5." }
+      ],
+      guided: {
+        problem: `A table shows x: 2, 4, 6 and y: ${2 * m + b}, ${4 * m + b}, ${6 * m + b}. Write the equation of the line.`,
+        steps: [
+          { label: "Change in y ÷ change in x", value: `${2 * m} ÷ 2 = ${m}` },
+          { label: "b = y − m·x using the first row", value: `${2 * m + b} − ${m}·2 = ${b}` },
+          { label: "Equation", value: `y = ${m}x + ${b}` }
+        ],
+        answer: `y = ${m}x + ${b}`, answerLabel: "Equation:",
+        interactiveSteps: [
+          { prompt: `What is the slope? (y goes up ${2 * m} each time x goes up 2)`, hint: "Divide the change in y by the change in x.", answer: String(m), acceptableAnswers: [String(m)], formatHint: "Enter a number",
+            commonMistakes: { [String(2 * m)]: "That is the jump in y. Divide it by the jump in x, which is 2." } },
+          { prompt: `What is b, the value of y when x = 0?`, hint: `Work back from (2, ${2 * m + b}): subtract the slope twice.`, answer: String(b), acceptableAnswers: [String(b)], formatHint: "Enter a number",
+            commonMistakes: { [String(2 * m + b)]: "That is y when x = 2. Go back two steps to x = 0." } },
+          { prompt: "Write the equation in the form y = mx + b.", hint: `m = ${m}, b = ${b}`, answer: `y = ${m}x + ${b}`,
+            acceptableAnswers: [`y = ${m}x + ${b}`, `y=${m}x+${b}`, `y = ${b} + ${m}x`, `y=${b}+${m}x`], formatHint: "e.g., y = 2x + 3", commonMistakes: {} }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    return choose({
+      situation_to_equation: () => {
+        const { c, m, b } = linCtx();
+        const ans = lin(m, b);
+        return {
+          question: `${c.say(m, b)} Write an equation for y, the ${c.y}, after x ${c.x}.`,
+          answer: ans, validate: linCheck(m, b),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(b, m), lin(m, 0), lin(m, -b), lin(-m, b), lin(m, b + 1), lin(2 * m, b)]),
+          explanation: `The starting value is ${fmt(b)} (when x = 0), so b = ${fmt(b)}. The change per one of the ${c.x} is ${fmt(m)}, so m = ${fmt(m)}. Equation: ${ans}.`
+        };
+      },
+      table_to_equation: () => {
+        let m = ri(-5, 7); if (m === 0) m = 3;
+        const b = ri(-9, 12), s = pick([1, 2, 3]), x0 = pick([1, 2, 3]);
+        const xs = [0, 1, 2, 3].map(i => x0 + i * s), ys = xs.map(x => m * x + b);
+        const ans = lin(m, b);
+        return {
+          question: `A table shows  x: ${xs.join(", ")}   and   y: ${ys.join(", ")}. Write the equation of the line in the form y = mx + b.`,
+          answer: ans, validate: linCheck(m, b),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(m, ys[0]), lin(m * s, b), lin(m, b + m), lin(-m, b), lin(m, -b), lin(m + 1, b)]),
+          explanation: `Slope = ${m * s} ÷ ${s} = ${m}. Work back to x = 0: b = ${ys[0]} − ${m < 0 ? "(" + m + ")" : m}·${x0} = ${b}. Equation: ${ans}. Check: ${m}·${xs[3]} ${b < 0 ? "− " + (-b) : "+ " + b} = ${ys[3]} ✓`
+        };
+      },
+      graph_to_equation: () => {
+        let m = pick([-3, -2, -1, 1, 2, 3, 4, "1/2", "-1/2", "2/3", "-2/3", "3/2"]);
+        let num = 0, den = 1;
+        if (typeof m === "string") { const p = m.split("/"); num = Number(p[0]); den = Number(p[1]); } else { num = m; den = 1; }
+        const mv = num / den, b = ri(-6, 6);
+        const k = pick([1, 2]) * (Math.random() < 0.5 ? 1 : -1);
+        const x1 = den * k, y1 = num * k + b;
+        const viaIntercept = Math.random() < 0.5;
+        let x2 = x1 + den * pick([1, 2]); const y2 = mv * x2 + b;
+        const text = viaIntercept
+          ? `A line on a graph crosses the y-axis at (0, ${b}) and passes through (${x1}, ${fmt(y1)}).`
+          : `A line on a graph passes through (${x1}, ${fmt(y1)}) and (${x2}, ${fmt(y2)}).`;
+        const ms = den === 1 ? (num === 1 ? "" : num === -1 ? "-" : String(num)) : `${num}/${den}`;
+        const ans = `y = ${ms}x${b > 0 ? " + " + b : b < 0 ? " - " + (-b) : ""}`;
+        return {
+          question: `${text} Write its equation in the form y = mx + b. (Use a fraction for the slope if needed.)`,
+          answer: ans, validate: linCheck(mv, b),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(b, mv), lin(-mv, b), lin(r2(den / num), b), lin(mv, -b), lin(mv, b + 1), lin(2 * mv, b), lin(mv + 1, b)]),
+          explanation: viaIntercept
+            ? `The y-intercept is (0, ${b}), so b = ${b}. Slope = (${fmt(y1)} − ${b < 0 ? "(" + b + ")" : b}) ÷ (${x1} − 0) = ${frac(num * k, den * k)}. Equation: ${ans}.`
+            : `Slope = (${fmt(y2)} − ${fmt(y1)}) ÷ (${x2} − ${x1}) = ${frac(Math.round((y2 - y1) * den), Math.round((x2 - x1) * den))}. Then b = ${fmt(y1)} − (${frac(num, den)})(${x1}) = ${b}. Equation: ${ans}.`
+        };
+      },
+      equation_to_table: () => {
+        let m = ri(-6, 7); if (m === 0) m = 2;
+        const b = ri(-10, 12);
+        const eq = lin(m, b);
+        if (Math.random() < 0.5) {
+          const xv = ri(-6, 9), y = m * xv + b;
+          return {
+            question: `A table is made from ${eq}. What y-value goes beside x = ${xv}?`,
+            answer: String(y),
+            options: opt4(String(y), [String(m + xv + b), String(m * xv - b), String(m * (xv + b)), String(y + m)]),
+            explanation: `Substitute x = ${xv}: y = ${m}·${xv < 0 ? "(" + xv + ")" : xv} ${b < 0 ? "− " + (-b) : "+ " + b} = ${m * xv} ${b < 0 ? "− " + (-b) : "+ " + b} = ${y}.`
+          };
+        }
+        const xv = ri(-5, 9), y = m * xv + b;
+        return {
+          subType: "equation_to_table",
+          question: `A table is made from ${eq}. One row has y = ${y}. What is x in that row?`,
+          answer: String(xv),
+          options: opt4(String(xv), [String(m * y + b), String(y - b), String(-xv), String(xv + 1), String(xv - 1)]),   // substituted y for x, forgot to divide, sign, off by one
+          explanation: `Set ${m === 1 ? "" : m === -1 ? "-" : m}x ${b < 0 ? "− " + (-b) : "+ " + b} = ${y}. ${b < 0 ? "Add " + (-b) : "Subtract " + b}: ${m === 1 ? "" : m === -1 ? "-" : m}x = ${y - b}. Divide by ${m}: x = ${xv}.`
+        };
+      },
+      equation_to_graph: () => {
+        let m = pick([-4, -3, -2, -1, 1, 2, 3, 4, 5]);
+        const r = ri(1, 6) * pick([1, -1]), b = -m * r;    // x-intercept at r (never 0), so it is a whole number
+        const eq = lin(m, b);
+        if (b === 0 || Math.random() < 0.5) {
+          return {
+            subType: "equation_to_graph",
+            question: `Where does the graph of ${eq} cross the y-axis? Give the point (x, y).`,
+            answer: pt(0, b), validate: pointIs(0, b),
+            options: opt4(pt(0, b), [pt(b, 0), pt(0, m), pt(r, 0), pt(0, -b)]),
+            explanation: `On the y-axis x = 0, so y = ${m}·0 ${b < 0 ? "− " + (-b) : "+ " + b} = ${b}. The graph crosses at (0, ${b}).`
+          };
+        }
+        return {
+          subType: "equation_to_graph",
+          question: `Where does the graph of ${eq} cross the x-axis? Give the point (x, y).`,
+          answer: pt(r, 0), validate: pointIs(r, 0),
+          options: opt4(pt(r, 0), [pt(0, b), pt(-r, 0), pt(b, 0), pt(0, r)]),
+          explanation: `On the x-axis y = 0: 0 = ${m === 1 ? "" : m === -1 ? "-" : m}x ${b < 0 ? "− " + (-b) : "+ " + b}, so ${m === 1 ? "" : m === -1 ? "-" : m}x = ${-b} and x = ${r}. The graph crosses at (${r}, 0).`
+        };
+      },
+      table_to_situation: () => {
+        const { c, m, b } = linCtx();
+        const xs = [0, 1, 2, 3], ys = xs.map(x => r2(m * x + b));
+        // Each option is a situation sentence from the same context with the
+        // numbers mishandled the way students mishandle them.
+        const ans = c.say(m, b);
+        return {
+          subType: "table_to_situation",
+          question: `A table shows x (${c.x}): ${xs.join(", ")}   and   y (${c.y}): ${ys.map(fmt).join(", ")}. Which situation matches the table?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [
+            c.say(m > 0 ? b : -b, m > 0 ? m : -m),               // swapped start and rate
+            c.say(m, ys[1]),                                       // read the start from x = 1
+            c.say(m > 0 ? ys[1] : -ys[1], b),                      // used the y at x = 1 as the rate
+            c.say(2 * m, b)
+          ]),
+          explanation: `At x = 0 the value is ${fmt(b)}, so that is the starting amount. Each step of 1 changes y by ${fmt(m)}, so that is the rate. ${ans}`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-308  Linear Modeling  (tier 5, grade 9)
+  // Plan item 25: build y = mx + b from a real situation, interpret slope and
+  // intercept in context, and use it to predict.
+  // =====================================================================
+  _addSkill(5, "Linear Modeling", "Linear Modeling", 4, function(){
+    const b = pick([3, 3.5, 4]), m = pick([2, 2.25, 2.5]), d = pick([8, 10, 12]);
+    const cost = r2(m * d + b);
+    return {
+      goalProblem: "A taxi charges $3 to start plus $2.50 per mile. Write a model and predict the cost of a 12-mile ride.",
+      teachingSteps: [
+        { title: "Name the variables", explanation: "Decide what x stands for (the thing you choose or that passes: miles, hours, weeks) and what y stands for (the result: cost, height, balance). Write the units down.", visual: "x = miles driven,  y = fare in dollars" },
+        { title: "Find the starting value b", explanation: "b is the value of y when x = 0: a fee, a deposit, a starting height, the amount in a full tank.", visual: "$3 to start → b = 3" },
+        { title: "Find the rate m", explanation: "m is the change in y for each 1 unit of x. If the quantity goes <strong>down</strong> (draining, spending, burning) m is <strong>negative</strong>.", visual: "$2.50 per mile → m = 2.5    drains 40 gal/min → m = −40" },
+        { title: "From two data points", explanation: "Sometimes you get two results instead of a fee and a rate. The slope is the change in y ÷ change in x; then b = y − m·x.", visual: "2 h → $130, 4 h → $230: m = 100 ÷ 2 = 50, b = 130 − 100 = 30" },
+        { title: "Predict and solve", explanation: "To <strong>predict</strong>, substitute x. To find <strong>when</strong> y reaches a value, set y equal to it and solve for x.", visual: "y = 2.5x + 3:  x = 12 → y = 33;   y = 23 → x = 8" },
+        { title: "Say what the numbers mean", explanation: "The slope means: each extra unit of x changes y by m. The intercept means: the value of y before anything happens (x = 0). Always give units.", visual: "slope 2.5: each mile adds $2.50   intercept 3: $3 before driving" }
+      ],
+      finalAnswer: "y = 2.5x + 3; a 12-mile ride costs $33",
+      answerExplanation: "b = 3 (the starting charge), m = 2.5 (per mile). y = 2.5(12) + 3 = 30 + 3 = $33.",
+      example: { problem: "A pool holds 900 gallons and drains 30 gallons per minute. When is it empty?", steps: [
+        { text: "Model (draining, so m is negative)", math: "y = −30x + 900" },
+        { text: "Empty means y = 0", math: "0 = −30x + 900" },
+        { text: "Solve", math: "30x = 900 → x = 30 minutes" }
+      ]},
+      keyPoints: [
+        "b = value at x = 0 (fee, starting amount); m = change per unit",
+        "Decreasing situations have a negative slope",
+        "Predict by substituting x; find 'when' by solving for x",
+        "Interpret slope and intercept with units"
+      ],
+      mistakes: [
+        { wrong: "y = 3x + 2.5 for '$3 to start plus $2.50 per mile'", why: "The per-mile amount multiplies the miles. The start fee is added once: y = 2.5x + 3." },
+        { wrong: "Using a positive slope for a pool that drains", why: "The amount goes down each minute, so the slope must be negative." },
+        { wrong: "Saying the slope is 'the cost of the ride'", why: "The slope is the cost of each EXTRA mile, not a total." }
+      ],
+      guided: {
+        problem: `A taxi charges ${cash(b)} to start plus ${cash(m)} per mile. What does a ${d}-mile ride cost?`,
+        steps: [
+          { label: "Starting value b", value: `${fmt(b)}` },
+          { label: "Rate m", value: `${fmt(m)}` },
+          { label: `Substitute x = ${d}`, value: `${fmt(m)}·${d} + ${fmt(b)} = ?` }
+        ],
+        answer: cost.toFixed(2), answerLabel: "Cost ($) =",
+        interactiveSteps: [
+          { prompt: "What is b, the charge before any miles?", hint: "The amount charged to start.", answer: fmt(b), acceptableAnswers: [fmt(b), b.toFixed(2), "$" + b.toFixed(2)], formatHint: "Enter a number", commonMistakes: { [fmt(m)]: "That is charged per mile — it is the slope." } },
+          { prompt: "Write the model y = mx + b.", hint: `m = ${fmt(m)} per mile, b = ${fmt(b)}`, answer: lin(m, b), acceptableAnswers: [lin(m, b), lin(m, b).replace(/\s+/g, ""), `y = ${fmt(b)} + ${fmt(m)}x`], formatHint: "e.g., y = 2x + 3", commonMistakes: { [lin(b, m)]: "The fee and the rate are swapped: the per-mile amount multiplies x." } },
+          { prompt: `Predict the cost of a ${d}-mile ride (in dollars).`, hint: `${fmt(m)} × ${d} + ${fmt(b)}`, answer: cost.toFixed(2), acceptableAnswers: [cost.toFixed(2), fmt(cost), "$" + cost.toFixed(2)], formatHint: "e.g., 24.50", commonMistakes: {} }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    return choose({
+      build_from_rate: () => {
+        const { c, m, b } = linCtx();
+        const ans = lin(m, b);
+        return {
+          question: `${c.say(m, b)} Write a linear model for y, the ${c.y}, after x ${c.x}.`,
+          answer: ans, validate: linCheck(m, b), acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(b, m), lin(-m, b), lin(m, 0), lin(m, -b), lin(m, b + 1), lin(2 * m, b)]),
+          explanation: `Starting value b = ${fmt(b)} and rate m = ${fmt(m)}${m < 0 ? " (negative, because it goes down)" : ""}. Model: ${ans}.`
+        };
+      },
+      build_from_two_points: () => {
+        const c = pick([
+          { s: (x1, y1, x2, y2) => `An electrician charges $${y1} for a ${x1}-hour job and $${y2} for a ${x2}-hour job.`, x: "hours", y: "charge in dollars", m: [40, 50, 60, 75], b: [30, 45, 60, 80], xr: [1, 6] },
+          { s: (x1, y1, x2, y2) => `A school club has $${y1} after ${x1} weeks of fundraising and $${y2} after ${x2} weeks.`, x: "weeks", y: "money raised in dollars", m: [25, 30, 40, 55], b: [20, 50, 100], xr: [1, 8] },
+          { s: (x1, y1, x2, y2) => `A water tank holds ${y1} liters after ${x1} minutes of draining and ${y2} liters after ${x2} minutes.`, x: "minutes", y: "liters left", m: [-15, -20, -25, -30], b: [500, 600, 800], xr: [2, 12] },
+          { s: (x1, y1, x2, y2) => `A printing shop charges $${y1} for ${x1} shirts and $${y2} for ${x2} shirts.`, x: "shirts", y: "cost in dollars", m: [8, 9, 12, 15], b: [25, 30, 40, 50], xr: [5, 30] }]);
+        const m = pick(c.m), b = pick(c.b);
+        const x1 = ri(c.xr[0], Math.floor((c.xr[0] + c.xr[1]) / 2)), x2 = x1 + ri(2, 5);
+        const y1 = m * x1 + b, y2 = m * x2 + b;
+        const ans = lin(m, b);
+        return {
+          question: `${c.s(x1, y1, x2, y2)} Assuming the relationship is linear, write a model for y, the ${c.y}, after x ${c.x}.`,
+          answer: ans, validate: linCheck(m, b), acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(m, y1), lin(y2 - y1, b), lin(r2(y1 / x1), 0), lin(-m, b), lin(m, -b), lin(m, b + 5)]),
+          explanation: `Slope = (${y2} − ${y1}) ÷ (${x2} − ${x1}) = ${y2 - y1} ÷ ${x2 - x1} = ${m}. Then b = ${y1} − ${m < 0 ? "(" + m + ")" : m}·${x1} = ${b}. Model: ${ans}.`
+        };
+      },
+      interpret_slope: () => {
+        const { c, m, b } = linCtx();
+        const ans = c.slope(m);
+        return {
+          question: `${c.y.charAt(0).toUpperCase() + c.y.slice(1)} after x ${c.x} is modeled by ${lin(m, b)}. What does ${fmt(m)} mean?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [
+            c.inter(m),       // read the slope as the starting value
+            c.slope(b),       // attached the intercept's number to the rate
+            c.total(m)        // read a per-unit rate as a total
+          ]),
+          explanation: `In y = mx + b the slope m is the change in y for each 1 unit of x. Here m = ${fmt(m)}: ${ans}`
+        };
+      },
+      interpret_intercept: () => {
+        const { c, m, b } = linCtx();
+        const ans = c.inter(b);
+        return {
+          question: `${c.y.charAt(0).toUpperCase() + c.y.slice(1)} after x ${c.x} is modeled by ${lin(m, b)}. What does ${fmt(b)} mean?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [
+            c.slope(b),       // read the intercept as the rate
+            c.inter(m),       // the right meaning with the slope's number
+            c.total(b)        // a starting value is not a total
+          ]),
+          explanation: `In y = mx + b, b is the value of y when x = 0 — before anything has happened. Here b = ${fmt(b)}: ${ans}`
+        };
+      },
+      predict: () => {
+        const { c, m, b } = linCtx();
+        let x = ri(2, 12);
+        if (m < 0) x = Math.min(x, Math.floor(b / -m) - 1);
+        const y = r2(m * x + b);
+        const ans = c.money ? y.toFixed(2) : fmt(y);
+        return {
+          question: `${c.say(m, b)} Using y = ${lin(m, b).slice(4)}, find y, the ${c.y}, after ${x} ${c.x}.`,
+          answer: ans, acceptableAnswers: c.money ? [fmt(y), "$" + y.toFixed(2)] : [],
+          options: opt4(ans, [b * x + m, m * x, m * (x + b), m * x - b].map(v => c.money ? r2(v).toFixed(2) : fmt(r2(v)))),   // swapped m and b, dropped b, bracketed, subtracted b
+          explanation: `Substitute x = ${x}: y = ${fmt(m)}·${x} + ${fmt(b)} = ${fmt(r2(m * x))} + ${fmt(b)} = ${ans}${c.money ? " dollars" : ""}.`
+        };
+      },
+      solve_for_x: () => {
+        const c = pick(LIN.filter(z => ["gym", "plumber", "savings", "pool", "plant"].includes(z.key)));
+        const m = c.m(), b = c.b();
+        const x = m > 0 ? ri(3, 14) : ri(2, Math.floor(b / -m) - 1);
+        const y = m * x + b;
+        const what = { gym: `the total cost reach $${y}`, plumber: `the charge reach $${y}`, savings: `Maya's savings reach $${y}`, pool: `there be ${commas(y)} gallons left`, plant: `the plant be ${fmt(y)} cm tall` }[c.key];
+        return {
+          question: `${c.say(m, b)} The model is ${lin(m, b)}. After how many ${c.x} will ${what}?`,
+          answer: fmt(x),
+          options: opt4(fmt(x), [fmt(r2(y / m)), fmt(r2((y + b) / m)), fmt(x + 1), fmt(m * y + b)]),
+          explanation: `Set ${fmt(y)} = ${fmt(m)}x + ${fmt(b)}. Subtract ${fmt(b)}: ${fmt(y - b)} = ${fmt(m)}x. Divide by ${fmt(m)}: x = ${fmt(x)} ${c.x}.`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-309  Exponential Growth and Decay  (tier 5, grade 9)
+  // Plan item 31: repeated percent increases and decreases, a(1 ± r)^t, and
+  // telling growth from decay.
+  // =====================================================================
+  const expCheck = (a, f) => typed => sameFn(typed, t => a * Math.pow(f, t), "t", [0, 1, 2, 3, 7]);
+  _addSkill(5, "Exponential Growth and Decay", "Exponential Growth and Decay", 4, function(){
+    const a = pick([2000, 5000, 8000]), r = pick([3, 4, 5]);
+    const v2 = Math.round(a * Math.pow(1 + r / 100, 2));
+    return {
+      goalProblem: "A town of 5,000 people grows by 4% every year. How many people live there after 3 years?",
+      teachingSteps: [
+        { title: "Repeated percent change multiplies", explanation: "Growing by 4% means each year's value is 104% of the year before: multiply by <strong>1.04</strong>. Shrinking by 15% leaves 85%: multiply by <strong>0.85</strong>. The same factor is used again every period.", visual: "5000 → ×1.04 → 5200 → ×1.04 → 5408 → ×1.04 → 5624.32" },
+        { title: "The model y = a(1 ± r)ᵗ", explanation: "<strong>a</strong> = starting amount, <strong>r</strong> = rate as a decimal, <strong>t</strong> = number of periods. Use <strong>1 + r</strong> for growth and <strong>1 − r</strong> for decay. The base (1 ± r) is the <strong>growth factor</strong>.", visual: "y = 5000(1.04)ᵗ     y = 900(0.85)ᵗ" },
+        { title: "Growth or decay?", explanation: "Look at the factor b in y = a·bᵗ. If <strong>b > 1</strong> it is growth; if <strong>0 < b < 1</strong> it is decay. The percent is the distance from 1.", visual: "1.07 → 7% growth     0.92 → 8% decay" },
+        { title: "Not the same as adding", explanation: "Linear change adds the same <em>amount</em> each period; exponential change multiplies by the same <em>factor</em>. Two 10% increases make 1.1 × 1.1 = 1.21, a <strong>21%</strong> increase, not 20%.", visual: "100 → 110 → 121 (not 120)" },
+        { title: "Doubling and half-life", explanation: "If something doubles every d years, the factor is 2 once per d years: a·2^(t/d). Half-life works the same with ½.", visual: "80 mg, half-life 5 h: after 15 h → 80 × ½ × ½ × ½ = 10 mg" },
+        { title: "Round at the end", explanation: "Keep the full calculator value until the last step, then round as the question asks (whole people, nearest cent).", visual: "5000 × 1.04³ = 5624.32 → 5,624 people" }
+      ],
+      finalAnswer: "5,624 people",
+      answerExplanation: "y = 5000(1.04)³ = 5000 × 1.124864 = 5624.32, which rounds to 5,624 people.",
+      example: { problem: "A $24,000 car loses 15% of its value each year. What is it worth after 2 years?", steps: [
+        { text: "Decay factor", math: "1 − 0.15 = 0.85" },
+        { text: "Model", math: "y = 24000(0.85)ᵗ" },
+        { text: "t = 2", math: "24000 × 0.7225 = $17,340" }
+      ]},
+      keyPoints: [
+        "Growth by r: multiply by (1 + r) each period; decay by r: multiply by (1 − r)",
+        "y = a(1 ± r)ᵗ — a is the start, t the number of periods",
+        "Factor above 1 = growth, between 0 and 1 = decay",
+        "Repeated percents compound: 10% twice is 21%, not 20%"
+      ],
+      mistakes: [
+        { wrong: "Using 0.15 as the factor for a 15% decrease", why: "0.15 is what is LOST. What is left each year is 1 − 0.15 = 0.85." },
+        { wrong: "Adding the percents: 10% for 3 years = 30%", why: "Each year's 10% is of a bigger amount. 1.1³ = 1.331, so it is a 33.1% increase." },
+        { wrong: "Multiplying a × r × t (5000 × 0.04 × 3)", why: "That is simple linear growth. Exponential growth multiplies by the factor t times: a × (1.04)ᵗ." }
+      ],
+      guided: {
+        problem: `A town of ${commas(a)} people grows by ${r}% each year. How many people after 2 years? (Round to the nearest whole number.)`,
+        steps: [
+          { label: "Growth factor", value: `1 + ${r / 100} = ${fmt(1 + r / 100)}` },
+          { label: "Model", value: `y = ${a}(${fmt(1 + r / 100)})^t` },
+          { label: "Substitute t = 2", value: `${a} × ${fmt(1 + r / 100)}² = ?` }
+        ],
+        answer: String(v2), answerLabel: "Population ≈",
+        interactiveSteps: [
+          { prompt: `What is the growth factor for ${r}% growth?`, hint: "Add the rate (as a decimal) to 1.", answer: fmt(1 + r / 100), acceptableAnswers: [fmt(1 + r / 100)], formatHint: "e.g., 1.06",
+            commonMistakes: { [fmt(r / 100)]: `That is just the rate. The population keeps 100% and adds ${r}%: 1 + ${r / 100}.` } },
+          { prompt: "Write the model y = a(1 + r)^t.", hint: `a = ${a}`, answer: `y = ${a}(${fmt(1 + r / 100)})^t`,
+            acceptableAnswers: [`y = ${a}(${fmt(1 + r / 100)})^t`, `y=${a}(${fmt(1 + r / 100)})^t`, `y = ${a} * ${fmt(1 + r / 100)}^t`], formatHint: "e.g., y = 500(1.06)^t", commonMistakes: {} },
+          { prompt: "Population after 2 years, to the nearest whole number:", hint: `${a} × ${fmt(1 + r / 100)} × ${fmt(1 + r / 100)}`, answer: String(v2), acceptableAnswers: [String(v2), commas(v2)], formatHint: "Enter a whole number",
+            commonMistakes: { [String(a + 2 * a * r / 100)]: "That adds the same amount twice (linear). The second year's growth is on the bigger number." } }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    const growthCtx = [
+      { n: "A town", u: "people", a: [2000, 4500, 8000, 12000, 25000], r: [2, 3, 4, 5, 6], per: "year" },
+      { n: "A savings account", u: "dollars", a: [500, 1000, 1500, 2500], r: [3, 4, 5, 6, 8], per: "year", money: true },
+      { n: "A colony of bacteria", u: "bacteria", a: [200, 500, 800, 1000], r: [10, 15, 20, 25], per: "hour" },
+      { n: "A video's view count", u: "views", a: [1000, 3000, 5000], r: [10, 20, 30], per: "day" }];
+    const decayCtx = [
+      { n: "A car", u: "dollars", a: [18000, 24000, 30000], r: [10, 12, 15, 20], per: "year", money: true },
+      { n: "A dose of medicine in the body", u: "mg", a: [200, 400, 500, 800], r: [10, 20, 25, 30], per: "hour" },
+      { n: "A lake's fish population", u: "fish", a: [3000, 5000, 8000], r: [5, 8, 10, 12], per: "year" },
+      { n: "A laptop", u: "dollars", a: [900, 1200, 1500], r: [15, 20, 25], per: "year", money: true }];
+    const say = (c, grow) => `${c.n} starts at ${c.money ? "$" + commas(c.a0) : commas(c.a0) + " " + c.u} and ${grow ? "grows" : "decreases"} by ${c.r0}% each ${c.per}.`;
+    const roll = list => { const c = Object.assign({}, pick(list)); c.a0 = pick(c.a); c.r0 = pick(c.r); return c; };
+    return choose({
+      write_model: () => {
+        const grow = Math.random() < 0.5, c = roll(grow ? growthCtx : decayCtx);
+        const f = 1 + (grow ? 1 : -1) * c.r0 / 100;
+        const ans = `y = ${c.a0}(${fmt(f)})^x`;
+        return {
+          question: `${say(c, grow)} Write a model for y, the amount after x ${c.per}s, in the form y = a(b)^x.`,
+          answer: ans, validate: typed => sameFn(typed, x => c.a0 * Math.pow(f, x), "x", [0, 1, 2, 3, 7]),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          // the rate as the base, growth/decay swapped, the percent as the base, a and b swapped
+          options: opt4(ans, [`y = ${c.a0}(${fmt(c.r0 / 100)})^x`, `y = ${c.a0}(${fmt(2 - f)})^x`, `y = ${c.a0}(${c.r0})^x`, `y = ${fmt(f)}(${c.a0})^x`]),
+          explanation: `Start a = ${commas(c.a0)}. ${grow ? "Growth" : "Decay"} of ${c.r0}% gives the factor 1 ${grow ? "+" : "−"} ${fmt(c.r0 / 100)} = ${fmt(f)}. Model: ${ans}.`
+        };
+      },
+      evaluate_growth: () => {
+        const c = roll(growthCtx), t = ri(2, 6);
+        const v = c.a0 * Math.pow(1 + c.r0 / 100, t);
+        const ans = c.money ? r2(v).toFixed(2) : String(Math.round(v));
+        return {
+          question: `${say(c, true)} How many ${c.u} after ${t} ${c.per}s? (Round to the nearest ${c.money ? "cent" : "whole number"}.)`,
+          answer: ans, acceptableAnswers: c.money ? ["$" + ans, fmt(r2(v))] : [commas(ans)],
+          options: opt4(ans, [String(Math.round(c.a0 * (1 + c.r0 * t / 100))), String(Math.round(c.a0 * Math.pow(1 + c.r0 / 100, t - 1))), String(Math.round(c.a0 * Math.pow(c.r0 / 100, t) + c.a0)), String(Math.round(c.a0 * Math.pow(1 + c.r0 / 100, t + 1)))]),
+          explanation: `y = ${c.a0}(${fmt(1 + c.r0 / 100)})^${t} = ${c.a0} × ${fmt(Math.pow(1 + c.r0 / 100, t))}… = ${fmt(v)}…, which rounds to ${ans}. (Adding ${c.r0}% of the START every ${c.per} would give only ${Math.round(c.a0 * (1 + c.r0 * t / 100))} — the growth compounds.)`
+        };
+      },
+      evaluate_decay: () => {
+        const c = roll(decayCtx), t = ri(2, 5);
+        const v = c.a0 * Math.pow(1 - c.r0 / 100, t);
+        const ans = c.money ? r2(v).toFixed(2) : String(Math.round(v));
+        return {
+          question: `${say(c, false)} What is it after ${t} ${c.per}s? (Round to the nearest ${c.money ? "cent" : "whole number"}.)`,
+          answer: ans, acceptableAnswers: c.money ? ["$" + ans, fmt(r2(v))] : [commas(ans)],
+          options: opt4(ans, [String(Math.round(c.a0 * (1 - c.r0 * t / 100))), String(Math.round(c.a0 * Math.pow(c.r0 / 100, t))), String(Math.round(c.a0 * Math.pow(1 - c.r0 / 100, t - 1))), String(Math.round(c.a0 * Math.pow(1 + c.r0 / 100, t)))]),
+          explanation: `Decay factor 1 − ${fmt(c.r0 / 100)} = ${fmt(1 - c.r0 / 100)}. y = ${c.a0}(${fmt(1 - c.r0 / 100)})^${t} = ${fmt(v)}…, which rounds to ${ans}${c.money ? " dollars" : " " + c.u}.`
+        };
+      },
+      identify: () => {
+        const grow = Math.random() < 0.5, p = pick([2, 3, 5, 6, 8, 12, 15, 20, 25, 35, 40]);
+        const f = 1 + (grow ? 1 : -1) * p / 100, a = pick([60, 250, 400, 1200, 5000]);
+        const per = pick(["year", "month", "hour"]);
+        const ans = `${grow ? "growth" : "decay"} of ${p}% per ${per}`;
+        const fpct = Math.round(f * 100);
+        return {
+          question: `The function y = ${a}(${fmt(f)})^t gives an amount after t ${per}s. Which describes it?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [
+            `${grow ? "decay" : "growth"} of ${p}% per ${per}`,            // misread which side of 1 the factor is
+            `${grow ? "growth" : "decay"} of ${fpct}% per ${per}`,          // read the factor itself as the rate
+            `${grow ? "decay" : "growth"} of ${fpct}% per ${per}`,
+            `${grow ? "growth" : "decay"} of ${fmt(f)}% per ${per}`
+          ]),
+          explanation: `The factor is ${fmt(f)}, which is ${grow ? "greater than 1, so it is growth" : "between 0 and 1, so it is decay"}. ${fmt(f)} = 1 ${grow ? "+" : "−"} ${fmt(p / 100)}, so the rate is ${p}% per ${per}.`
+        };
+      },
+      factor: () => {
+        const grow = Math.random() < 0.5, p = pick([2, 3, 4, 5, 6, 7, 8, 9, 12, 15, 18, 25, 30, 35]);
+        const f = fmt(1 + (grow ? 1 : -1) * p / 100);
+        return {
+          question: `A quantity ${grow ? "increases" : "decreases"} by ${p}% every period. What number do you multiply by each period (the ${grow ? "growth" : "decay"} factor)?`,
+          answer: f,
+          options: opt4(f, [fmt(p / 100), fmt(1 + (grow ? -1 : 1) * p / 100), fmt(1 + (grow ? 1 : -1) * p / 10), fmt(p)]),
+          explanation: `${grow ? "Growing" : "Shrinking"} by ${p}% leaves 100% ${grow ? "+" : "−"} ${p}% = ${grow ? 100 + p : 100 - p}% each period. As a decimal that is 1 ${grow ? "+" : "−"} ${fmt(p / 100)} = ${f}.`
+        };
+      },
+      repeated_percent: () => {
+        const kind = pick(["up", "down", "updown"]);
+        let p, n, f, words;
+        if (kind === "updown") { p = pick([10, 20, 25, 30, 40, 50]); n = 2; f = (1 + p / 100) * (1 - p / 100); words = `goes up ${p}% and then down ${p}%`; }
+        else { p = pick([10, 20, 30, 50]); n = pick([2, 2, 3]); f = Math.pow(1 + (kind === "up" ? 1 : -1) * p / 100, n); words = `${kind === "up" ? "rises" : "falls"} ${p}% each year for ${n} years`; }
+        const change = Math.round((f - 1) * 10000) / 100;    // signed percent, exact to 2 dp
+        const size = fmt(Math.abs(change));
+        const dir = change > 0 ? "increase" : "decrease";
+        const ans = size + "%";
+        return {
+          question: `A price ${words}. What is the total percent ${kind === "up" ? "increase" : "decrease"} from the original price?`,
+          answer: ans, acceptableAnswers: [size, size + " percent"],
+          options: opt4(ans, [kind === "updown" ? "0%" : fmt(p * n) + "%", fmt(p) + "%", fmt(Math.abs(change) + p) + "%", fmt(Math.abs(change) / 2) + "%"]),
+          explanation: kind === "updown"
+            ? `Multiply the factors: ${fmt(1 + p / 100)} × ${fmt(1 - p / 100)} = ${fmt(f)}. The price ends at ${fmt(f * 100)}% of where it started — a ${size}% ${dir}, not 0%, because the ${p}% decrease is taken from the larger price.`
+            : `Multiply the factor ${n} times: ${fmt(1 + (kind === "up" ? 1 : -1) * p / 100)}^${n} = ${fmt(f)}. That is ${fmt(f * 100)}% of the original — a ${size}% ${dir}, not ${p * n}%, because each change is on the new amount.`
+        };
+      },
+      doubling_half_life: () => {
+        const half = Math.random() < 0.5;
+        const d = pick([2, 3, 4, 5, 6, 8]), k = ri(2, half ? 4 : 5);
+        const a = half ? pick([1, 3, 5]) * Math.pow(2, k) * pick([5, 10]) : pick([25, 50, 75, 100, 150, 300]);
+        const t = d * k, ans = String(half ? a / Math.pow(2, k) : a * Math.pow(2, k));
+        return {
+          question: half
+            ? `${art(a) === "an" ? "An" : "A"} ${a} mg sample of a substance has a half-life of ${d} hours. How many mg remain after ${t} hours?`
+            : `A population of ${a} insects doubles every ${d} days. How many insects are there after ${t} days?`,
+          answer: ans,
+          options: half
+            ? opt4(ans, [String(a / (2 * k)), String(a - a * k / 4), String(a / Math.pow(2, k - 1)), String(a / Math.pow(2, k + 1))])
+            : opt4(ans, [String(a * 2 * k), String(a * Math.pow(2, k - 1)), String(a * Math.pow(2, t)), String(a * Math.pow(2, k + 1))]),
+          explanation: half
+            ? `${t} ÷ ${d} = ${k} half-lives. ${a} × (½)^${k} = ${a} ÷ ${Math.pow(2, k)} = ${ans} mg.`
+            : `${t} ÷ ${d} = ${k} doublings. ${a} × 2^${k} = ${a} × ${Math.pow(2, k)} = ${ans} insects.`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-310  Quadratic Graphs and Vertices  (tier 5, grade 9)
+  // Plan item 33: parabolas — vertex, axis of symmetry, direction, roots and
+  // y-intercept, from a graph or an equation.
+  // =====================================================================
+  // Polynomial pieces formatted the way students write them.
+  const term1 = (c, s, first) => {            // c·s with a sign, e.g. " - 4x", "3x²", " + 7"
+    if (c === 0) return "";
+    const mag = Math.abs(c), body = (mag === 1 && s) ? s : mag + s;
+    if (first) return (c < 0 ? "-" : "") + body;
+    return (c < 0 ? " - " : " + ") + body;
+  };
+  const stdForm = (a, b, c) => "y = " + (term1(a, "x²", true) + term1(b, "x") + term1(c, "")).trim();
+  const shift = h => h === 0 ? "x" : h > 0 ? `(x - ${h})` : `(x + ${-h})`;
+  const vtxForm = (a, h, k) => {
+    const lead = a === 1 ? "" : a === -1 ? "-" : String(a);
+    const sq = h === 0 ? "x²" : `${shift(h)}²`;
+    return `y = ${lead}${sq}${k > 0 ? " + " + k : k < 0 ? " - " + (-k) : ""}`;
+  };
+  const fact = r => r === 0 ? "x" : r > 0 ? `(x - ${r})` : `(x + ${-r})`;
+  const facForm = (a, p, q) => `y = ${a === 1 ? "" : a === -1 ? "-" : a}${fact(p)}${fact(q)}`;
+  _addSkill(5, "Quadratic Graphs and Vertices", "Quadratic Graphs and Vertices", 4, function(){
+    const h = pick([1, 2, 3, 4]), d = pick([1, 2, 3]), k = -d * d;
+    return {
+      goalProblem: "For y = (x − 3)² − 4, find the vertex, the axis of symmetry, the roots and the y-intercept.",
+      teachingSteps: [
+        { title: "The shape and its direction", explanation: "The graph of a quadratic is a <strong>parabola</strong>. If the x² coefficient <strong>a</strong> is positive it opens <strong>up</strong> and the vertex is a <strong>minimum</strong>; if a is negative it opens <strong>down</strong> and the vertex is a <strong>maximum</strong>.", visual: "a > 0: ∪ (minimum)     a < 0: ∩ (maximum)" },
+        { title: "Vertex form y = a(x − h)² + k", explanation: "The vertex is <strong>(h, k)</strong>. Watch the sign: (x − 3) means h = <strong>3</strong>, and (x + 2) means h = <strong>−2</strong>.", visual: "y = (x − 3)² − 4  →  vertex (3, −4)" },
+        { title: "Axis of symmetry", explanation: "The parabola is a mirror image of itself across the vertical line <strong>x = h</strong> through the vertex. In standard form y = ax² + bx + c, <strong>h = −b ÷ (2a)</strong>; substitute h to get k.", visual: "y = x² − 6x + 5: h = 6 ÷ 2 = 3, k = 9 − 18 + 5 = −4" },
+        { title: "Roots (x-intercepts)", explanation: "Roots are where the graph crosses the x-axis, so y = 0. In factored form y = a(x − p)(x − q) the roots are <strong>x = p and x = q</strong>, and the vertex sits exactly halfway between them.", visual: "y = (x − 1)(x − 5): roots 1 and 5, axis x = 3" },
+        { title: "The y-intercept", explanation: "Set x = 0. In standard form that is just <strong>(0, c)</strong>; in other forms substitute 0.", visual: "y = (x − 3)² − 4 at x = 0: 9 − 4 = 5 → (0, 5)" },
+        { title: "Reading a graph by symmetry", explanation: "Points at the same height are the same distance either side of the axis. If you know the vertex and one point, you get a second point free.", visual: "vertex (2, −9), point (5, 0) → mirror point (−1, 0)" }
+      ],
+      finalAnswer: "vertex (3, −4); axis x = 3; roots x = 1 and x = 5; y-intercept (0, 5)",
+      answerExplanation: "Vertex form gives (3, −4) and the axis x = 3. Setting y = 0: (x − 3)² = 4, so x − 3 = ±2 and x = 1 or 5. At x = 0, y = 9 − 4 = 5.",
+      example: { problem: "For y = x² − 8x + 12, find the vertex.", steps: [
+        { text: "h = −b ÷ (2a)", math: "h = 8 ÷ 2 = 4" },
+        { text: "k = y at x = 4", math: "16 − 32 + 12 = −4" },
+        { text: "Vertex", math: "(4, −4); it opens up (a = 1 > 0), so this is the minimum" }
+      ]},
+      keyPoints: [
+        "a > 0 opens up (minimum); a < 0 opens down (maximum)",
+        "y = a(x − h)² + k has vertex (h, k) and axis x = h",
+        "Standard form: h = −b ÷ (2a); y-intercept (0, c)",
+        "Roots are where y = 0; the vertex is halfway between them"
+      ],
+      mistakes: [
+        { wrong: "Reading the vertex of y = (x − 3)² − 4 as (−3, −4)", why: "(x − h) has a minus built in. x − 3 means h = +3." },
+        { wrong: "Giving the axis of symmetry as a number or a point", why: "It is a vertical LINE: write it as x = 3." },
+        { wrong: "Saying y = −2x² + … opens up", why: "A negative x² coefficient flips the parabola so it opens down." }
+      ],
+      guided: {
+        problem: `For y = (x − ${h})² − ${d * d}, find the vertex and the roots.`,
+        steps: [
+          { label: "Vertex (h, k)", value: `(${h}, ${k})` },
+          { label: "Set y = 0", value: `(x − ${h})² = ${d * d}` },
+          { label: "Square root both sides", value: `x − ${h} = ±${d}` }
+        ],
+        answer: `x = ${h - d} or x = ${h + d}`, answerLabel: "Roots:",
+        interactiveSteps: [
+          { prompt: `What is the vertex of y = (x − ${h})² − ${d * d}?`, hint: "Vertex form a(x − h)² + k has vertex (h, k).", answer: `(${h}, ${k})`, acceptableAnswers: [`(${h}, ${k})`, `(${h},${k})`], formatHint: "e.g., (3, -4)",
+            commonMistakes: { [`(${-h}, ${k})`]: `(x − ${h}) means h = +${h}.` } },
+          { prompt: "The axis of symmetry is the vertical line x = h. What is h?", hint: "The vertical line through the vertex.", answer: String(h), acceptableAnswers: [String(h)], formatHint: "Enter a number", commonMistakes: { [String(-h)]: `(x − ${h}) means h = +${h}.` } },
+          { prompt: `Solve (x − ${h})² = ${d * d}. Give both roots.`, hint: `x − ${h} = ${d} or x − ${h} = −${d}`, answer: `x = ${h - d} or x = ${h + d}`,
+            acceptableAnswers: [`x = ${h - d} or x = ${h + d}`, `x = ${h + d} or x = ${h - d}`, `${h - d} or ${h + d}`, `${h + d} or ${h - d}`, `${h - d}, ${h + d}`, `${h + d}, ${h - d}`, `${h - d} and ${h + d}`, `x=${h - d} or x=${h + d}`],
+            formatHint: "e.g., x = 1 or x = 5", commonMistakes: {} }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    const A = () => pick([1, 1, 1, -1, -1, 2, -2, 3]);
+    return choose({
+      vertex_from_vertex_form: () => {
+        const a = A(), h = ri(-6, 6), k = ri(-9, 9);
+        return {
+          question: `What is the vertex of the parabola ${vtxForm(a, h, k)}?`,
+          answer: pt(h, k), validate: pointIs(h, k),
+          options: opt4(pt(h, k), [pt(-h, k), pt(k, h), pt(h, -k), pt(-h, -k)]),
+          explanation: `In y = a(x − h)² + k the vertex is (h, k). ${h === 0 ? "There is no shift left or right, so h = 0" : `${shift(h)} means h = ${h}`}, and k = ${k}. Vertex (${h}, ${k}).`
+        };
+      },
+      vertex_from_standard: () => {
+        const a = pick([1, 1, -1, 2, -2]), h = ri(1, 5) * pick([1, -1]), k = ri(-12, 12);   // h never 0: "y = x²" is no exercise
+        const b = -2 * a * h, c = a * h * h + k;
+        return {
+          question: `What is the vertex of y = ${stdForm(a, b, c).slice(4)}?`,
+          answer: pt(h, k), validate: pointIs(h, k),
+          options: opt4(pt(h, k), [pt(-h, a * h * h - b * h + c), pt(h, c), pt(b / (2 * a), k), pt(-b, c)]),
+          explanation: `h = −b ÷ (2a) = ${-b} ÷ ${2 * a} = ${h}. Then k = ${a}(${h})² ${b < 0 ? "− " + (-b) : "+ " + b}(${h}) ${c < 0 ? "− " + (-c) : "+ " + c} = ${k}. Vertex (${h}, ${k}).`
+        };
+      },
+      axis_of_symmetry: () => {
+        const formKind = pick(["std", "fac"]);
+        let h, eq;
+        let work;
+        if (formKind === "std") { const a = pick([1, -1, 2, -3]); h = ri(-6, 6); const b = -2 * a * h, c = ri(-10, 10); eq = stdForm(a, b, c); work = `h = −b ÷ (2a) = ${-b} ÷ ${2 * a} = ${h}`; }
+        else { const p = ri(-7, 6); const q = p + 2 * ri(1, 4); h = (p + q) / 2; eq = facForm(pick([1, -1, 2]), p, q); work = `the roots are ${p} and ${q}, and halfway between them is (${p} + ${q}) ÷ 2 = ${h}`; }
+        // The answer is the bare number h, with the line spelled out in the
+        // question. An answer of "x = 4" is graded by the shared interpreter as
+        // equal to "x = 8" (see the report), so a wrong line would be marked
+        // right; "4" is graded as a number and "x = 4" still passes as a
+        // restated variable.
+        const ans = String(h);
+        return {
+          question: `The axis of symmetry of the parabola ${eq} is the vertical line x = h. What is h?`,
+          answer: ans,
+          options: opt4(ans, [String(-h), String(2 * h || 1), String(h + 1), String(h - 1)]),   // sign of −b/2a, forgot the 2, off by one
+          explanation: formKind === "std"
+            ? `For y = ax² + bx + c, ${work}. The axis is x = ${h}.`
+            : `Each factor is zero at a root: ${work}. The axis is x = ${h}.`
+        };
+      },
+      direction: () => {
+        const a = pick([1, 2, 3, -1, -2, -3, 0.5, -0.5]);
+        const formKind = pick(["std", "vtx"]);
+        const h = ri(-4, 4), k = ri(-6, 6);
+        const eq = formKind === "std" ? stdForm(a, ri(-6, 6), ri(-8, 8)) : vtxForm(a, h, k);
+        const ans = a > 0 ? "opens up, with a minimum" : "opens down, with a maximum";
+        return {
+          question: `Which describes the graph of ${eq}?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, ["opens up, with a minimum", "opens down, with a maximum", "opens up, with a maximum", "opens down, with a minimum"]),
+          explanation: `The x² coefficient is ${fmt(a)}, which is ${a > 0 ? "positive, so the parabola opens up and its vertex is the lowest point (a minimum)" : "negative, so the parabola opens down and its vertex is the highest point (a maximum)"}.`
+        };
+      },
+      roots: () => {
+        const viaFactored = Math.random() < 0.6;
+        let p, q, eq;
+        if (viaFactored) { p = ri(-8, 7); q = ri(-8, 8); if (q === p) q = p + 3; eq = facForm(pick([1, 1, -1, 2]), p, q); }
+        else { const h = ri(-4, 5), d = ri(1, 5); p = h - d; q = h + d; eq = vtxForm(1, h, -d * d); }
+        const lo = Math.min(p, q), hi = Math.max(p, q);
+        const ans = `x = ${lo} or x = ${hi}`;
+        return {
+          question: `What are the roots (x-intercepts) of ${eq}?`,
+          answer: ans, acceptableAnswers: [`x = ${hi} or x = ${lo}`, `${lo} or ${hi}`, `${lo}, ${hi}`, `${hi}, ${lo}`, `${lo} and ${hi}`],
+          validate: typed => { const n = numsIn(typed).sort((u, v) => u - v); return n.length === 2 && n[0] === lo && n[1] === hi; },
+          options: opt4(ans, [`x = ${-hi} or x = ${-lo}`, `x = ${lo} or x = ${-hi}`, `x = ${lo - 1} or x = ${hi + 1}`, `x = ${-lo} or x = ${hi}`]),
+          explanation: viaFactored
+            ? `Set y = 0. A product is zero when a factor is zero: ${fact(p)} = 0 gives x = ${p}, and ${fact(q)} = 0 gives x = ${q}.`
+            : `Set y = 0: ${shift((p + q) / 2)}² = ${((q - p) / 2) ** 2}, so ${shift((p + q) / 2)} = ±${(q - p) / 2}. x = ${(p + q) / 2} − ${(q - p) / 2} = ${lo} or x = ${(p + q) / 2} + ${(q - p) / 2} = ${hi}.`
+        };
+      },
+      y_intercept: () => {
+        const formKind = pick(["std", "vtx", "fac"]);
+        let eq, c;
+        if (formKind === "std") { const a = pick([1, -1, 2, -2, 3]), b = ri(-8, 8); c = ri(-12, 12); eq = stdForm(a, b, c); }
+        else if (formKind === "vtx") { const a = pick([1, -1, 2]), h = ri(-4, 4), k = ri(-8, 8); c = a * h * h + k; eq = vtxForm(a, h, k); }
+        else { const a = pick([1, -1, 2]), p = ri(-6, 6), q = ri(-6, 6); c = a * p * q; eq = facForm(a, p, q); }
+        return {
+          question: `Where does the graph of ${eq} cross the y-axis? Give the point (x, y).`,
+          answer: pt(0, c), validate: pointIs(0, c),
+          options: opt4(pt(0, c), [pt(c, 0), pt(0, -c), pt(0, c + 1), pt(0, c - 2)]),
+          explanation: `On the y-axis x = 0. Substituting x = 0 into ${eq} gives y = ${c}, so the y-intercept is (0, ${c}).`
+        };
+      },
+      graph_symmetry: () => {
+        if (Math.random() < 0.5) {
+          const h = ri(-5, 5), k = ri(-9, 9), d = ri(1, 4), y = k + pick([1, -1, 2, -2]) * d * d;
+          const ans = pt(h - d, y);
+          return {
+            subType: "graph_symmetry",
+            question: `A parabola on a graph has its vertex at (${h}, ${k}) and passes through (${h + d}, ${y}). What other point on the parabola has a y-value of ${y}?`,
+            answer: ans, validate: pointIs(h - d, y),
+            options: opt4(ans, [pt(-(h + d), y), pt(h + d, -y), pt(h - 2 * d, y), pt(h, y)]),
+            explanation: `The axis of symmetry is x = ${h}. The point (${h + d}, ${y}) is ${d} to the right of it, so its mirror image is ${d} to the left: x = ${h} − ${d} = ${h - d}. The point is (${h - d}, ${y}).`
+          };
+        }
+        const p = ri(-8, 5), q = p + 2 * ri(1, 5), h = (p + q) / 2;
+        const ans = String(h);   // bare number, for the same reason as axis_of_symmetry
+        return {
+          subType: "graph_symmetry",
+          question: `A parabola on a graph crosses the x-axis at (${p}, 0) and (${q}, 0). Its axis of symmetry is the line x = h. What is h?`,
+          answer: ans,
+          options: opt4(ans, [String(q - p), String(p + q), String((q - p) / 2), String(-h), String(h + 1)]),   // the gap, the sum, half the gap, sign
+          explanation: `The axis is halfway between the roots: (${p} + ${q}) ÷ 2 = ${h}. Axis of symmetry: x = ${h}.`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-311  Modeling with Functions  (tier 5, grades 9-10)
+  // Plan item 34: turn a situation into a linear, exponential or quadratic
+  // model, use it, and judge whether the answer makes sense.
+  // =====================================================================
+  const FAMS3 = ["linear", "exponential", "quadratic", "constant"];
+  _addSkill(5, "Modeling with Functions", "Modeling with Functions", 5, function(){
+    const v = pick([32, 64, 96]), s = pick([5, 6, 10]);
+    const tMax = v / 32, hMax = s + v * v / 64;
+    return {
+      goalProblem: "A $900 laptop loses 20% of its value every year. Which kind of model fits, and what is it worth after 2 years?",
+      teachingSteps: [
+        { title: "Same AMOUNT each step → linear", explanation: "If y goes up or down by the <strong>same amount</strong> every step (+$15 a week, −3 cm an hour), use <strong>y = mx + b</strong>. In a table the <strong>differences</strong> are constant.", visual: "10, 25, 40, 55 → differences 15, 15, 15" },
+        { title: "Same PERCENT each step → exponential", explanation: "If y is <strong>multiplied</strong> by the same factor every step (grows 5% a year, halves every hour), use <strong>y = a·bᵗ</strong>. In a table the <strong>ratios</strong> are constant.", visual: "40, 60, 90, 135 → ratios ×1.5, ×1.5, ×1.5" },
+        { title: "Up then down, or area → quadratic", explanation: "Thrown objects, areas built from a fixed fence, and profit that peaks are <strong>quadratic</strong>: y = ax² + bx + c. The <strong>second differences</strong> are constant, and the vertex gives the maximum or minimum.", visual: "0, 7, 12, 15, 16 → differences 7, 5, 3, 1 → second differences −2" },
+        { title: "Use the model", explanation: "Substitute to predict; set the model equal to a value and solve to find <em>when</em>; use the vertex for a <em>greatest</em> or <em>least</em> value.", visual: `h = −16t² + ${v}t + ${s}: highest at t = ${v} ÷ 32 = ${tMax}, h = ${hMax} ft` },
+        { title: "Does the answer make sense?", explanation: "Check the units and the situation. Time cannot be negative; you cannot hire 6.25 buses; a model built from a few weeks of data may not hold for 10 years.", visual: "t = −1 or t = 3 → only t = 3 seconds makes sense" }
+      ],
+      finalAnswer: "Exponential: y = 900(0.8)ᵗ; after 2 years it is worth $576",
+      answerExplanation: "Losing the same PERCENT each year is exponential decay with factor 1 − 0.20 = 0.8. y = 900 × 0.8² = 900 × 0.64 = $576.",
+      example: { problem: "A ball is thrown so h = −16t² + 32t + 48. When does it hit the ground?", steps: [
+        { text: "Ground means h = 0", math: "−16t² + 32t + 48 = 0 → t² − 2t − 3 = 0" },
+        { text: "Factor", math: "(t − 3)(t + 1) = 0 → t = 3 or t = −1" },
+        { text: "Judge the answers", math: "time cannot be negative, so it lands at t = 3 seconds" }
+      ]},
+      keyPoints: [
+        "Constant differences → linear; constant ratios → exponential; constant second differences → quadratic",
+        "Same amount per step is linear; same percent per step is exponential",
+        "Maximum height or area → use the vertex of a quadratic",
+        "Reject answers the situation does not allow (negative time, part of a bus)"
+      ],
+      mistakes: [
+        { wrong: "Using a linear model for 'loses 20% each year'", why: "20% of a smaller value each year is a smaller amount each year. Same percent = exponential." },
+        { wrong: "Keeping t = −1 as a landing time", why: "The equation allows it but the situation does not: the ball was thrown at t = 0." },
+        { wrong: "Answering 6.25 buses", why: "Buses come whole, and 6 would leave students behind. Round UP to 7." }
+      ],
+      guided: {
+        problem: `A ball's height is h = −16t² + ${v}t + ${s} feet after t seconds. What is its greatest height?`,
+        steps: [
+          { label: "Which model is this?", value: "quadratic (opens down)" },
+          { label: "Time of the vertex t = −b ÷ (2a)", value: `${v} ÷ 32 = ${tMax}` },
+          { label: `Height at t = ${tMax}`, value: `−16(${tMax})² + ${v}(${tMax}) + ${s} = ?` }
+        ],
+        answer: String(hMax), answerLabel: "Greatest height (ft) =",
+        interactiveSteps: [
+          { prompt: "At what time t is the ball highest? (t = −b ÷ 2a)", hint: `a = −16, b = ${v}`, answer: String(tMax), acceptableAnswers: [String(tMax)], formatHint: "Enter a number",
+            commonMistakes: { [String(-tMax)]: "−b ÷ (2a) = −" + v + " ÷ (−32), which is positive." } },
+          { prompt: `What is the height at t = ${tMax}? (in feet)`, hint: `−16·${tMax}² + ${v}·${tMax} + ${s}`, answer: String(hMax), acceptableAnswers: [String(hMax)], formatHint: "Enter a number", commonMistakes: {} }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    // [situation, family]. Several of each, including "constant", so the
+    // fourth choice is a real option and not filler.
+    // Each is a function so the numbers change from draw to draw.
+    const SITS = [
+      () => [`A gym charges $${pick([20, 25, 30, 35, 40])} a month, and the total paid is tracked month by month.`, "linear"],
+      () => [`A candle burns down ${pick([1.5, 2, 2.5, 3])} cm every hour.`, "linear"],
+      () => [`A plumber charges a $${pick([50, 60, 75])} call-out fee plus $${pick([40, 45, 55])} an hour.`, "linear"],
+      () => [`A car travels at a steady ${pick([45, 50, 55, 60, 65])} miles per hour; distance is tracked over time.`, "linear"],
+      () => [`A bakery sells cookies for $${pick([1.5, 2, 2.5, 3])} each; money taken is compared with cookies sold.`, "linear"],
+      () => [`A savings account earns ${pick([2, 3, 4, 5, 6])}% interest every year, added to the balance.`, "exponential"],
+      () => [`A rumor spreads so that the number of people who know it ${pick(["doubles", "triples"])} every ${pick(["day", "hour"])}.`, "exponential"],
+      () => [`A medicine leaves the body at ${pick([10, 15, 20, 25])}% of the remaining amount each hour.`, "exponential"],
+      () => [`A car loses ${pick([10, 12, 15, 18])}% of its value every year.`, "exponential"],
+      () => [`A colony of bacteria grows by ${pick([20, 30, 50])}% every hour.`, "exponential"],
+      () => [`A ball is thrown upward at ${pick([32, 48, 64])} feet per second and its height is tracked until it lands.`, "quadratic"],
+      () => [`A rectangle has a perimeter of ${pick([20, 30, 40, 60])} m and its area is found for different widths.`, "quadratic"],
+      () => [`A stone is dropped from a ${pick([100, 150, 200])}-foot bridge and the distance it has fallen is tracked over time.`, "quadratic"],
+      () => [`The area of a square ${pick(["patio", "garden", "rug"])} is found for different side lengths.`, "quadratic"],
+      () => [`A streaming service costs $${pick([9, 12, 15])} a month no matter how many hours you watch; cost is compared with hours watched.`, "constant"],
+      () => [`A parking garage charges a flat $${pick([6, 8, 10])} for any stay up to 24 hours; cost is compared with hours parked.`, "constant"],
+      () => [`A museum charges $${pick([12, 15, 20])} to enter however long you stay; cost is compared with time spent inside.`, "constant"]];
+    return choose({
+      choose_from_situation: () => {
+        const [s, fam] = pick(SITS)();
+        return {
+          question: `Which type of model best fits this situation?  ${s}`,
+          answer: fam, forceChoice: true,
+          options: opt4(fam, FAMS3),
+          explanation: {
+            linear: "The quantity changes by the same AMOUNT each step, so the model is linear: y = mx + b.",
+            exponential: "The quantity is multiplied by the same FACTOR (the same percent) each step, so the model is exponential: y = a·bᵗ.",
+            quadratic: "Height of a thrown or falling object, and area from a fixed perimeter or side length, follow a squared relationship: a quadratic, y = ax² + bx + c.",
+            constant: "The output does not change at all as the input changes, so the model is constant: y = c (slope 0)."
+          }[fam]
+        };
+      },
+      choose_from_table: () => {
+        const fam = pick(["linear", "exponential", "quadratic", "linear", "exponential", "quadratic", "constant"]);
+        let ys;
+        if (fam === "linear") { const b = ri(2, 30), m = pick([3, 4, 5, 6, 7, 8, -3, -4, -5]); ys = [0, 1, 2, 3, 4].map(x => b + m * x + (m < 0 ? 30 : 0)); }
+        else if (fam === "exponential") {
+          // Whole-number tables only: growth by 2 or 3, or ×1.5 / ×2/3 from a start that keeps every value whole.
+          const [a, r] = pick([[2, 2], [3, 2], [5, 2], [10, 2], [2, 3], [4, 3], [16, 1.5], [32, 1.5], [81, 2 / 3], [162, 2 / 3]]);
+          ys = [0, 1, 2, 3, 4].map(x => Math.round(a * Math.pow(r, x)));
+        }
+        else if (fam === "quadratic") { const a = pick([1, 2, -1, 3]), h = ri(0, 4), k = ri(-5, 20); ys = [0, 1, 2, 3, 4].map(x => a * (x - h) * (x - h) + k); }
+        else { const c = ri(5, 50); ys = [c, c, c, c, c]; }
+        const show = ys.map(v => fmt(v));
+        const d1 = ys.slice(1).map((v, i) => fmt(v - ys[i]));
+        return {
+          question: `A table shows  x: 0, 1, 2, 3, 4   and   y: ${show.join(", ")}. Which type of model fits the data?`,
+          answer: fam, forceChoice: true,
+          options: opt4(fam, FAMS3),
+          explanation: `First differences: ${d1.join(", ")}. ` + {
+            linear: "They are all the same, so the data is linear.",
+            exponential: `They are not equal, but each y is the one before multiplied by ${fmt(ys[1] / ys[0])}: constant ratios mean exponential.`,
+            quadratic: `They change by the same amount each time (second differences ${fmt(ys[2] - 2 * ys[1] + ys[0])}), so the data is quadratic.`,
+            constant: "They are all 0: y never changes, so the model is constant."
+          }[fam]
+        };
+      },
+      use_model: () => {
+        const which = pick(["linear", "exponential", "quadratic_max", "quadratic_area"]);
+        if (which === "linear") {
+          const fee = pick([20, 35, 50]), rate = pick([12, 15, 18, 22]), d = ri(3, 9);
+          return {
+            question: `A bike rental costs $${fee} plus $${rate} per day. Choose a model and find the cost of renting for ${d} days (in dollars).`,
+            answer: String(fee + rate * d), acceptableAnswers: ["$" + (fee + rate * d)],
+            options: opt4(String(fee + rate * d), [String((fee + rate) * d), String(fee * d + rate), String(rate * d), String(fee + rate * (d + 1))]),
+            explanation: `Same amount per day → linear: y = ${rate}x + ${fee}. y = ${rate}·${d} + ${fee} = ${fee + rate * d} dollars.`
+          };
+        }
+        if (which === "exponential") {
+          const a = pick([100, 150, 250, 300, 500]), d = pick([2, 3, 4, 6]), k = ri(2, 5);
+          return {
+            question: `A culture starts with ${a} bacteria and doubles every ${d} hours. Choose a model and find how many bacteria there are after ${d * k} hours.`,
+            answer: String(a * Math.pow(2, k)),
+            options: opt4(String(a * Math.pow(2, k)), [String(a * 2 * k), String(a * Math.pow(2, k - 1)), String(a * Math.pow(2, k + 1)), String(a + a * k)]),   // ×2 per doubling read as ×2k, off-by-one doublings, added a each time
+            explanation: `Doubling is a constant factor → exponential: y = ${a}·2^(t/${d}). After ${d * k} hours that is ${k} doublings: ${a} × 2^${k} = ${a * Math.pow(2, k)}.`
+          };
+        }
+        if (which === "quadratic_max") {
+          const v = pick([32, 48, 64, 80, 96]), s = pick([0, 4, 5, 6, 10]);
+          const t = v / 32, h = s + v * v / 64;
+          return {
+            question: `A ball is launched so its height is h = −16t² + ${v}t${s ? " + " + s : ""} feet after t seconds. What is its greatest height, in feet?`,
+            answer: fmt(h),
+            options: opt4(fmt(h), [fmt(t), fmt(s + v * t), fmt(h + 16 * t * t), fmt(v)]),
+            explanation: `Quadratic opening down, so the top is the vertex. t = −b ÷ (2a) = ${v} ÷ 32 = ${fmt(t)}. h = −16(${fmt(t)})² + ${v}(${fmt(t)})${s ? " + " + s : ""} = ${fmt(h)} feet.`
+          };
+        }
+        const P = pick([24, 32, 40, 48, 60, 80, 100]), side = P / 4;
+        return {
+          question: `A farmer has ${P} m of fence for a rectangular pen. The area is A = x(${P / 2} − x) for a width of x m. What is the greatest possible area, in square meters?`,
+          answer: fmt(side * side), acceptableAnswers: [fmt(side * side) + " m²"],
+          options: opt4(fmt(side * side), [fmt(P), fmt((P / 2) * (P / 2)), fmt(side), fmt(side * (side + 2))]),
+          explanation: `A = x(${P / 2} − x) is a quadratic opening down, with roots 0 and ${P / 2}. The vertex is halfway: x = ${fmt(side)}. A = ${fmt(side)} × ${fmt(side)} = ${fmt(side * side)} m².`
+        };
+      },
+      reject_impossible: () => {
+        const r2v = ri(2, 5); let m = ri(1, 3); if (m === r2v) m = 1;   // roots t = r2v and t = −m; never equal, so the t term is not zero
+        const b = 16 * (r2v - m), c = 16 * r2v * m;
+        return {
+          question: `A ball is thrown from a ${c}-foot platform. Its height is h = −16t² ${b >= 0 ? "+ " + b : "− " + (-b)}t + ${c}. Solving h = 0 gives t = ${-m} or t = ${r2v}. How many seconds after it is thrown does the ball hit the ground?`,
+          answer: String(r2v), acceptableAnswers: [`t = ${r2v}`, `${r2v} seconds`],
+          options: opt4(String(r2v), [String(-m), String(r2v + m), String(r2v - m)]),
+          explanation: `Both values solve the equation, but time starts at t = 0 when the ball is thrown, so t = ${-m} cannot be when it lands. The ball hits the ground after ${r2v} seconds.`
+        };
+      },
+      whole_units: () => {
+        const up = Math.random() < 0.6;
+        if (up) {
+          const thing = pick([["students on a field trip", "buses", "seats", [48, 52, 56]], ["guests at a party", "tables", "seats", [6, 8, 10]], ["eggs", "cartons", "spaces", [12, 18]]]);
+          const cap = pick(thing[3]), n = cap * ri(3, 8) + ri(1, cap - 1);
+          return {
+            question: `There are ${n} ${thing[0]}. Each of the ${thing[1]} has ${cap} ${thing[2]}. Dividing ${n} by ${cap} gives a decimal. How many ${thing[1]} are needed so that everything fits?`,
+            answer: String(Math.ceil(n / cap)),
+            options: opt4(String(Math.ceil(n / cap)), [String(Math.floor(n / cap)), String(Math.round(n / cap * 100) / 100), String(Math.ceil(n / cap) + 1)]),
+            explanation: `${n} ÷ ${cap} ≈ ${fmt(Math.round(n / cap * 100) / 100)}. ${Math.floor(n / cap)} ${thing[1]} would leave ${n - cap * Math.floor(n / cap)} out, and you cannot use part of one, so round UP: ${Math.ceil(n / cap)}.`
+          };
+        }
+        const price = pick([3, 4, 6, 7, 8, 9]), money = price * ri(4, 12) + ri(1, price - 1);
+        return {
+          subType: "whole_units",
+          question: `Tickets cost $${price} each and you have $${money}. Dividing ${money} by ${price} gives a decimal. How many tickets can you actually buy?`,
+          answer: String(Math.floor(money / price)),
+          options: opt4(String(Math.floor(money / price)), [String(Math.ceil(money / price)), String(Math.round(money / price * 100) / 100), String(Math.floor(money / price) - 1)]),
+          explanation: `${money} ÷ ${price} ≈ ${fmt(Math.round(money / price * 100) / 100)}. You cannot buy part of a ticket and you cannot afford ${Math.ceil(money / price)} (that costs $${price * Math.ceil(money / price)}), so round DOWN: ${Math.floor(money / price)} tickets.`
+        };
+      },
+      judge_reasonable: () => {
+        const c = pick([
+          () => { const m = pick([2, 2.5, 3]), b = pick([4, 5, 6]), yrs = pick([5, 10, 20]), w = 52 * yrs, y = fmt(m * w + b);
+            return { q: `A sunflower's height is modeled by h = ${m}w + ${b} cm, using data from its first 8 weeks. The model predicts it will be ${y} cm tall after ${yrs} years (${w} weeks). Is that prediction reasonable?`,
+              a: "No, plants stop growing, so the model cannot be stretched that far",
+              d: ["Yes, the equation gives that height, so it must be right", "No, the height should be negative", "Yes, a plant grows the same amount every week forever"] }; },
+          () => { const v = pick([20000, 24000, 30000]), m = pick([2500, 3000, 4000]), yrs = Math.ceil(v / m) + ri(1, 3), y = v - m * yrs;
+            return { q: `A car's value is modeled by V = ${v} − ${m}t dollars. For t = ${yrs} years the model gives V = ${y}. Is that reasonable?`,
+              a: "No, a car's value cannot drop below zero, so the model fails there",
+              d: ["Yes, the owner owes that much to keep the car", "Yes, every linear model works for any value of t", "No, the value should have doubled by then"] }; },
+          () => { const a = pick([500, 800, 1000]), yrs = pick([30, 40, 50]);
+            return { q: `A town of ${a} people grows 10% a year. The model y = ${a}(1.1)^t predicts about ${commas(Math.round(a * Math.pow(1.1, yrs)))} people after ${yrs} years. A planner says the town only has room for about 5,000 people. Should the prediction be trusted?`,
+              a: "No, limited space means the growth cannot keep compounding forever",
+              d: ["Yes, exponential growth always continues", "No, the town should shrink instead", "Yes, but only if the rate is changed to 1%"] }; },
+          () => { return { q: `A ball's height is h = −16t² + 16t + 96. A student finds h = 0 at t = −2 and t = 3 and says the ball lands 2 seconds before it is thrown. Is the student right?`,
+              a: "No, negative time is before the throw, so only t = 3 seconds makes sense",
+              d: ["Yes, both answers are times when it lands", "No, the ball never lands", "Yes, because the equation has two solutions"] }; }]);
+        const r = c();
+        return {
+          subType: "judge_reasonable",
+          question: r.q, answer: r.a, forceChoice: true,
+          options: opt4(r.a, r.d),
+          explanation: `Always check a model's answer against the situation. ${r.a}.`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-317  Comparing Function Families  (tier 7, grades 10-11)
+  // Plan item 52: recognise and compare linear, quadratic, exponential,
+  // absolute-value and piecewise functions from equations, tables, graphs.
+  // =====================================================================
+  const FAMS5 = ["linear", "quadratic", "exponential", "absolute value", "piecewise"];
+  // Three other families as distractors, in random order.
+  const famOpts = fam => opt4(fam, sh(FAMS5.filter(f => f !== fam)));
+  _addSkill(7, "Comparing Function Families", "Comparing Function Families", 5, function(){
+    const p = pick([2, 3]), k = pick([3, 4, 5]);
+    const fval = k <= 2 ? k * k : 2 * k + 1;
+    return {
+      goalProblem: "Name the family of each: y = 3x + 1, y = x² − 4, y = 2ˣ, y = |x − 1|, and f(x) = x + 1 for x < 0, 3 for x ≥ 0.",
+      teachingSteps: [
+        { title: "Linear", explanation: "<strong>y = mx + b</strong>. Straight line. Equal steps in x give <strong>equal differences</strong> in y — a constant rate of change.", visual: "y = 3x + 1:  1, 4, 7, 10 (+3 each time)" },
+        { title: "Quadratic", explanation: "<strong>y = ax² + bx + c</strong>. A smooth U-shaped <strong>parabola</strong> with one turning point and a line of symmetry. The <strong>second differences</strong> are constant.", visual: "y = x² − 4:  −4, −3, 0, 5 (differences 1, 3, 5; second differences 2)" },
+        { title: "Exponential", explanation: "<strong>y = a·bˣ</strong> with the variable in the <strong>exponent</strong>. Equal steps in x <strong>multiply</strong> y by the same factor (constant <strong>ratio</strong>). The graph hugs a horizontal asymptote on one side and grows steeply on the other — it eventually passes any linear or quadratic.", visual: "y = 2ˣ:  1, 2, 4, 8, 16 (×2 each time)" },
+        { title: "Absolute value", explanation: "<strong>y = a|x − h| + k</strong>. A <strong>V shape</strong> with a sharp corner at (h, k). The rate is −a on one side of the corner and +a on the other.", visual: "y = |x − 1|:  2, 1, 0, 1, 2 (corner at x = 1)" },
+        { title: "Piecewise", explanation: "Different rules on different intervals of x. To evaluate, <strong>first decide which interval x is in</strong>, then use only that rule. The graph can change direction suddenly or even jump.", visual: "f(x) = x + 1 if x < 0;  3 if x ≥ 0" },
+        { title: "Comparing", explanation: "Compare families by their shape, rate, turning points and long-run behaviour: linear changes steadily, quadratics turn once, absolute value turns at a corner, and exponential growth eventually beats all of them.", visual: "2ˣ vs 10x: at x = 6, 64 > 60 — the exponential has overtaken" }
+      ],
+      finalAnswer: "linear, quadratic, exponential, absolute value, piecewise",
+      answerExplanation: "3x + 1 has x to the first power (linear); x² − 4 is squared (quadratic); 2ˣ has x in the exponent (exponential); |x − 1| is absolute value; the last uses different rules on different intervals (piecewise).",
+      example: { problem: "A table shows x: 0, 1, 2, 3 and y: 5, 10, 20, 40. Which family?", steps: [
+        { text: "First differences", math: "5, 10, 20 — not constant, so not linear" },
+        { text: "Second differences", math: "5, 10 — not constant, so not quadratic" },
+        { text: "Ratios", math: "10 ÷ 5 = 2, 20 ÷ 10 = 2, 40 ÷ 20 = 2 → exponential" }
+      ]},
+      keyPoints: [
+        "Linear: constant differences; quadratic: constant second differences",
+        "Exponential: constant ratios, variable in the exponent",
+        "Absolute value: V shape with a corner; piecewise: different rules on intervals",
+        "Exponential growth eventually beats linear and quadratic growth"
+      ],
+      mistakes: [
+        { wrong: "Calling y = x² exponential because it has an exponent", why: "In x² the variable is the BASE (quadratic). Exponential has the variable IN the exponent: 2ˣ." },
+        { wrong: "Calling a V-shaped graph quadratic", why: "A parabola is smooth at the bottom. A sharp corner means absolute value." },
+        { wrong: "Using every rule of a piecewise function at once", why: "Only the rule whose interval contains x applies." }
+      ],
+      guided: {
+        problem: `f(x) = x² if x ≤ 2, and f(x) = 2x + 1 if x > 2. Find f(${k}).`,
+        steps: [
+          { label: `Which interval contains x = ${k}?`, value: "x > 2" },
+          { label: "Use that rule", value: `2(${k}) + 1` },
+          { label: "Evaluate", value: `${2 * k} + 1 = ?` }
+        ],
+        answer: String(fval), answerLabel: `f(${k}) =`,
+        interactiveSteps: [
+          { prompt: `Which rule applies at x = ${k}: the first (x² for x ≤ 2) or the second (2x + 1 for x > 2)? Type first or second.`, hint: `Is ${k} greater than 2?`, answer: "second", acceptableAnswers: ["second", "2nd", "the second"], formatHint: "Type first or second", commonMistakes: { first: `${k} is greater than 2, so the first rule does not apply.` } },
+          { prompt: `Evaluate f(${k}) using that rule.`, hint: `2(${k}) + 1`, answer: String(fval), acceptableAnswers: [String(fval)], formatHint: "Enter a number",
+            commonMistakes: { [String(k * k)]: `That uses x², but x² only applies when x ≤ 2.` } },
+          { prompt: `What family is the piece 2x + 1?`, hint: "x to the first power, constant rate.", answer: "linear", acceptableAnswers: ["linear", "Linear"], formatHint: "Type the family name", commonMistakes: {} }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    const nz = (lo, hi) => { let v = ri(lo, hi); return v === 0 ? 1 : v; };
+    return choose({
+      from_equation: () => {
+        const fam = pick(FAMS5);
+        let eq;
+        if (fam === "linear") eq = pick([`y = ${coef(nz(-5, 6))}x ${pick(["+", "−"])} ${ri(1, 9)}`, `y = ${ri(2, 9)} − ${ri(2, 5)}x`, `y = x/${ri(2, 5)} + ${ri(1, 7)}`]);
+        else if (fam === "quadratic") eq = pick([`y = ${coef(nz(-3, 3))}x² + ${ri(1, 6)}x − ${ri(1, 9)}`, `y = (x − ${ri(1, 5)})² + ${ri(1, 6)}`, `y = (x + ${ri(1, 4)})(x − ${ri(1, 6)})`]);
+        else if (fam === "exponential") eq = pick([`y = ${ri(2, 9)}·${pick([2, 3, 5])}ˣ`, `y = ${pick([100, 250, 500])}(${pick(["0.8", "1.05", "1.5", "0.5"])})ˣ`, `y = ${pick([2, 3, 4])}ˣ − ${ri(1, 5)}`]);
+        else if (fam === "absolute value") eq = pick([`y = |x − ${ri(1, 6)}| + ${ri(1, 6)}`, `y = ${coef(nz(-3, 3))}|x + ${ri(1, 5)}|`, `y = −|x| + ${ri(2, 8)}`]);
+        else { const c = ri(-2, 3); eq = pick([`f(x) = ${ri(2, 4)}x if x < ${c}; f(x) = ${ri(1, 9)} if x ≥ ${c}`, `f(x) = x² if x ≤ ${c}; f(x) = x + ${ri(1, 6)} if x > ${c}`]); }
+        return {
+          question: `Which family does ${eq} belong to?`,
+          answer: fam, forceChoice: true, options: famOpts(fam),
+          explanation: {
+            linear: `${eq} has x only to the first power, so its graph is a straight line: linear.`,
+            quadratic: `${eq} has x squared (multiplying out the brackets if needed gives an x² term): quadratic.`,
+            exponential: `In ${eq} the variable is IN the exponent: exponential.`,
+            "absolute value": `${eq} takes the absolute value of an expression in x: absolute value (a V-shaped graph).`,
+            piecewise: `${eq} uses different rules on different intervals of x: piecewise.`
+          }[fam]
+        };
+      },
+      from_table: () => {
+        const fam = pick(FAMS5);
+        const xs = [-2, -1, 0, 1, 2, 3];
+        let ys;
+        if (fam === "linear") { const m = nz(-4, 5), b = ri(-5, 8); ys = xs.map(x => m * x + b); }
+        else if (fam === "quadratic") { const a = pick([1, 2, -1]), h = pick([0, 1]), k = ri(-4, 4); ys = xs.map(x => a * (x - h) * (x - h) + k); }
+        else if (fam === "exponential") { const a = pick([4, 8, 12]), b = 2; ys = xs.map(x => a * Math.pow(b, x)); }
+        else if (fam === "absolute value") { const a = pick([1, 2, 3]), h = pick([0, 1]), k = ri(-3, 4); ys = xs.map(x => a * Math.abs(x - h) + k); }
+        else { const m1 = pick([1, 2]), m2 = pick([3, 4]), b = ri(0, 5); ys = xs.map(x => x <= 0 ? m1 * x + b : m2 * x + b); }
+        const d1 = ys.slice(1).map((v, i) => v - ys[i]);
+        return {
+          question: `A table shows  x: ${xs.join(", ")}   and   y: ${ys.map(fmt).join(", ")}. Which family of functions fits the table?`,
+          answer: fam, forceChoice: true, options: famOpts(fam),
+          explanation: `First differences: ${d1.map(fmt).join(", ")}. ` + {
+            linear: "All equal — constant rate of change — so it is linear.",
+            quadratic: "They change by the same amount each step (constant second differences) and the values turn around smoothly — quadratic.",
+            exponential: `Each y is double the one before (constant ratio 2) — exponential.`,
+            "absolute value": "They are the same size but switch from negative to positive at one point: the values fall at a steady rate, hit a corner, then rise at the same rate — absolute value.",
+            piecewise: "They are constant on one part of the table and a different constant on the other, both positive: two different straight-line rules joined together — piecewise. (Absolute value would switch to the opposite rate.)"
+          }[fam]
+        };
+      },
+      from_graph: () => {
+        const h = ri(-3, 4), k = ri(-4, 5);
+        const D = {
+          linear: [`a straight line through (0, ${k}) that rises 2 units for every 1 unit to the right`, `a straight line that falls steadily from (${h}, ${k + 6}) to (${h + 3}, ${k})`],
+          quadratic: [`a smooth U-shaped curve with its lowest point at (${h}, ${k}), symmetric about x = ${h}`, `a smooth upside-down U that peaks at (${h}, ${k}) and falls away equally on both sides`],
+          exponential: [`a curve that stays just above the x-axis on the left, crosses the y-axis at (0, ${Math.abs(k) + 1}), and then shoots up more and more steeply`, `a curve that starts high on the left and flattens out toward the x-axis on the right, never touching it`],
+          "absolute value": [`a V shape with a sharp corner at (${h}, ${k}), with straight sides rising at the same steepness on each side`, `an upside-down V with a sharp point at (${h}, ${k}) and two straight sides`],
+          piecewise: [`a flat horizontal segment at y = ${k} for x < ${h}, then a separate straight line that starts at (${h}, ${k + 3}) and rises`, `two straight pieces that meet at x = ${h} with different, both-positive steepnesses`]
+        };
+        const fam = pick(FAMS5);
+        return {
+          question: `A graph shows ${pick(D[fam])}. Which family of functions is it?`,
+          answer: fam, forceChoice: true, options: famOpts(fam),
+          explanation: {
+            linear: "A straight line with a constant steepness is linear.",
+            quadratic: "A smooth U (or upside-down U) with one turning point and a line of symmetry is a parabola: quadratic.",
+            exponential: "A curve that flattens toward a horizontal asymptote on one side and grows (or decays) faster and faster on the other is exponential.",
+            "absolute value": "A V with a sharp corner and equally steep straight sides is absolute value.",
+            piecewise: "Separate rules on different intervals — here a jump or a change in steepness that is not a mirror-image V — is piecewise."
+          }[fam]
+        };
+      },
+      overtake: () => {
+        const base = pick([2, 2, 3]);
+        const lin = Math.random() < 0.5;
+        const m = lin ? pick([10, 15, 20, 25, 50]) : 0, c = lin ? pick([0, 20, 50, 100]) : 0;
+        // 3ˣ is above x² and 2x² from x = 0, so with base 3 only 5x² leaves a crossing to find.
+        const qa = lin ? 0 : (base === 3 ? 5 : pick([1, 2, 5]));
+        const other = x => lin ? m * x + c : qa * x * x;
+        // The LAST whole number where f ≤ g, plus one: 2ˣ beats x² at x = 1, falls
+        // behind, and only stays ahead from x = 5, so "first x where f > g" would
+        // be the wrong question. Checked to x = 60, far past every case here.
+        let x = 60; while (x > 1 && Math.pow(base, x - 1) > other(x - 1)) x--;
+        const otherTxt = lin ? `g(x) = ${m}x${c ? " + " + c : ""}` : `g(x) = ${qa === 1 ? "" : qa}x²`;
+        return {
+          question: `f(x) = ${base}ˣ and ${otherTxt}. From some whole number x on, f(x) > g(x) for that x and every larger whole number. What is the smallest such x?`,
+          answer: String(x),
+          options: opt4(String(x), [String(x - 1), String(x + 1), String(x + 2), String(Math.max(1, x - 2))]),   // off by one either way: misread the table at the crossing
+          explanation: `Check whole numbers near the crossing: at x = ${x - 1}, f = ${Math.pow(base, x - 1)} and g = ${other(x - 1)}, so f is not ahead; at x = ${x}, f = ${Math.pow(base, x)} and g = ${other(x)}, so f > g — and the exponential keeps pulling away (it multiplies by ${base} each step while g only ${lin ? "adds " + m : "grows a little faster each step"}). The answer is x = ${x}.`
+        };
+      },
+      evaluate_piecewise: () => {
+        const c = ri(-1, 3);
+        const A = pick([
+          { t: "x²", f: x => x * x }, { t: "|x − 1|", f: x => Math.abs(x - 1) }, { t: "2x + 3", f: x => 2 * x + 3 }]);
+        const B = pick([
+          { t: "3x − 2", f: x => 3 * x - 2 }, { t: "2ˣ", f: x => Math.pow(2, x) }, { t: "10 − x", f: x => 10 - x }]);
+        const x = pick([c, c, c - 1, c + 1, c + 2, c - 2]);
+        const v = x < c ? A.f(x) : B.f(x);
+        const wrong = x < c ? B.f(x) : A.f(x);
+        return {
+          question: `f(x) = ${A.t} if x < ${c}, and f(x) = ${B.t} if x ≥ ${c}. What is f(${x})?`,
+          answer: fmt(v),
+          options: opt4(fmt(v), [fmt(wrong), fmt(v + 1), fmt(v - 2), fmt(-v)]),
+          explanation: `${x} ${x < c ? "<" : "≥"} ${c}, so use ${x < c ? A.t : B.t}: f(${x}) = ${fmt(v)}.${x === c ? ` (At x = ${c} exactly, the "≥" piece applies.)` : ""}`
+        };
+      },
+      property: () => {
+        const P = [
+          ["has a constant rate of change", "linear"],
+          ["changes by the same FACTOR over equal intervals of x", "exponential"],
+          ["has constant second differences and a smooth turning point", "quadratic"],
+          ["has a V-shaped graph with a sharp corner", "absolute value"],
+          ["is defined by different rules on different intervals of x", "piecewise"],
+          ["has a horizontal asymptote and eventually grows faster than any polynomial", "exponential"],
+          ["has a graph that is symmetric about a vertical line and is smooth at its vertex", "quadratic"],
+          ["has a graph that is a single straight line", "linear"]];
+        const [prop, fam] = pick(P);
+        return {
+          question: `Which family of functions ${prop}?`,
+          answer: fam, forceChoice: true, options: famOpts(fam),
+          explanation: `A function that ${prop} is ${fam}.`
+        };
+      },
+      compare_extremes: () => {
+        const h1 = ri(-5, 5), k1 = ri(-9, 9), h2 = ri(-5, 5); let k2 = ri(-9, 9); if (k2 === k1) k2 = k1 + 2;
+        const ans = String(Math.min(k1, k2));
+        return {
+          question: `f(x) = (x ${h1 >= 0 ? "− " + h1 : "+ " + (-h1)})² ${k1 >= 0 ? "+ " + k1 : "− " + (-k1)} and g(x) = |x ${h2 >= 0 ? "− " + h2 : "+ " + (-h2)}| ${k2 >= 0 ? "+ " + k2 : "− " + (-k2)}. Both have a minimum value. What is the smaller of the two minimum values?`,
+          answer: ans,
+          options: opt4(ans, [String(Math.max(k1, k2)), String(Math.min(h1, h2)), String(-Math.min(k1, k2)), String(Math.min(k1, k2) - 1)]),
+          explanation: `The quadratic f has its vertex at (${h1}, ${k1}), so its minimum is ${k1}. The absolute value g has its corner at (${h2}, ${k2}), so its minimum is ${k2}. The smaller is ${ans}.`
+        };
+      }
+    });
+  }));
+})();
 // ==== END GRADUATION PLAN CONTENT: CORE-ALGEBRA ====
 </script>
 
