@@ -4537,3 +4537,20 @@ Content for the 102 new skills is in the `GRADUATION PLAN CONTENT` script
 blocks near the end of `math-dojo.html`, one per group, each registering via
 `_addSkill`. `python debug-tools/graduation-path-journey.py` walks the path
 as a student and fails if any planned skill has no lesson or questions.
+
+### Same day: answer-checker fixes and the content landing
+
+All 102 graduation skills now have lessons and question generators (13
+`GRADUATION PLAN CONTENT` blocks). Writing them turned up answer-checker bugs
+that also affected existing questions, all fixed in `AnswerInterpreter`:
+`x = 8` graded right for `x = 4`; `$678,400` read as `$678`; a bare number
+was accepted as cents; `-1/3` passed for `-1`; `7.5 ft` read as 5 ft; decimal
+degrees were truncated; any two answers containing "square" matched; `1 3/16`
+equalled `13/16`; the flat 0.0001 tolerance was too loose for small numbers.
+If a student reports a typed answer newly marked wrong, this is the change to
+look at first.
+
+`tools/audit-dojo-coverage.js` and `debug-tools/typed-answer-coverage.js`
+now run the graduation blocks; before, no check except the distractor sweep
+and step hints could see them. `tools/dojo-skill-audit.js` and
+`tools/dojo-lesson-audit.js` still read only the literal tables.

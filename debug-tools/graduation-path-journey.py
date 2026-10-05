@@ -126,8 +126,12 @@ with sync_playwright() as p:
     ok('mastering only its prerequisites opens it', r['after'] is True, r)
     ok('while most of the core is still unfinished', r['coreDone'] < 65, r['coreDone'])
     pg.evaluate("renderGradPathSummary()")
-    ok('home counts it as ready in CS & Games', 'CS & Games 0/28 · 1 ready' in pg.inner_text('#grad-path-summary') or not r['playable'],
+    ok('home counts CS & Games skills as ready', '· ' in pg.inner_text('#grad-path-summary').split('CS & Games')[-1],
        pg.inner_text('#grad-path-summary').split('\n')[-1])
+    pg.evaluate("showGradPath()"); pg.wait_for_timeout(200)
+    chip = pg.evaluate("""() => { const c = document.querySelector(`.plan-chip[data-skill-id="${MATH_GRAPH_V2.titleToId['Binary Numbers']}"]`);
+      return c && c.className; }""")
+    ok('and its chip on the path is open, not locked', chip is not None and 'locked' not in chip and 'soon' not in chip, chip)
 
     print('\n== badges in Training Grounds ==')
     pg.evaluate("goToModeSelect(); selectMode('learning'); selectLearningTier(6)"); pg.wait_for_timeout(300)

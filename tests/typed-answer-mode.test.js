@@ -56,7 +56,12 @@ const helpers = [
 ].join('\n');
 
 const iifes = [];
-for (let i = 0; i < lines.length; i++) {
+// The V2 blocks only. The graduation-plan blocks after them (one IIFE per
+// content group) carry their own helpers and are covered by
+// debug-tools/typed-answer-coverage.js, which runs the whole page's content.
+const gradStart = lines.findIndex(l => l.includes('==== GRADUATION PLAN CONTENT ===='));
+const v2End = gradStart < 0 ? lines.length : gradStart;
+for (let i = 0; i < v2End; i++) {
   if (lines[i].trimEnd() === '(function(){') {
     for (let j = i + 1; j < lines.length; j++) {
       if (lines[j].trimEnd() === '})();') { iifes.push(lines.slice(i, j + 1).join('\n')); i = j; break; }
