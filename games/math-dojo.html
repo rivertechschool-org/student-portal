@@ -55856,6 +55856,1421 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: CORE-APPLICATION ====
+// Plan section 7, "Mathematical Application" (data/math_graduation_plan.json):
+//   59 Multi-Step Problem Solving   -> M-318 Multi-Step Problem Solving   (T5)
+//   62 Spreadsheet Mathematics      -> M-321 Spreadsheet Formulas         (T5)
+//   63 Financial Mathematics        -> M-322 Personal Finance             (T5)
+//      (item 63 also maps to Financial Math and Compound Interest, which
+//      already carry simple interest and savings growth; this skill is the
+//      paycheck / budget / unit price / debt half)
+//   64 Mathematical Communication   -> M-323 Mathematical Communication   (T6)
+//   65 Applied Math Capstone        -> M-324 Applied Math Capstone        (T6)
+//
+// All five are tier 5-6, so numeric answers are TYPED (shouldTypeAnswer).
+// Money is generated in whole cents and every money question accepts
+// "1234.50", "$1,234.50", "1,234.50" and "1234.5". Selection tasks (which
+// formula, which step, which justification, which conclusion) set
+// forceChoice so their options stay on screen.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Same contract as Group E's opt4: 4 distinct shuffled options, or undefined
+  // when there were not enough genuinely different candidates.
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- money and rounding ------------------------------------------------
+  // Money is carried in whole CENTS once it is rounded, so totals are sums of
+  // integers. cR rounds a cents value half-up; the 1e-7 pushes a true half
+  // cent that floating point stored as x.49999999 back over the line (the
+  // float error on these magnitudes is ~1e-12, far below the nudge).
+  const cR = x => Math.round(x + 1e-7);
+  const m2 = c => (c / 100).toFixed(2);
+  const commas = s => { const parts = String(s).split('.');
+    return parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (parts.length > 1 ? '.' + parts[1] : ''); };
+  const usd = c => '$' + commas(m2(c));
+  // Every way a student writes the same amount. The grader already treats
+  // "1234.5" and "1234.50" as equal, and accepts "$1,234.50" against a plain
+  // number. No "$" form is listed on purpose: AnswerInterpreter compares a
+  // money string with a number as |n × 100 − cents| < 1, and float slop
+  // (0.14 × 100 = 14.000000000000002) lets an answer one cent off pass that
+  // test. Keeping the expected forms plain numbers means a plain-number
+  // answer is graded exactly.
+  const moneyForms = c => {
+    const a = m2(c), out = [a, commas(a)];
+    const t = a.replace(/\.?0+$/, '');
+    if (t !== a) out.push(t);
+    return out;
+  };
+  // Half-up rounding of a positive value to dp places (same nudge as cR).
+  const rnd = (v, dp) => { const k = Math.pow(10, dp); return Math.round(v * k + 1e-7) / k; };
+  // Exact half-up rounding / truncation of p/q (positive integers), which is
+  // what a spreadsheet's ROUND and ROUNDDOWN return - no float comparison.
+  const roundDiv = (p, q, dp) => { const k = Math.pow(10, dp); return Math.floor((2 * p * k + q) / (2 * q)) / k; };
+  const truncDiv = (p, q, dp) => { const k = Math.pow(10, dp); return Math.floor(p * k / q) / k; };
+  const ceilDiv = (p, q) => Math.floor((p + q - 1) / q);   // positive integers
+  // "4.239 ≈ 4.2", or just "45" when the rounding changed nothing.
+  const toward = (v, r) => Math.abs(v - r) < 1e-9 ? String(r) : rnd(v, 3) + " ≈ " + r;
+  const hrs = h => h === 1 ? '1 hour' : h + ' hours';
+  const co = k => k === 1 ? '' : String(k);                 // 1x is written x
+  const NAMES = ["Maya","Leo","Ava","Noah","Zoe","Eli","Mia","Owen","Ivy","Sam","Nora","Jai","Lena","Theo","Ruby","Kai","Ana","Ben"];
+
+  // ---- question builders -------------------------------------------------
+  // A number answer. Wrong values equal to the answer, negative or non-finite
+  // are dropped here so no distractor is a second right answer.
+  // When the listed mistakes happen to coincide (gallons came out whole, so
+  // rounding them early changes nothing) the last-resort candidates are
+  // plain slips of one unit. Without them generateQuestion's backfill would
+  // perturb the answer and could show float noise like 15.350000000000001.
+  const Qn = (subType, question, value, wrongs, explanation, extra) => {
+    const a = String(value);
+    const ws = wrongs.concat([rnd(value + 1, 4), rnd(value + 10, 4), rnd(value - 1, 4)])
+      .filter(w => Number.isFinite(w) && w >= 0 && Math.abs(w - value) > 1e-9).map(String);
+    return Object.assign({ subType, type: "procedural", question, answer: a,
+      options: opt4(a, ws), explanation }, extra || {});
+  };
+  // A money answer, given and compared in cents.
+  const Qm = (subType, question, c, wrongs, explanation) => {
+    const a = m2(c);
+    const ws = wrongs.concat([c + 100, c - 100, c + 1000])          // a dollar slip, last resort
+      .filter(w => Number.isFinite(w) && w > 0 && w !== c).map(m2);
+    return { subType, type: "procedural", question, answer: a,
+      acceptableAnswers: moneyForms(c), options: opt4(a, ws), explanation };
+  };
+  // A percent answer: "28", "28%" and "28.0 %" are all right. The grader
+  // does not equate 28 with 28%, so this validates the number itself.
+  const Qp = (subType, question, value, wrongs, explanation) =>
+    Qn(subType, question, value, wrongs, explanation, {
+      acceptableAnswers: [String(value) + '%'],
+      validate: s => { const v = Number(String(s).replace(/[%\s,]/g, ''));
+        return String(s).trim() !== '' && Number.isFinite(v) && Math.abs(v - value) < 1e-9; }
+    });
+  // A selection task: the candidates ARE the question, so it stays multiple
+  // choice at every tier.
+  const Qc = (subType, question, answer, wrongs, explanation) => ({
+    subType, type: "reasoning", question, answer, options: opt4(answer, wrongs),
+    forceChoice: true, explanation });
+
+  // =====================================================================
+  // M-318  Multi-Step Problem Solving  (tier 5)
+  // Prereqs: Multi-Step Equations, Percent Increase and Decrease, Rates and
+  // Speed-Distance-Time. Every question chains two to four of those.
+  // =====================================================================
+  _addSkill(5, "Multi-Step Problem Solving", "Multi-Step Problem Solving", 4, {
+    goalProblem: "Maya drives 50 mph for 3 hours, then 60 mph for 2 hours. Her car gets 30 miles per gallon and gas costs $3.60 per gallon. How much does the gas for the trip cost?",
+    teachingSteps: [
+      { title: "Find the question first", explanation: "Before any arithmetic, say exactly what the <strong>final answer</strong> is and what unit it is in. Here it is a <strong>cost in dollars</strong> — not a distance and not a number of gallons. Then list what you are given.", visual: "Find: cost of gas ($)\nGiven: 50 mph × 3 h, 60 mph × 2 h, 30 mi/gal, $3.60/gal" },
+      { title: "Work backwards to a chain", explanation: "Ask: <em>what would I need to know to get the answer?</em> Cost needs gallons. Gallons need miles. Miles need speed × time. That gives you a chain of small questions, each one a skill you already have.", visual: "speed × time → miles → gallons → dollars" },
+      { title: "Label every result", explanation: "Write each step's result <strong>with its unit and what it means</strong>. A bare 150 halfway down the page is how people lose track and answer the wrong question.", visual: "Leg 1: 50 × 3 = 150 mi\nLeg 2: 60 × 2 = 120 mi\nTotal: 270 mi" },
+      { title: "Pick the tool for each link", explanation: "Each link uses one idea: <strong>distance = rate × time</strong>, a percent change is a <strong>multiplier</strong> (25% off → × 0.75), an unknown on both sides needs an <strong>equation</strong>, and \"how many packs\" needs <strong>rounding up</strong>.", visual: "270 mi ÷ 30 mi/gal = 9 gal\n9 gal × $3.60 = $32.40" },
+      { title: "Round once, at the end", explanation: "Keep full values between steps. Rounding 7.83 gallons to 8 in the middle changes the final cost. Round only the final answer, and only as the question asks.", visual: "7.833… gal × $3.69 = $28.905 → $28.91\n8 gal × $3.69 = $29.52 (wrong)" },
+      { title: "Check that it makes sense", explanation: "Estimate: about 270 miles at 30 mpg is about 9 gallons, and 9 gallons at under $4 is under $36. An answer of $324 or $3.24 would be caught here.", visual: "≈ 9 gal × ≈ $3.60 ≈ $32 ✓" }
+    ],
+    finalAnswer: "$32.40",
+    answerExplanation: "Miles: 50 × 3 + 60 × 2 = 270. Gallons: 270 ÷ 30 = 9. Cost: 9 × $3.60 = $32.40.",
+    example: { problem: "Test scores so far are 78, 85 and 90. What score on the 4th test makes the mean of all four tests exactly 86?", steps: [
+      { text: "A mean of 86 over 4 tests needs this total", math: "86 × 4 = 344" },
+      { text: "Points already earned", math: "78 + 85 + 90 = 253" },
+      { text: "Points still needed", math: "344 − 253 = 91" },
+      { text: "Check: the mean of the four scores", math: "(253 + 91) ÷ 4 = 86 ✓" }
+    ]},
+    keyPoints: [
+      "Name the final quantity and its unit before you start",
+      "Build a chain of small questions from the answer back to the givens",
+      "Label each intermediate result with its unit",
+      "Round only the final answer; round UP when you must buy whole items",
+      "Estimate to check the answer is the right size"
+    ],
+    mistakes: [
+      { wrong: "Answering with an intermediate value (270 miles) when the question asked for a cost", why: "Re-read the question at the end. The chain is not finished until you reach the quantity that was asked for." },
+      { wrong: "25% off then 8% tax is the same as 17% off", why: "Percents apply one after the other to different amounts: × 0.75 then × 1.08 = × 0.81, which is 19% off, not 17%." },
+      { wrong: "Ordering 16 pizzas because 135 ÷ 8 = 16.875", why: "16 pizzas only give 128 slices. When you buy whole items you round UP to 17." }
+    ],
+    guided: {
+      problem: "A class orders pizza for 45 students. Each student eats 3 slices, each pizza has 8 slices, and a pizza costs $11.50. How much does the order cost?",
+      steps: [
+        { label: "Slices needed", value: "45 × 3 = 135" },
+        { label: "Pizzas (round up)", value: "135 ÷ 8 = 16.875, round up to 17" },
+        { label: "Cost", value: "17 × 11.50 = 195.50" }
+      ],
+      answer: "195.50", answerLabel: "Total cost ($):",
+      interactiveSteps: [
+        { prompt: "How many slices are needed in all?", hint: "Students times slices each.", answer: "135", acceptableAnswers: ["135"], formatHint: "e.g., 120",
+          commonMistakes: { "48": "That adds 45 and 3. Each of the 45 students eats 3 slices, so multiply." } },
+        { prompt: "How many <strong>whole</strong> pizzas must be ordered?", hint: "Divide by 8 slices per pizza, then think about the leftover.", answer: "17", acceptableAnswers: ["17"], formatHint: "a whole number",
+          commonMistakes: { "16": "16 pizzas give only 128 slices, 7 short. Round up.", "16.875": "You cannot order part of a pizza. Round up to a whole pizza." } },
+        { prompt: "What does the order cost?", hint: "Pizzas times the price of one pizza.", answer: "195.50", acceptableAnswers: moneyForms(19550), formatHint: "e.g., 120.25",
+          commonMistakes: { "184": "That is 16 pizzas. You need 17.", "194.06": "That pays for 16.875 pizzas. You have to buy 17 whole ones." } }
+      ]
+    }
+  }, function(){
+    const t = pick(["trip_fuel","price_chain","equal_plans","average_needed","packages","machines"]);
+    const who = pick(NAMES);
+
+    if (t === "trip_fuel") {
+      const s1 = pick([45,50,55,60,65,70]), s2 = pick([40,45,50,55,60,65,70].filter(s => s !== s1));
+      const h1 = pick([1,1.5,2,2.5,3,3.5]), h2 = pick([0.5,1,1.5,2,2.5]);
+      const mpg = pick([24,25,28,30,32,35,40]), ppg = ri(319, 469);   // cents per gallon
+      const d1 = s1*h1, d2 = s2*h2, D = d1 + d2, gal = D / mpg;
+      const c = cR(D * ppg / mpg);
+      const g3 = rnd(gal, 3), approx = Math.abs(g3 - gal) < 1e-12 ? "=" : "≈";
+      return Qm("trip_fuel",
+        `${who} drives at ${s1} mph for ${hrs(h1)}, then at ${s2} mph for ${hrs(h2)}. The car gets ${mpg} miles per gallon and gas costs ${usd(ppg)} per gallon. How much does the gas for the whole trip cost? Round to the nearest cent.`,
+        c,
+        [cR(d1 * ppg / mpg),                         // stopped after the first leg
+         cR((s1+s2)/2*(h1+h2) * ppg / mpg),          // averaged the two speeds
+         Math.floor(gal) * ppg,                       // rounded the gallons down early
+         Math.ceil(gal) * ppg,                        // rounded the gallons up early
+         cR(d2 * ppg / mpg)],
+        `Miles: ${s1} × ${h1} = ${d1} and ${s2} × ${h2} = ${d2}, so ${D} miles in all. Gallons: ${D} ÷ ${mpg} ${approx} ${g3}. Cost: ${D} ÷ ${mpg} × ${usd(ppg)} ${approx} ${usd(c)}. Keep the unrounded gallons until the last step.`);
+    }
+
+    if (t === "price_chain") {
+      const item = pick(["jacket","pair of boots","backpack","lamp","guitar case","desk chair"]);
+      const tax = pick([5,6,7,8,8.5,9]);
+      if (Math.random() < 0.5) {
+        const P = ri(20,150), m = pick([20,25,30,40,50]), d = pick([10,15,20,25,30]);
+        const total = cR(P * (100+m) * (100-d) * (100+tax) / 1e4);
+        const sale = P * (100+m) * (100-d) / 100;              // cents, before tax
+        return Qm("price_chain",
+          `A store buys a ${item} for $${P} and marks the price up ${m}%. Later the ${item} goes on sale for ${d}% off the marked price. Sales tax is ${tax}%. What does a customer pay for it on sale, including tax? Round only the final answer to the nearest cent.`,
+          total,
+          [cR(P * (100+m-d) * (100+tax) / 100),                 // netted the percents: +m% − d%
+           cR(sale),                                            // forgot the tax
+           cR(P * (100-d) * (100+tax) / 100),                   // took the discount off the store's cost
+           cR(P * (100+m) * (100+tax) / 100)],                  // forgot the sale
+          `Marked price: $${P} × ${1 + m/100} = ${usd(P*(100+m))}. Sale price: × ${1 - d/100} = ${usd(cR(sale))}. With tax: × ${1 + tax/100} = ${usd(total)}. The percents apply one after another, so they cannot be combined into one +${m - d}% change.`);
+      }
+      const P = ri(30,200), d = pick([10,15,20,25,30,40]), k = pick([5,10,15,20]);
+      const afterD = P * (100 - d);                             // cents
+      const total = cR((afterD - k*100) * (100 + tax) / 100);
+      return Qm("price_chain",
+        `A ${item} costs $${P}. It is ${d}% off, and ${who} has a $${k} coupon that is taken off after the percent discount. Sales tax of ${tax}% is charged on the price after both. What does ${who} pay? Round to the nearest cent.`,
+        total,
+        [cR((P - k) * (100 - d) * (100 + tax) / 100),          // coupon before the discount
+         afterD - k*100,                                       // forgot the tax
+         cR(P * (100 - d - k) * (100 + tax) / 100),            // treated the coupon as k%
+         cR(afterD * (100 + tax) / 100)],                      // forgot the coupon
+        `After ${d}% off: $${P} × ${1 - d/100} = ${usd(afterD)}. After the coupon: ${usd(afterD)} − $${k} = ${usd(afterD - k*100)}. With ${tax}% tax: ${usd(afterD - k*100)} × ${1 + tax/100} = ${usd(total)}.`);
+    }
+
+    if (t === "equal_plans") {
+      const ctx = pick([
+        { a: "Gym A", b: "Gym B", fee: "as a sign-up fee", unit: "month", units: "months" },
+        { a: "Phone plan A", b: "Phone plan B", fee: "as an activation fee", unit: "month", units: "months" },
+        { a: "Lawn service A", b: "Lawn service B", fee: "as a start-up charge", unit: "visit", units: "visits" },
+        { a: "Bowling alley A", b: "Bowling alley B", fee: "for shoe rental", unit: "game", units: "games" }]);
+      const n = ri(3,12), dr = pick([2,3,4,5,6,8,10]), rB = ri(5,30), rA = rB + dr;
+      const fA = pick([0,5,10,15,20,25,30]), fB = fA + dr*n;
+      const plans = `${ctx.a} charges $${fA} ${ctx.fee} plus $${rA} per ${ctx.unit}. ${ctx.b} charges $${fB} ${ctx.fee} plus $${rB} per ${ctx.unit}.`;
+      const work = `Set the costs equal: ${fA} + ${rA}x = ${fB} + ${rB}x. Subtract ${rB}x and ${fA}: ${dr}x = ${fB - fA}, so x = ${n} ${ctx.units}.`;
+      if (Math.random() < 0.5) {
+        return Qn("equal_plans",
+          `${plans} After how many ${ctx.units} do the two cost exactly the same?`,
+          n, [n + 1, n - 1, Math.round(fB / rB), Math.round((fA + fB) / dr), 2 * n],
+          work);
+      }
+      const total = fA + rA*n;
+      return Qm("equal_plans",
+        `${plans} At some number of ${ctx.units} the two cost exactly the same. What is that cost?`,
+        total * 100,
+        [(fA + rA*(n+1)) * 100,       // one step past the break-even point
+         fB * 100,                    // gave a fee, not a total
+         (fA + rA*(n-1)) * 100,
+         rA * n * 100],               // dropped the fee
+        `${work} Cost at ${n} ${ctx.units}: ${fA} + ${rA} × ${n} = $${total} (check: ${fB} + ${rB} × ${n} = $${fB + rB*n}).`);
+    }
+
+    if (t === "average_needed") {
+      let k, scores, sum, T, need, tries = 0;
+      do {
+        k = ri(3,5); scores = Array.from({length: k}, () => ri(68,98));
+        sum = scores.reduce((s,x) => s + x, 0); T = pick([78,80,82,84,85,86,88,90]);
+        need = T * (k + 1) - sum;
+      } while ((need < 55 || need > 100) && ++tries < 60);
+      if (need < 55 || need > 100) { scores[0] += need - 80; sum = scores.reduce((s,x) => s + x, 0); need = 80; }
+      const list = scores.slice(0, -1).join(", ") + " and " + scores[k-1];
+      return Qn("average_needed",
+        `${who}'s test scores so far are ${list}. What score on the next test would make the mean of all ${k + 1} tests exactly ${T}?`,
+        need,
+        [T,                                   // just the target
+         Math.round(2 * T - sum / k),         // "averaged with the average"
+         T * k - sum,                         // multiplied by k tests, not k + 1
+         Math.round(sum / k),                 // the current mean
+         need + 1],
+        `A mean of ${T} over ${k + 1} tests needs a total of ${T} × ${k + 1} = ${T * (k + 1)}. The scores so far add to ${sum}. So the next test must be ${T * (k + 1)} − ${sum} = ${need}.`);
+    }
+
+    if (t === "packages") {
+      const ctx = pick([
+        { people: "guests", each: "slices of pizza", per: 8, pack: "pizza", packs: "pizzas", lo: 999, hi: 1599, perWord: "slices" },
+        { people: "runners", each: "bottles of water", per: 24, pack: "case", packs: "cases", lo: 449, hi: 799, perWord: "bottles" },
+        { people: "campers", each: "hot dog buns", per: 8, pack: "pack", packs: "packs", lo: 199, hi: 349, perWord: "buns" },
+        { people: "students", each: "pencils", per: 12, pack: "box", packs: "boxes", lo: 179, hi: 399, perWord: "pencils" }]);
+      let N, e, total, tries = 0;
+      do { N = ri(18, 95); e = ri(2, 4); total = N * e; } while (total % ctx.per === 0 && ++tries < 30);
+      const packs = ceilDiv(total, ctx.per), price = ri(ctx.lo, ctx.hi), off = pick([0,10,15,20]);
+      const c = cR(packs * price * (100 - off) / 100);
+      const offTxt = off ? ` A coupon takes ${off}% off the whole order.` : "";
+      return Qm("packages",
+        `${N} ${ctx.people} each need ${e} ${ctx.each}. They come ${ctx.per} to a ${ctx.pack}, and each ${ctx.pack} costs ${usd(price)}.${offTxt} Only whole ${ctx.packs} can be bought. What is the total cost? Round to the nearest cent.`,
+        c,
+        [cR(Math.floor(total / ctx.per) * price * (100 - off) / 100),   // rounded the packs down
+         cR(total / ctx.per * price * (100 - off) / 100),               // paid for a fraction of a pack
+         off ? packs * price : cR((packs + 1) * price),                 // forgot the coupon
+         cR((packs + 1) * price * (100 - off) / 100)],
+        `${ctx.perWord[0].toUpperCase() + ctx.perWord.slice(1)} needed: ${N} × ${e} = ${total}. ${ctx.packs[0].toUpperCase() + ctx.packs.slice(1)}: ${total} ÷ ${ctx.per} = ${rnd(total / ctx.per, 3)}, so buy ${packs} (round up). Cost: ${packs} × ${usd(price)} = ${usd(packs * price)}` +
+        (off ? `, then ${off}% off: × ${1 - off/100} = ${usd(c)}.` : "."));
+    }
+
+    // machines: one works alone, then both together - rates add.
+    const ctx = pick([
+      { a: "Machine A", b: "Machine B", verb: "fills", thing: "bottles" },
+      { a: "Printer A", b: "Printer B", verb: "prints", thing: "pages" },
+      { a: "Pump A", b: "Pump B", verb: "moves", thing: "gallons of water" }]);
+    const r1 = pick([20,24,30,36,40,45,50,60]), r2 = pick([15,20,25,30,35,40,50].filter(r => r !== r1));
+    const t0 = ri(5,20), t2 = ri(10,40), N = r1*t0 + (r1 + r2)*t2;
+    return Qn("machines",
+      `${ctx.a} ${ctx.verb} ${r1} ${ctx.thing} per minute and ${ctx.b} ${ctx.verb} ${r2} per minute. ${ctx.a} starts alone. After ${t0} minutes ${ctx.b} joins in, and they work together until ${N.toLocaleString('en-US')} ${ctx.thing} are done in all. How many minutes does the whole job take?`,
+      t0 + t2,
+      [t2,                                   // forgot the time A worked alone
+       Math.round(N / (r1 + r2)),            // ignored the head start
+       Math.round(N / r1),                   // A alone the whole time
+       t0 + Math.round(N / (r1 + r2))],
+      `Alone, ${ctx.a} does ${r1} × ${t0} = ${r1*t0}. That leaves ${N} − ${r1*t0} = ${N - r1*t0}. Together the rate is ${r1} + ${r2} = ${r1 + r2} per minute, so ${N - r1*t0} ÷ ${r1 + r2} = ${t2} minutes. Total: ${t0} + ${t2} = ${t0 + t2} minutes.`);
+  });
+
+  // =====================================================================
+  // M-321  Spreadsheet Formulas  (tier 5)
+  // Prereqs: Evaluating Expressions, Order of Operations, Mean Median Mode.
+  // Plan item 62 also names graphs and tables: the chart_choice subtype.
+  // The grid is always described in words ("A1 = 4, A2 = 7") because a
+  // question must be answerable from its text alone.
+  // =====================================================================
+  const COLS = "ABCDEFGH";
+  const colShift = (c, k) => COLS[COLS.indexOf(c) + k];
+  const listCells = cells => cells.map(([k, v]) => v === null ? `${k} is empty` : `${k} = ${v}`).join(", ");
+
+  _addSkill(5, "Spreadsheet Formulas", "Spreadsheet Formulas", 3, {
+    goalProblem: "A1 = 4, A2 = 7, A3 = 9 and B1 = 3. What does the formula =SUM(A1:A3)*B1 return?",
+    teachingSteps: [
+      { title: "Cells and references", explanation: "A spreadsheet is a grid. Columns are <strong>letters</strong>, rows are <strong>numbers</strong>, so <strong>B3</strong> is column B, row 3. A formula starts with <strong>=</strong> and uses cell names in place of numbers, so when a cell changes the answer updates.", visual: "     A    B\n1    4    3\n2    7\n3    9" },
+      { title: "Operators follow the order of operations", explanation: "Spreadsheets use <strong>+ − * /</strong> and <strong>^</strong> for powers, with the usual order: parentheses, powers, multiply/divide, then add/subtract. So <strong>=A1+B1*2</strong> multiplies first.", visual: "A1 = 4, B1 = 3\n=A1+B1*2 → 4 + 6 = 10\n=(A1+B1)*2 → 7 × 2 = 14" },
+      { title: "Functions and ranges", explanation: "<strong>A1:A3</strong> means every cell from A1 to A3. <strong>A1:B2</strong> is a rectangle: A1, A2, B1, B2. <strong>SUM</strong>, <strong>AVERAGE</strong>, <strong>MIN</strong>, <strong>MAX</strong> and <strong>COUNT</strong> work on ranges. AVERAGE and COUNT <strong>skip empty cells</strong>. <strong>ROUND(x, 2)</strong> rounds x to 2 decimal places (0 means a whole number).", visual: "=SUM(A1:A3) → 4 + 7 + 9 = 20\n=AVERAGE(A1:A3) → 20 ÷ 3 = 6.67 (shown rounded)\n=ROUND(20/3, 1) → 6.7" },
+      { title: "Filling copies the pattern, not the text", explanation: "When you fill a formula down or right, ordinary references <strong>move with it</strong>. =A2*B2 in C2, filled down one row, becomes =A3*B3 in C3. Filled right one column, it becomes =B2*C2. These are <strong>relative</strong> references.", visual: "C2: =A2*B2\nC3: =A3*B3\nC4: =A4*B4" },
+      { title: "$ locks a reference", explanation: "A <strong>$</strong> stops part of a reference from moving. <strong>$B$1</strong> never changes (absolute). <strong>$A2</strong> locks the column only; <strong>A$1</strong> locks the row only. Use $B$1 when every row must use the same rate cell.", visual: "C2: =A2*$B$1\nC3: =A3*$B$1\nC4: =A4*$B$1" },
+      { title: "Tables into charts", explanation: "Pick the chart from the question the data answers: a <strong>line graph</strong> for change over time, a <strong>bar graph</strong> to compare categories, a <strong>pie chart</strong> for parts of one whole, a <strong>scatter plot</strong> to see whether two measurements are related.", visual: "over time → line\ncompare groups → bar\nshare of a whole → pie\ntwo variables → scatter" }
+    ],
+    finalAnswer: "60",
+    answerExplanation: "SUM(A1:A3) = 4 + 7 + 9 = 20, then 20 × B1 = 20 × 3 = 60.",
+    example: { problem: "B1 = 0.07 (the tax rate). A2 = 20, A3 = 35, A4 = 12. C2 holds =A2*$B$1 and is filled down to C4. What is in C4, and what does it show?", steps: [
+      { text: "The relative part moves down two rows", math: "A2 → A4" },
+      { text: "The absolute part stays", math: "$B$1 → $B$1" },
+      { text: "Formula in C4", math: "=A4*$B$1" },
+      { text: "Value", math: "12 × 0.07 = 0.84" }
+    ]},
+    keyPoints: [
+      "Formulas start with = and follow the order of operations",
+      "A1:B3 is every cell in the rectangle from A1 to B3",
+      "AVERAGE and COUNT ignore empty cells",
+      "Filling moves relative references; $ locks a column, a row, or both",
+      "Line = over time, bar = compare, pie = parts of a whole, scatter = relationship"
+    ],
+    mistakes: [
+      { wrong: "Reading =A1+B1*2 left to right as (A1+B1)*2", why: "Multiplication comes first. Use parentheses when you mean to add first." },
+      { wrong: "Leaving out the $ in =A2*B1 and filling it down", why: "B1 slides to B2, B3, ... and the rows use the wrong cell (often an empty one, which counts as 0). Write $B$1." },
+      { wrong: "Thinking B2:B9 has 7 cells", why: "Count both ends: 9 − 2 + 1 = 8 cells." }
+    ],
+    guided: {
+      problem: "Quiz scores are in A2 = 12, A3 = 18, A4 = 15, A5 = 21. B1 = 2 (bonus points). C2 holds =A2+$B$1 and is filled down to C5.",
+      steps: [
+        { label: "Formula in C5", value: "=A5+$B$1" },
+        { label: "Value in C5", value: "21 + 2 = 23" },
+        { label: "AVERAGE(C2:C5)", value: "(14 + 20 + 17 + 23) ÷ 4 = 18.5" }
+      ],
+      answer: "18.5", answerLabel: "=AVERAGE(C2:C5) returns",
+      interactiveSteps: [
+        { prompt: "Which formula ends up in C5?", hint: "Only the reference without $ moves.", answer: "=A5+$B$1", acceptableAnswers: ["=A5+$B$1"],
+          selectOptions: [{ value: "=A5+$B$1", label: "=A5+$B$1" }, { value: "=A5+$B$4", label: "=A5+$B$4" }, { value: "=A2+$B$1", label: "=A2+$B$1" }],
+          commonMistakes: { "=A5+$B$4": "The $ signs lock B1, so it never moves.", "=A2+$B$1": "A2 has no $, so it moves down with the formula." } },
+        { prompt: "What value does C5 show?", hint: "A5 plus the bonus in B1.", answer: "23", acceptableAnswers: ["23"], formatHint: "a whole number",
+          commonMistakes: { "21": "Add the bonus in B1." } },
+        { prompt: "Column C holds 14, 20, 17 and 23. What does =AVERAGE(C2:C5) return?", hint: "Add the four values and divide by 4.", answer: "18.5", acceptableAnswers: ["18.5"], formatHint: "e.g., 16.25",
+          commonMistakes: { "74": "That is the SUM. AVERAGE divides by how many cells there are.", "16.5": "That averages the original scores in column A, not column C." } }
+      ]
+    }
+  }, function(){
+    const t = pick(["eval_formula","sum_range","stat_function","round_function","fill_formula","fill_value","which_formula","chart_choice"]);
+
+    if (t === "eval_formula") {
+      const a = ri(2,12), b = ri(2,12), c = ri(2,9), d = ri(2,12);
+      const grid = listCells([["A1", a], ["A2", b], ["B1", c], ["B2", d]]);
+      const tpl = pick([
+        { f: "=A1+B1*A2", v: a + c*b, w: [(a + c)*b, a + c + b, a*c + b], why: `Multiply first: ${c} × ${b} = ${c*b}, then add ${a}: ${a + c*b}.` },
+        { f: "=(A1+B1)*A2", v: (a + c)*b, w: [a + c*b, a + c + b, a*c*b], why: `Parentheses first: ${a} + ${c} = ${a + c}, then × ${b} = ${(a + c)*b}.` },
+        { f: "=A1^2-B2", v: a*a - d, w: [2*a - d, (a - d)*(a - d), a*a + d], why: `Power first: ${a}^2 = ${a*a}, then subtract ${d}: ${a*a - d}.` },
+        { f: "=A1*B1-A2*B2", v: a*c - b*d, w: [(a*c - b)*d, a*(c - b)*d, a*c + b*d], why: `Both products first: ${a} × ${c} = ${a*c} and ${b} × ${d} = ${b*d}, then ${a*c} − ${b*d} = ${a*c - b*d}.` },
+        { f: "=SUM(A1:A2)*B1", v: (a + b)*c, w: [a + b*c, a + b + c, a*b*c], why: `SUM(A1:A2) = ${a} + ${b} = ${a + b}, then × ${c} = ${(a + b)*c}.` },
+        { f: "=B2+A2*B1^2", v: d + b*c*c, w: [(d + b)*c*c, d + (b*c)*(b*c), d + 2*b*c], why: `Power first: ${c}^2 = ${c*c}; then ${b} × ${c*c} = ${b*c*c}; then + ${d} = ${d + b*c*c}.` }]);
+      // Negative answers are fine here; only drop distractors that equal it.
+      const ws = tpl.w.filter(w => w !== tpl.v).map(String);
+      return { subType: "eval_formula", type: "procedural",
+        question: `In a spreadsheet, ${grid}. What does the formula ${tpl.f} return?`,
+        answer: String(tpl.v), options: opt4(String(tpl.v), ws.concat([String(tpl.v + 1), String(tpl.v - 1), String(tpl.v + 10)])),
+        explanation: `Replace each cell with its value and use the order of operations. ${tpl.why}` };
+    }
+
+    if (t === "sum_range") {
+      // A 3 × 3 block A1:C3; the range is a rectangle inside it.
+      const v = {}; const cells = [];
+      for (let r = 1; r <= 3; r++) for (const col of "ABC") { const k = col + r; v[k] = ri(1, 20); }
+      for (const col of "ABC") for (let r = 1; r <= 3; r++) cells.push([col + r, v[col + r]]);
+      const R = pick([["A1","B3"], ["B1","C2"], ["A2","C3"], ["A1","C1"], ["B2","C3"], ["A1","A3"]]);
+      const inRange = (k, s, e) => { const ci = COLS.indexOf(k[0]), r = +k[1];
+        return ci >= COLS.indexOf(s[0]) && ci <= COLS.indexOf(e[0]) && r >= +s[1] && r <= +e[1]; };
+      const keys = Object.keys(v).filter(k => inRange(k, R[0], R[1])).sort();
+      const sum = keys.reduce((s, k) => s + v[k], 0);
+      // Transposed reading: columns and rows swapped (A1:B3 read as A1:C2).
+      const tS = COLS[+R[0][1] - 1] + (COLS.indexOf(R[0][0]) + 1), tE = COLS[+R[1][1] - 1] + (COLS.indexOf(R[1][0]) + 1);
+      const tSum = Object.keys(v).filter(k => inRange(k, tS, tE)).reduce((s, k) => s + v[k], 0);
+      const all = Object.values(v).reduce((s, x) => s + x, 0);
+      return Qn("sum_range",
+        `In a spreadsheet, ${listCells(cells)}. What does =SUM(${R[0]}:${R[1]}) return?`,
+        sum,
+        [v[R[0]] + v[R[1]],         // only the two named corner cells
+         tSum,                      // read the range with rows and columns swapped
+         all,                       // the whole block
+         sum + v[keys[0]]],
+        `${R[0]}:${R[1]} is the rectangle with corners ${R[0]} and ${R[1]}: ${keys.join(", ")}. Their sum is ${keys.map(k => v[k]).join(" + ")} = ${sum}.`);
+    }
+
+    if (t === "stat_function") {
+      const L = pick([["daily sales", 10, 99], ["quiz scores", 45, 100], ["minutes of practice", 10, 90], ["tickets sold", 12, 99]]);
+      const n = ri(5, 6), label = L[0];
+      const vals = Array.from({length: n}, () => ri(L[1], L[2]));
+      const blank = Math.random() < 0.35 ? ri(1, n - 2) : -1;     // index of an empty cell
+      const cells = vals.map((x, i) => ["B" + (i + 2), i === blank ? null : x]);
+      const used = vals.filter((x, i) => i !== blank), cnt = used.length, sum = used.reduce((s, x) => s + x, 0);
+      const rng = `B2:B${n + 1}`;
+      const fn = pick(blank >= 0 ? ["AVERAGE","COUNT","AVERAGE"] : ["AVERAGE","MAX","MIN","RANGE"]);
+      const lead = `Cells ${rng} hold ${label}: ${listCells(cells)}.`;
+      const blankNote = blank >= 0 ? ` The empty cell is skipped, so there are ${cnt} values, not ${n}.` : "";
+      if (fn === "AVERAGE") {
+        const exact = sum % cnt === 0, f = exact ? `=AVERAGE(${rng})` : `=ROUND(AVERAGE(${rng}),1)`;
+        const ans = exact ? sum / cnt : roundDiv(sum, cnt, 1);
+        const asZero = exact ? rnd(sum / n, 1) : roundDiv(sum, n, 1);
+        const sorted = used.slice().sort((p, q) => p - q);
+        const med = cnt % 2 ? sorted[(cnt - 1) / 2] : (sorted[cnt/2 - 1] + sorted[cnt/2]) / 2;
+        return Qn("stat_function", `${lead} What does ${f} return?`, ans,
+          [blank >= 0 ? asZero : roundDiv(sum, cnt - 1, 1),   // blank counted as 0 / one cell short
+           sum, med, roundDiv(sum, cnt + 1, 1)],
+          `AVERAGE adds the values and divides by how many there are: ${sum} ÷ ${cnt} = ${rnd(sum / cnt, 4)}${exact ? "" : `, and ROUND(…,1) gives ${ans}`}.${blankNote}`);
+      }
+      if (fn === "COUNT") {
+        return Qn("stat_function", `${lead} What does =COUNT(${rng}) return?`, cnt,
+          [n, sum, n - 2, Math.max(...used)],
+          `COUNT counts the cells that hold numbers. ${rng} has ${n} cells and one is empty, so COUNT returns ${cnt}.`);
+      }
+      const mx = Math.max(...used), mn = Math.min(...used);
+      if (fn === "MAX") return Qn("stat_function", `${lead} What does =MAX(${rng}) return?`, mx,
+        [mn, vals[n - 1] === mx ? vals[0] : vals[n - 1], mx - mn, rnd(sum / cnt, 1)],
+        `MAX returns the largest value in the range: ${mx}.`);
+      if (fn === "MIN") return Qn("stat_function", `${lead} What does =MIN(${rng}) return?`, mn,
+        [mx, vals[0] === mn ? vals[n - 1] : vals[0], mx - mn, rnd(sum / cnt, 1)],
+        `MIN returns the smallest value in the range: ${mn}.`);
+      return Qn("stat_function", `${lead} What does =MAX(${rng})-MIN(${rng}) return?`, mx - mn,
+        [mx, mn, mx + mn, vals[n - 1] - vals[0] > 0 ? vals[n - 1] - vals[0] : vals[0] - vals[n - 1]],
+        `MAX is ${mx} and MIN is ${mn}, so the formula returns ${mx} − ${mn} = ${mx - mn} (the range of the data).`);
+    }
+
+    if (t === "round_function") {
+      let p, q, d, tries = 0;
+      do { p = ri(10, 250); q = pick([3,6,7,8,9,11,12,13]); d = pick([0,1,2]); }
+      while ((p % q === 0 || roundDiv(p, q, d) === truncDiv(p, q, d)) && ++tries < 40);
+      const ans = roundDiv(p, q, d);
+      const grid = listCells([["A1", p], ["B1", q]]);
+      return Qn("round_function",
+        `In a spreadsheet, ${grid}. What does =ROUND(A1/B1, ${d}) return?`,
+        ans,
+        [truncDiv(p, q, d),                  // chopped instead of rounding
+         roundDiv(p, q, d + 1),              // one decimal place too many
+         d ? roundDiv(p, q, d - 1) : roundDiv(p, q, 2),
+         roundDiv(q * 100, p, 2)],           // divided the wrong way
+        `A1/B1 = ${p} ÷ ${q} = ${rnd(p / q, 5)}… ROUND to ${d} decimal place${d === 1 ? "" : "s"} looks at the next digit: 5 or more rounds up. Result: ${ans}.`);
+    }
+
+    if (t === "fill_formula") {
+      const kind = pick(["down_abs", "down_total", "right_abs", "mixed"]);
+      if (kind === "down_abs") {
+        const R = ri(4, 9), rate = pick(["the sales-tax rate", "the discount rate", "the hourly wage", "the price per pound"]);
+        return Qc("fill_formula",
+          `In a spreadsheet, B1 holds ${rate}. Cell C2 contains =A2*$B$1, and it is filled down to C${R}. What formula is in C${R}?`,
+          `=A${R}*$B$1`,
+          [`=A2*$B$1`,                       // thinks filling copies the text
+           `=A${R}*$B$${R - 1}`,             // moved the locked reference too
+           `=A${R - 1}*$B$1`],               // counted the rows off by one
+          `Filling down from row 2 to row ${R} moves relative references down ${R - 2} rows, so A2 becomes A${R}. $B$1 is absolute and stays $B$1. C${R} holds =A${R}*$B$1.`);
+      }
+      if (kind === "down_total") {
+        const R = ri(3, 9);
+        return Qc("fill_formula",
+          `Sales for nine stores are in B2:B10 and their total is in B11. C2 contains =B2/$B$11 (each store's share of the total), and it is filled down to C${R}. What formula is in C${R}?`,
+          `=B${R}/$B$11`,
+          [`=B${R}/$B$${11 + R - 2}`,         // moved the locked total
+           `=B2/$B$11`,                       // nothing moved
+           `=B${R}/B${11 + R - 2}`],          // as if there were no $ at all
+          `B2 is relative, so it moves down ${R - 2} rows to B${R}. $B$11 is locked, so every row still divides by the total. C${R} holds =B${R}/$B$11.`);
+      }
+      if (kind === "right_abs") {
+        const X = pick(["C","D","E","F"]), k = COLS.indexOf(X) - 1;
+        return Qc("fill_formula",
+          `Row 2 holds monthly sales starting in B2, and A5 holds a commission rate. Cell B6 contains =B2*$A$5, and it is filled right to ${X}6. What formula is in ${X}6?`,
+          `=${X}2*$A$5`,
+          [`=B2*$A$5`,                        // nothing moved
+           `=${X}2*$${colShift("A", k)}$5`,   // moved the locked column too
+           `=B${2 + k}*$A$5`],                // moved rows instead of columns
+          `Filling right moves relative column letters: B becomes ${X} (${k} column${k === 1 ? "" : "s"} over); the row 2 stays. $A$5 is absolute and does not change. ${X}6 holds =${X}2*$A$5.`);
+      }
+      const X = pick(["C","D","E","F"]), R = ri(3, 7), k = COLS.indexOf(X) - 1;
+      return Qc("fill_formula",
+        `A multiplication table has the numbers 1, 2, 3, … across row 1 (from B1) and down column A (from A2). Cell B2 contains =$A2*B$1, and it is copied to ${X}${R}. What formula is in ${X}${R}?`,
+        `=$A${R}*${X}$1`,
+        [`=$A2*B$1`,                                      // nothing moved
+         `=$A${R}*${X}$${R - 1}`,                         // moved the locked row of B$1
+         `=$${colShift("A", k)}${R}*${X}$1`],             // moved the locked column of $A2
+        `$A2 locks the column: it stays A but its row moves from 2 to ${R}, giving $A${R}. B$1 locks the row: it stays row 1 but its column moves from B to ${X}, giving ${X}$1. So ${X}${R} holds =$A${R}*${X}$1.`);
+    }
+
+    if (t === "fill_value") {
+      const r = pick([5,6,7,8,9,10]), rows = [2,3,4,5,6];
+      const price = rows.map(() => ri(4, 60)), R = ri(4, 6), i = R - 2;
+      const cells = price.map((p, j) => ["A" + rows[j], p]);
+      if (Math.random() < 0.55) {
+        const ans = price[i] * r / 100;
+        return Qn("fill_value",
+          `A2:A6 hold prices: ${listCells(cells)}. B1 holds the tax rate ${r / 100}. C2 contains =A2*$B$1 and is filled down to C6. What value does C${R} show?`,
+          ans, [price[i] * r, price[i - 1] * r / 100, price[i] + r / 100, price[i] * (100 + r) / 100],
+          `C${R} holds =A${R}*$B$1 = ${price[i]} × ${r / 100} = ${ans}.`);
+      }
+      // The same sheet with the $ forgotten: the rate reference slides down
+      // into the quantity column, and the student has to see that.
+      const qty = rows.map(() => ri(2, 9));
+      const qcells = qty.map((x, j) => ["B" + rows[j], x]);
+      const ans = price[i] * qty[i - 1];
+      return Qn("fill_value",
+        `A2:A6 hold prices (${listCells(cells)}) and B2:B6 hold quantities (${listCells(qcells)}). B1 holds a discount rate of ${r / 100}. Someone typed =A2*B1 into C2 (no $ signs) and filled it down to C6. What value does C${R} actually show?`,
+        ans, [price[i] * r / 100, price[i] * qty[i], price[i - 1] * qty[i - 1], price[i]],
+        `With no $, both references move down. In C${R} the formula is =A${R}*B${R - 1} = ${price[i]} × ${qty[i - 1]} = ${ans}. That is why the rate needed to be $B$1.`);
+    }
+
+    if (t === "which_formula") {
+      const kind = pick(["average", "tax", "change", "range", "balance"]);
+      if (kind === "average") {
+        const end = ri(6, 14), n = end - 1;
+        return Qc("which_formula",
+          `Test scores are in B2 through B${end}. Which formula computes their average?`,
+          `=AVERAGE(B2:B${end})`,
+          [`=SUM(B2:B${end})/${n - 1}`,            // counted the cells as end − 2
+           `=AVERAGE(B2,B${end})`,                 // comma: only the two end cells
+           `=B2+B${end}/2`],                       // order of operations
+          `B2:B${end} is ${n} cells. =AVERAGE(B2:B${end}) adds them and divides by ${n}. A comma lists single cells, so AVERAGE(B2,B${end}) only averages two; and B2+B${end}/2 halves just one cell.`);
+      }
+      if (kind === "tax") {
+        const r = ri(2, 9);
+        return Qc("which_formula",
+          `A price is in B${r} and the sales-tax rate (as a decimal) is in E1. Which formula gives the price including tax, and still works when filled down?`,
+          `=B${r}*(1+$E$1)`,
+          [`=B${r}*1+$E$1`,                        // order of operations: adds the rate
+           `=B${r}*$E$1`,                          // the tax alone, not the total
+           `=B${r}*(1+E1)`],                       // right today, breaks when filled
+          `Price with tax = price × (1 + rate). The parentheses make the 1 and the rate add first, and $E$1 keeps every filled row pointing at the rate. Without the $ the reference would slide to E2, E3, …`);
+      }
+      if (kind === "change") {
+        const r = ri(2, 9);
+        return Qc("which_formula",
+          `Last year's value is in B${r} and this year's is in C${r}. Which formula gives the percent change as a decimal?`,
+          `=(C${r}-B${r})/B${r}`,
+          [`=C${r}-B${r}/B${r}`,                   // order of operations
+           `=(C${r}-B${r})/C${r}`,                 // divided by the new value
+           `=(B${r}-C${r})/B${r}`],                // subtracted the wrong way
+          `Percent change = (new − old) ÷ old. The parentheses make the subtraction happen first, and the divisor is the OLD value, B${r}.`);
+      }
+      if (kind === "range") {
+        const end = ri(6, 14);
+        return Qc("which_formula",
+          `Daily high temperatures are in B2:B${end}. Which formula finds the difference between the hottest and coldest day?`,
+          `=MAX(B2:B${end})-MIN(B2:B${end})`,
+          [`=B${end}-B2`,                          // last minus first, not max minus min
+           `=MIN(B2:B${end})-MAX(B2:B${end})`,     // backwards: negative
+           `=MAX(B2:B${end})-B2`],                 // assumed the first day was coldest
+          `The hottest day is MAX and the coldest is MIN, wherever they are in the list. Their difference is MAX − MIN. B${end} − B2 only compares the first and last days.`);
+      }
+      const r = ri(3, 9);
+      return Qc("which_formula",
+        `A checkbook register lists deposits in column B, withdrawals in column C and the running balance in column D. Which formula belongs in D${r}?`,
+        `=D${r - 1}+B${r}-C${r}`,
+        [`=D${r - 1}+B${r}+C${r}`,                 // added the withdrawal
+         `=B${r}-C${r}`,                           // forgot the previous balance
+         `=D${r}+B${r}-C${r}`],                    // refers to itself (circular)
+        `The new balance is the previous balance (D${r - 1}) plus this row's deposit (B${r}) minus this row's withdrawal (C${r}). A formula in D${r} cannot use D${r} itself.`);
+    }
+
+    // chart_choice
+    const CH = { line: "line graph", bar: "bar graph", pie: "pie chart", scatter: "scatter plot" };
+    const s = pick([
+      ["line", "a savings balance recorded at the end of each month for two years"],
+      ["line", "the temperature every hour from 6 a.m. to 6 p.m."],
+      ["line", "a website's visitors each week over a semester"],
+      ["bar", "the number of students in each of five clubs"],
+      ["bar", "total sales of four different products last month"],
+      ["bar", "the average commute time in six cities"],
+      ["pie", "how a monthly budget is split among rent, food, transport and savings"],
+      ["pie", "the share of the vote each of four candidates received"],
+      ["pie", "the percent of a class that chose each lunch option"],
+      ["scatter", "whether hours of sleep and test score are related, for 40 students"],
+      ["scatter", "each used car's age and its price, for 60 cars"],
+      ["scatter", "height and arm span for everyone in a class"]]);
+    const why = { line: "A line graph shows how one quantity changes over time.",
+      bar: "A bar graph compares separate categories side by side.",
+      pie: "A pie chart shows how one whole is divided into parts.",
+      scatter: "A scatter plot shows pairs of measurements, so you can see whether two variables are related." };
+    return Qc("chart_choice",
+      `A spreadsheet table holds ${s[1]}. Which chart displays this data best?`,
+      CH[s[0]], Object.keys(CH).filter(k => k !== s[0]).map(k => CH[k]),
+      why[s[0]]);
+  });
+
+  // =====================================================================
+  // M-322  Personal Finance  (tier 5)
+  // Prereqs: Financial Math, Percent Increase and Decrease.
+  // Mastery: wages, paychecks, deductions, budgets, unit prices, simple debt.
+  // =====================================================================
+  _addSkill(5, "Personal Finance", "Personal Finance", 3, {
+    goalProblem: "Sam earns $16.40 an hour and worked 46 hours this week. Hours over 40 are paid at 1.5 times the regular rate. What is Sam's gross pay?",
+    teachingSteps: [
+      { title: "Gross pay and overtime", explanation: "<strong>Gross pay</strong> is everything earned before anything is taken out. For hourly work, hours over 40 in a week are usually <strong>overtime</strong>, paid at <strong>1.5 ×</strong> the regular rate. Only the extra hours get the higher rate.", visual: "40 × $16.40 = $656.00\n6 × ($16.40 × 1.5) = 6 × $24.60 = $147.60\nGross = $803.60" },
+      { title: "Salary per paycheck", explanation: "A yearly salary is split across pay periods: <strong>weekly ÷ 52</strong>, <strong>every two weeks (biweekly) ÷ 26</strong>, <strong>twice a month (semimonthly) ÷ 24</strong>, <strong>monthly ÷ 12</strong>. A full-time hourly job is about 40 × 52 = 2,080 hours a year.", visual: "$41,600 ÷ 26 = $1,600 per biweekly check\n$20/hr × 2,080 = $41,600 a year" },
+      { title: "Deductions and net pay", explanation: "Before you are paid, <strong>deductions</strong> come out: federal and state income tax withholding, <strong>Social Security 6.2%</strong>, <strong>Medicare 1.45%</strong>, and things like health insurance. What is left is <strong>net pay</strong> (take-home pay). Round each deduction to the cent.", visual: "Net = Gross − all deductions" },
+      { title: "Budgets use net pay", explanation: "A budget plans the money you actually receive. The <strong>percent of income</strong> spent on something is part ÷ income × 100. One common guide is <strong>50/30/20</strong>: 50% needs, 30% wants, 20% savings.", visual: "$780 rent ÷ $2,600 net = 0.30 → 30%" },
+      { title: "Unit price finds the better buy", explanation: "Divide <strong>price by quantity</strong> to get the cost of one unit, then compare like with like. The bigger package is often cheaper per unit — but not always.", visual: "$4.79 ÷ 24 oz ≈ $0.20/oz\n$3.29 ÷ 18 oz ≈ $0.18/oz ← better" },
+      { title: "Debt costs interest", explanation: "Simple interest on a loan is <strong>I = P × r × t</strong>. A credit card's <strong>APR</strong> is yearly, so one month of interest is <strong>balance × APR ÷ 12</strong>. Interest is charged on whatever you have not paid off.", visual: "$1,200 × 0.21 ÷ 12 = $21.00 interest this month" }
+    ],
+    finalAnswer: "$803.60",
+    answerExplanation: "Regular: 40 × $16.40 = $656.00. Overtime rate: $16.40 × 1.5 = $24.60, and 6 × $24.60 = $147.60. Gross = $656.00 + $147.60 = $803.60.",
+    example: { problem: "Gross pay is $820.00. Deductions: 12% federal, 6.2% Social Security, 1.45% Medicare. What is the net pay?", steps: [
+      { text: "Federal", math: "820 × 0.12 = $98.40" },
+      { text: "Social Security", math: "820 × 0.062 = $50.84" },
+      { text: "Medicare", math: "820 × 0.0145 = $11.89" },
+      { text: "Total deductions", math: "98.40 + 50.84 + 11.89 = $161.13" },
+      { text: "Net pay", math: "820.00 − 161.13 = $658.87" }
+    ]},
+    keyPoints: [
+      "Overtime is 1.5 × the rate, for the hours over 40 only",
+      "Biweekly = ÷ 26, semimonthly = ÷ 24, monthly = ÷ 12",
+      "Net pay = gross pay − deductions; budget with net pay",
+      "Unit price = price ÷ quantity; compare in the same unit",
+      "Monthly card interest = balance × APR ÷ 12"
+    ],
+    mistakes: [
+      { wrong: "Paying 1.5 × the rate for all 46 hours", why: "The first 40 hours are paid at the regular rate. Only the 6 extra hours earn 1.5 ×." },
+      { wrong: "Budgeting with gross pay", why: "Deductions come out first. You can only spend your net pay." },
+      { wrong: "Using the APR as the monthly rate", why: "APR is per YEAR. Divide by 12 for one month: 21% APR is 1.75% a month." },
+      { wrong: "Assuming the biggest package is the best buy", why: "Work out each unit price. Stores sometimes price large sizes higher per unit." }
+    ],
+    guided: {
+      problem: "A credit card has a 21% APR and a $1,400 balance. You pay $200 this month, and interest is charged on what is left for one month. What is the new balance?",
+      steps: [
+        { label: "Balance left after the payment", value: "1400 − 200 = 1200" },
+        { label: "Monthly rate (percent)", value: "21 ÷ 12 = 1.75" },
+        { label: "Interest for the month", value: "1200 × 0.0175 = 21" },
+        { label: "New balance", value: "1200 + 21 = 1221" }
+      ],
+      answer: "1221.00", answerLabel: "New balance ($):",
+      interactiveSteps: [
+        { prompt: "How much of the balance is left after the $200 payment?", hint: "Subtract the payment from the balance.", answer: "1200", acceptableAnswers: moneyForms(120000), formatHint: "e.g., 950",
+          commonMistakes: { "1600": "A payment lowers the balance. Subtract it." } },
+        { prompt: "The APR is 21% a year. What is the interest rate for one month, as a percent?", hint: "There are 12 months in a year.", answer: "1.75", acceptableAnswers: ["1.75", "1.75%"], formatHint: "e.g., 1.5",
+          commonMistakes: { "21": "21% is the yearly rate. Divide by 12.", "252": "Divide the yearly rate by 12, don't multiply." } },
+        { prompt: "How much interest is charged this month (in dollars)?", hint: "1200 × 0.0175", answer: "21", acceptableAnswers: moneyForms(2100), formatHint: "e.g., 18.50",
+          commonMistakes: { "24.50": "That charges interest on the full $1,400. The payment came off first.", "252": "That is a whole year of interest. Use the monthly rate." } },
+        { prompt: "What is the new balance?", hint: "Balance left plus the interest.", answer: "1221.00", acceptableAnswers: moneyForms(122100), formatHint: "e.g., 980.50",
+          commonMistakes: { "1179": "Interest is ADDED to what you owe." } }
+      ]
+    }
+  }, function(){
+    const t = pick(["overtime","net_pay","salary","budget","unit_price","better_buy","debt","savings_goal"]);
+    const who = pick(NAMES);
+
+    if (t === "overtime") {
+      const rate = ri(50, 105) * 25;                  // $12.50 - $26.25, in cents
+      let hours, dayTxt = "";
+      if (Math.random() < 0.5) {
+        const days = Array.from({length: 5}, () => pick([7, 7.5, 8, 8.5, 9, 9.5, 10, 10.5, 11]));
+        hours = days.reduce((s, x) => s + x, 0);
+        if (hours <= 40) { days[4] += 41 - hours; hours = 41; }
+        dayTxt = `Monday to Friday ${who} worked ${days.slice(0, 4).join(", ")} and ${days[4]} hours.`;
+      } else {
+        hours = ri(41, 56) + pick([0, 0.5]);
+        dayTxt = `${who} worked ${hours} hours this week.`;
+      }
+      const ot = hours - 40, c = cR(40 * rate + ot * rate * 1.5);
+      // $12.75 × 1.5 = $19.125: show the exact overtime rate, not a rounded one.
+      const otRate = rate * 1.5, otTxt = otRate % 1 ? "$" + (otRate / 100).toFixed(3) : usd(otRate);
+      return Qm("overtime",
+        `${who} earns ${usd(rate)} an hour. ${dayTxt} Hours over 40 are paid at 1.5 times the regular rate. What is ${who}'s gross pay for the week? Round to the nearest cent.`,
+        c,
+        [cR(hours * rate),                         // no overtime premium
+         cR(hours * rate * 1.5),                   // 1.5 × on every hour
+         cR(40 * rate + ot * rate * 2),            // double time
+         cR(40 * rate + ot * rate * 0.5)],         // only the premium half
+        `Total hours: ${hours}, so ${ot} overtime. Regular: 40 × ${usd(rate)} = ${usd(40 * rate)}. Overtime rate: ${usd(rate)} × 1.5 = ${otTxt}; ${ot} × ${otTxt} = ${usd(cR(ot * otRate))}. Gross: ${usd(40 * rate)} + ${usd(cR(ot * otRate))} = ${usd(c)}.`);
+    }
+
+    if (t === "net_pay") {
+      const hourly = Math.random() < 0.5;
+      const r = ri(56, 104) * 25, h = ri(24, 40);
+      const gross = hourly ? r * h : ri(1100, 3200) * 100 + pick([0, 50, 75]);
+      const fed = pick([8, 10, 12, 15]), st = pick([0, 3, 4.5, 5]), ins = pick([0, 2500, 4000, 5550]);
+      const dF = cR(gross * fed / 100), dS = cR(gross * 6.2 / 100), dM = cR(gross * 1.45 / 100), dT = cR(gross * st / 100);
+      const ded = dF + dS + dM + dT + ins, net = gross - ded;
+      const gTxt = hourly ? `${who} worked ${h} hours at ${usd(r)} an hour.` : `${who}'s gross pay for this pay period is ${usd(gross)}.`;
+      const parts = [`federal withholding ${fed}%`, "Social Security 6.2%", "Medicare 1.45%"];
+      if (st) parts.push(`state tax ${st}%`);
+      if (ins) parts.push(`health insurance ${usd(ins)}`);
+      const list = parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1];
+      const work = `${hourly ? `Gross: ${h} × ${usd(r)} = ${usd(gross)}. ` : ""}Federal ${usd(dF)}, Social Security ${usd(dS)}, Medicare ${usd(dM)}${st ? `, state ${usd(dT)}` : ""}${ins ? `, insurance ${usd(ins)}` : ""}. Total deductions: ${usd(ded)}.`;
+      if (Math.random() < 0.7) {
+        return Qm("net_pay",
+          `${gTxt} Deductions are ${list}. Each percent deduction is rounded to the nearest cent. What is the net (take-home) pay?`,
+          net,
+          [gross - dF,                    // only federal tax
+           net + dM,                      // forgot Medicare
+           ins ? net + ins : net + dS,    // forgot insurance / Social Security
+           gross],                        // gave the gross
+          `${work} Net pay: ${usd(gross)} − ${usd(ded)} = ${usd(net)}.`);
+      }
+      return Qm("net_pay",
+        `${gTxt} Deductions are ${list}. Each percent deduction is rounded to the nearest cent. What is the total of all deductions?`,
+        ded, [net, ded - dM, ded - dS, dF], work);
+    }
+
+    if (t === "salary") {
+      const kind = pick(["per_check", "annual", "compare"]);
+      if (kind === "per_check") {
+        const S = ri(64, 150) * 500, per = pick([["weekly", 52], ["every two weeks (biweekly)", 26], ["twice a month (semimonthly)", 24], ["monthly", 12]]);
+        const c = cR(S * 100 / per[1]);
+        return Qm("salary",
+          `${who} is offered a salary of ${usd(S * 100)} a year, paid ${per[0]}. What is the gross pay on each paycheck? Round to the nearest cent.`,
+          c, [52, 26, 24, 12].filter(k => k !== per[1]).map(k => cR(S * 100 / k)),
+          `Paid ${per[0]} means ${per[1]} paychecks a year: ${usd(S * 100)} ÷ ${per[1]} = ${usd(c)}.`);
+      }
+      const r = ri(56, 120) * 25;
+      if (kind === "annual") {
+        return Qm("salary",
+          `${who} earns ${usd(r)} an hour and works 40 hours a week, 52 weeks a year. What is the yearly gross pay?`,
+          r * 2080,
+          [r * 40 * 12,          // 40 hours "a month"
+           r * 40 * 4 * 12,      // 4 weeks a month = 48 weeks
+           r * 40 * 50,
+           r * 8 * 365],         // every day of the year
+          `Hours a year: 40 × 52 = 2,080. Pay: 2,080 × ${usd(r)} = ${usd(r * 2080)}.`);
+      }
+      const A = r * 2080;
+      let B; do { B = ri(60, 150) * 50000; } while (B === A);
+      const diff = Math.abs(A - B), better = A > B ? "Job 1" : "Job 2";
+      return Qm("salary",
+        `Job 1 pays ${usd(r)} an hour for 40 hours a week, 52 weeks a year. Job 2 pays a salary of ${usd(B)} a year. How much more per year does the higher-paying job pay?`,
+        diff,
+        [Math.abs(r * 40 * 48 - B), cR(diff / 52), Math.abs(r * 2000 - B), Math.max(A, B)],
+        `Job 1: 40 × 52 = 2,080 hours × ${usd(r)} = ${usd(A)} a year. Job 2: ${usd(B)}. ${better} pays more, by ${usd(diff)}.`);
+    }
+
+    if (t === "budget") {
+      const I = ri(36, 84) * 50;                         // net monthly income, dollars
+      const rent = Math.round(I * (0.25 + Math.random() * 0.15) / 5) * 5;
+      const food = ri(25, 60) * 10, car = ri(8, 30) * 10, phone = ri(4, 9) * 10;
+      const kind = pick(["percent", "left", "rule"]);
+      if (kind === "percent") {
+        const pct = roundDiv(rent * 100, I, 1);
+        return Qp("budget",
+          `${who}'s net (take-home) income is ${usd(I * 100)} a month, and rent is ${usd(rent * 100)}. What percent of ${who}'s income goes to rent? Round to the nearest tenth of a percent.`,
+          pct,
+          [roundDiv(I * 100, rent, 1),                    // divided the wrong way
+           roundDiv(rent * 100, I + rent, 1),             // divided by income + rent
+           roundDiv((I - rent) * 100, I, 1),              // the percent NOT spent on rent
+           rnd(pct + 10, 1)],
+          `Percent = part ÷ whole × 100 = ${rent} ÷ ${I} × 100 = ${rnd(rent * 100 / I, 4)}…% ≈ ${pct}%.`);
+      }
+      if (kind === "left") {
+        const save = pick([0, 5, 10, 15]);
+        const saveAmt = I * save;                          // cents
+        const left = I * 100 - (rent + food + car + phone) * 100 - saveAmt;
+        const saveTxt = save ? ` ${who} also puts ${save}% of income into savings first.` : "";
+        return Qm("budget",
+          `${who}'s net income is ${usd(I * 100)} a month. Monthly costs are rent ${usd(rent * 100)}, food ${usd(food * 100)}, car ${usd(car * 100)} and phone ${usd(phone * 100)}.${saveTxt} How much is left each month for everything else?`,
+          left,
+          [I * 100 - (rent + food + car + phone) * 100 + (save ? 0 : phone * 100),   // forgot savings (or the phone)
+           I * 100 - (rent + food + car) * 100 - saveAmt,                            // missed one bill
+           (rent + food + car + phone) * 100,                                        // the total spent
+           left - save * 100 * 10 + (save ? 0 : car * 100)],
+          `Bills: ${rent} + ${food} + ${car} + ${phone} = ${usd((rent + food + car + phone) * 100)}.` +
+          (save ? ` Savings: ${save}% of ${usd(I * 100)} = ${usd(saveAmt)}.` : "") +
+          ` Left: ${usd(I * 100)} − ${usd((rent + food + car + phone) * 100)}${save ? ` − ${usd(saveAmt)}` : ""} = ${usd(left)}.`);
+      }
+      const cat = pick([["needs", 50], ["wants", 30], ["savings", 20]]);
+      return Qm("budget",
+        `${who} follows the 50/30/20 budget rule (50% needs, 30% wants, 20% savings) on a net income of ${usd(I * 100)} a month. How much should go to ${cat[0]} each month?`,
+        I * cat[1],
+        [50, 30, 20].filter(p => p !== cat[1]).map(p => I * p).concat([cat[1] * 100]),
+        `${cat[1]}% of ${usd(I * 100)} = ${I} × ${cat[1] / 100} = ${usd(I * cat[1])}.`);
+    }
+
+    const PRODUCTS = [
+      { name: "cereal", unit: "ounce", abbr: "oz", sizes: [12, 18, 24, 32], u: 22 },
+      { name: "rice", unit: "pound", abbr: "lb", sizes: [2, 5, 10, 20], u: 120 },
+      { name: "laundry detergent", unit: "fluid ounce", abbr: "fl oz", sizes: [46, 64, 92, 150], u: 14 },
+      { name: "peanut butter", unit: "ounce", abbr: "oz", sizes: [12, 16, 28, 40], u: 19 },
+      { name: "dog food", unit: "pound", abbr: "lb", sizes: [4, 8, 15, 30], u: 160 }];
+    const P = pick(PRODUCTS);
+
+    if (t === "unit_price") {
+      const s = pick(P.sizes), price = Math.max(99, Math.round(s * P.u * (0.8 + Math.random() * 0.45)) - 1);
+      const up = cR(price / s);
+      return Qm("unit_price",
+        `A ${s}-${P.unit} package of ${P.name} costs ${usd(price)}. What is the unit price, in dollars per ${P.unit}? Round to the nearest cent.`,
+        up,
+        [Math.floor(price / s),                 // chopped instead of rounding
+         cR(s * 10000 / price),                 // divided quantity by price
+         cR(price * s / 100),                   // multiplied
+         up + 1],
+        `Unit price = price ÷ quantity = ${usd(price)} ÷ ${s} ` +
+        (price % s ? `= $${rnd(price / s / 100, 4)}… ≈ ${usd(up)}` : `= ${usd(up)}`) + ` per ${P.unit}.`);
+    }
+
+    if (t === "better_buy") {
+      // Four sizes with distinct unit prices at least ~3% apart, so the best
+      // buy is clear but not always the biggest box.
+      let prices, ups, tries = 0;
+      do {
+        const mult = sh([0.80, 0.86, 0.92, 0.98, 1.04, 1.10, 1.16]).slice(0, 4);
+        prices = P.sizes.map((s, i) => Math.round(s * P.u * mult[i]) - 1);
+        ups = prices.map((p, i) => p / P.sizes[i]);
+        const sorted = ups.slice().sort((a, b) => a - b);
+        if (sorted[1] - sorted[0] > sorted[0] * 0.03) break;
+      } while (++tries < 40);
+      const label = i => `${P.sizes[i]} ${P.abbr} for ${usd(prices[i])}`;
+      const best = ups.indexOf(Math.min(...ups));
+      return Qc("better_buy",
+        `A store sells ${P.name} in four sizes: ${P.sizes.map((s, i) => label(i)).join(", ")}. Which size is the best buy (lowest price per ${P.unit})?`,
+        label(best), P.sizes.map((s, i) => i).filter(i => i !== best).map(label),
+        `Unit prices: ${P.sizes.map((s, i) => `${usd(prices[i])} ÷ ${s} ≈ $${rnd(ups[i] / 100, 3)}`).join("; ")}. The lowest is ${label(best)}.`);
+    }
+
+    if (t === "debt") {
+      const kind = pick(["loan_total", "card_month", "card_after_payment", "loan_monthly"]);
+      if (kind === "loan_total" || kind === "loan_monthly") {
+        const Pd = ri(10, 80) * 100, r = pick([3, 4, 4.5, 5, 6, 7.5, 8, 9, 10, 12]), y = ri(1, 5);
+        const I = cR(Pd * r * y), tot = Pd * 100 + I;      // cents
+        const thing = pick(["used car", "motorcycle", "set of tools", "computer"]);
+        if (kind === "loan_total") {
+          return Qm("debt",
+            `${who} borrows ${usd(Pd * 100)} for a ${thing} at ${r}% simple interest per year for ${y} year${y > 1 ? "s" : ""}. What is the total amount ${who} repays?`,
+            tot,
+            [I,                                            // the interest only
+             Pd * 100 + cR(Pd * r),                        // one year of interest
+             cR(Pd * 100 * Math.pow(1 + r / 100, y)),      // compounded
+             Pd * 100 + I * 2],
+            `Interest I = P × r × t = ${Pd} × ${r / 100} × ${y} = ${usd(I)}. Total repaid = ${usd(Pd * 100)} + ${usd(I)} = ${usd(tot)}.`);
+        }
+        const mo = cR(tot / (12 * y));
+        return Qm("debt",
+          `${who} borrows ${usd(Pd * 100)} for a ${thing} at ${r}% simple interest per year, to be repaid in equal monthly payments over ${y} year${y > 1 ? "s" : ""}. What is each monthly payment? Round to the nearest cent.`,
+          mo,
+          [cR(Pd * 100 / (12 * y)),                // left out the interest
+           cR(tot / y),                            // a yearly payment
+           cR(tot / 12),                           // spread over 12 months, not 12 × years
+           cR((Pd * 100 + cR(Pd * r)) / (12 * y))],
+          `Interest: ${Pd} × ${r / 100} × ${y} = ${usd(I)}. Total owed: ${usd(tot)}. Payments: 12 × ${y} = ${12 * y}. Each: ${usd(tot)} ÷ ${12 * y} = ${usd(mo)}.`);
+      }
+      const B = ri(300, 2500) * 100, apr = pick([15, 18, 19.99, 21, 24, 26.99]);
+      if (kind === "card_month") {
+        const c = cR(B * apr / 1200);
+        return Qm("debt",
+          `A credit card has an APR of ${apr}% and a balance of ${usd(B)}. How much interest is charged for one month? Round to the nearest cent.`,
+          c, [cR(B * apr / 100), cR(B * apr / 36500), cR(B * apr / 5200), cR(B * apr / 1200) + 100],
+          `APR is yearly, so the monthly rate is ${apr}% ÷ 12. Interest = ${usd(B)} × ${apr / 100} ÷ 12 = ${usd(c)}.`);
+      }
+      const pay = Math.round(B * pick([0.1, 0.15, 0.2, 0.25]) / 100) * 100;
+      const rest = B - pay, intr = cR(rest * apr / 1200), nb = rest + intr;
+      return Qm("debt",
+        `A credit card has an APR of ${apr}% and a balance of ${usd(B)}. ${who} pays ${usd(pay)} this month, and one month of interest is then charged on the rest. What is the new balance? Round to the nearest cent.`,
+        nb,
+        [rest + cR(B * apr / 1200),             // interest on the old balance
+         rest,                                  // forgot the interest
+         cR(rest * (100 + apr) / 100),          // a whole year of interest
+         B + intr],                             // forgot the payment
+        `Left after paying: ${usd(B)} − ${usd(pay)} = ${usd(rest)}. Interest: ${usd(rest)} × ${apr / 100} ÷ 12 = ${usd(intr)}. New balance: ${usd(nb)}.`);
+    }
+
+    // savings_goal: weeks of saving, rounded UP to reach the goal.
+    const Gd = ri(12, 60) * 50, start = pick([0, 0, 50, 75, 100, 150, 200]);
+    const rate = ri(52, 72) * 25, h = ri(8, 20), pct = pick([20, 25, 30, 40, 50]);
+    const job = Math.random() < 0.5;
+    const perWeek = job ? cR(rate * h * pct / 100) : ri(15, 60) * 100;
+    const needC = Gd * 100 - start * 100;
+    let weeks = ceilDiv(needC, perWeek);
+    const jobTxt = job ? `${who} works ${h} hours a week at ${usd(rate)} an hour and saves ${pct}% of that pay.` : `${who} saves ${usd(perWeek)} every week.`;
+    return Qn("savings_goal",
+      `${who} wants to buy something that costs ${usd(Gd * 100)} and ${start ? `already has ${usd(start * 100)} saved` : "has nothing saved yet"}. ${jobTxt} How many weeks of saving will it take to have enough?`,
+      weeks,
+      [Math.floor(needC / perWeek),                       // rounded down - still short
+       ceilDiv(Gd * 100, perWeek),                        // ignored what was already saved
+       weeks + 1,
+       job ? ceilDiv(needC, rate * h) : weeks + 2],       // saved the whole paycheck
+      `${job ? `Saved per week: ${h} × ${usd(rate)} × ${pct / 100} = ${usd(perWeek)}. ` : ""}Still needed: ${usd(Gd * 100)} − ${usd(start * 100)} = ${usd(needC)}. ${usd(needC)} ÷ ${usd(perWeek)} = ${rnd(needC / perWeek, 2)}` +
+      (needC % perWeek ? `, so it takes ${weeks} weeks (round up: after ${weeks - 1} weeks there is not quite enough).` : `, exactly ${weeks} weeks.`));
+  });
+
+  // =====================================================================
+  // M-323  Mathematical Communication  (tier 6)
+  // Prereqs: Proofs, Multi-Step Equations. Mastery: choose a justification,
+  // find the error in a worked solution, state a conclusion with units and
+  // context. Every question is a selection task, so all are forceChoice.
+  // =====================================================================
+  _addSkill(6, "Mathematical Communication", "Mathematical Communication", 4, {
+    goalProblem: "A student solved 4(x + 3) = 2x + 20. Step 1: 4x + 3 = 2x + 20. Step 2: 2x + 3 = 20. Step 3: 2x = 17. Step 4: x = 8.5. Which step has the first error?",
+    teachingSteps: [
+      { title: "Every step needs a reason", explanation: "A solution is an argument. Each line must follow from the line before by a rule you can name: the <strong>Distributive Property</strong>, the <strong>Subtraction / Division Property of Equality</strong>, <strong>combining like terms</strong>, or in geometry a definition, postulate or theorem.", visual: "3(x + 4) = 21\n3x + 12 = 21   Distributive Property\n3x = 9         Subtraction Property of Equality\nx = 3          Division Property of Equality" },
+      { title: "Hunt for the FIRST error", explanation: "Compare each line only with the line <strong>just before it</strong>. Once one step is wrong, later steps can be perfectly correct moves made on wrong numbers — the mistake is the first line that does not follow.", visual: "4(x + 3) → 4x + 3   ✗ (the 4 must multiply the 3 too)\n2x + 3 = 20 → 2x = 17   ✓ a correct move on a wrong line" },
+      { title: "Name the mistake exactly", explanation: "\"It's wrong\" helps no one. Say <strong>what</strong> went wrong: \"divided by the new price instead of the original\", \"used the diameter as the radius\", \"wrote 2 h 30 min as 2.30 h\". A precise name tells you how to fix it.", visual: "vague: the answer is off\nprecise: 4 was not distributed to the 3" },
+      { title: "A conclusion answers the question", explanation: "A finished answer is a <strong>sentence</strong> with the <strong>number</strong>, the <strong>unit</strong> and the <strong>context</strong> of the question. \"195\" or \"The answer is 195\" is not finished. Check the unit fits: distance in miles, a rate in miles per hour, an area in square feet.", visual: "✗ 195\n✗ The car goes 195 miles per hour.\n✓ The car travels 195 miles in 3 hours." },
+      { title: "One counterexample defeats \"always\"", explanation: "To show a claim like \"every odd number is prime\" is false, give <strong>one</strong> case that meets the condition but breaks the conclusion: 9 is odd and not prime. Examples that agree with a claim never prove it is always true.", visual: "Claim: divisible by 4 → divisible by 8\n12: divisible by 4 ✓, by 8 ✗ → counterexample\n10: not divisible by 4 → not a counterexample" }
+    ],
+    finalAnswer: "Step 1",
+    answerExplanation: "4(x + 3) = 4x + 12, not 4x + 3. Steps 2–4 are correct moves, but they start from the wrong line. Done correctly: 4x + 12 = 2x + 20, so 2x = 8 and x = 4.",
+    example: { problem: "Give a reason for each step of 5x − 7 = 2x + 8.", steps: [
+      { text: "3x − 7 = 8", math: "Subtraction Property of Equality (subtract 2x)" },
+      { text: "3x = 15", math: "Addition Property of Equality (add 7)" },
+      { text: "x = 5", math: "Division Property of Equality (divide by 3)" },
+      { text: "Check", math: "5(5) − 7 = 18 and 2(5) + 8 = 18 ✓" }
+    ]},
+    keyPoints: [
+      "Justify each step with a named property, definition or theorem",
+      "The first error is the first line that does not follow from the line before",
+      "A conclusion is a sentence: number + unit + context",
+      "A counterexample must meet the claim's condition and break its conclusion",
+      "Examples can support a claim but cannot prove it is always true"
+    ],
+    mistakes: [
+      { wrong: "Marking the last step as the error because the final answer is wrong", why: "The last step may be a correct move. Find the FIRST line that does not follow from the one before." },
+      { wrong: "Offering 10 as a counterexample to \"divisible by 4 → divisible by 8\"", why: "10 is not divisible by 4, so it says nothing about the claim. A counterexample must satisfy the condition: 12 works." },
+      { wrong: "Concluding \"The car travels 195 miles per hour\" when asked how far", why: "How far is a distance, so the unit is miles. Miles per hour is a speed." }
+    ],
+    guided: {
+      problem: "Look again at the goal problem: 4(x + 3) = 2x + 20, where Step 1 was written as 4x + 3 = 2x + 20.",
+      steps: [
+        { label: "What 4(x + 3) should be", value: "4x + 12" },
+        { label: "Step with the first error", value: "Step 1" },
+        { label: "Correct solution", value: "x = 4" }
+      ],
+      answer: "4", answerLabel: "x =",
+      interactiveSteps: [
+        { prompt: "Distribute correctly: 4(x + 3) = ?", hint: "Multiply the 4 by BOTH terms inside the parentheses.", answer: "4x + 12", acceptableAnswers: ["4x + 12", "4x+12", "12 + 4x"], formatHint: "e.g., 5x + 10",
+          commonMistakes: { "4x+3": "The 4 multiplies the 3 as well.", "4x+7": "Multiply, don't add: 4 × 3 = 12." } },
+        { prompt: "So which step contains the first error?", hint: "Which line first fails to follow from the line before it?", answer: "Step 1", acceptableAnswers: ["Step 1"],
+          selectOptions: [{ value: "Step 1", label: "Step 1" }, { value: "Step 2", label: "Step 2" }, { value: "Step 3", label: "Step 3" }, { value: "Step 4", label: "Step 4" }],
+          commonMistakes: { "Step 4": "Step 4 divides 17 by 2 correctly. The mistake came earlier.", "Step 2": "Subtracting 2x from both sides is a correct move on the line it was given." } },
+        { prompt: "Solve 4x + 12 = 2x + 20 correctly. x = ?", hint: "Subtract 2x, then subtract 12, then divide by 2.", answer: "4", acceptableAnswers: ["4", "x = 4"], formatHint: "a whole number",
+          commonMistakes: { "8.5": "That is the student's answer from the wrong Step 1.", "16": "After 2x = 8, divide by 2." } }
+      ]
+    }
+  }, function(){
+    const t = pick(["first_error","error_reason","justify_algebra","justify_geometry","conclusion","counterexample"]);
+    const who = pick(NAMES);
+    const stepsTxt = s => s.map((x, i) => `Step ${i + 1}: ${x}.`).join(" ");
+    const STEP_OPTS = ["Step 1","Step 2","Step 3","Step 4"];
+
+    if (t === "first_error") {
+      if (Math.random() < 0.55) {
+        // a(x + b) = cx + d, with a − c ≥ 2 so no step ever shows "1x".
+        let a, b, c, x0, d, e, steps, tries = 0;
+        do {
+          a = ri(3, 7); c = ri(1, a - 2); b = ri(1, 9); x0 = ri(1, 12); d = a*(x0 + b) - c*x0;
+          e = ri(1, 4);
+          const k = a - c, ab = a*b;
+          steps = [`${a}x + ${ab} = ${co(c)}x + ${d}`, `${co(k)}x + ${ab} = ${d}`, `${co(k)}x = ${d - ab}`, `x = ${x0}`];
+          if (e === 1) steps = [`${a}x + ${b} = ${co(c)}x + ${d}`, `${k}x + ${b} = ${d}`, `${k}x = ${d - b}`, `x = ${frac(d - b, k)}`];
+          if (e === 2) steps = [steps[0], `${a + c}x + ${ab} = ${d}`, `${a + c}x = ${d - ab}`, `x = ${frac(d - ab, a + c)}`];
+          if (e === 3) steps = [steps[0], steps[1], `${k}x = ${d + ab}`, `x = ${frac(d + ab, k)}`];
+          if (e === 4) steps = [steps[0], steps[1], steps[2], `x = ${d - ab - k}`];
+        } while (e === 4 && d - a*b - (a - c) === x0 && ++tries < 20);
+        const why = [
+          `Step 1 is wrong: ${a}(x + ${b}) = ${a}x + ${a*b}, because the ${a} multiplies both terms.`,
+          `Step 2 is wrong: subtracting ${co(c)}x from both sides gives ${co(a - c)}x, not ${a + c}x.`,
+          `Step 3 is wrong: subtracting ${a*b} from both sides gives ${d} − ${a*b} = ${d - a*b}, not ${d + a*b}.`,
+          `Step 4 is wrong: to undo multiplying by ${a - c}, divide by ${a - c}; x = ${d - a*b} ÷ ${a - c} = ${x0}.`][e - 1];
+        return Qc("first_error",
+          `A student solved ${a}(x + ${b}) = ${co(c)}x + ${d}. ${stepsTxt(steps)} Which step contains the first error?`,
+          STEP_OPTS[e - 1], STEP_OPTS.filter((s, i) => i !== e - 1),
+          `${why} The correct solution is x = ${x0}.${e < 4 ? " The steps after the error are correct moves made on a wrong line." : ""}`);
+      }
+      // Rectangle perimeter: length = width + k.
+      const w = ri(4, 20), k = ri(2, 9), P = 4*w + 2*k, e = ri(1, 4);
+      let steps = [`${P} = 2w + 2(w + ${k})`, `${P} = 4w + ${2*k}`, `4w = ${P - 2*k}`, `w = ${w}`];
+      if (e === 1) steps = [`${P} = w + (w + ${k})`, `${P} = 2w + ${k}`, `2w = ${P - k}`, `w = ${frac(P - k, 2)}`];
+      if (e === 2) steps = [steps[0], `${P} = 4w + ${k}`, `4w = ${P - k}`, `w = ${frac(P - k, 4)}`];
+      if (e === 3) steps = [steps[0], steps[1], `4w = ${P + 2*k}`, `w = ${frac(P + 2*k, 4)}`];
+      if (e === 4) steps = [steps[0], steps[1], steps[2], `w = ${P - 2*k - 4}`];
+      const why = [
+        `Step 1 is wrong: a perimeter adds all four sides, P = 2w + 2(w + ${k}), not just one width and one length.`,
+        `Step 2 is wrong: 2(w + ${k}) = 2w + ${2*k}, so the total is 4w + ${2*k}; the 2 was not distributed to the ${k}.`,
+        `Step 3 is wrong: subtracting ${2*k} from both sides gives ${P} − ${2*k} = ${P - 2*k}.`,
+        `Step 4 is wrong: 4w means 4 × w, so divide by 4: w = ${P - 2*k} ÷ 4 = ${w}.`][e - 1];
+      return Qc("first_error",
+        `A rectangle's length is ${k} cm more than its width, and its perimeter is ${P} cm. A student found the width w like this. ${stepsTxt(steps)} Which step contains the first error?`,
+        STEP_OPTS[e - 1], STEP_OPTS.filter((s, i) => i !== e - 1),
+        `${why} The width is ${w} cm.`);
+    }
+
+    if (t === "error_reason") {
+      const fam = pick(["percent", "circle", "speed"]);
+      if (fam === "percent") {
+        const o = pick([20, 40, 60, 80, 120, 200]), p = pick([10, 15, 20, 25, 30, 40, 50]), n = o * (100 + p) / 100;
+        const item = pick(["bus pass", "concert ticket", "gym membership", "textbook"]);
+        const E = {
+          newBase: ["Divided the change by the new price instead of the original price", `${n} − ${o} = ${n - o}, then ${n - o} ÷ ${n} ≈ ${rnd((n - o) / n, 3)}, so the increase is about ${rnd(100 * (n - o) / n, 1)}%`],
+          no100: ["Did not multiply the decimal by 100 to write it as a percent", `${n} − ${o} = ${n - o}, then ${n - o} ÷ ${o} = ${(n - o) / o}, so the increase is ${(n - o) / o}%`],
+          added: ["Added the two prices instead of subtracting to find the change", `${n} + ${o} = ${n + o}, then ${n + o} ÷ ${o} = ${rnd((n + o) / o, 3)}, so the increase is ${rnd(100 * (n + o) / o, 1)}%`],
+          noDivide: ["Reported the dollar change as the percent without dividing by the original price", `${n} − ${o} = ${n - o}, so the increase is ${n - o}%`] };
+        const key = pick(Object.keys(E));
+        return Qc("error_reason",
+          `The price of a ${item} rose from $${o} to $${n}. A student found the percent increase like this: ${E[key][1]}. What mistake did the student make?`,
+          E[key][0], Object.keys(E).filter(k => k !== key).map(k => E[k][0]),
+          `Percent change = (new − old) ÷ old × 100 = (${n} − ${o}) ÷ ${o} × 100 = ${p}%. The student's work shows: ${E[key][0].toLowerCase()}.`);
+      }
+      if (fam === "circle") {
+        const r = ri(3, 12), unit = pick(["ft", "m"]), uw = { ft: "feet", m: "meters" }[unit];
+        const E = {
+          diam: ["Used the diameter as the radius", `the diameter is ${2*r} ${unit}, so A = π × ${2*r}² = ${4*r*r}π square ${uw}`, `the pool is ${2*r} ${unit} across`],
+          circ: ["Used the circumference formula instead of the area formula", `A = 2 × π × ${r} = ${2*r}π square ${uw}`, `the radius is ${r} ${unit}`],
+          pi2: ["Squared π along with the radius", `A = (π × ${r})² = ${r*r}π² square ${uw}`, `the radius is ${r} ${unit}`],
+          units: ["Gave an area in linear units instead of square units", `A = π × ${r}² = ${r*r}π ≈ ${rnd(3.14 * r * r, 2)} ${uw}`, `the radius is ${r} ${unit}`] };
+        const key = pick(Object.keys(E));
+        return Qc("error_reason",
+          `A circular pool cover is needed and ${E[key][2]}. A student found its area like this: ${E[key][1]}. What mistake did the student make?`,
+          E[key][0], Object.keys(E).filter(k => k !== key).map(k => E[k][0]),
+          `Area of a circle = πr² with r = ${r} ${unit}: A = ${r*r}π ≈ ${rnd(3.14 * r * r, 2)} square ${uw}. The student's work shows: ${E[key][0].toLowerCase()}.`);
+      }
+      // speed: d miles in h hours m minutes
+      const m = pick([15, 30, 45]), h = ri(1, 4), s = m === 30 ? 2 * ri(20, 35) : 4 * ri(10, 17);
+      const T = h + m / 60, d = s * T;
+      const E = {
+        decimal: [`Wrote ${h} hour${h > 1 ? "s" : ""} ${m} minutes as ${h}.${m} hours`, `time = ${h}.${m} hours, so speed = ${d} ÷ ${h}.${m} ≈ ${rnd(d / (h + m / 100), 1)} mph`],
+        inverted: ["Divided the time by the distance instead of the distance by the time", `time = ${T} hours, so speed = ${T} ÷ ${d} ≈ ${rnd(T / d, 3)} mph`],
+        multiplied: ["Multiplied the distance by the time instead of dividing", `time = ${T} hours, so speed = ${d} × ${T} = ${rnd(d * T, 2)} mph`],
+        noMinutes: [`Left out the ${m} minutes and used only the whole hours`, `time = ${h} hours, so speed = ${d} ÷ ${h} = ${rnd(d / h, 2)} mph`] };
+      const key = pick(Object.keys(E));
+      return Qc("error_reason",
+        `${who} drove ${d} miles in ${h} hour${h > 1 ? "s" : ""} ${m} minutes. A student found the average speed like this: ${E[key][1]}. What mistake did the student make?`,
+        E[key][0], Object.keys(E).filter(k => k !== key).map(k => E[k][0]),
+        `${m} minutes is ${m / 60} of an hour, so the time is ${T} hours. Speed = distance ÷ time = ${d} ÷ ${T} = ${s} mph.`);
+    }
+
+    if (t === "justify_algebra") {
+      const a = ri(2, 9), b = ri(2, 15), k = ri(2, 12), c = a*k + b, b2 = ri(2, 6);
+      const POOL = [
+        ["Distributive Property", `${a}(x + ${b}) = ${a*k + a*b}`, `${a}x + ${a*b} = ${a*k + a*b}`],
+        ["Subtraction Property of Equality", `${a}x + ${b} = ${c}`, `${a}x = ${c - b}`],
+        ["Addition Property of Equality", `x − ${b} = ${k}`, `x = ${k + b}`],
+        ["Division Property of Equality", `${a}x = ${a*k}`, `x = ${k}`],
+        ["Multiplication Property of Equality", `x/${a} = ${k}`, `x = ${a*k}`],
+        ["Commutative Property of Addition", `${b} + ${a}x = ${c}`, `${a}x + ${b} = ${c}`],
+        ["Combining like terms", `${a}x + ${b2}x + ${b} = ${c + b2*k}`, `${a + b2}x + ${b} = ${c + b2*k}`],
+        ["Symmetric Property of Equality", `${c} = ${a}x + ${b}`, `${a}x + ${b} = ${c}`],
+        ["Substitution Property of Equality", `y = ${a}x and x = ${k}`, `y = ${a}(${k})`]];
+      // Subtracting b is also "adding −b", and dividing by a is "multiplying
+      // by 1/a" - so those pairs are never offered against each other.
+      const CLASH = { "Subtraction Property of Equality": "Addition Property of Equality", "Addition Property of Equality": "Subtraction Property of Equality",
+        "Division Property of Equality": "Multiplication Property of Equality", "Multiplication Property of Equality": "Division Property of Equality" };
+      const [ans, from, to] = pick(POOL);
+      const wrongs = sh(POOL.map(p => p[0]).filter(n => n !== ans && n !== CLASH[ans])).slice(0, 3);
+      const how = {
+        "Distributive Property": `the ${a} is multiplied into both terms in the parentheses`,
+        "Subtraction Property of Equality": `${b} is subtracted from both sides`,
+        "Addition Property of Equality": `${b} is added to both sides`,
+        "Division Property of Equality": `both sides are divided by ${a}`,
+        "Multiplication Property of Equality": `both sides are multiplied by ${a}`,
+        "Commutative Property of Addition": `the two terms on the left swap order, which addition allows`,
+        "Combining like terms": `${a}x and ${b2}x are like terms and add to ${a + b2}x`,
+        "Symmetric Property of Equality": `the two sides of the equation trade places (if p = q then q = p)`,
+        "Substitution Property of Equality": `x is replaced by its value, ${k}`}[ans];
+      const line = ans === "Substitution Property of Equality" ? `From "${from}" a student writes "${to}".` : `A student goes from ${from} to ${to}.`;
+      return Qc("justify_algebra", `${line} Which property justifies this step?`, ans, wrongs,
+        `${ans}: ${how}.`);
+    }
+
+    if (t === "justify_geometry") {
+      const A = ri(25, 75), B = ri(30, 80), L1 = ri(3, 12), L2 = ri(4, 15);
+      const pyth = pick([[3,4,5],[6,8,10],[5,12,13],[8,15,17],[9,12,15]]);
+      const POOL = [
+        ["Vertical Angles Theorem", `∠1 and ∠2 are vertical angles and m∠1 = ${A}°, so m∠2 = ${A}°.`, "vertical angles are congruent"],
+        ["Linear Pair Postulate", `∠ABD and ∠DBC form a linear pair and m∠ABD = ${A}°, so m∠DBC = ${180 - A}°.`, "the two angles of a linear pair add to 180°"],
+        ["Triangle Angle Sum Theorem", `In triangle PQR, m∠P = ${A}° and m∠Q = ${B}°, so m∠R = ${180 - A - B}°.`, "the angles of a triangle add to 180°"],
+        ["Alternate Interior Angles Theorem", `Parallel lines are cut by a transversal; ∠3 and ∠6 are alternate interior angles and m∠3 = ${B}°, so m∠6 = ${B}°.`, "alternate interior angles formed by parallel lines are congruent"],
+        ["Definition of midpoint", `M is the midpoint of segment AB and AM = ${L1}, so MB = ${L1}.`, "a midpoint splits a segment into two equal parts"],
+        ["Definition of angle bisector", `Ray BD bisects ∠ABC and m∠ABD = ${A}°, so m∠DBC = ${A}°.`, "a bisector splits an angle into two equal angles"],
+        ["Segment Addition Postulate", `Point B lies on segment AC, AB = ${L1} and BC = ${L2}, so AC = ${L1 + L2}.`, "the two parts of a segment add to the whole"],
+        ["Pythagorean Theorem", `Triangle ABC has a right angle at C, AC = ${pyth[0]} and BC = ${pyth[1]}, so AB = ${pyth[2]}.`, `in a right triangle a² + b² = c², and ${pyth[0]}² + ${pyth[1]}² = ${pyth[2]}²`],
+        ["Transitive Property of Equality", `m∠1 = m∠2 and m∠2 = m∠3, so m∠1 = m∠3.`, "two things equal to the same thing are equal to each other"]];
+      const [ans, stmt, why] = pick(POOL);
+      return Qc("justify_geometry", `${stmt} Which reason justifies this conclusion?`, ans,
+        sh(POOL.map(p => p[0]).filter(n => n !== ans)).slice(0, 3),
+        `${ans}: ${why}.`);
+    }
+
+    if (t === "conclusion") {
+      const kind = pick(["distance", "area", "cost", "time", "volume", "unit_rate"]);
+      let q, right, w, ex;
+      if (kind === "distance") {
+        const r = ri(35, 70), h = ri(2, 6);
+        q = `${who} drives at ${r} miles per hour for ${h} hours. How far does ${who} travel?`;
+        right = `${who} travels ${r*h} miles in ${h} hours.`;
+        w = [`The answer is ${r*h}.`, `${who} travels ${r*h} miles per hour.`, `${who} travels ${r} miles in ${h} hours.`];
+        ex = `Distance = rate × time = ${r} × ${h} = ${r*h}. The question asks how far, so the unit is miles (not miles per hour) and the sentence names who and over what time.`;
+      } else if (kind === "area") {
+        let l, wd; do { l = ri(6, 30); wd = ri(4, 20); } while (l * wd === 2 * (l + wd) || l === wd);
+        q = `A rectangular garden is ${l} ft long and ${wd} ft wide. How much ground does it cover?`;
+        right = `The garden covers ${l*wd} square feet.`;
+        w = [`The garden covers ${l*wd} feet.`, `The garden covers ${2*(l + wd)} square feet.`, `The answer is ${l*wd}.`];
+        ex = `Ground covered is an area: ${l} × ${wd} = ${l*wd} square feet. ${2*(l + wd)} is the perimeter, and area is never in plain feet.`;
+      } else if (kind === "cost") {
+        const n = ri(3, 12), p = ri(129, 899), tot = n * p;
+        q = `Notebooks cost ${usd(p)} each and ${who} buys ${n}. How much does ${who} spend?`;
+        right = `${who} spends ${usd(tot)} on ${n} notebooks.`;
+        w = [`${who} spends ${usd(tot)} per notebook.`, `${who} spends ${usd(p)} on ${n} notebooks.`, `The answer is ${m2(tot)}.`];
+        ex = `${n} × ${usd(p)} = ${usd(tot)} in total — not per notebook — and the sentence says what was bought.`;
+      } else if (kind === "time") {
+        const r = pick([40, 45, 50, 55, 60, 65]), h = ri(2, 7);
+        q = `A bus travels ${r*h} miles at an average speed of ${r} miles per hour. How long does the trip take?`;
+        right = `The trip takes ${h} hours.`;
+        w = [`The trip takes ${h} minutes.`, `The trip takes ${h*60} hours.`, `The answer is ${h}.`];
+        ex = `Time = distance ÷ rate = ${r*h} ÷ ${r} = ${h}. Miles ÷ miles per hour gives hours (${h} hours is ${h*60} minutes, not ${h*60} hours).`;
+      } else if (kind === "volume") {
+        const l = ri(4, 15), wd = ri(3, 12), ht = ri(2, 10);
+        q = `A box is ${l} in long, ${wd} in wide and ${ht} in tall. How much does it hold?`;
+        right = `The box holds ${l*wd*ht} cubic inches.`;
+        w = [`The box holds ${l*wd*ht} square inches.`, `The box holds ${l*wd} cubic inches.`, `The answer is ${l*wd*ht}.`];
+        ex = `Volume = length × width × height = ${l} × ${wd} × ${ht} = ${l*wd*ht}, measured in cubic inches. ${l*wd} is only the area of the base.`;
+      } else {
+        const n = ri(3, 8), u = ri(89, 349), tot = n * u;
+        q = `${who} pays ${usd(tot)} for ${n} pounds of apples. What is the price per pound?`;
+        right = `The apples cost ${usd(u)} per pound.`;
+        w = [`The apples cost ${usd(u)} for ${n} pounds.`, `The apples cost ${usd(tot)} per pound.`, `The answer is ${m2(u)}.`];
+        ex = `Price per pound = ${usd(tot)} ÷ ${n} = ${usd(u)}. The sentence must say "per pound" — ${usd(u)} is the cost of one pound, not of all ${n}.`;
+      }
+      return Qc("conclusion", `${q} Which conclusion answers the question completely and correctly?`, right, w,
+        `${ex} A complete conclusion states the number, the right unit and the context.`);
+    }
+
+    // counterexample: exactly one option meets the claim's condition and
+    // breaks its conclusion.
+    const kind = pick(["square_bigger", "odd_prime", "div4_div8", "div3_odd", "divide_smaller", "prime_sum", "square_double"]);
+    const take = (arr, n) => sh(arr).slice(0, n);
+    let claim, ans, others, ex;
+    if (kind === "square_bigger") {
+      ans = pick(["0.5", "1", "0", "0.25"]); others = take(["2","3","4","5","6","7","8","10"], 3);
+      claim = "For every number n, n² > n.";
+      ex = `${ans}² = ${rnd(Number(ans) * Number(ans), 4)}, which is not greater than ${ans}. For the other choices n² really is bigger than n.`;
+    } else if (kind === "odd_prime") {
+      ans = String(pick([9,15,21,25,27,33,35,39,45,49])); others = take(["3","5","7","11","13","17","19","23","29","31"], 3);
+      claim = "Every odd number greater than 1 is prime.";
+      const n = Number(ans), f = [3,5,7].find(p => n % p === 0);
+      ex = `${ans} is odd but not prime: ${ans} = ${f} × ${n / f}. The other choices are odd AND prime, so they agree with the claim.`;
+    } else if (kind === "div4_div8") {
+      ans = String(pick([4,12,20,28,36,44,52,60])); others = take(["16","24","32","40","10","18","6","14"], 3);
+      claim = "Every number that is divisible by 4 is also divisible by 8.";
+      ex = `${ans} is divisible by 4 but not by 8. Multiples of 8 agree with the claim, and numbers not divisible by 4 do not meet its condition at all.`;
+    } else if (kind === "div3_odd") {
+      ans = String(pick([6,12,18,24,30,36,42])); others = take(["9","15","21","27","10","14","8","20"], 3);
+      claim = "Every number that is divisible by 3 is odd.";
+      ex = `${ans} is divisible by 3 but even. Odd multiples of 3 agree with the claim, and numbers not divisible by 3 do not meet its condition.`;
+    } else if (kind === "divide_smaller") {
+      const N = ri(6, 24), dv = pick(["0.5","0.25","0.2"]);
+      ans = `${N} ÷ ${dv}`; others = take([2,3,4,6,8].map(x => `${N} ÷ ${x}`), 3);
+      claim = "Dividing a positive number by another positive number always gives a smaller result.";
+      ex = `${N} ÷ ${dv} = ${rnd(N / Number(dv), 2)}, which is LARGER than ${N}. Dividing by a number less than 1 makes the result bigger.`;
+    } else if (kind === "prime_sum") {
+      const p = pick([3,5,7,11,13,17,19]);
+      ans = `2 and ${p}`;
+      others = take(["3 and 5","5 and 7","3 and 11","7 and 13","5 and 11","11 and 13"], 3);
+      claim = "The sum of any two prime numbers is even.";
+      ex = `2 and ${p} are both prime, and 2 + ${p} = ${2 + p} is odd. Two odd primes always give an even sum, so only a pair containing 2 can break the claim.`;
+    } else {
+      ans = pick(["1", "2"]); others = take(["3","4","5","6","7","9"], 3);
+      claim = "For every whole number n ≥ 1, n² > 2n.";
+      ex = `For n = ${ans}: n² = ${Number(ans) ** 2} and 2n = ${2 * Number(ans)}, so n² is not greater than 2n. For n ≥ 3 the claim holds.`;
+    }
+    return Qc("counterexample", `Claim: "${claim}" Which choice is a counterexample to this claim?`, ans, others,
+      `A counterexample meets the claim's condition but breaks its conclusion. ${ex}`);
+  });
+
+  // =====================================================================
+  // M-324  Applied Math Capstone  (tier 6)
+  // Prereqs: Multi-Step Problem Solving, Modeling with Functions, Personal
+  // Finance, Composite Area, Questioning Data. Each scenario draws on at
+  // least three areas and asks for ONE well-defined final quantity.
+  // =====================================================================
+  _addSkill(6, "Applied Math Capstone", "Applied Math Capstone", 5, {
+    goalProblem: "An L-shaped room is a 14 ft by 12 ft rectangle with a 4 ft by 5 ft corner cut out. Flooring comes in boxes that cover 20 sq ft and cost $38.50 each. You buy 10% extra for waste, and sales tax is 6%. What is the total cost?",
+    teachingSteps: [
+      { title: "Plan before you calculate", explanation: "A big problem is several small ones in a row. Sketch it, name the <strong>final quantity</strong>, and list the pieces: here an <strong>area</strong>, an <strong>adjustment</strong> (waste), a <strong>whole-number purchase</strong>, and <strong>money</strong> (subtotal, then tax).", visual: "area → + waste → boxes (round up) → subtotal → + tax" },
+      { title: "The geometry piece", explanation: "Composite shapes are sums and differences of simple ones. A rectangle with a corner cut out is the big rectangle <strong>minus</strong> the corner. Circles use <strong>A = πr²</strong> (r is half the diameter); boxes and pools use <strong>V = l × w × h</strong>.", visual: "14 × 12 = 168\n168 − 4 × 5 = 148 sq ft" },
+      { title: "Real-world adjustments", explanation: "Real jobs add extra for waste (× 1.10 for 10%), buy materials in <strong>whole units</strong> (round <strong>up</strong>), and convert units with a factor that cancels: 1 mile = 1.6 km, 1 ft³ ≈ 7.5 gallons, 60 minutes = 1 hour.", visual: "148 × 1.10 = 162.8 sq ft\n162.8 ÷ 20 = 8.14 → 9 boxes" },
+      { title: "The money piece", explanation: "Build the cost in order: <strong>subtotal</strong>, then <strong>tax</strong> on the subtotal (× 1.06 for 6%), then any flat fees. Keep cents exact and round once at the end.", visual: "9 × $38.50 = $346.50\n$346.50 × 1.06 = $367.29" },
+      { title: "Data and models", explanation: "When a scenario gives data over time, decide the model: the <strong>same amount</strong> added each step is <strong>linear</strong>; the <strong>same percent</strong> (same ratio) each step is <strong>exponential</strong>. Percent change = (new − old) ÷ old.", visual: "100, 120, 140 → +20 each: linear\n100, 120, 144 → × 1.2 each: exponential" },
+      { title: "Sanity-check the size", explanation: "Estimate before you trust the calculator: about 150 sq ft at about $2 a square foot is about $300, plus a little for waste and tax. $367 fits; $36.73 or $3,673 does not.", visual: "≈ 150 × $2 ≈ $300 → $367.29 ✓" }
+    ],
+    finalAnswer: "$367.29",
+    answerExplanation: "Area 168 − 20 = 148 sq ft; with waste 162.8 sq ft; 162.8 ÷ 20 = 8.14 so 9 boxes; 9 × $38.50 = $346.50; with 6% tax $367.29.",
+    example: { problem: "A pool is 20 ft by 10 ft and 5 ft deep on average. A hose delivers 10 gallons a minute, and 1 cubic foot holds about 7.5 gallons. How many hours does it take to fill?", steps: [
+      { text: "Volume", math: "20 × 10 × 5 = 1,000 ft³" },
+      { text: "Gallons", math: "1,000 × 7.5 = 7,500 gal" },
+      { text: "Minutes", math: "7,500 ÷ 10 = 750 min" },
+      { text: "Hours", math: "750 ÷ 60 = 12.5 hours" }
+    ]},
+    keyPoints: [
+      "Sketch and list the chain of sub-results first",
+      "Composite area: add and subtract simple shapes; circles use the radius",
+      "Waste and whole units: multiply up, then round UP",
+      "Convert units with factors; tax goes on the subtotal",
+      "Same amount each step = linear; same percent = exponential"
+    ],
+    mistakes: [
+      { wrong: "Using 14 × 12 = 168 for the L-shaped room", why: "The cut-out corner is not part of the floor. Subtract it: 168 − 20 = 148 sq ft." },
+      { wrong: "Buying 8.14 boxes (or rounding down to 8)", why: "Stores sell whole boxes and 8 boxes is not enough. Round up to 9." },
+      { wrong: "Using the diameter in πr²", why: "r is the radius, half the diameter. A circle 10 ft across has r = 5 and area 25π, not 100π." }
+    ],
+    guided: {
+      problem: "A 40 ft by 30 ft yard has a circular pond with radius 5 ft. Sod costs $0.60 per square foot and delivery is $45. Using π ≈ 3.14, what does it cost to cover the yard except the pond?",
+      steps: [
+        { label: "Yard area", value: "40 × 30 = 1200" },
+        { label: "Pond area", value: "3.14 × 5 × 5 = 78.5" },
+        { label: "Sod area", value: "1200 − 78.5 = 1121.5" },
+        { label: "Total cost", value: "1121.5 × 0.60 + 45 = 717.90" }
+      ],
+      answer: "717.90", answerLabel: "Total cost ($):",
+      interactiveSteps: [
+        { prompt: "What is the area of the whole yard, in square feet?", hint: "Length times width.", answer: "1200", acceptableAnswers: ["1200", "1,200"], formatHint: "e.g., 950",
+          commonMistakes: { "140": "That is the perimeter. Area is length × width." } },
+        { prompt: "What is the area of the pond? (use π ≈ 3.14)", hint: "π × r × r with r = 5.", answer: "78.5", acceptableAnswers: ["78.5", "78.50"], formatHint: "e.g., 50.24",
+          commonMistakes: { "31.4": "That is 2πr, the circumference. Area is πr².", "314": "That uses 10 (the diameter) as the radius." } },
+        { prompt: "How many square feet need sod?", hint: "Yard minus pond.", answer: "1121.5", acceptableAnswers: ["1121.5", "1,121.5"], formatHint: "e.g., 870.75",
+          commonMistakes: { "1278.5": "The pond is taken OUT of the yard, so subtract." } },
+        { prompt: "What is the total cost, including delivery?", hint: "Square feet × $0.60, then add the $45 delivery.", answer: "717.90", acceptableAnswers: moneyForms(71790), formatHint: "e.g., 655.40",
+          commonMistakes: { "672.9": "Add the $45 delivery fee.", "765": "That sods the pond too. Use 1,121.5 square feet." } }
+      ]
+    }
+  }, function(){
+    const t = pick(["flooring","sod_yard","road_trip","pool","data_model","event_profit","buy_vs_finance"]);
+    const who = pick(NAMES);
+
+    if (t === "flooring") {
+      const L = ri(12, 24), W = ri(10, 18), a = ri(3, Math.min(8, L - 4)), b = ri(3, Math.min(8, W - 4));
+      const A = L*W - a*b, waste = pick([5, 10, 15]), c = pick([18, 20, 22, 24, 25]);
+      const boxes = ceilDiv(A * (100 + waste), 100 * c);
+      const p = ri(2499, 5999), tax = pick([5, 6, 6.5, 7, 7.25, 8, 8.5]);
+      const sub = boxes * p, tot = cR(sub * (100 + tax) / 100);
+      const mat = pick(["Laminate flooring", "Vinyl plank flooring", "Hardwood flooring", "Carpet tile"]);
+      return Qm("flooring",
+        `An L-shaped room is a ${L} ft by ${W} ft rectangle with a ${a} ft by ${b} ft corner cut out. ${mat} comes in boxes that each cover ${c} square feet and cost ${usd(p)}. You buy ${waste}% extra for waste and can only buy whole boxes. Sales tax is ${tax}%. What is the total cost? Round to the nearest cent.`,
+        tot,
+        [cR(ceilDiv(A * 100, 100 * c) * p * (100 + tax) / 100),                 // no waste allowance
+         sub,                                                                    // no tax
+         cR(ceilDiv(L * W * (100 + waste), 100 * c) * p * (100 + tax) / 100),   // forgot the cut-out
+         cR(A * (100 + waste) / (100 * c) * p * (100 + tax) / 100)],            // paid for part of a box
+        `Area: ${L} × ${W} − ${a} × ${b} = ${L*W} − ${a*b} = ${A} sq ft. With ${waste}% waste: ${A} × ${1 + waste/100} = ${rnd(A * (100 + waste) / 100, 2)} sq ft. Boxes: ${rnd(A * (100 + waste) / 100, 2)} ÷ ${c} = ${rnd(A * (100 + waste) / (100 * c), 3)}, so ${boxes} boxes. Subtotal: ${boxes} × ${usd(p)} = ${usd(sub)}. With ${tax}% tax: ${usd(tot)}.`);
+    }
+
+    if (t === "sod_yard") {
+      const L = ri(30, 80), W = ri(20, 60), r = ri(3, 8), price = pick([35, 40, 45, 50, 55, 60, 65, 75]);
+      const fee = ri(5, 15) * 500, diam = Math.random() < 0.5;
+      const areaH = L*W*100 - 314*r*r;                          // hundredths of a sq ft
+      const tot = cR(areaH * price / 100) + fee;
+      const pond = diam ? `a circular pond ${2*r} ft across` : `a circular pond with a radius of ${r} ft`;
+      return Qm("sod_yard",
+        `A rectangular yard is ${L} ft by ${W} ft and has ${pond}. Sod costs ${usd(price)} per square foot and delivery is ${usd(fee)}. Using π ≈ 3.14, what does it cost to sod the whole yard except the pond? Round to the nearest cent.`,
+        tot,
+        [L*W*price + fee,                                           // forgot to remove the pond
+         cR((L*W*100 - 314*4*r*r) * price / 100) + fee,             // diameter used as radius
+         cR(areaH * price / 100),                                   // forgot delivery
+         cR((L*W*100 - 628*r) * price / 100) + fee],                // 2πr instead of πr²
+        `Yard: ${L} × ${W} = ${L*W} sq ft. Pond: radius ${r} ft${diam ? ` (half of ${2*r})` : ""}, so 3.14 × ${r}² = ${rnd(3.14*r*r, 2)} sq ft. Sod: ${L*W} − ${rnd(3.14*r*r, 2)} = ${rnd(areaH / 100, 2)} sq ft × ${usd(price)} = ${usd(cR(areaH * price / 100))}. Plus delivery: ${usd(tot)}.`);
+    }
+
+    if (t === "road_trip") {
+      const k = ri(15, 70), M = 5*k, D = 8*k;                 // 1 mile = 1.6 km, so 8k km = 5k miles
+      if (Math.random() < 0.55) {
+        const mpg = pick([25, 28, 30, 32, 35, 40]), ppg = ri(319, 479), both = Math.random() < 0.5;
+        const miles = both ? 2*M : M, c = cR(miles * ppg / mpg);
+        return Qm("road_trip",
+          `${who} plans a drive to a city ${D} km away${both ? " and back" : ""}. The car gets ${mpg} miles per gallon and gas costs ${usd(ppg)} per gallon. Using 1 mile = 1.6 km, how much will the gas cost? Round to the nearest cent.`,
+          c,
+          [cR((both ? 2*D : D) * ppg / mpg),               // treated km as miles
+           cR((both ? 2*D : D) * 1.6 * ppg / mpg),         // multiplied by 1.6
+           cR((both ? M : 2*M) * ppg / mpg),               // one way / round trip confused
+           Math.ceil(miles / mpg) * ppg],                  // rounded gallons up early
+          `Miles: ${D} ÷ 1.6 = ${M}${both ? `, and there and back is ${2*M}` : ""}. Gallons: ${miles} ÷ ${mpg} = ${rnd(miles / mpg, 3)}. Cost: × ${usd(ppg)} = ${usd(c)}.`);
+      }
+      const s = pick([40, 45, 50, 55, 60, 65]), stops = ri(1, 3), sm = pick([10, 15, 20, 30]);
+      const drive = Math.round(M * 60 / s), tot = drive + stops * sm;
+      return Qn("road_trip",
+        `A trip is ${D} km. ${who} averages ${s} miles per hour and makes ${stops > 1 ? `${stops} stops of ${sm} minutes each` : `one ${sm}-minute stop`}. Using 1 mile = 1.6 km, how many minutes does the whole trip take? Round the driving time to the nearest minute.`,
+        tot,
+        [drive,                                  // forgot the stops
+         Math.round(D * 60 / s) + stops * sm,    // treated km as miles
+         Math.round(M / s * 100) + stops * sm,   // 2.75 hours read as 275 minutes
+         Math.round(M * 60 / s) + sm],           // counted one stop
+        `Miles: ${D} ÷ 1.6 = ${M}. Driving: ${M} ÷ ${s} = ${rnd(M / s, 4)} hours × 60 = ${rnd(M * 60 / s, 2)} ≈ ${drive} minutes. Stops: ${stops} × ${sm} = ${stops * sm} minutes. Total: ${tot} minutes.`);
+    }
+
+    if (t === "pool") {
+      const kind = pick(["rect_hours", "cyl_hours", "rect_cost"]);
+      const gpm = pick([8, 10, 12, 15]);
+      if (kind === "cyl_hours") {
+        const Dm = pick([12, 15, 18, 24]), h = pick([3, 4, 4.5]), r = Dm / 2;
+        const V = 3.14 * r * r * h, G = V * 7.5, hours = rnd(G / gpm / 60, 1);
+        return Qn("pool",
+          `A round above-ground pool is ${Dm} ft across and filled to a depth of ${h} ft. One cubic foot holds about 7.5 gallons, and the hose delivers ${gpm} gallons per minute. Using π ≈ 3.14, how many hours does it take to fill? Round to the nearest tenth of an hour.`,
+          hours,
+          [rnd(3.14 * Dm * Dm * h * 7.5 / gpm / 60, 1),   // diameter used as radius
+           rnd(G / gpm, 1),                              // minutes, not hours
+           rnd(V / gpm / 60, 1),                         // forgot gallons per cubic foot
+           rnd(G / gpm / 60, 0) + 1],
+          `Radius: ${Dm} ÷ 2 = ${r} ft. Volume: 3.14 × ${r}² × ${h} = ${rnd(V, 2)} ft³. Gallons: × 7.5 = ${rnd(G, 2)}. Minutes: ÷ ${gpm} = ${rnd(G / gpm, 2)}. Hours: ÷ 60 = ${toward(G / gpm / 60, hours)}.`);
+      }
+      const l = ri(20, 40), w = ri(10, 20), d = pick([4, 4.5, 5, 5.5, 6]);
+      const V = l * w * d, G = V * 7.5;
+      if (kind === "rect_cost") {
+        const per = ri(35, 90) * 10;                            // cents per 1,000 gallons
+        const c = cR(G * per / 1000);
+        return Qm("pool",
+          `A pool is ${l} ft long, ${w} ft wide and ${d} ft deep on average. One cubic foot holds about 7.5 gallons, and water costs ${usd(per)} per 1,000 gallons. How much does the water to fill the pool cost? Round to the nearest cent.`,
+          c,
+          [cR(V * per / 1000),                  // forgot the 7.5 gallons per cubic foot
+           cR(G * per / 100),                   // per 100 gallons
+           cR(l * w * 7.5 * per / 1000),        // forgot the depth
+           cR(G * per / 1000) + per],
+          `Volume: ${l} × ${w} × ${d} = ${V} ft³. Gallons: ${V} × 7.5 = ${G}. Thousands of gallons: ${G / 1000}. Cost: ${G / 1000} × ${usd(per)} = ${usd(c)}.`);
+      }
+      const hours = rnd(G / gpm / 60, 1);
+      return Qn("pool",
+        `A pool is ${l} ft long, ${w} ft wide and ${d} ft deep on average. One cubic foot holds about 7.5 gallons, and the hose delivers ${gpm} gallons per minute. How many hours does it take to fill? Round to the nearest tenth of an hour.`,
+        hours,
+        [rnd(G / gpm, 1), rnd(V / gpm / 60, 1), rnd(l * w * 7.5 / gpm / 60, 1), rnd(hours + 1, 1)],
+        `Volume: ${l} × ${w} × ${d} = ${V} ft³. Gallons: × 7.5 = ${G}. Minutes: ${G} ÷ ${gpm} = ${rnd(G / gpm, 2)}. Hours: ÷ 60 = ${toward(G / gpm / 60, hours)}.`);
+    }
+
+    if (t === "data_model") {
+      const thing = pick(["members of a running club", "subscribers to a school podcast", "visitors to a museum", "downloads of an app"]);
+      const kind = pick(["exponential", "linear", "percent_change"]);
+      if (kind === "percent_change") {
+        const v = [ri(150, 600)]; for (let i = 1; i < 4; i++) v.push(v[i - 1] + ri(-40, 120));
+        if (v[3] === v[0]) v[3] += 7;
+        const pc = v[3] > v[0] ? roundDiv((v[3] - v[0]) * 100, v[0], 1) : -roundDiv((v[0] - v[3]) * 100, v[0], 1);
+        const dir = pc > 0 ? "increase" : "decrease";
+        return Qp("data_model",
+          `A table shows ${thing}: Year 1: ${v[0]}, Year 2: ${v[1]}, Year 3: ${v[2]}, Year 4: ${v[3]}. What is the percent ${dir} from Year 1 to Year 4? Round to the nearest tenth of a percent.`,
+          Math.abs(pc),
+          [roundDiv(Math.abs(v[3] - v[0]) * 100, v[3], 1),            // divided by the new value
+           Math.abs(v[3] - v[0]),                                     // the raw change
+           roundDiv(Math.abs(v[3] - v[0]) * 100, v[0] * 3, 1),        // per year average
+           roundDiv(Math.abs(v[3] - v[2]) * 100, v[2], 1)],           // only the last year
+          `Percent change = (Year 4 − Year 1) ÷ Year 1 × 100 = (${v[3]} − ${v[0]}) ÷ ${v[0]} × 100 = ${rnd((v[3] - v[0]) * 100 / v[0], 4)}…, ${dir === "increase" ? "an" : "a"} ${dir} of about ${Math.abs(pc)}%.`);
+      }
+      const j = pick([1, 2]), target = 4 + j;
+      if (kind === "exponential") {
+        // Year 1 is a multiple of the ratio's denominator cubed, so Years 1-4
+        // are whole numbers: 1.2 = 6/5 needs 125, 1.5 = 3/2 needs 8, and so on.
+        const R = pick([{ r: 1.2, m: 125, lo: 1, hi: 6, w: "20%" }, { r: 1.5, m: 8, lo: 3, hi: 40, w: "50%" },
+                        { r: 1.25, m: 64, lo: 2, hi: 9, w: "25%" }, { r: 1.1, m: 1000, lo: 1, hi: 2, w: "10%" }]);
+        const a0 = R.m * ri(R.lo, R.hi);
+        const v = [0, 1, 2, 3].map(i => Math.round(a0 * Math.pow(R.r, i)));
+        const ans = rnd(a0 * Math.pow(R.r, target - 1), 0);
+        const lin = v[3] + j * (v[3] - v[2]);
+        return Qn("data_model",
+          `A table shows ${thing}: Year 1: ${v[0]}, Year 2: ${v[1]}, Year 3: ${v[2]}, Year 4: ${v[3]}. Decide whether the data grows by a constant amount or a constant percent, then use that model to predict Year ${target}. Round to the nearest whole number.`,
+          ans,
+          [lin,                                                    // treated it as linear
+           rnd(a0 * Math.pow(R.r, target - 1 - 1), 0),             // one year short
+           rnd(a0 * Math.pow(R.r, target), 0),                     // one year too far
+           rnd(v[3] * (1 + (R.r - 1) * j), 0)],                    // added the percent once per year, no compounding
+          `The differences (${v[1] - v[0]}, ${v[2] - v[1]}, ${v[3] - v[2]}) grow, but each year is ${R.r} times the last (${R.w} growth), so the model is exponential: y = ${a0} × ${R.r}^(year − 1). Year ${target}: ${a0} × ${R.r}^${target - 1} = ${rnd(a0 * Math.pow(R.r, target - 1), 3)} ≈ ${ans}.`);
+      }
+      const a0 = ri(80, 400), dd = ri(6, 45), v = [0, 1, 2, 3].map(i => a0 + dd * i);
+      const ans = a0 + dd * (target - 1);
+      return Qn("data_model",
+        `A table shows ${thing}: Year 1: ${v[0]}, Year 2: ${v[1]}, Year 3: ${v[2]}, Year 4: ${v[3]}. Decide whether the data grows by a constant amount or a constant percent, then use that model to predict Year ${target}.`,
+        ans,
+        [rnd(v[3] * Math.pow(v[3] / v[2], j), 0),     // treated it as exponential
+         ans - dd, ans + dd, v[3] + dd * target],
+        `Each year adds ${dd} (${v[0]} → ${v[1]} → ${v[2]} → ${v[3]}), so the model is linear: y = ${a0} + ${dd}(year − 1). Year ${target}: ${a0} + ${dd} × ${target - 1} = ${ans}.`);
+    }
+
+    if (t === "event_profit") {
+      // A0 ≥ 200 and b·k ≤ 125 keep at least 75 people; the venue fee is
+      // drawn below the margin so the profit is always at least $50.
+      const p0 = ri(8, 15), A0 = ri(20, 60) * 10, b = ri(5, 25), k = ri(1, 5), cpp = ri(2, 6);
+      const p = p0 + k, A = A0 - b*k;
+      const F = 50 * ri(2, Math.max(2, Math.min(30, Math.floor(((p - cpp) * A - 50) / 50))));
+      const profit = p*A - F - cpp*A;
+      const ev = pick(["school dance", "talent show", "fundraising concert", "robotics showcase"]);
+      return Qm("event_profit",
+        `At a ticket price of $${p0}, about ${A0} people come to a ${ev}. For every $1 the price goes up, ${b} fewer people come. The venue costs $${commas(F)}, and snacks cost $${cpp} per person who attends. If tickets are $${p}, what profit does the event make?`,
+        profit * 100,
+        [(p*A - F) * 100,                      // forgot the per-person cost
+         (p*A0 - F - cpp*A0) * 100,            // did not lower the attendance
+         p*A*100,                              // revenue, not profit
+         (p0*A0 - F - cpp*A0) * 100],          // old price
+        `Price rises $${k}, so attendance drops ${b} × ${k} = ${b*k}: ${A0} − ${b*k} = ${A} people. Revenue: ${p} × ${A} = $${p*A}. Costs: $${F} + ${cpp} × ${A} = $${F + cpp*A}. Profit: $${p*A} − $${F + cpp*A} = $${profit}.`);
+    }
+
+    // buy_vs_finance
+    const P = ri(30, 150) * 10 - 1, d = pick([0, 5, 10]), tax = pick([6, 7, 8, 8.5]);
+    const cash = cR(P * (100 - d) * (100 + tax) / 100);
+    const down = ri(1, 4) * 50, n = pick([6, 12, 18, 24]);
+    const m = Math.max(cR((cash * pick([1.08, 1.12, 1.18, 1.25]) - down * 100) / n), 1000);
+    const fin = down * 100 + n * m, diff = fin - cash;
+    const thing = pick(["laptop", "phone", "e-bike", "gaming PC", "sofa"]);
+    // The plan totals 8-25% over the cash price (plus rounding), so diff > 0.
+    return Qm("buy_vs_finance",
+      `A ${thing} costs ${usd(P * 100)}. Option 1: pay cash${d ? ` and get ${d}% off` : ""}, plus ${tax}% sales tax on the ${d ? "discounted " : ""}price. Option 2: a payment plan of ${usd(down * 100)} down and ${n} monthly payments of ${usd(m)} (tax included). How much more does Option 2 cost than Option 1? Round to the nearest cent.`,
+      diff,
+      [n * m - cash,                                           // forgot the down payment
+       fin - cR(P * (100 + tax)),                              // ignored the cash discount
+       n * m,                                                  // the payments alone
+       fin - cR(P * (100 - d))],                               // forgot the tax on cash
+      `Option 1: ${usd(P * 100)}${d ? ` × ${1 - d/100}` : ""} × ${1 + tax/100} = ${usd(cash)}. Option 2: ${usd(down * 100)} + ${n} × ${usd(m)} = ${usd(fin)}. Difference: ${usd(fin)} − ${usd(cash)} = ${usd(diff)}.`);
+  });
+
+})();
 // ==== END GRADUATION PLAN CONTENT: CORE-APPLICATION ====
 </script>
 
