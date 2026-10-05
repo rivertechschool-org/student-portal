@@ -81,8 +81,18 @@ function fnSource(name) {
   return src.slice(d, findMatchingBrace(src, o) + 1);
 }
 
+// The graduation-plan content blocks (one <script> per group near the end of
+// the page, each registering skills with _addSkill exactly like the V2
+// block). Run them after it, or none of their skills are seen at all.
+function graduationBlocks(text) {
+  const re = /\/\/ ==== GRADUATION PLAN CONTENT: ([A-Z-]+) ====\n([\s\S]*?)\/\/ ==== END GRADUATION PLAN CONTENT: \1 ====/g;
+  let m, out = '';
+  while ((m = re.exec(text))) out += '\n' + m[2];
+  return out;
+}
 const V2 = src.slice(src.indexOf('// ===== V2 NEW-SKILL CONTENT'),
-  src.lastIndexOf('// ===== end V2 NEW-SKILL CONTENT =====') + '// ===== end V2 NEW-SKILL CONTENT ====='.length);
+  src.lastIndexOf('// ===== end V2 NEW-SKILL CONTENT =====') + '// ===== end V2 NEW-SKILL CONTENT ====='.length)
+  + graduationBlocks(src);
 
 // ---- page helper stubs (mirrors tools/audit-dojo-coverage.js) ----
 let seed = 1;

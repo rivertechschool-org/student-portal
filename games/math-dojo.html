@@ -1569,6 +1569,10 @@ const AnswerInterpreter = {
     // A parser rather than eval/Function: no arbitrary code from an input box,
     // and it works under a strict CSP.
     parseArithmetic(str) {
+        // A mixed number is read before spaces are stripped, or "5 5/16"
+        // becomes 55/16.
+        const mixed = String(str).trim().match(/^(-?)(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
+        if (mixed && +mixed[4] !== 0) return (mixed[1] ? -1 : 1) * (+mixed[2] + (+mixed[3]) / (+mixed[4]));
         let src = String(str).toLowerCase().replace(/[\s,$]/g, '');
         src = src.replace(/[\u00d7\u00b7\u22c5]/g, '*').replace(/\u00f7/g, '/');
         src = src.replace(/sqrt/g, '\u221a');
@@ -1746,14 +1750,17 @@ const AnswerInterpreter = {
         if (/^[●○△□★◐◑]+$/.test(original)) return 'pattern_symbol';
 
         // Fraction: contains / but not a date-like format
-        if (/^\d+\s*\/\s*\d+$/.test(ans) || /^\d+\s+\d+\s*\/\s*\d+$/.test(ans)) return 'fraction';
+        // A leading minus is part of a fraction. Without it "-1/3" was filed as
+        // text and the trailing-units rule compared only its "-1", so it graded
+        // as correct for an expected -1.
+        if (/^-?\d+\s*\/\s*\d+$/.test(ans) || /^-?\d+\s+\d+\s*\/\s*\d+$/.test(ans)) return 'fraction';
         if (/mixed|improper/i.test(ans)) return 'fraction';
 
         // Percent
         if (ans.includes('%') || /percent/i.test(ans)) return 'percent';
 
         // Money
-        if (/^\$|¢$|cents?$|dollars?$/i.test(ans)) return 'money';
+        if (/^-?\s*\$|¢$|cents?$|dollars?$/i.test(ans)) return 'money';
 
         // Time
         if (/^\d{1,2}:\d{2}/.test(ans) || /\d+\s*(hours?|minutes?|seconds?|hr|min|sec)/i.test(ans)) return 'time';
@@ -1761,6 +1768,8 @@ const AnswerInterpreter = {
 
         // Measurement with units
         if (/\d+\s*(ft|feet|foot|in|inch|inches|cm|m|mm|km|mi|mile|yd|yard)/i.test(ans)) return 'measurement';
+        // Feet-and-inches marks: 14' 3" or 14'3".
+        if (/^\d+(?:\.\d+)?\s*'\s*(?:\d+(?:\.\d+)?\s*"?)?$/.test(ans)) return 'measurement';
         if (/\d+\s*(lb|lbs|pound|oz|ounce|kg|g|gram|mg)/i.test(ans)) return 'weight';
         if (/\d+\s*(l|liter|litre|ml|gal|gallon|cup|qt|quart|pt|pint)/i.test(ans)) return 'capacity';
 
@@ -1781,7 +1790,10 @@ const AnswerInterpreter = {
         if (/^(add|subtract|multiply|divide|addition|subtraction|multiplication|division)$/i.test(ans)) return 'operation';
 
         // Shape/geometry terms
-        if (/triangle|square|rectangle|circle|pentagon|hexagon|parallel|perpendicular|vertical|horizontal|intersecting/i.test(ans)) return 'geometry';
+        // Shape and line WORDS only. With a number in it, "120 square feet" or
+        // "12 squares" is a quantity, and filing it as geometry made any two
+        // answers containing "square" equal.
+        if (!/\d/.test(ans) && /triangle|square|rectangle|circle|pentagon|hexagon|parallel|perpendicular|vertical|horizontal|intersecting/i.test(ans)) return 'geometry';
 
         // Fraction words
         if (/^(half|third|fourth|quarter|fifth|sixth|seventh|eighth|ninth|tenth)s?$/i.test(ans)) return 'fraction_word';
@@ -2006,6 +2018,12 @@ const AnswerInterpreter = {
     // Parse algebraic expression: "3x + 2" -> { terms: [{coef: 3, var: 'x', exp: 1}, {coef: 2, var: null, exp: 0}] }
     parseAlgebraic(str) {
         const s = String(str).toLowerCase().replace(/\s/g, '').replace(/−/g, '-');
+        // Polynomials and equations in x are parsed term by term, both sides.
+        // The older pattern below only saw a constant that had a sign in front
+        // of it or opened the string, so the 8 in "x=8" and the 50 in
+        // "y=50+30x" were dropped: "x = 8" graded as correct for "x = 4".
+        const strict = this.parseAlgebraicStrict(s);
+        if (strict) return strict;
         // Simplified: extract coefficient of x terms
         const xTerms = s.match(/([+-]?\d*)x\^?(\d*)/g) || [];
         const constMatch = s.match(/([+-]\d+)(?![x\d])|^(\d+)(?![x])/);
@@ -2027,6 +2045,48 @@ const AnswerInterpreter = {
         }
 
         return { x2Coef, xCoef, constant, normalized: `${x2Coef}x²+${xCoef}x+${constant}` };
+    },
+
+    // Exact parse of a polynomial in x of degree <= 2, or an equation of them.
+    //   "y = 2x + 3", "f(x)=2x+3"  -> the right side, labelled with its left
+    //   "x = 8", "2x+1 = 17"       -> left minus right, scaled so the leading
+    //                                 coefficient is 1 (so "x=4", "4=x" and
+    //                                 "2x=8" agree, and "x=8" does not)
+    // Returns null for anything else (brackets, other letters, fractions), and
+    // the caller falls back to the older loose reading.
+    parseAlgebraicStrict(s) {
+        const round = v => Math.round(v * 1e9) / 1e9;
+        const poly = side => {
+            if (!side || !/^[0-9x.^²+\-]+$/.test(side)) return null;
+            const terms = side.match(/[+-]?[^+-]+/g);
+            if (!terms || terms.join('') !== side) return null;
+            const p = { x2: 0, x1: 0, c: 0 };
+            for (const t of terms) {
+                const m = t.match(/^([+-]?)(\d*\.?\d*)(x(?:\^2|²|\^1)?)?$/);
+                if (!m || (m[2] === '' && !m[3]) || m[2] === '.') return null;
+                const sign = m[1] === '-' ? -1 : 1;
+                const k = m[2] === '' ? 1 : parseFloat(m[2]);
+                if (!isFinite(k)) return null;
+                if (!m[3]) p.c += sign * k;
+                else if (/\^2|²/.test(m[3])) p.x2 += sign * k;
+                else p.x1 += sign * k;
+            }
+            return p;
+        };
+        const out = (p, lhs) => ({ x2Coef: round(p.x2), xCoef: round(p.x1), constant: round(p.c), lhs,
+            normalized: `${lhs}:${round(p.x2)}x²+${round(p.x1)}x+${round(p.c)}` });
+        const parts = s.split('=');
+        if (parts.length === 1) { const p = poly(s); return p && out(p, ''); }
+        if (parts.length !== 2) return null;
+        const [l, r] = parts;
+        const named = /^(?:[a-wyz]|[a-z]\(x\))$/;   // y=, f(x)=: a function's rule
+        if (named.test(l)) { const p = poly(r); return p && out(p, l.replace(/\(x\)$/, '()')); }
+        if (named.test(r)) { const p = poly(l); return p && out(p, r.replace(/\(x\)$/, '()')); }
+        const a = poly(l), b = poly(r);
+        if (!a || !b) return null;
+        const d = { x2: a.x2 - b.x2, x1: a.x1 - b.x1, c: a.c - b.c };
+        const lead = d.x2 || d.x1 || d.c || 1;
+        return out({ x2: d.x2 / lead, x1: d.x1 / lead, c: d.c / lead }, '=0');
     },
 
     // Parse integral with constant: "x^3/3 + C" -> { expression: "x^3/3", hasConstant: true }
@@ -2178,11 +2238,16 @@ const AnswerInterpreter = {
     // Parse money value to cents
     parseMoney(str) {
         const s = String(str).toLowerCase().trim();
-        const dollarMatch = s.match(/\$\s*(\d+)(?:\.(\d{1,2}))?/);
+        // Thousands commas and a minus sign either side of the $ are part of
+        // the amount. The old pattern stopped at the first comma, so "$678,400"
+        // and "$678,976" both read as $678 and graded as the same answer.
+        const dollarMatch = s.match(/(-)?\s*\$\s*(-)?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?/)
+            || s.match(/^(-)?()(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*dollars?$/);
         if (dollarMatch) {
-            const dollars = parseInt(dollarMatch[1]);
-            const cents = dollarMatch[2] ? parseInt(dollarMatch[2].padEnd(2, '0')) : 0;
-            return dollars * 100 + cents;
+            const dollars = parseInt(dollarMatch[3].replace(/,/g, ''), 10);
+            const cents = dollarMatch[4] ? parseInt(dollarMatch[4].padEnd(2, '0'), 10) : 0;
+            const sign = (dollarMatch[1] || dollarMatch[2]) ? -1 : 1;
+            return sign * (dollars * 100 + cents);
         }
         const centsMatch = s.match(/(\d+)\s*(?:¢|cents?)/i);
         if (centsMatch) return parseInt(centsMatch[1]);
@@ -2223,9 +2288,11 @@ const AnswerInterpreter = {
             'yd': 36, 'yard': 36, 'yards': 36,
             'cm': 0.3937, 'm': 39.37, 'mm': 0.03937
         };
-        const feetInches = s.match(/(\d+)\s*(?:ft|feet|foot|')\s*(\d+)?\s*(?:in|inch|inches|")?/i);
+        // Whole string only, decimals allowed. Unanchored, "7.5 ft" matched
+        // just its "5 ft" and read as 60 in, the same as "12.5 ft".
+        const feetInches = s.match(/^(\d+(?:\.\d+)?)\s*(?:ft|feet|foot|')\s*(?:(\d+(?:\.\d+)?)\s*(?:in|inch|inches|")?)?$/i);
         if (feetInches) {
-            return (parseInt(feetInches[1]) || 0) * 12 + (parseInt(feetInches[2]) || 0);
+            return (parseFloat(feetInches[1]) || 0) * 12 + (parseFloat(feetInches[2]) || 0);
         }
         const singleUnit = s.match(/^(\d+\.?\d*)\s*([a-z'"]+)$/i);
         if (singleUnit && lengthUnits[singleUnit[2].toLowerCase()]) {
@@ -2291,6 +2358,13 @@ const AnswerInterpreter = {
             case 'pi_expression': {
                 const pi = this.parsePiExpression(original);
                 if (pi) return { type: 'pi_expression', ...pi, original };
+                break;
+            }
+            case 'equation': {
+                // "y = 30x + 50" and "y=50+30x" are the same line. Equations in
+                // x parse exactly; anything else stays text as before.
+                const eq = this.parseAlgebraicStrict(String(original).toLowerCase().replace(/\s/g, '').replace(/−/g, '-'));
+                if (eq) return { type: 'algebraic', ...eq, original };
                 break;
             }
             case 'complex_number': {
@@ -2499,8 +2573,13 @@ const AnswerInterpreter = {
                 break;
             }
             case 'angle': {
-                const angleMatch = s.match(/(\d+)\s*°?/);
-                if (angleMatch) return { type: 'angle', value: parseInt(angleMatch[1]), original: s };
+                // Decimals and a sign are part of the angle: parseInt read
+                // "34.9°" as 34, equal to an expected "34°".
+                // One angle only: "30°, 150°" is a list, and reading just its
+                // first angle let "30°" pass for both.
+                if (/,|and|or/.test(s)) break;
+                const angleMatch = s.match(/(-?\d+(?:\.\d+)?)\s*°?/);
+                if (angleMatch) return { type: 'angle', value: parseFloat(angleMatch[1]), original: s };
                 break;
             }
             case 'geometry': {
@@ -2528,8 +2607,14 @@ const AnswerInterpreter = {
         if (normA.type === normB.type) {
             switch (normA.type) {
                 case 'number': case 'fraction': case 'percent': case 'money':
-                case 'time': case 'measurement': case 'angle': case 'pi_expression':
-                    return Math.abs(normA.value - normB.value) < tolerance;
+                case 'time': case 'measurement': case 'angle': case 'pi_expression': {
+                    // The flat tolerance is too loose for small values (0.0069
+                    // passed for 0.00685, 1.01% for 1%), so it shrinks to 0.1%
+                    // of the size of the numbers when that is smaller.
+                    const diff = Math.abs(normA.value - normB.value);
+                    const scale = Math.max(Math.abs(normA.value), Math.abs(normB.value));
+                    return diff === 0 || diff < (scale > 0 ? Math.min(tolerance, scale * 0.001) : tolerance);
+                }
 
                 case 'scientific_notation':
                     return Math.abs(normA.value - normB.value) < Math.abs(normA.value * 0.0001);
@@ -2571,7 +2656,10 @@ const AnswerInterpreter = {
                     return normA.direction === normB.direction && normA.amount === normB.amount;
 
                 case 'algebraic':
-                    return normA.x2Coef === normB.x2Coef && normA.xCoef === normB.xCoef && normA.constant === normB.constant;
+                    // lhs: '' expression, '=0' equation, or the named left side
+                    // ("y", "f()"); undefined from the loose parser.
+                    return normA.x2Coef === normB.x2Coef && normA.xCoef === normB.xCoef && normA.constant === normB.constant
+                        && (normA.lhs || '') === (normB.lhs || '');
 
                 case 'integral_constant':
                     return normA.normalized === normB.normalized;
@@ -2742,6 +2830,12 @@ const AnswerInterpreter = {
                     return { correct: true, matchType: 'equivalent' };
                 }
             }
+            // Angle <-> bare number: "34" typed for an expected "34°" (and
+            // the reverse) is the same angle.
+            if ((expectedNorm.type === 'angle' && userNorm.type === 'number') ||
+                (expectedNorm.type === 'number' && userNorm.type === 'angle')) {
+                if (Math.abs(expectedNorm.value - userNorm.value) < 1e-9) return { correct: true, matchType: 'equivalent' };
+            }
             // Money ↔ number equivalence. parseMoney returns CENTS while
             // number parsing is unit-agnostic. Accept both directions:
             //   - expected number 0.40 vs user "$0.40" or "40 cents" (40 cents)
@@ -2749,11 +2843,18 @@ const AnswerInterpreter = {
             // Match when the dollar values agree to two-cent tolerance.
             if ((expectedNorm.type === 'number' && userNorm.type === 'money') ||
                 (expectedNorm.type === 'money' && userNorm.type === 'number')) {
-                const moneyCents = expectedNorm.type === 'money' ? expectedNorm.value : userNorm.value;
+                const moneySide = expectedNorm.type === 'money' ? expectedNorm : userNorm;
+                const moneyCents = moneySide.value;
                 const numberVal = expectedNorm.type === 'number' ? expectedNorm.value : userNorm.value;
-                // numberVal might be either dollars (0.4) or cents (40); accept either reading
-                if (Math.abs(numberVal * 100 - moneyCents) < 1 ||
-                    Math.abs(numberVal - moneyCents) < 1) {
+                // The bare number is read as dollars. It is read as CENTS only
+                // when the money side was itself written in cents ("40 cents",
+                // "40¢"): accepting the cents reading for "$458.80" let a typed
+                // $458.80 pass for an expected 45,880.
+                const writtenInCents = /¢|cents?/i.test(String(moneySide.original)) && !/\$/.test(String(moneySide.original));
+                // Half a cent, not a whole one: with float noise (0.14 * 100 =
+                // 14.000000000000002) "< 1" let an answer one cent off pass.
+                if (Math.abs(numberVal * 100 - moneyCents) < 0.5 ||
+                    (writtenInCents && Math.abs(numberVal - moneyCents) < 0.5)) {
                     return { correct: true, matchType: 'equivalent' };
                 }
             }
@@ -5631,7 +5732,7 @@ function backfillOptions(answer, opts, seen, want = 4) {
 // (reversed first, the classic slip); a point gets its coordinates swapped and
 // its signs flipped. Anything else returns nothing here and is topped up by
 // backfillOptions, which perturbs the numbers inside the answer.
-function sameShapeDistractors(answer) {
+function sameShapeDistractors(answer, question) {
     const s = String(answer).trim();
     const out = [];
     const add = v => { if (v !== s && !out.includes(v)) out.push(v); };
@@ -5648,7 +5749,12 @@ function sameShapeDistractors(answer) {
     }
 
     const items = s.split(/\s*,\s*/);
-    if (items.length >= 3 && items.every(Boolean)) {
+    // Reorderings are wrong answers only when the question is ABOUT order.
+    // For a set of numbers ("the solutions are 0, 120, 240") another order is
+    // the same answer, so those fall through to backfill's nudged numbers.
+    const aboutOrder = /order|arrange|least|greatest|shortest|longest|smallest|largest|first|sequence|rank/i.test(String(question || ''));
+    const numeric = items.every(v => /^-?\d+(?:\.\d+)?$/.test(v));
+    if (items.length >= 3 && items.every(Boolean) && (aboutOrder || !numeric)) {
         add(items.slice().reverse().join(', '));
         // Every other order, shuffled, until there are three.
         const perms = [];
@@ -5798,7 +5904,9 @@ function typedAnswerIsCorrect(userInput, expectedOrQuestion) {
             correct = AnswerInterpreter.checkAnswer(userInput, alts.length === 1 ? alts[0] : alts).correct;
         } catch (e) { correct = false; }
         if (!correct) {
-            const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
+            // Spaces are dropped except between two digits: "1 3/16" is a mixed
+            // number, not 13/16, and dropping that space marked it right for 13/16.
+            const norm = s => String(s).toLowerCase().trim().replace(/\s+/g, ' ').replace(/(?<!\d) | (?!\d)/g, '');
             if (alts.some(a => norm(a) === norm(userInput))) correct = true;
         }
     }
@@ -41311,7 +41419,11 @@ function generateQuestion(tier, domain = null) {
 
     const generator = tierGens[selectedDomain];
     
-    const q = generator();
+    // A generator that hands back nothing (a draw it could not complete)
+    // is asked again rather than crashing the session on q.tier below.
+    let q = generator();
+    for (let tries = 0; !q && tries < 5; tries++) q = generator();
+    if (!q) return null;
     q.tier = tier;
     q.domain = selectedDomain;
     q.type = q.type || "procedural";
@@ -41339,7 +41451,7 @@ function generateQuestion(tier, domain = null) {
             // Same-shape wrong choices; whatever is still short is topped up
             // below by perturbing the numbers inside the answer. Never numbers
             // near zero, which beside "ruler, paperclip, book" gave it away.
-            q.options = [q.answer, ...sameShapeDistractors(q.answer)];
+            q.options = [q.answer, ...sameShapeDistractors(q.answer, q.question)];
         }
     }
 
@@ -45815,7 +45927,9 @@ function checkGuidedStepAnswer() {
     // Case + whitespace insensitive fallback for formula-style answers so
     // "X + 5" never marks wrong vs "x + 5" even if a parser misclassifies.
     if (!isCorrect && input) {
-        const norm = s => String(s).toLowerCase().replace(/\s+/g, '');
+        // Spaces are dropped except between two digits: "1 3/16" is a mixed
+            // number, not 13/16, and dropping that space marked it right for 13/16.
+            const norm = s => String(s).toLowerCase().trim().replace(/\s+/g, ' ').replace(/(?<!\d) | (?!\d)/g, '');
         if (acceptableAnswers.some(a => a != null && norm(a) === norm(input))) {
             isCorrect = true;
         }
@@ -45893,7 +46007,7 @@ function addCompletedStep(step, answer) {
             <div class="step-num">✓</div>
             <div class="step-content">
                 <div class="step-question">${step.prompt}</div>
-                <div class="step-answer">${answer}</div>
+                <div class="step-answer">${escapeHtml(String(answer))}</div>
             </div>
         </div>
     `;

@@ -68,6 +68,16 @@ function literal(decl) {
   return src.slice(o, findMatchingBrace(src, o) + 1);
 }
 
+// The graduation-plan content blocks (one <script> per group near the end of
+// the page, each registering skills with _addSkill exactly like the V2
+// block). Run them after it, or none of their skills are seen at all.
+function graduationBlocks(text) {
+  const re = /\/\/ ==== GRADUATION PLAN CONTENT: ([A-Z-]+) ====\n([\s\S]*?)\/\/ ==== END GRADUATION PLAN CONTENT: \1 ====/g;
+  let m, out = '';
+  while ((m = re.exec(text))) out += '\n' + m[2];
+  return out;
+}
+
 // ---- the V2 block, and whether it is actually inside the document ----
 const V2_START = src.indexOf('// ===== V2 NEW-SKILL CONTENT');
 const V2_END = src.lastIndexOf('// ===== end V2 NEW-SKILL CONTENT =====');
@@ -77,6 +87,7 @@ if (V2_START < 0) {
   problems.push('FATAL: V2 NEW-SKILL CONTENT block not found at all');
 } else {
   v2 = src.slice(V2_START, V2_END + '// ===== end V2 NEW-SKILL CONTENT ====='.length);
+  v2 += graduationBlocks(src);
   // It must sit before </body>, inside a <script>. This is the regression that bit.
   const closeBody = src.lastIndexOf('</body>');
   if (V2_START > closeBody) {
@@ -123,6 +134,13 @@ sandbox.getUnlockedSubSkillTypes = (lessonKey, map, ordered) => {
 sandbox.globalThis = sandbox;
 
 const ctx = vm.createContext(sandbox);
+// Page functions some lessons call, lifted verbatim. tallyMarks draws the
+// Data Collection tally SVG; without it that lesson "threw" on every run.
+for (const name of ['tallyMarks']) {
+  const d = src.indexOf(`function ${name}(`);
+  if (d < 0) { problems.push(`page function ${name} not found`); continue; }
+  vm.runInContext(src.slice(d, findMatchingBrace(src, src.indexOf('{', d)) + 1), ctx, { filename: `${name}.js` });
+}
 try {
   vm.runInContext(
     `const TIERS = ${literal('const TIERS = {')};\n` +
