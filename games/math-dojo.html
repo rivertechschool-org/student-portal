@@ -44760,12 +44760,35 @@ function branchReadyCount(branch) {
     return seen.size;
 }
 
+// The skill to start with for a not-yet-done skill: walk down its unmastered
+// prerequisites until reaching one whose own prerequisites are all done. For
+// a new student, item 1 sits behind elementary foundations, and "next up"
+// has to name the foundation skill, not jump to whichever item happens to be
+// open (it was telling a brand-new student to start at item 50).
+function planStartSkill(id, seen = new Set()) {
+    if (seen.has(id)) return null;
+    seen.add(id);
+    const n = MATH_GRAPH_V2.nodes[id];
+    for (const p of n.hp) {
+        if (!PLAN_DONE_STATES.includes(getSkillState(MATH_GRAPH_V2.nodes[p].ds))) return planStartSkill(p, seen) || p;
+    }
+    return id;
+}
+
 function renderGradPathSummary() {
     const el = document.getElementById('grad-path-summary');
     if (!el || typeof MATH_PLAN === 'undefined') return;
     const core = planItems(MATH_PLAN.core).map(planItem);
     const done = core.filter(i => i.done).length;
-    const next = core.find(i => i.ready);
+    // In plan order: the first core item not yet complete.
+    const next = core.find(i => !i.done);
+    let nextHTML = '';
+    if (next) {
+        const todo = next.skills.find(s => !s.done);
+        const start = todo && MATH_GRAPH_V2.nodes[planStartSkill(todo.id)];
+        nextHTML = `Next up: <strong>${escapeHtml(next.item.code)}. ${escapeHtml(next.item.title)}</strong>` +
+            (start && start.ds !== todo.dojo ? ` · start with ${escapeHtml(start.ds)}` : '');
+    }
     const pct = Math.round(done / core.length * 100);
     const branches = MATH_PLAN.branches.map(b => {
         const items = planItems(b).map(planItem);
@@ -44775,8 +44798,7 @@ function renderGradPathSummary() {
     el.innerHTML = `
         <div class="gs-head"><span class="gs-title">🎓 Graduation Core</span><span class="gs-count">${done} of ${core.length} complete</span></div>
         <div class="gs-bar" role="progressbar" aria-valuemin="0" aria-valuemax="${core.length}" aria-valuenow="${done}"><div class="gs-fill" style="width:${pct}%"></div></div>
-        <div class="gs-next">${done === core.length ? 'Every core skill complete. Keep going in any branch.'
-            : next ? `Next up: <strong>${escapeHtml(next.item.code)}. ${escapeHtml(next.item.title)}</strong>` : 'Master the skills you are working on to open the next core item.'}</div>
+        <div class="gs-next">${done === core.length ? 'Every core skill complete. Keep going in any branch.' : nextHTML}</div>
         <div class="gs-branches">${branches}</div>`;
 }
 
