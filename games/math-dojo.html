@@ -52238,6 +52238,1558 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: CORE-MEASURE-DATA ====
+// Seven graduation-plan skills from plan sections 5-7: unit conversion between
+// systems (36/69C), dimensional reasoning (37/73C), composite area (39), scale
+// drawings (46), questioning data (50), estimation (60) and calculator fluency
+// (61). Same registration pattern as V2 CONTENT GROUP E; this block is its own
+// script, so the helpers are redefined here rather than shared.
+//
+// All seven sit at tiers 3-4, where questions are multiple choice, so every
+// generator supplies its own options. Distractors are the mistakes a student
+// actually makes (multiplying where they should divide, forgetting the 1/2 in
+// a triangle, reading a truncated axis as if it started at zero) and each one
+// is commented where it is built. `acceptableAnswers` is still given wherever
+// an answer could be typed in another form, so the questions stay correct if a
+// skill is ever moved up into the typed tiers.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors.
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- number formatting -------------------------------------------------
+  // Measurement answers come out of floating-point products (0.37 × 1000 is
+  // 370.00000000000006), so every displayed number goes through one rounding
+  // and one formatter. Two options are then the same string exactly when they
+  // are the same value, which is what opt4's de-duplication relies on.
+  // The 1e-9 nudge makes halves round up the way they do on paper (2.675 is
+  // stored as 2.67499999...).
+  const rnd = (x, dp) => { const p = Math.pow(10, dp); return Math.round((x + (x < 0 ? -1e-9 : 1e-9)) * p) / p; };
+  const fx = (x, dp = 6) => { const v = rnd(x, dp); return String(Object.is(v, -0) ? 0 : v); };
+  const commas = s => { s = String(s); const neg = s[0] === '-'; if (neg) s = s.slice(1);
+    const parts = s.split('.');
+    return (neg ? '-' : '') + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (parts.length > 1 ? '.' + parts[1] : ''); };
+  const nf = (x, dp = 6) => commas(fx(x, dp));
+  const money = x => '$' + commas(rnd(x, 2).toFixed(2));
+  // Numeric options at a fixed precision. Candidates that are not finite, not
+  // positive (unless allowed), or that round to the answer are dropped before
+  // opt4 sees them.
+  const numOpts = (ans, cands, dp = 6, allowNeg = false) => {
+    const A = nf(ans, dp);
+    const c = cands.filter(v => Number.isFinite(v) && (allowNeg || v > 0)).map(v => nf(v, dp))
+      .filter(s => s !== A && (allowNeg || s !== "0"));      // a tiny value can round to 0
+    return opt4(A, c);
+  };
+  const moneyOpts = (ans, cands) => {
+    const A = money(ans);
+    return opt4(A, cands.filter(v => Number.isFinite(v) && v > 0).map(money).filter(s => s !== A));
+  };
+  // Every way a student could legitimately write a numeric answer: with or
+  // without thousands commas, with or without the unit.
+  const accept = (ans, dp, units) => {
+    const plain = fx(ans, dp), out = [plain, commas(plain)];
+    for (const u of [].concat(units || [])) out.push(plain + ' ' + u, commas(plain) + ' ' + u, plain + u);
+    return [...new Set(out)];
+  };
+  const SUP = { '0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹','-':'⁻' };
+  const sup = n => String(n).split('').map(c => SUP[c] || c).join('');
+  const NUM_HINT = "Enter a number";
+  const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+  // "an 8 m ribbon", "an 18 cm rectangle", "an 11 ft wall": the article follows the spoken number.
+  const art = n => { const s = String(n).replace(/,/g, ""); return (/^8/.test(s) || /^1[18]$/.test(s) || /^1[18]\d{3}$/.test(s)) ? "an" : "a"; };
+  const Art = n => cap(art(n));
+
+  // =====================================================================
+  // M-312  Metric and Customary Conversion  (tier 3; plan items 36 / 69C)
+  // =====================================================================
+  // Metric ladders. `e` is the power of ten of each unit relative to the base
+  // unit, so converting from u to v multiplies by 10^(e[u] − e[v]).
+  const MET_LEN  = [["km","m",3],["m","cm",2],["m","mm",3],["cm","mm",1]];
+  const MET_MASS = [["kg","g",3],["g","mg",3],["L","mL",3]];
+  const UNIT_NAME = { km:"kilometers", m:"meters", cm:"centimeters", mm:"millimeters",
+    kg:"kilograms", g:"grams", mg:"milligrams", L:"liters", mL:"milliliters" };
+  // Cross-system factors, each "1 A = f B". `aMetric` says which side is metric,
+  // so one table serves both directions. The value ranges and contexts keep the
+  // numbers realistic for the object being measured.
+  const CROSS = [
+    { a:"in",  an:"inches",    b:"cm", bn:"centimeters", f:2.54,  eq:"1 inch = 2.54 cm",      aMetric:false,
+      ctxA: v => `A tablet screen is ${v} inches wide.`, va: () => ri(6, 40),
+      ctxB: v => `A poster is ${v} cm tall.`,           vb: () => ri(20, 120) },
+    { a:"ft",  an:"feet",      b:"cm", bn:"centimeters", f:30.48, eq:"1 foot = 30.48 cm",     aMetric:false,
+      ctxA: v => `A board is ${v} feet long.`,          va: () => ri(2, 16),
+      ctxB: v => `A shelf is ${v} cm long.`,            vb: () => ri(60, 400) },
+    { a:"mi",  an:"miles",     b:"km", bn:"kilometers",  f:1.61,  eq:"1 mile ≈ 1.61 km",      aMetric:false,
+      ctxA: v => `A hiking trail is ${v} miles long.`,  va: () => ri(2, 40),
+      ctxB: v => `A race course is ${v} km long.`,      vb: () => pick([5, 8, 10, 15, 21, 25, 42, 50]) },
+    { a:"yd",  an:"yards",     b:"m",  bn:"meters",      f:0.91,  eq:"1 yard ≈ 0.91 m",       aMetric:false,
+      ctxA: v => `A roll of fabric holds ${v} yards.`,  va: () => ri(5, 60),
+      ctxB: v => `A swimming pool is ${v} m long.`,     vb: () => pick([25, 33, 50, 100]) },
+    { a:"oz",  an:"ounces",    b:"g",  bn:"grams",       f:28.35, eq:"1 ounce ≈ 28.35 g",     aMetric:false,
+      ctxA: v => `A box of cereal holds ${v} ounces.`,  va: () => ri(8, 32),
+      ctxB: v => `A bag of flour holds ${v} g.`,        vb: () => pick([250, 500, 750, 1000, 1500, 2000]) },
+    { a:"kg",  an:"kilograms", b:"lb", bn:"pounds",      f:2.2,   eq:"1 kg ≈ 2.2 lb",         aMetric:true,
+      ctxA: v => `A suitcase has a mass of ${v} kg.`,   va: () => ri(8, 32),
+      ctxB: v => `A dog weighs ${v} pounds.`,           vb: () => ri(12, 95) },
+    { a:"gal", an:"gallons",   b:"L",  bn:"liters",      f:3.79,  eq:"1 gallon ≈ 3.79 L",     aMetric:false,
+      ctxA: v => `A fish tank holds ${v} gallons.`,     va: () => ri(5, 75),
+      ctxB: v => `A water barrel holds ${v} liters.`,   vb: () => ri(20, 200) },
+    { a:"L",   an:"liters",    b:"qt", bn:"quarts",      f:1.06,  eq:"1 liter ≈ 1.06 quarts", aMetric:true,
+      ctxA: v => `A cooler holds ${v} liters.`,         va: () => ri(4, 60),
+      ctxB: v => `A pot holds ${v} quarts.`,            vb: () => ri(2, 24) },
+    { a:"m",   an:"meters",    b:"ft", bn:"feet",        f:3.28,  eq:"1 meter ≈ 3.28 feet",   aMetric:true,
+      ctxA: v => `A diving board is ${v} m high.`,      va: () => pick([1, 3, 5, 7.5, 10]),
+      ctxB: v => `A flagpole is ${v} feet tall.`,       vb: () => ri(15, 60) }
+  ];
+  // Distance and mass candidates for "which is the greatest?". `toBase` is
+  // meters or kilograms, using the same rounded factors the question prints.
+  const CMP_LEN = [
+    { lab: v => `${v} km`,             toBase: v => v * 1000, gen: () => ri(20, 90) / 10 },
+    { lab: v => `${v} miles`,          toBase: v => v * 1610, gen: () => ri(2, 11) / 2 },
+    { lab: v => `${commas(v)} m`,      toBase: v => v,        gen: () => ri(20, 90) * 100 },
+    { lab: v => `${commas(v)} yards`,  toBase: v => v * 0.91, gen: () => ri(22, 99) * 100 }
+  ];
+  const CMP_MASS = [
+    { lab: v => `${v} kg`,             toBase: v => v,            gen: () => ri(20, 160) / 10 },
+    { lab: v => `${v} pounds`,         toBase: v => v / 2.2,      gen: () => ri(5, 35) },
+    { lab: v => `${commas(v)} g`,      toBase: v => v / 1000,     gen: () => ri(20, 160) * 100 },
+    { lab: v => `${v} ounces`,         toBase: v => v * 0.02835,  gen: () => ri(8, 56) * 10 }
+  ];
+
+  _addSkill(3, "Metric and Customary Conversion", "Metric and Customary Conversion", 3, {
+    goalProblem: "A runner finishes a 5 km race. How many miles did she run, to the nearest tenth? (1 mile ≈ 1.61 km)",
+    teachingSteps: [
+      { title: "Metric units are powers of ten", explanation: "Every metric unit is the base unit times a power of ten. The prefix tells you which: <strong>kilo</strong> = 1,000, <strong>centi</strong> = 1/100, <strong>milli</strong> = 1/1,000. The same prefixes work for meters (length), grams (mass) and liters (capacity).", visual: "1 km = 1,000 m    1 m = 100 cm    1 m = 1,000 mm    1 cm = 10 mm\n1 kg = 1,000 g    1 g = 1,000 mg    1 L = 1,000 mL" },
+      { title: "Big unit to small unit: multiply", explanation: "When you change to a <strong>smaller</strong> unit you need <strong>more</strong> of them, so multiply. Changing to a <strong>larger</strong> unit needs fewer, so divide. Multiplying or dividing by 10, 100 or 1,000 just moves the decimal point 1, 2 or 3 places.", visual: "3.5 km → m:  3.5 × 1,000 = 3,500 m\n245 cm → m:  245 ÷ 100 = 2.45 m" },
+      { title: "Between systems, use a conversion factor", explanation: "Metric and US customary units are not related by powers of ten, so you need a factor. Some are exact (1 inch = 2.54 cm); most are rounded (≈). A problem will tell you which factor to use.", visual: "1 in = 2.54 cm    1 mi ≈ 1.61 km    1 kg ≈ 2.2 lb\n1 gal ≈ 3.79 L    1 oz ≈ 28.35 g    1 m ≈ 3.28 ft" },
+      { title: "Multiply or divide? Let the units decide", explanation: "Read the factor as \"1 of the first unit = f of the second\". Going from the first unit to the second, <strong>multiply</strong> by f. Going the other way, <strong>divide</strong> by f. Writing the factor as a fraction makes the old unit cancel.", visual: "5 km × (1 mi / 1.61 km) = 5 ÷ 1.61 ≈ 3.1 mi" },
+      { title: "Check the size of your answer", explanation: "A mile is longer than a kilometer, so a distance is a <strong>smaller</strong> number of miles than of kilometers. A kilogram is heavier than a pound, so a mass is a <strong>bigger</strong> number of pounds than of kilograms. If your answer moved the wrong way, you multiplied when you should have divided.", visual: "5 km ≈ 3.1 mi  (fewer miles — miles are longer) ✓" }
+    ],
+    finalAnswer: "3.1 miles",
+    answerExplanation: "1 mile is 1.61 km, so divide: 5 ÷ 1.61 = 3.105…, which rounds to 3.1 miles. Fewer miles than kilometers makes sense because a mile is the longer unit.",
+    example: { problem: "A ruler is 12 inches long. How long is it in centimeters? (1 in = 2.54 cm)", steps: [
+      { text: "The factor goes from inches to centimeters", math: "1 in = 2.54 cm" },
+      { text: "Inches → centimeters is the direction of the factor, so multiply", math: "12 × 2.54" },
+      { text: "Compute", math: "= 30.48 cm" },
+      { text: "Check: centimeters are smaller, so the number should grow", math: "30.48 > 12 ✓" }
+    ]},
+    keyPoints: [
+      "Metric conversions multiply or divide by 10, 100 or 1,000 — the decimal point moves",
+      "To a smaller unit: multiply. To a larger unit: divide",
+      "Between systems, use the given factor: with its direction multiply, against it divide",
+      "Always check that the number got bigger or smaller the way the units say it should"
+    ],
+    mistakes: [
+      { wrong: "3.5 km = 0.0035 m", why: "Meters are smaller than kilometers, so there must be MORE of them. Multiply by 1,000: 3,500 m." },
+      { wrong: "5 km × 1.61 = 8.05 miles", why: "The factor says 1 mile = 1.61 km, so going from km to miles you divide: 5 ÷ 1.61 ≈ 3.1 miles. 8 miles is longer than the race." },
+      { wrong: "245 cm = 24.5 m", why: "There are 100 cm in a meter, not 10. Move the decimal point two places: 2.45 m." }
+    ],
+    guided: { problem: "An airline weighs bags in pounds. Your suitcase has a mass of 18 kg. How many pounds is it? (1 kg ≈ 2.2 lb)", steps: [
+      { label: "The factor goes from kilograms to pounds", value: "1 kg ≈ 2.2 lb" },
+      { label: "Estimate first: 20 kg would be about", value: "20 × 2.2 = 44 lb" },
+      { label: "Now multiply exactly", value: "18 × 2.2 = 39.6" }
+    ], answer: "39.6", answerLabel: "Suitcase (lb) =",
+      interactiveSteps: [
+        { prompt: "The factor is 1 kg ≈ 2.2 lb. How many pounds is ONE kilogram?", hint: "Read the number on the pound side of the factor.", answer: "2.2", acceptableAnswers: ["2.2", "2.2 lb"], formatHint: NUM_HINT },
+        { prompt: "Estimate first. 18 kg is close to 20 kg. About how many pounds is 20 kg?", hint: "Each kilogram is 2.2 pounds, so multiply 20 by 2.2.", answer: "44", acceptableAnswers: ["44", "44 lb"], formatHint: NUM_HINT },
+        { prompt: "Kilograms to pounds goes WITH the factor, so multiply. What is 18 × 2.2?", hint: "18 × 2 = 36 and 18 × 0.2 = 3.6. Add them.", answer: "39.6", acceptableAnswers: ["39.6", "39.6 lb", "39.60"], formatHint: NUM_HINT,
+          commonMistakes: { "8.2": "That divides 18 by 2.2. A kilogram is heavier than a pound, so the number of pounds must be BIGGER than 18.", "396": "Check the decimal point: your estimate was about 44, so the answer is 39.6." } }
+      ] }
+  }, function(){
+    const mode = pick(["metric-length","metric-mass-capacity","metric-context","to-metric","to-customary","compare"]);
+
+    if (mode === "metric-length" || mode === "metric-mass-capacity") {
+      const [big, small, k] = pick(mode === "metric-length" ? MET_LEN : MET_MASS);
+      const down = Math.random() < 0.5;           // big → small (multiply)
+      const v = down ? ri(12, 950) / pick([1, 10, 100]) : ri(12, 9500) / pick([1, 10]);
+      const from = down ? big : small, to = down ? small : big;
+      const e = down ? k : -k, f = Math.pow(10, k);
+      const ans = v * Math.pow(10, e);
+      return {
+        subType: mode,
+        question: `How many ${UNIT_NAME[to]} are in ${nf(v)} ${UNIT_NAME[from]}?`,
+        answer: nf(ans),
+        acceptableAnswers: accept(ans, 6, [to, UNIT_NAME[to]]),
+        // wrong direction (×↔÷), and the decimal point moved one place too few or too many
+        options: numOpts(ans, [v * Math.pow(10, -e), ans * 10, ans / 10, ans * 100, ans / 100]),
+        explanation: `1 ${big} = ${commas(f)} ${small}. ${down ? `${cap(UNIT_NAME[small])} are smaller, so you need more of them: multiply` : `${cap(UNIT_NAME[big])} are larger, so you need fewer of them: divide`} by ${commas(f)}. ${nf(v)} ${down ? "×" : "÷"} ${commas(f)} = ${nf(ans)} ${to}.`
+      };
+    }
+
+    if (mode === "metric-context") {
+      const kind = pick(["bottles","ribbon","parcels","laps","doses"]);
+      if (kind === "bottles") {
+        const b = pick([250, 330, 355, 500, 750]), n = ri(2, 12), ans = b * n / 1000;
+        return { subType: mode,
+          question: `A water bottle holds ${b} mL. How many liters do ${n} full bottles hold altogether?`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 6, ["L", "liters"]),
+          // forgot to convert; divided by 100; converted only one bottle
+          options: numOpts(ans, [b * n, b * n / 100, b / 1000, b * n / 10000]),
+          explanation: `Total = ${n} × ${b} mL = ${commas(b * n)} mL. There are 1,000 mL in a liter, so ${commas(b * n)} ÷ 1,000 = ${nf(ans)} L.` };
+      }
+      if (kind === "ribbon") {
+        const L = ri(2, 9), p = pick([4, 5, 8, 10, 16, 20, 25]), ans = L * 100 / p;
+        return { subType: mode,
+          question: `${Art(L)} ${L} m ribbon is cut into ${p} equal pieces. How long is each piece in centimeters?`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 6, ["cm", "centimeters"]),
+          // left it in meters; used 10 cm per meter; used 1,000 (millimeters)
+          options: numOpts(ans, [L / p, L * 10 / p, L * 1000 / p, L * 100 * p]),
+          explanation: `${L} m = ${L * 100} cm (100 cm in a meter). ${L * 100} ÷ ${p} = ${nf(ans)} cm per piece.` };
+      }
+      if (kind === "parcels") {
+        const m = ri(14, 50) * 25, n = ri(3, 12), ans = m * n / 1000;
+        return { subType: mode,
+          question: `A courier is carrying ${n} parcels that each have a mass of ${m} g. What is their total mass in kilograms?`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 6, ["kg", "kilograms"]),
+          // never converted; divided by 100; converted one parcel only
+          options: numOpts(ans, [m * n, m * n / 100, m / 1000, m * n / 10000]),
+          explanation: `Total = ${n} × ${m} g = ${commas(m * n)} g. There are 1,000 g in a kilogram: ${commas(m * n)} ÷ 1,000 = ${nf(ans)} kg.` };
+      }
+      if (kind === "laps") {
+        const n = ri(3, 25), ans = n * 400 / 1000;
+        return { subType: mode,
+          question: `One lap of a running track is 400 m. How many kilometers is ${n} laps?`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 6, ["km", "kilometers"]),
+          // left in meters; divided by 100 or 10,000 instead of 1,000
+          options: numOpts(ans, [n * 400, n * 4, n * 0.04, n * 40]),
+          explanation: `${n} × 400 m = ${commas(n * 400)} m. There are 1,000 m in a kilometer: ${commas(n * 400)} ÷ 1,000 = ${nf(ans)} km.` };
+      }
+      // doses: a bottle in liters, doses in milliliters, a whole number of doses
+      let bottle, dose;
+      do { bottle = pick([0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.5]); dose = pick([5, 10, 15, 20, 25]); }
+      while (Math.round(bottle * 1000) % dose !== 0);
+      const ml = Math.round(bottle * 1000), ans = ml / dose;
+      return { subType: mode,
+        question: `A bottle holds ${bottle} L of cough syrup. One dose is ${dose} mL. How many full doses are in the bottle?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 6, ["doses"]),
+        // converted with 100 or 10,000 mL per liter; multiplied by the dose
+        options: numOpts(ans, [ml / 10 / dose, ml * 10 / dose, ans * 100, ml / 100]),
+        explanation: `${bottle} L × 1,000 = ${ml} mL. ${ml} ÷ ${dose} = ${nf(ans)} doses.` };
+    }
+
+    if (mode === "to-metric" || mode === "to-customary") {
+      const c = pick(CROSS);
+      // Which side are we starting from? to-metric starts on the customary side.
+      const startA = (mode === "to-metric") ? !c.aMetric : c.aMetric;
+      const v = startA ? c.va() : c.vb();
+      const ans = startA ? v * c.f : v / c.f;
+      const wrong = startA ? v / c.f : v * c.f;          // used the factor backwards
+      const toName = startA ? c.bn : c.an, toUnit = startA ? c.b : c.a;
+      const ctx = startA ? c.ctxA(v) : c.ctxB(v);
+      return {
+        subType: mode,
+        question: `${ctx} How many ${toName} is that? Use ${c.eq}. Round to the nearest tenth.`,
+        answer: nf(ans, 1),
+        acceptableAnswers: accept(ans, 1, [toUnit, toName]),
+        // backwards factor; decimal slips either way; not converted at all
+        options: numOpts(ans, [wrong, ans * 10, v, ans / 10], 1),
+        explanation: `The factor is ${c.eq}. ${startA
+          ? `Going from ${c.an} to ${c.bn} is the direction of the factor, so multiply: ${v} × ${c.f} = ${fx(ans, 4)}`
+          : `Going from ${c.bn} to ${c.an} is against the factor, so divide: ${v} ÷ ${c.f} = ${fx(ans, 4)}…`}, which rounds to ${nf(ans, 1)} ${toUnit}.`
+      };
+    }
+
+    // compare: which of four quantities in mixed units is the largest (or smallest)?
+    const len = Math.random() < 0.5, table = len ? CMP_LEN : CMP_MASS;
+    const most = Math.random() < 0.5;
+    let items, sorted, guard = 0;
+    do {
+      items = table.map(t => { const v = t.gen(); return { label: t.lab(v), base: t.toBase(v) }; });
+      sorted = items.slice().sort((p, q) => most ? q.base - p.base : p.base - q.base);
+      guard++;
+    } while (guard < 200 && Math.abs(sorted[0].base - sorted[1].base) < 0.06 * sorted[1].base);
+    const baseUnit = len ? "m" : "kg";
+    const facts = len ? "1 mile ≈ 1.61 km, 1 yard ≈ 0.91 m" : "1 kg ≈ 2.2 pounds, 1 ounce ≈ 28.35 g";
+    const word = len ? (most ? "longest distance" : "shortest distance") : (most ? "heaviest mass" : "lightest mass");
+    return {
+      subType: "compare",
+      question: `Which is the ${word}? (${facts})`,
+      answer: sorted[0].label,
+      // every other quantity is a real candidate: the one a student picks by
+      // comparing the bare numbers instead of converting to one unit
+      options: opt4(sorted[0].label, items.filter(it => it !== sorted[0]).map(it => it.label)),
+      explanation: `Convert everything to ${baseUnit}: ` + items.map(it => it.label.endsWith(" " + baseUnit) ? `${it.label} is already in ${baseUnit}` : `${it.label} ≈ ${nf(it.base, len ? 0 : 2)} ${baseUnit}`).join("; ") +
+        `. The ${most ? "largest" : "smallest"} is ${sorted[0].label}.`
+    };
+  });
+
+  // =====================================================================
+  // M-313  Dimensional Analysis  (tier 4; plan items 37 / 73C)
+  // =====================================================================
+  // "Which factor do I multiply by?" — the factor that cancels the unit you are
+  // leaving. The three wrong choices are the factor upside down and the same
+  // two numbers attached to the wrong units.
+  const FACTOR_Q = [
+    { q: v => `To change ${v} miles per hour into miles per MINUTE`, ok: "1 h / 60 min", bad: ["60 min / 1 h", "1 min / 60 h", "60 h / 1 min"],
+      why: "Hours are in the denominator of mi/h, so the factor needs hours on top to cancel them: (mi/h) × (h/min) = mi/min." },
+    { q: v => `To change ${v} kilometers into meters`, ok: "1,000 m / 1 km", bad: ["1 km / 1,000 m", "1 m / 1,000 km", "1,000 km / 1 m"],
+      why: "Kilometers are on top, so the factor needs km on the bottom to cancel: km × (m/km) = m." },
+    { q: v => `To change ${v} centimeters into inches`, ok: "1 in / 2.54 cm", bad: ["2.54 cm / 1 in", "1 cm / 2.54 in", "2.54 in / 1 cm"],
+      why: "Centimeters are on top, so cm goes on the bottom of the factor: cm × (in/cm) = in." },
+    { q: v => `To change a price of $${v} per pound into dollars per OUNCE`, ok: "1 lb / 16 oz", bad: ["16 oz / 1 lb", "1 oz / 16 lb", "16 lb / 1 oz"],
+      why: "Pounds are in the denominator of $/lb, so the factor needs lb on top: ($/lb) × (lb/oz) = $/oz." },
+    { q: v => `To change ${v} gallons into quarts`, ok: "4 qt / 1 gal", bad: ["1 gal / 4 qt", "1 qt / 4 gal", "4 gal / 1 qt"],
+      why: "Gallons are on top, so gal goes on the bottom of the factor: gal × (qt/gal) = qt." },
+    { q: v => `To change a flow of ${v} liters per minute into liters per HOUR`, ok: "60 min / 1 h", bad: ["1 h / 60 min", "1 min / 60 h", "60 h / 1 min"],
+      why: "Minutes are in the denominator of L/min, so the factor needs minutes on top: (L/min) × (min/h) = L/h." },
+    { q: v => `To change ${v} meters per second into meters per MINUTE`, ok: "60 s / 1 min", bad: ["1 min / 60 s", "1 s / 60 min", "60 min / 1 s"],
+      why: "Seconds are in the denominator of m/s, so seconds go on top of the factor: (m/s) × (s/min) = m/min." },
+    { q: v => `To change ${v} days into hours`, ok: "24 h / 1 day", bad: ["1 day / 24 h", "1 h / 24 days", "24 days / 1 h"],
+      why: "Days are on top, so days go on the bottom of the factor: days × (h/day) = h." }
+  ];
+  // Expressions whose units are the whole question. `opts` lists the result
+  // unit first, then units a student gets by multiplying where they should
+  // divide, dividing the wrong way round, or not cancelling.
+  const UNIT_Q = [
+    { e: () => { const s = ri(40, 110), t = pick([1.5, 2, 2.5, 3, 4]); return `(${s} km/h) × (${t} h)`; }, opts: ["km", "km/h", "km·h", "h/km"],
+      why: "km/h × h: the hours cancel, leaving km." },
+    { e: () => { const d = ri(60, 480), t = ri(2, 6); return `(${d} km) ÷ (${t} h)`; }, opts: ["km/h", "h/km", "km·h", "km"],
+      why: "km divided by h is km per hour, km/h." },
+    { e: () => { const a = ri(3, 12), b = ri(3, 12); return `(${a} m) × (${b} m)`; }, opts: ["m²", "m", "m³", "2 m"],
+      why: "m × m = m², a unit of area." },
+    { e: () => { const r = ri(12, 25), t = ri(4, 40); return `($${r} per hour) × (${t} hours)`; }, opts: ["dollars", "dollars per hour", "hours", "dollar-hours"],
+      why: "($/h) × h: the hours cancel, leaving dollars." },
+    { e: () => { const V = ri(20, 200), r = ri(2, 10); return `(${V} L) ÷ (${r} L/min)`; }, opts: ["min", "L/min", "L²/min", "1/min"],
+      why: "L ÷ (L/min) = L × (min/L): the liters cancel, leaving minutes." },
+    { e: () => { const m = ri(20, 400), V = ri(10, 200); return `(${m} g) ÷ (${V} mL)`; }, opts: ["g/mL", "mL/g", "g·mL", "g"],
+      why: "grams divided by milliliters is grams per milliliter, g/mL — a density." },
+    { e: () => { const d = ri(150, 600), e = ri(10, 25); return `(${d} km) ÷ (${e} km/L)`; }, opts: ["L", "km/L", "km²/L", "L/km"],
+      why: "km ÷ (km/L) = km × (L/km): the kilometers cancel, leaving liters." },
+    { e: () => { const s = ri(3, 30), t = ri(10, 90); return `(${s} m/s) × (${t} s)`; }, opts: ["m", "m/s", "m/s²", "m·s"],
+      why: "(m/s) × s: the seconds cancel, leaving meters." }
+  ];
+
+  _addSkill(4, "Dimensional Analysis", "Dimensional Analysis", 4, {
+    goalProblem: "A car is traveling at 72 km/h. How fast is that in meters per second?",
+    teachingSteps: [
+      { title: "Units multiply and cancel like numbers", explanation: "Treat a unit as a factor. km/h × h leaves km, because h on top cancels h on the bottom. That is why distance = speed × time works.", visual: "(60 km/h) × (3 h) = 180 km     h/h cancels" },
+      { title: "A conversion factor is a fraction equal to 1", explanation: "Since 1 km = 1,000 m, the fraction <strong>1,000 m / 1 km</strong> equals 1, and so does <strong>1 km / 1,000 m</strong>. Multiplying by 1 changes the units without changing the amount.", visual: "1,000 m / 1 km = 1      60 min / 1 h = 1" },
+      { title: "Choose the way up that cancels", explanation: "Put the unit you want to get rid of on the <strong>opposite</strong> side of the fraction. km on top? Use a factor with km on the bottom. Hours on the bottom (as in km/h)? Use a factor with hours on top.", visual: "72 km/h × (1,000 m / 1 km) → km cancels" },
+      { title: "Chain factors one unit at a time", explanation: "Change one unit per factor and cancel as you go. Multiply all the tops, multiply all the bottoms, then divide.", visual: "72 km/h × (1,000 m / 1 km) × (1 h / 3,600 s)\n= 72,000 m / 3,600 s = 20 m/s" },
+      { title: "Squared units need the factor twice", explanation: "1 yd = 3 ft, but 1 yd² is a 3 ft by 3 ft square: 9 ft². For area, square the factor; for volume, cube it.", visual: "1 yd² = 3 ft × 3 ft = 9 ft²     1 m² = 100 cm × 100 cm = 10,000 cm²" },
+      { title: "Use the units to check the answer", explanation: "Before calculating, check that the units left over are the ones the question asks for. If you wanted km/h and got km·h, the setup is wrong — no arithmetic can fix it.", visual: "speed? km ÷ h = km/h ✓     km × h = km·h ✗" }
+    ],
+    finalAnswer: "20 m/s",
+    answerExplanation: "72 km/h × (1,000 m / 1 km) × (1 h / 3,600 s) = 72,000 m ÷ 3,600 s = 20 m/s. The km and h both cancel, leaving m/s.",
+    example: { problem: "Convert 60 miles per hour to feet per second. (1 mi = 5,280 ft)", steps: [
+      { text: "Start with the rate", math: "60 mi / 1 h" },
+      { text: "Cancel miles: put mi on the bottom", math: "× 5,280 ft / 1 mi" },
+      { text: "Cancel hours: put h on top", math: "× 1 h / 3,600 s" },
+      { text: "Multiply tops and bottoms", math: "60 × 5,280 = 316,800 ft;  316,800 ÷ 3,600 = 88 ft/s" }
+    ]},
+    keyPoints: [
+      "A conversion factor is a fraction worth exactly 1",
+      "Put the unit you are leaving on the opposite side so it cancels",
+      "Area units use the factor squared, volume units the factor cubed",
+      "If the leftover units are not the ones asked for, the setup is wrong"
+    ],
+    mistakes: [
+      { wrong: "72 km/h × (1 km / 1,000 m)", why: "That leaves km² on top. To cancel km on top, km must be on the BOTTOM of the factor: 1,000 m / 1 km." },
+      { wrong: "3 yd² = 9 ft²", why: "Each square yard is 3 ft × 3 ft = 9 ft², so 3 yd² = 27 ft². Multiplying by 3 converts only one side of the square." },
+      { wrong: "Converting hours to seconds with one factor of 60", why: "60 changes hours to minutes. Seconds need a second factor of 60: 1 h = 3,600 s." }
+    ],
+    guided: { problem: "How many seconds are there in 2 days?", steps: [
+      { label: "Days to hours", value: "2 × 24 = 48 h" },
+      { label: "Hours to minutes", value: "48 × 60 = 2880 min" },
+      { label: "Minutes to seconds", value: "2880 × 60 = 172800 s" }
+    ], answer: "172800", answerLabel: "Seconds in 2 days =",
+      interactiveSteps: [
+        { prompt: "Multiply by 24 h / 1 day so that days cancel. How many hours are in 2 days?", hint: "2 × 24", answer: "48", acceptableAnswers: ["48", "48 h", "48 hours"], formatHint: NUM_HINT },
+        { prompt: "Now multiply by 60 min / 1 h. How many minutes are in 48 hours?", hint: "48 × 60", answer: "2880", acceptableAnswers: ["2880", "2,880", "2880 min"], formatHint: NUM_HINT },
+        { prompt: "Finally multiply by 60 s / 1 min. How many seconds is 2,880 minutes?", hint: "2,880 × 60", answer: "172800", acceptableAnswers: ["172800", "172,800", "172800 s"], formatHint: NUM_HINT,
+          commonMistakes: { "2880": "That is minutes. One more factor of 60 changes minutes to seconds.", "17280": "Check the zeros: 2,880 × 60 = 172,800." } }
+      ] }
+  }, function(){
+    const mode = pick(["rate-convert","chain","which-factor","result-units","check-setup","rate-cost","area-convert"]);
+
+    if (mode === "rate-convert") {
+      const kind = pick(["kmh-ms","ms-kmh","mph-fts"]);
+      if (kind === "kmh-ms") {
+        const v = ri(20, 130), ans = v * 1000 / 3600;
+        return { subType: mode,
+          question: `A vehicle travels at ${v} km/h. What is its speed in meters per second? Round to the nearest tenth.`,
+          answer: nf(ans, 1), acceptableAnswers: accept(ans, 1, ["m/s"]),
+          // multiplied by 3.6 instead of dividing; changed hours only to minutes; dropped a zero from 3,600
+          options: numOpts(ans, [v * 3.6, v * 1000 / 60, v * 1000 / 360, v / 60], 1),
+          explanation: `${v} km/h × (1,000 m / 1 km) × (1 h / 3,600 s) = ${commas(v * 1000)} ÷ 3,600 = ${fx(ans, 3)}… ≈ ${nf(ans, 1)} m/s.` };
+      }
+      if (kind === "ms-kmh") {
+        const v = ri(4, 40), ans = v * 3600 / 1000;
+        return { subType: mode,
+          question: `A cyclist sprints at ${v} m/s. What is that speed in kilometers per hour?`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 6, ["km/h"]),
+          // divided by 3.6; only s→h (forgot m→km); only s→min
+          options: numOpts(ans, [v / 3.6, v * 3600, v * 60 / 1000, v * 60], 2),
+          explanation: `${v} m/s × (3,600 s / 1 h) × (1 km / 1,000 m) = ${commas(v * 3600)} ÷ 1,000 = ${nf(ans)} km/h.` };
+      }
+      const v = ri(15, 75), ans = v * 5280 / 3600;
+      return { subType: mode,
+        question: `A car travels at ${v} miles per hour. How many feet per second is that? (1 mile = 5,280 ft) Round to the nearest tenth.`,
+        answer: nf(ans, 1), acceptableAnswers: accept(ans, 1, ["ft/s"]),
+        // used one factor of 60 (ft per minute); flipped both factors; dropped a zero from 3,600
+        options: numOpts(ans, [v * 5280 / 60, v * 3600 / 5280, v * 5280 / 360], 1),
+        explanation: `${v} mi/h × (5,280 ft / 1 mi) × (1 h / 3,600 s) = ${commas(v * 5280)} ÷ 3,600 = ${fx(ans, 3)}… ≈ ${nf(ans, 1)} ft/s.` };
+    }
+
+    if (mode === "chain") {
+      const kind = pick(["hours-s","yd-in","gal-cups","weeks-min","km-mm","days-min"]);
+      const n = ri(2, 9);
+      const C = {
+        "hours-s":   { q: `How many seconds are in ${n} hours?`, f: 3600, chain: `${n} h × 60 min/h × 60 s/min`, u: "s",
+                       bad: [n * 60, n * 100 * 100, n * 600, n * 360] },     // one 60 only; 100 per hour; dropped a zero
+        "yd-in":     { q: `How many inches are in ${n} yards? (1 yd = 3 ft, 1 ft = 12 in)`, f: 36, chain: `${n} yd × 3 ft/yd × 12 in/ft`, u: "in",
+                       bad: [n * 12, n * 3, n * 15, n * 4] },                // skipped yd→ft; skipped ft→in; added 3 + 12
+        "gal-cups":  { q: `How many cups are in ${n} gallons? (1 gal = 4 qt, 1 qt = 4 cups)`, f: 16, chain: `${n} gal × 4 qt/gal × 4 cups/qt`, u: "cups",
+                       bad: [n * 4, n * 8, n * 32, n + 8] },                 // one factor of 4; added 4 + 4; doubled
+        "weeks-min": { q: `How many minutes are in ${n} weeks?`, f: 10080, chain: `${n} wk × 7 days/wk × 24 h/day × 60 min/h`, u: "min",
+                       bad: [n * 168, n * 7 * 60, n * 7 * 24 * 3600, n * 1440] }, // stopped at hours; skipped hours; went to seconds; skipped weeks→days
+        "km-mm":     { q: `How many millimeters are in ${n} kilometers?`, f: 1000000, chain: `${n} km × 1,000 m/km × 1,000 mm/m`, u: "mm",
+                       bad: [n * 1000, n * 100000, n * 10000000, n * 10000] },
+        "days-min":  { q: `How many minutes are in ${n} days?`, f: 1440, chain: `${n} days × 24 h/day × 60 min/h`, u: "min",
+                       bad: [n * 24, n * 60, n * 144, n * 86400] }
+      }[kind];
+      const ans = n * C.f;
+      return { subType: mode, question: C.q, answer: nf(ans), acceptableAnswers: accept(ans, 0, [C.u]),
+        options: numOpts(ans, C.bad),
+        explanation: `Chain the factors so each unit cancels: ${C.chain} = ${nf(ans)} ${C.u}.` };
+    }
+
+    if (mode === "which-factor") {
+      const F = pick(FACTOR_Q), v = ri(3, 95);
+      return { subType: mode, forceChoice: true,
+        question: `${F.q(v)}, which conversion factor should you multiply by?`,
+        answer: F.ok,
+        // the factor upside down, and the right numbers on the wrong units
+        options: opt4(F.ok, F.bad),
+        explanation: `${F.why} The factor ${F.ok} is equal to 1, so the amount is unchanged — only the unit changes.` };
+    }
+
+    if (mode === "result-units") {
+      const U = pick(UNIT_Q), expr = U.e();
+      return { subType: mode, forceChoice: true,
+        question: `What unit does the result of ${expr} have?`,
+        answer: U.opts[0],
+        options: opt4(U.opts[0], U.opts.slice(1)),
+        explanation: `${U.why} Tracking the units tells you what the number means before you work it out.` };
+    }
+
+    if (mode === "check-setup") {
+      const kind = pick(["speed","time","fuel","unit-price","cost"]);
+      let q, ok, bad, why;
+      if (kind === "speed") {
+        const t = ri(2, 6), d = t * ri(35, 95);
+        q = `A train travels ${d} km in ${t} hours. Which calculation gives its average speed in km/h?`;
+        ok = `${d} ÷ ${t}`; bad = [`${t} ÷ ${d}`, `${d} × ${t}`, `${d} − ${t}`];
+        why = `Speed in km/h is km ÷ h, so divide the distance by the time: ${d} ÷ ${t} = ${d / t} km/h. ${t} ÷ ${d} would be in h/km and ${d} × ${t} in km·h.`;
+      } else if (kind === "time") {
+        const s = pick([40, 50, 60, 75, 80]), d = s * ri(2, 7);
+        q = `A bus averages ${s} km/h on ${art(d)} ${d} km trip. Which calculation gives the travel time in hours?`;
+        ok = `${d} ÷ ${s}`; bad = [`${s} ÷ ${d}`, `${d} × ${s}`, `${d} − ${s}`];
+        why = `km ÷ (km/h) = km × (h/km) = h, so ${d} ÷ ${s} = ${d / s} h. ${s} ÷ ${d} has units 1/h, and ${d} × ${s} has km²/h.`;
+      } else if (kind === "fuel") {
+        const e = pick([12, 15, 16, 20, 25]), d = e * ri(8, 30);
+        q = `A car uses fuel at ${e} km per liter. Which calculation gives the liters needed for ${art(d)} ${d} km trip?`;
+        ok = `${d} ÷ ${e}`; bad = [`${e} ÷ ${d}`, `${d} × ${e}`, `${d} + ${e}`];
+        why = `km ÷ (km/L) = km × (L/km) = L, so ${d} ÷ ${e} = ${d / e} L. Multiplying would give km²/L, which is not an amount of fuel.`;
+      } else if (kind === "unit-price") {
+        const oz = pick([12, 16, 18, 20, 24, 32]), cents = ri(15, 45) * oz, price = (cents / 100).toFixed(2);
+        q = `${Art(oz)} ${oz} oz jar of peanut butter costs $${price}. Which calculation gives the price in dollars per ounce?`;
+        ok = `${price} ÷ ${oz}`; bad = [`${oz} ÷ ${price}`, `${price} × ${oz}`, `${price} − ${oz}`];
+        why = `Dollars per ounce is $ ÷ oz: ${price} ÷ ${oz} = $${(cents / oz / 100).toFixed(2)} per ounce. ${oz} ÷ ${price} would be ounces per dollar.`;
+      } else {
+        const lb = pick([2, 3, 4, 5, 6]), cents = ri(120, 690), price = (cents / 100).toFixed(2);
+        q = `Apples cost $${price} per pound. Which calculation gives the cost of ${lb} pounds?`;
+        ok = `${price} × ${lb}`; bad = [`${price} ÷ ${lb}`, `${lb} ÷ ${price}`, `${price} + ${lb}`];
+        why = `($/lb) × lb: the pounds cancel, leaving dollars. ${price} × ${lb} = $${(cents * lb / 100).toFixed(2)}.`;
+      }
+      return { subType: mode, forceChoice: true, question: q, answer: ok, options: opt4(ok, bad), explanation: why };
+    }
+
+    if (mode === "rate-cost") {
+      const kind = pick(["fuel-cost","dose","leak","pay"]);
+      if (kind === "fuel-cost") {
+        const E = pick([20, 24, 25, 28, 30, 32, 35, 40]), k = ri(3, 20), M = E * k, P = ri(64, 96) * 5 / 100;
+        const ans = k * P;
+        return { subType: mode,
+          question: `A car gets ${E} miles per gallon and gas costs $${P.toFixed(2)} per gallon. How much does the gas cost for ${art(M)} ${M}-mile trip?`,
+          answer: money(ans), acceptableAnswers: [money(ans), rnd(ans, 2).toFixed(2), fx(ans, 2)],
+          // forgot the mpg (miles × price); multiplied by mpg; the gallons used, read as dollars
+          options: moneyOpts(ans, [M * P, E * P, k, M / P]),
+          explanation: `${M} mi × (1 gal / ${E} mi) = ${k} gal. ${k} gal × ($${P.toFixed(2)} / gal) = ${money(ans)}. Miles and gallons both cancel, leaving dollars.` };
+      }
+      if (kind === "dose") {
+        const kg = ri(10, 80), D = pick([5, 10, 12, 15, 20]), lb = rnd(kg * 2.2, 1), ans = D * kg;
+        return { subType: mode,
+          question: `A medicine dose is ${D} mg per kilogram of body weight. A patient weighs ${fx(lb, 1)} pounds. How many milligrams should the patient get? (1 kg = 2.2 lb)`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 0, ["mg"]),
+          // used pounds as if they were kilograms; multiplied by 2.2 instead of dividing
+          options: numOpts(ans, [D * lb, D * lb * 2.2, kg, D * kg * 10], 1),
+          explanation: `${fx(lb, 1)} lb × (1 kg / 2.2 lb) = ${kg} kg. ${kg} kg × (${D} mg / 1 kg) = ${nf(ans)} mg.` };
+      }
+      if (kind === "leak") {
+        const r = pick([0.5, 1, 1.5, 2, 2.5, 3, 4, 5]), ans = r * 1440 / 1000;
+        return { subType: mode,
+          question: `A leaky faucet drips ${r} mL every minute. How many liters does it waste in one day? Round to the nearest hundredth.`,
+          answer: nf(ans, 2), acceptableAnswers: accept(ans, 2, ["L", "liters"]),
+          // per hour instead of per day; left in mL; only 24 per day (hours, not minutes)
+          options: numOpts(ans, [r * 60 / 1000, r * 1440, r * 24 / 1000, r * 1440 / 100], 2),
+          explanation: `${r} mL/min × (60 min / 1 h) × (24 h / 1 day) = ${nf(r * 1440)} mL per day. ${nf(r * 1440)} ÷ 1,000 = ${nf(ans, 2)} L.` };
+      }
+      const p = ri(12, 24), m = pick([30, 45, 75, 90, 105, 135, 150, 165, 195, 210]), ans = p * m / 60;
+      return { subType: mode,
+        question: `A tutor earns $${p} per hour. How much does she earn for ${art(m)} ${m}-minute session?`,
+        answer: money(ans), acceptableAnswers: [money(ans), rnd(ans, 2).toFixed(2), fx(ans, 2)],
+        // minutes treated as hours; minutes written as a decimal of an hour (90 min = 0.90 h)
+        options: moneyOpts(ans, [p * m, p * m / 100, p * Math.floor(m / 60), p * Math.ceil(m / 60)]),
+        explanation: `${m} min × (1 h / 60 min) = ${fx(m / 60, 4)} h. ${fx(m / 60, 4)} h × $${p}/h = ${money(ans)}.` };
+    }
+
+    // area-convert: square and cubic units use the factor squared or cubed
+    const kind = pick(["yd2-ft2","ft2-in2","m2-cm2","cm2-mm2","ft2-yd2","yd3-ft3"]);
+    const A = {
+      "yd2-ft2": { n: ri(2, 25),       from: "square yards", to: "square feet",        f: 9,     base: "1 yd = 3 ft",    sq: "3 × 3 = 9",           bad: n => [n * 3, n * 27, n * 6] },
+      "ft2-in2": { n: ri(2, 12),       from: "square feet",  to: "square inches",      f: 144,   base: "1 ft = 12 in",   sq: "12 × 12 = 144",       bad: n => [n * 12, n * 24, n * 1728] },
+      "m2-cm2":  { n: ri(2, 9),        from: "square meters", to: "square centimeters", f: 10000, base: "1 m = 100 cm",   sq: "100 × 100 = 10,000",  bad: n => [n * 100, n * 1000, n * 200] },
+      "cm2-mm2": { n: ri(3, 60),       from: "square centimeters", to: "square millimeters", f: 100, base: "1 cm = 10 mm", sq: "10 × 10 = 100",    bad: n => [n * 10, n * 1000, n * 20] },
+      "ft2-yd2": { n: 9 * ri(2, 40),   from: "square feet",  to: "square yards",       f: 1 / 9, base: "1 yd = 3 ft",    sq: "3 × 3 = 9 square feet in each square yard", bad: n => [n / 3, n * 9, n / 27] },
+      "yd3-ft3": { n: ri(2, 12),       from: "cubic yards",  to: "cubic feet",         f: 27,    base: "1 yd = 3 ft",    sq: "3 × 3 × 3 = 27",      bad: n => [n * 3, n * 9, n * 81] }
+    }[kind];
+    const ans = A.n * A.f;
+    return { subType: "area-convert",
+      question: `How many ${A.to} are in ${nf(A.n)} ${A.from}? (${A.base})`,
+      answer: nf(ans), acceptableAnswers: accept(ans, 6, [A.to]),
+      // converting only one dimension; squaring/cubing the wrong number of times
+      options: numOpts(ans, A.bad(A.n), 2),
+      explanation: `${A.base}, but ${A.from.split(" ")[0] === "cubic" ? "a cube has three dimensions" : "a square has two dimensions"}: ${A.sq}. ` +
+        `${kind === "ft2-yd2" ? `${nf(A.n)} ÷ 9` : `${nf(A.n)} × ${commas(A.f)}`} = ${nf(ans)} ${A.to}.` };
+  });
+
+  // =====================================================================
+  // M-314  Composite Area  (tier 4; plan item 39)
+  // =====================================================================
+  // Every shape is described in words and dimensions so the question can be
+  // answered from the text alone (no q.visual). π is fixed at 3.14 and the
+  // circle answers are computed in whole hundredths so the rounding is exact.
+  const SQ = { m: "square meters", ft: "square feet", cm: "square centimeters", in: "square inches" };
+  const A_UNITS = u => [u + "²", "sq " + u, SQ[u]];
+  // r² × 3.14 or 1.57 in integer hundredths, then to the nearest tenth.
+  const tenthFromHundredths = h => Math.round(h / 10) / 10;
+  // "74.13 ≈ 74.1", or just "78.5" when nothing was rounded away.
+  const about = (exact, rounded) => nf(exact, 2) === nf(rounded, 1) ? nf(rounded, 1) : `${nf(exact, 2)} ≈ ${nf(rounded, 1)}`;
+
+  _addSkill(4, "Composite Area", "Composite Area", 3, {
+    goalProblem: "A sign is shaped like a house: a rectangle 6 ft wide and 4 ft tall, with a triangle on top whose base is the full 6 ft and whose height is 3 ft. What is the area of the sign?",
+    teachingSteps: [
+      { title: "Rectangles: length × width", explanation: "The area of a rectangle is the number of unit squares that cover it: <strong>length × width</strong>. Area is always in <strong>square units</strong> (ft², m²).", visual: "6 ft × 4 ft = 24 ft²" },
+      { title: "Triangles: half a rectangle", explanation: "Any triangle is exactly half of a rectangle with the same base and height, so its area is <strong>½ × base × height</strong>. The height is measured straight up from the base, at a right angle.", visual: "½ × 6 × 3 = 9 ft²" },
+      { title: "Circles: π × radius²", explanation: "A circle's area is <strong>π × r × r</strong>, where r is the radius — half the diameter. A <strong>semicircle</strong> is half of that. We often use π ≈ 3.14.", visual: "radius 3: 3.14 × 3 × 3 = 28.26     semicircle: 14.13" },
+      { title: "Split the shape and ADD", explanation: "Break a composite shape into rectangles, triangles and circle pieces that do not overlap. Find each area, then add them.", visual: "house = rectangle + triangle = 24 + 9 = 33 ft²" },
+      { title: "Or take a piece away and SUBTRACT", explanation: "When a shape has a hole or a missing corner, find the area of the whole outer shape and subtract the missing piece. An L-shape is a big rectangle minus a corner rectangle.", visual: "12 × 9 rectangle with a 5 × 4 corner removed: 108 − 20 = 88" },
+      { title: "Check the answer", explanation: "Every piece must be in the same unit, the answer is in square units, and a shape with a piece removed must be smaller than the outer rectangle.", visual: "88 < 108 ✓   units: ft² ✓" }
+    ],
+    finalAnswer: "33 ft²",
+    answerExplanation: "Rectangle: 6 × 4 = 24 ft². Triangle: ½ × 6 × 3 = 9 ft². Total: 24 + 9 = 33 ft².",
+    example: { problem: "An L-shaped room is a 10 m by 8 m rectangle with a 4 m by 3 m rectangle cut out of one corner. Find its area.", steps: [
+      { text: "Area of the whole outer rectangle", math: "10 × 8 = 80 m²" },
+      { text: "Area of the missing corner", math: "4 × 3 = 12 m²" },
+      { text: "Subtract the missing piece", math: "80 − 12 = 68 m²" }
+    ]},
+    keyPoints: [
+      "Rectangle = length × width; triangle = ½ × base × height; circle = π × r²",
+      "The radius is half the diameter",
+      "Add pieces that make up the shape; subtract pieces that are cut out",
+      "Area is in square units"
+    ],
+    mistakes: [
+      { wrong: "Triangle area = base × height", why: "That is the area of the whole rectangle around it. A triangle is half: ½ × base × height." },
+      { wrong: "Using the diameter as r in π × r²", why: "r is the radius, half the diameter. A 6 ft wide semicircle has r = 3, not 6." },
+      { wrong: "Adding the cut-out corner instead of subtracting it", why: "A missing piece makes the area smaller. Take the corner's area away from the outer rectangle." }
+    ],
+    guided: { problem: "A garden bed is a rectangle 10 m long and 6 m wide, with a semicircle on one of its 6 m ends (the semicircle's diameter is the whole 6 m side). Use π ≈ 3.14. What is the total area?", steps: [
+      { label: "Rectangle area", value: "10 × 6 = 60" },
+      { label: "Radius of the semicircle", value: "6 ÷ 2 = 3" },
+      { label: "Semicircle area", value: "3.14 × 3 × 3 ÷ 2 = 14.13" },
+      { label: "Total area", value: "60 + 14.13 = 74.13" }
+    ], answer: "74.13", answerLabel: "Total area (m²) =",
+      interactiveSteps: [
+        { prompt: "First the rectangle. What is 10 × 6?", hint: "Length times width.", answer: "60", acceptableAnswers: ["60", "60 m²", "60 m^2"], formatHint: NUM_HINT },
+        { prompt: "The semicircle's diameter is 6 m. What is its radius?", hint: "The radius is half the diameter.", answer: "3", acceptableAnswers: ["3", "3 m"], formatHint: NUM_HINT,
+          commonMistakes: { "6": "6 m is the diameter, the whole way across. The radius is half of it." } },
+        { prompt: "A full circle of radius 3 has area 3.14 × 3 × 3 = 28.26. What is the area of the semicircle?", hint: "A semicircle is half a circle.", answer: "14.13", acceptableAnswers: ["14.13", "14.13 m²"], formatHint: NUM_HINT,
+          commonMistakes: { "28.26": "That is the whole circle. The bed only has half of one." } },
+        { prompt: "Add the pieces. What is the total area in square meters?", hint: "60 + 14.13", answer: "74.13", acceptableAnswers: ["74.13", "74.13 m²", "74.13 m^2"], formatHint: NUM_HINT }
+      ] }
+  }, function(){
+    const mode = pick(["l-shape","add-rects","rect-triangle","semicircle","subtract-circle","path","triangle-cutout"]);
+    const u = pick(["m","ft","cm","in"]);
+
+    if (mode === "l-shape") {
+      const W = ri(8, 20), H = ri(6, 16), a = ri(2, W - 3), b = ri(2, H - 3);
+      const ans = W * H - a * b;
+      const ctx = pick([`An L-shaped room is ${art(W)} ${W} ${u} by ${H} ${u} rectangle with ${art(a)} ${a} ${u} by ${b} ${u} rectangle cut out of one corner.`,
+                        `A metal bracket is cut from ${art(W)} ${W} ${u} by ${H} ${u} rectangle by removing ${art(a)} ${a} ${u} by ${b} ${u} rectangle from one corner, leaving an L shape.`]);
+      return { subType: mode,
+        question: `${ctx} What is its area in ${SQ[u]}?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 0, A_UNITS(u)),
+        // forgot to subtract; added the corner; found only the leftover corner block; used perimeter
+        options: numOpts(ans, [W * H, W * H + a * b, (W - a) * (H - b), 2 * (W + H), a * b]),
+        explanation: `Whole rectangle: ${W} × ${H} = ${W * H}. Cut-out corner: ${a} × ${b} = ${a * b}. Area = ${W * H} − ${a * b} = ${ans} ${u}².` };
+    }
+
+    if (mode === "add-rects") {
+      const a = ri(8, 16), b = ri(2, 5), c = ri(2, a - 4), d = ri(3, 9);
+      const ans = a * b + c * d;
+      return { subType: mode,
+        question: `A T-shaped patio is made of ${art(a)} ${a} ${u} by ${b} ${u} strip, with ${art(c)} ${c} ${u} by ${d} ${u} strip attached to the middle of one long side (the strips do not overlap). What is the area of the patio in ${SQ[u]}?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 0, A_UNITS(u)),
+        // used the bounding rectangle; only the first strip; multiplied added sides
+        options: numOpts(ans, [a * (b + d), a * b, (a + c) * (b + d), 2 * (a + b) + 2 * (c + d), a * b * c * d]),
+        explanation: `Split it into its two rectangles: ${a} × ${b} = ${a * b} and ${c} × ${d} = ${c * d}. Area = ${a * b} + ${c * d} = ${ans} ${u}².` };
+    }
+
+    if (mode === "rect-triangle") {
+      const w = ri(4, 14), h = ri(4, 12), t = ri(2, h - 1);
+      const tri = w * t / 2, ans = w * h + tri;
+      return { subType: mode,
+        question: `A sign is shaped like a house: a rectangle ${w} ${u} wide and ${h} ${u} tall, with a triangle on top whose base is the full ${w} ${u} width and whose height is ${t} ${u}. What is the area of the sign in ${SQ[u]}?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 1, A_UNITS(u)),
+        // forgot the ½; only the rectangle; subtracted the triangle; rectangle + full triangle height ×½ on the wrong side
+        options: numOpts(ans, [w * h + w * t, w * h, w * h - tri, w * (h + t) / 2]),
+        explanation: `Rectangle: ${w} × ${h} = ${w * h}. Triangle: ½ × ${w} × ${t} = ${nf(tri)}. Area = ${w * h} + ${nf(tri)} = ${nf(ans)} ${u}².` };
+    }
+
+    if (mode === "semicircle") {
+      const W = 2 * ri(2, 7), r = W / 2, L = ri(W, 20);
+      const h = L * W * 100;                          // rectangle, in hundredths
+      const ans  = tenthFromHundredths(h + 157 * r * r);
+      return { subType: mode,
+        question: `A garden bed is a rectangle ${L} ${u} long and ${W} ${u} wide, with a semicircle on one of its ${W} ${u} ends (the semicircle's diameter is the whole ${W} ${u} side). Use π ≈ 3.14. What is the total area in ${SQ[u]}, to the nearest tenth?`,
+        answer: nf(ans, 1), acceptableAnswers: accept(ans, 1, A_UNITS(u)),
+        // a full circle instead of half; the diameter used as the radius; the semicircle subtracted
+        options: numOpts(ans, [tenthFromHundredths(h + 314 * r * r), tenthFromHundredths(h + 157 * W * W),
+                               tenthFromHundredths(h - 157 * r * r), L * W], 1),
+        explanation: `Rectangle: ${L} × ${W} = ${L * W}. The radius is ${W} ÷ 2 = ${r}, so the semicircle is 3.14 × ${r} × ${r} ÷ 2 = ${nf(1.57 * r * r, 2)}. ` +
+          `Total = ${L * W} + ${nf(1.57 * r * r, 2)} = ${about((h + 157 * r * r) / 100, ans)} ${u}².` };
+    }
+
+    if (mode === "subtract-circle") {
+      const s = ri(8, 24), r = ri(1, Math.floor(s / 4));
+      const h = s * s * 100;
+      const ans = tenthFromHundredths(h - 314 * r * r);
+      const thing = pick(["A square metal plate", "A square wooden tabletop", "A square tile"]);
+      return { subType: mode,
+        question: `${thing} measures ${s} ${u} on each side and has a circular hole of radius ${r} ${u} cut through it. Use π ≈ 3.14. What area is left, in ${SQ[u]}, to the nearest tenth?`,
+        answer: nf(ans, 1), acceptableAnswers: accept(ans, 1, A_UNITS(u)),
+        // added the hole; used the diameter in π r²; subtracted the circumference 2πr instead of the area
+        options: numOpts(ans, [tenthFromHundredths(h + 314 * r * r), tenthFromHundredths(h - 314 * 4 * r * r),
+                               tenthFromHundredths(h - 628 * r), s * s], 1),
+        explanation: `Square: ${s} × ${s} = ${s * s}. Hole: 3.14 × ${r} × ${r} = ${nf(3.14 * r * r, 2)}. Left over: ${s * s} − ${nf(3.14 * r * r, 2)} = ${about((h - 314 * r * r) / 100, ans)} ${u}².` };
+    }
+
+    if (mode === "path") {
+      const L = ri(8, 25), W = ri(4, L - 2), p = ri(1, 3);
+      const outer = (L + 2 * p) * (W + 2 * p), ans = outer - L * W;
+      const ctx = pick([`A rectangular pool is ${L} ${u} by ${W} ${u}. A path ${p} ${u} wide runs all the way around it.`,
+                        `A rectangular photo is ${L} ${u} by ${W} ${u}. A frame ${p} ${u} wide surrounds it on every side.`]);
+      return { subType: mode,
+        question: `${ctx} What is the area of the ${ctx.includes("path") ? "path" : "frame"} alone, in ${SQ[u]}?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 0, A_UNITS(u)),
+        // added the width once instead of twice; forgot the four corners; gave the whole outer rectangle
+        options: numOpts(ans, [(L + p) * (W + p) - L * W, 2 * (L + W) * p, outer, L * W]),
+        explanation: `The outer rectangle is ${L} + 2×${p} = ${L + 2 * p} by ${W} + 2×${p} = ${W + 2 * p}, area ${outer}. Subtract the inside ${L} × ${W} = ${L * W}: ${outer} − ${L * W} = ${ans} ${u}².` };
+    }
+
+    // triangle-cutout: a rectangle with a right-triangle corner removed
+    const L = ri(10, 30), W = ri(8, 24), a = ri(2, L - 3), b = ri(2, W - 3);
+    const tri = a * b / 2, ans = L * W - tri;
+    return { subType: "triangle-cutout",
+      question: `A rectangular board is ${L} ${u} by ${W} ${u}. One corner is sawn off along a straight line, removing a right triangle with legs ${a} ${u} and ${b} ${u}. What is the area of the board that is left, in ${SQ[u]}?`,
+      answer: nf(ans), acceptableAnswers: accept(ans, 1, A_UNITS(u)),
+      // forgot the ½; added the triangle; did not subtract at all
+      options: numOpts(ans, [L * W - a * b, L * W + tri, L * W, L * W - (a + b)]),
+      explanation: `Rectangle: ${L} × ${W} = ${L * W}. Triangle cut off: ½ × ${a} × ${b} = ${nf(tri)}. Left: ${L * W} − ${nf(tri)} = ${nf(ans)} ${u}².` };
+  });
+
+  // =====================================================================
+  // M-315  Scale Drawings and Maps  (tier 4; plan item 46)
+  // =====================================================================
+  // Unit scales ("1 cm : 4 m") for plans and maps. `dp` is how finely the
+  // drawing length is generated: cm to the tenth, inches to the quarter.
+  const SCALES = [
+    { d: "cm", dn: "centimeters", d1: "centimeter", r: "m",  rn: "meters",     s: [2, 4, 5, 10, 20, 25, 50], what: ["a floor plan", "a plan of a park", "a drawing of a school"], gen: () => ri(15, 120) / 10 },
+    { d: "in", dn: "inches", d1: "inch", r: "ft", rn: "feet",       s: [2, 4, 5, 8, 10, 12, 16],  what: ["a house plan", "a blueprint", "a drawing of a barn"],      gen: () => ri(6, 40) / 4 },
+    { d: "cm", dn: "centimeters", d1: "centimeter", r: "km", rn: "kilometers", s: [2, 5, 10, 25, 50],        what: ["a road map", "a map of the state", "a hiking map"],           gen: () => ri(15, 120) / 10 },
+    { d: "in", dn: "inches", d1: "inch", r: "mi", rn: "miles",      s: [5, 10, 15, 20, 25, 50],   what: ["a road map", "a county map", "a trail map"],                  gen: () => ri(4, 40) / 4 }
+  ];
+  const CHOOSE_S = [2, 4, 5, 8, 10, 12, 16, 20, 25];
+
+  _addSkill(4, "Scale Drawings and Maps", "Scale Drawings and Maps", 3, {
+    goalProblem: "On a map, 1 cm represents 5 km. Two towns are 7.4 cm apart on the map. How far apart are they really?",
+    teachingSteps: [
+      { title: "A scale is a ratio", explanation: "A scale compares a length on the drawing to the real length it stands for. <strong>1 cm : 5 km</strong> means every centimeter on the map is 5 km in real life. Because every length uses the same scale, the drawing is a <strong>similar figure</strong> of the real thing.", visual: "drawing : real = 1 cm : 5 km" },
+      { title: "Drawing to real: multiply", explanation: "Each drawing unit stands for a fixed real amount, so multiply the drawing length by that amount. You can also set up a proportion and cross-multiply.", visual: "7.4 cm × 5 km per cm = 37 km\n1/5 = 7.4/x  →  x = 37" },
+      { title: "Real to drawing: divide", explanation: "To <strong>make</strong> a scale drawing, divide each real length by the real amount one drawing unit represents.", visual: "scale 1 in : 8 ft,  wall 36 ft → 36 ÷ 8 = 4.5 in" },
+      { title: "Ratio scales have no units", explanation: "A scale like <strong>1 : 25,000</strong> means 1 of any unit stands for 25,000 of the SAME unit. Multiply, then convert to a sensible unit.", visual: "6 cm × 25,000 = 150,000 cm = 1,500 m = 1.5 km" },
+      { title: "Areas scale by the square", explanation: "If each length is multiplied by k, an area is multiplied by <strong>k²</strong>, because both the length and the width are scaled. Convert lengths first, then find the area.", visual: "scale 1 cm : 3 m, room 4 cm × 5 cm → 12 m × 15 m = 180 m²" },
+      { title: "Choosing a scale", explanation: "When you make a drawing, pick a scale that fits the space you have. The largest real length divided by the space available tells you the smallest real amount one drawing unit can stand for.", visual: "48 ft into 10 in: 48 ÷ 10 = 4.8 → 1 in : 5 ft fits" }
+    ],
+    finalAnswer: "37 km",
+    answerExplanation: "Each centimeter is 5 km, so 7.4 cm × 5 = 37 km.",
+    example: { problem: "A hiking map has a scale of 1 : 25,000. Two campsites are 8 cm apart on the map. How far apart are they in kilometers?", steps: [
+      { text: "Multiply by the scale (same units)", math: "8 cm × 25,000 = 200,000 cm" },
+      { text: "Centimeters to meters", math: "200,000 ÷ 100 = 2,000 m" },
+      { text: "Meters to kilometers", math: "2,000 ÷ 1,000 = 2 km" }
+    ]},
+    keyPoints: [
+      "Drawing → real: multiply by the scale. Real → drawing: divide",
+      "A ratio scale like 1 : 50,000 uses the same unit on both sides — convert afterward",
+      "Scale each length first; areas grow by the square of the scale factor",
+      "Pick a scale so the largest real length fits the space on the page"
+    ],
+    mistakes: [
+      { wrong: "1 : 25,000 and 8 cm → 200,000 km", why: "The scale keeps the same unit: 8 cm stands for 200,000 cm, which is 2 km." },
+      { wrong: "Scale 1 cm : 3 m, a 4 cm × 5 cm room is 20 × 3 = 60 m²", why: "Scale each side first: 12 m × 15 m = 180 m². Multiplying the area by 3 only scales one direction." },
+      { wrong: "Real to drawing by multiplying: 36 ft × 8 = 288 in", why: "A drawing is smaller than the real thing. Divide by the scale: 36 ÷ 8 = 4.5 in." }
+    ],
+    guided: { problem: "A house plan uses the scale 1 in : 6 ft. A bedroom is drawn 3.5 in by 2 in. What is the real area of the bedroom?", steps: [
+      { label: "Real length", value: "3.5 × 6 = 21 ft" },
+      { label: "Real width", value: "2 × 6 = 12 ft" },
+      { label: "Real area", value: "21 × 12 = 252" }
+    ], answer: "252", answerLabel: "Area (ft²) =",
+      interactiveSteps: [
+        { prompt: "Each inch on the plan is 6 ft. How many feet long is the 3.5 in side?", hint: "3.5 × 6", answer: "21", acceptableAnswers: ["21", "21 ft"], formatHint: NUM_HINT },
+        { prompt: "How many feet wide is the 2 in side?", hint: "2 × 6", answer: "12", acceptableAnswers: ["12", "12 ft"], formatHint: NUM_HINT },
+        { prompt: "Now find the real area. What is 21 × 12, in square feet?", hint: "Scale the lengths first, then multiply them.", answer: "252", acceptableAnswers: ["252", "252 ft²", "252 sq ft", "252 square feet"], formatHint: NUM_HINT,
+          commonMistakes: { "42": "That is 7 square inches × 6. Scale BOTH sides first: 21 ft × 12 ft.", "7": "That is the area on the plan in square inches, not the real area." } }
+      ] }
+  }, function(){
+    const mode = pick(["drawing-to-real","real-to-drawing","map-ratio","find-scale","area-scale","map-time","choose-scale"]);
+
+    if (mode === "drawing-to-real") {
+      const S = pick(SCALES), s = pick(S.s), d = S.gen(), ans = d * s;
+      return { subType: mode,
+        question: `On ${pick(S.what)}, 1 ${S.d} represents ${s} ${S.r}. A distance measures ${nf(d)} ${S.d} on the drawing. What is the real distance in ${S.rn}?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 6, [S.r, S.rn]),
+        // divided instead of multiplying; added the scale; decimal slips
+        options: numOpts(ans, [d / s, d + s, ans * 10, ans / 10], 3),
+        explanation: `Each ${S.d1} stands for ${s} ${S.r}, so multiply: ${nf(d)} × ${s} = ${nf(ans)} ${S.r}.` };
+    }
+
+    if (mode === "real-to-drawing") {
+      const S = pick(SCALES), s = pick(S.s), d = S.gen(), R = d * s;
+      return { subType: mode,
+        question: `You are making ${pick(S.what)} with the scale 1 ${S.d} : ${s} ${S.r}. A real distance of ${nf(R)} ${S.r} should be drawn how many ${S.dn} long?`,
+        answer: nf(d), acceptableAnswers: accept(d, 6, [S.d, S.dn]),
+        // multiplied instead of dividing; subtracted the scale; decimal slip
+        options: numOpts(d, [R * s, R - s, d * 10, d / 10, d * 2], 2),
+        explanation: `Each ${S.d1} on the drawing is ${s} ${S.r}, so divide: ${nf(R)} ÷ ${s} = ${nf(d)} ${S.d}.` };
+    }
+
+    if (mode === "map-ratio") {
+      const n = pick([10000, 20000, 25000, 50000, 100000, 250000]);
+      const d = ri(2, 30) / pick([1, 2]);
+      const cmReal = d * n, ans = cmReal / 100000;
+      return { subType: mode,
+        question: `A map has a scale of 1 : ${commas(n)}. Two landmarks are ${nf(d)} cm apart on the map. How far apart are they in real life, in kilometers?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 6, ["km", "kilometers"]),
+        // stopped after cm→m and called it km; used 10,000 cm per km; never converted
+        options: numOpts(ans, [cmReal / 100, cmReal / 1000, cmReal / 10000, cmReal, cmReal / 1000000]),
+        explanation: `${nf(d)} cm × ${commas(n)} = ${nf(cmReal)} cm in real life. ÷ 100 = ${nf(cmReal / 100)} m, then ÷ 1,000 = ${nf(ans)} km.` };
+    }
+
+    if (mode === "find-scale") {
+      const S = pick(SCALES.slice(0, 2)), s = pick(S.s), d = pick([2, 3, 4, 5, 6, 8, 9, 10, 12]), R = d * s;
+      return { subType: mode,
+        question: `${Art(R)} ${R} ${S.r} long wall is drawn ${d} ${S.d} long on a plan. Complete the scale: 1 ${S.d} represents how many ${S.rn}?`,
+        answer: nf(s), acceptableAnswers: accept(s, 6, [S.r, S.rn]),
+        // divided the wrong way; multiplied; subtracted
+        options: numOpts(s, [d / R, R * d, R - d, s * 10], 3),
+        explanation: `${d} ${S.d} stands for ${R} ${S.r}, so 1 ${S.d} stands for ${R} ÷ ${d} = ${s} ${S.r}. The scale is 1 ${S.d} : ${s} ${S.r}.` };
+    }
+
+    if (mode === "area-scale") {
+      if (Math.random() < 0.5) {
+        const S = SCALES[pick([0, 1])], s = pick(S.s.slice(0, 5)), a = ri(2, 9), b = ri(2, 9);
+        const ans = a * s * b * s;
+        return { subType: mode,
+          question: `On a plan with scale 1 ${S.d} : ${s} ${S.r}, a rectangular room measures ${a} ${S.d} by ${b} ${S.d}. What is the room's real area in square ${S.rn}?`,
+          answer: nf(ans), acceptableAnswers: accept(ans, 0, [S.r + "²", "sq " + S.r, "square " + S.rn]),
+          // multiplied the drawing area by the scale once; left it unscaled; scaled perimeter
+          options: numOpts(ans, [a * b * s, a * b, 2 * (a + b) * s, a * b * s * s * s]),
+          explanation: `Scale each side: ${a} × ${s} = ${a * s} ${S.r} and ${b} × ${s} = ${b * s} ${S.r}. Area = ${a * s} × ${b * s} = ${nf(ans)} square ${S.rn}.` };
+      }
+      const k = ri(2, 5), a = pick([3, 4, 5, 6]), b = a + pick([1, 2, 3, 4]), ans = a * b * k * k;
+      return { subType: mode,
+        question: `${Art(a)} ${a} in by ${b} in photo is enlarged so that every length is ${k} times as long. What is the area of the enlarged photo in square inches?`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 0, ["in²", "sq in", "square inches"]),
+        // area multiplied by k instead of k²; by k³; unchanged
+        options: numOpts(ans, [a * b * k, a * b * k * k * k, a * b, a * b + k * k]),
+        explanation: `New sides: ${a * k} in and ${b * k} in. Area = ${a * k} × ${b * k} = ${nf(ans)} in². That is ${k}² = ${k * k} times the original ${a * b} in².` };
+    }
+
+    if (mode === "map-time") {
+      let d, s, v, mins, guard = 0;
+      do { d = ri(2, 16) / 2; s = pick([5, 10, 15, 20, 25]); v = pick([30, 40, 45, 50, 60]); mins = d * s * 60 / v; guard++; }
+      while (guard < 200 && (!Number.isInteger(mins) || mins < 20 || mins > 240));
+      const miles = d * s;
+      return { subType: mode,
+        question: `On a road map, 1 inch represents ${s} miles. Two towns are ${nf(d)} inches apart on the map. Driving at an average of ${v} miles per hour, how many minutes will the trip take?`,
+        answer: nf(mins), acceptableAnswers: accept(mins, 0, ["min", "minutes"]),
+        // the miles read as minutes; ignored the scale; hours left as minutes
+        options: numOpts(mins, [miles, d * 60 / v, miles / v, mins * 2, mins / 2], 2),
+        explanation: `Real distance: ${nf(d)} × ${s} = ${nf(miles)} miles. Time = ${nf(miles)} ÷ ${v} = ${nf(miles / v, 4)} h, and × 60 = ${nf(mins)} minutes.` };
+    }
+
+    // choose-scale: the largest drawing that still fits the space
+    let L, P, i, guard = 0;
+    do {
+      L = ri(30, 220); P = pick([8, 9, 10, 11]);
+      i = CHOOSE_S.findIndex(s => L / s <= P);
+      guard++;
+    } while (guard < 200 && (i < 2 || i > CHOOSE_S.length - 2));
+    const lab = s => `1 in : ${s} ft`;
+    const sAns = CHOOSE_S[i];
+    const others = [CHOOSE_S[i - 1], CHOOSE_S[i - 2], CHOOSE_S[i + 1]];
+    return { subType: "choose-scale", forceChoice: true,
+      question: `${Art(L)} ${L} ft long barn must be drawn so its length fits in a space ${P} inches wide. Which scale gives the LARGEST drawing that still fits?`,
+      answer: lab(sAns),
+      // two scales whose drawing is too long to fit, and one that fits but is smaller than it needs to be
+      options: opt4(lab(sAns), others.map(lab)),
+      explanation: `Divide ${L} ft by each scale: ` + [sAns].concat(others).sort((p, q) => p - q).map(s => `1 in : ${s} ft → ${nf(L / s, 2)} in`).join("; ") +
+        `. Only drawings of ${P} in or less fit, and the largest of those uses ${lab(sAns)}.` };
+  });
+
+  // =====================================================================
+  // M-316  Questioning Data  (tier 4; plan item 50)
+  // =====================================================================
+  // Flaw categories for "what is the biggest problem with this claim?". Each
+  // scenario names its flaw and the categories its own details rule OUT (a
+  // random sample of 2,000 is not "too small"; a neutral question is not
+  // "leading"), and only those are offered as distractors — so no wrong
+  // choice is also a fair criticism.
+  const FLAW = {
+    REP:    "The people asked do not represent the whole group",
+    SMALL:  "The sample is too small to support the claim",
+    SOURCE: "The group reporting it profits from the result",
+    LEAD:   "The survey question pushes people toward one answer",
+    CAUSE:  "Two things happening together does not prove one causes the other",
+    COUNT:  "It compares counts without the totals they come from",
+    OK:     "Nothing important, the data supports the claim"
+  };
+  const bigN = () => commas(ri(12, 50) * 100);
+  const FLAW_SCENARIOS = [
+    () => { const c = pick([
+        ["a fitness magazine", "its own subscribers", "How many days a week do you exercise?", "said they exercise at least four days a week", "most adults in the country exercise at least four days a week"],
+        ["a video game website", "the visitors to its home page", "How many hours a week do you play video games?", "said they play more than ten hours a week", "most teenagers play video games more than ten hours a week"],
+        ["a researcher at a soccer stadium", "the fans leaving a match", "What is your favorite sport to watch?", "chose soccer", "soccer is the country's favorite sport"],
+        ["a library", "the people checking out books", "How many books did you read last year?", "read more than twenty books", "most people in town read more than twenty books a year"]]);
+      return { text: `A survey by ${c[0]} asked ${bigN()} of ${c[1]}, chosen at random, the neutral question "${c[2]}" and ${ri(60, 85)}% ${c[3]}. The report claims that ${c[4]}.`,
+        ans: "REP", out: ["SMALL", "LEAD", "CAUSE", "COUNT"] }; },
+    () => { const c = pick([
+        ["900 students", "Which lunch do you prefer, pizza or tacos?", "chose pizza", "most students prefer pizza"],
+        ["1,200 employees", "Would you rather start work at 8 or at 9?", "chose 9", "most employees want a 9 o'clock start"],
+        ["4,000 residents", "Should the town pool open earlier or later?", "chose earlier", "most residents want the pool to open earlier"]]);
+      const n = ri(4, 7), k = n - ri(0, 1);
+      return { text: `${n} people were picked at random from all ${c[0]} and asked the neutral question "${c[1]}" and ${k} of them ${c[2]}. A newsletter announces that ${c[3]}.`,
+        ans: "SMALL", out: ["REP", "LEAD", "CAUSE", "COUNT"] }; },
+    () => { const c = pick([
+        ["an energy-drink company", "drinking its product daily", "improves focus"],
+        ["a toothpaste brand", "using its toothpaste", "whitens teeth faster than other brands"],
+        ["a phone maker", "its newest phone", "has the best battery life on the market"],
+        ["a cereal company", "eating its cereal", "is the healthiest way to start the day"]]);
+      return { text: `A study paid for and run by ${c[0]} tested ${bigN()} randomly chosen adults and announced that ${c[1]} ${c[2]}. No one outside the company checked the results.`,
+        ans: "SOURCE", out: ["SMALL", "REP", "COUNT"] }; },
+    () => { const c = pick([
+        ["Don't you agree that the dangerous, crumbling old bridge must be replaced?", "residents strongly support building a new bridge"],
+        ["Wouldn't you love a shorter, less exhausting school day?", "students want a shorter school day"],
+        ["Should the city protect our beautiful park from ugly new buildings?", "residents oppose any building near the park"],
+        ["Do you support the popular plan to fix our terrible roads?", "voters back the road plan"]]);
+      return { text: `A city council asked ${bigN()} residents, chosen at random from the voter list, "${c[0]}" and ${ri(75, 92)}% said yes. The council claims ${c[1]}.`,
+        ans: "LEAD", out: ["SMALL", "REP", "CAUSE", "COUNT"] }; },
+    () => { const c = pick([
+        ["students who eat breakfast have higher average grades", "eating breakfast raises grades"],
+        ["towns that sell more ice cream have more sunburns", "ice cream causes sunburn"],
+        ["students with more books at home score higher on reading tests", "buying more books will raise reading scores"],
+        ["people who own a dog report being happier", "getting a dog will make a person happier"]]);
+      return { text: `Researchers studied ${bigN()} randomly chosen people and found that ${c[0]}. A headline says ${c[1]}.`,
+        ans: "CAUSE", out: ["SMALL", "REP", "LEAD", "COUNT"] }; },
+    () => { const c = pick([
+        ["car accidents", "City A's roads are more dangerous", "City A has many more people and cars than City B"],
+        ["patients who did not recover", "Hospital A gives worse care", "Hospital A treats many more patients than Hospital B"],
+        ["customer complaints", "App A is worse than App B", "App A has many more users than App B"],
+        ["failing grades", "School A teaches worse than School B", "School A has many more students than School B"]]);
+      const x = ri(120, 400), y = ri(30, Math.floor(x / 2));
+      const A = c[1].match(/^(\w+ A)/)[1], B = A.replace(/A$/, "B");
+      return { text: `Last year ${A} had ${x} ${c[0]} and ${B} had ${y}. A report concludes that ${c[1]}. ${c[2]}.`,
+        ans: "COUNT", out: ["SMALL", "LEAD", "REP"] }; },
+    () => { const c = pick([
+        ["voters chosen at random from the entire voter list", "Which candidate do you plan to vote for?", "chose Candidate Lee", "Candidate Lee is probably ahead among all voters"],
+        ["light bulbs chosen at random from a day's production", "(each bulb was tested)", "were defective", "a few percent of that day's bulbs are probably defective"],
+        ["students chosen at random from the school roster", "Do you take the bus to school?", "said yes", "roughly that share of all students ride the bus"]]);
+      const p = c[2] === "were defective" ? ri(2, 5) : ri(55, 70);
+      return { text: `An independent researcher looked at ${bigN()} ${c[0]}. ${c[1].startsWith("(") ? "Each one was tested" : `Each was asked the neutral question "${c[1]}"`} and ${p}% ${c[2]}. She concludes that ${c[3]}.`,
+        ans: "OK", out: ["SMALL", "REP", "LEAD", "CAUSE"] }; }
+  ];
+  const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+  _addSkill(4, "Questioning Data", "Questioning Data", 4, {
+    goalProblem: "A bar graph's vertical axis starts at 90. Store A's bar shows 92 sales and Store B's shows 96, so B's bar looks three times as tall. Did Store B really sell three times as much?",
+    teachingSteps: [
+      { title: "Read the whole display first", explanation: "Before believing a graph, read its <strong>title, labels, units and axis numbers</strong>. Know what is being counted and over what time.", visual: "title • axis labels • units • where the axis starts" },
+      { title: "Check the scale", explanation: "If a bar graph's axis does not start at zero, bar heights exaggerate differences. Compare the <strong>actual values</strong>, not the picture.", visual: "axis from 90:  bar A = 92 − 90 = 2 tall,  bar B = 96 − 90 = 6 tall\nlooks 3×, really 96 ÷ 92 ≈ 1.04×" },
+      { title: "Check the sample", explanation: "Ask <strong>who</strong> was measured, <strong>how many</strong>, and <strong>how they were chosen</strong>. A random sample from the whole group can stand for the group. Volunteers, a convenient crowd or a handful of people cannot.", visual: "500 picked at random from all voters ✓\n500 readers of one magazine ✗\n5 people ✗" },
+      { title: "Check the source and the question", explanation: "Who collected the data, and do they gain from the result? Was the question <strong>neutral</strong>, or did its wording push people toward an answer?", visual: "\"Don't you agree the crumbling bridge must go?\" — leading" },
+      { title: "Look for missing context", explanation: "Counts need totals: 120 accidents means little without knowing how many people drive. A mean can be dragged by one huge value, so check the median. Two things rising together does not prove one causes the other.", visual: "rate = count ÷ total     mean vs median     linked ≠ caused" },
+      { title: "Decide what the data shows", explanation: "Finish with a judgment: the data <strong>supports</strong> the claim, <strong>does not</strong> support it, or <strong>cannot tell</strong> without more information. Sometimes the honest answer is that the claim is fine.", visual: "supported • not supported • need more information" }
+    ],
+    finalAnswer: "No — 96 ÷ 92 ≈ 1.04, so B sold only about 4% more",
+    answerExplanation: "The bars measure height above 90, not above 0: B's bar is 6 units tall and A's is 2, which looks like three times. The real values are 96 and 92, and 96 ÷ 92 ≈ 1.04.",
+    example: { problem: "Town A had 120 bike thefts and Town B had 60. Town A has 80,000 residents and Town B has 20,000. Which town has the higher theft rate?", steps: [
+      { text: "Town A per 1,000 residents", math: "120 ÷ 80 = 1.5 per 1,000" },
+      { text: "Town B per 1,000 residents", math: "60 ÷ 20 = 3 per 1,000" },
+      { text: "Compare the rates, not the counts", math: "Town B's rate is twice Town A's" }
+    ]},
+    keyPoints: [
+      "Check where the axis starts before comparing bar heights",
+      "A sample must be large enough and chosen so it represents the whole group",
+      "Ask who collected the data and whether the question was neutral",
+      "Compare rates, not raw counts; check the median when one value is extreme",
+      "A link between two things does not prove that one causes the other"
+    ],
+    mistakes: [
+      { wrong: "Bar B is three times as tall, so B is three times as big", why: "Only if the axis starts at zero. Compare the values the bars show." },
+      { wrong: "Town A had more thefts, so it is less safe", why: "Town A also has more people. Divide by the population to compare rates." },
+      { wrong: "Thousands of people answered, so the result must be right", why: "A big sample of the wrong people (all readers of one magazine) is still not representative." }
+    ],
+    guided: { problem: "Five homes on a street sold for $210k, $225k, $230k, $240k and $895k. An ad says the street's average home price is $360k. Is that a fair picture of a typical home?", steps: [
+      { label: "Total of the prices (thousands)", value: "210 + 225 + 230 + 240 + 895 = 1800" },
+      { label: "Mean (thousands)", value: "1800 ÷ 5 = 360" },
+      { label: "Median: the middle price (thousands)", value: "230" }
+    ], answer: "230", answerLabel: "Median price (thousands of dollars) =",
+      interactiveSteps: [
+        { prompt: "Add the five prices, in thousands: 210 + 225 + 230 + 240 + 895.", hint: "Add them two at a time.", answer: "1800", acceptableAnswers: ["1800", "1,800"], formatHint: NUM_HINT },
+        { prompt: "Divide by 5 to check the ad's mean. What is 1,800 ÷ 5?", hint: "1,800 ÷ 5", answer: "360", acceptableAnswers: ["360", "$360k", "360k"], formatHint: NUM_HINT },
+        { prompt: "The ad's number is right, but four of the five homes cost less than $241k. The prices are already in order. What is the median (the middle one), in thousands?", hint: "With five values in order, the median is the third.", answer: "230", acceptableAnswers: ["230", "230k", "$230k"], formatHint: NUM_HINT,
+          commonMistakes: { "360": "That is the mean, pulled up by the $895k home. The median is the middle value.", "895": "That is the one unusual home — the reason the mean is misleading." } }
+      ] }
+  }, function(){
+    const mode = pick(["truncated-axis","flaw","best-sample","rate-context","mean-median","check-claim"]);
+
+    if (mode === "truncated-axis") {
+      const c = pick([["Store A", "Store B", "sales"], ["Phone A", "Phone B", "hours of battery life"],
+                      ["Class A", "Class B", "average test points"], ["Site A", "Site B", "thousand visits"]]);
+      const s = pick([40, 50, 60, 70, 80, 90, 100]), a = ri(2, 6), k = ri(2, 4);
+      const A = s + a, B = s + k * a, ans = B / A;
+      return { subType: mode,
+        question: `A bar graph's vertical axis starts at ${s} instead of 0. ${c[0]}'s bar shows ${A} ${c[2]} and ${c[1]}'s shows ${B}, so ${c[1]}'s bar looks ${k} times as tall. In fact, ${c[1]}'s value is how many times ${c[0]}'s? Round to the nearest hundredth.`,
+        answer: nf(ans, 2), acceptableAnswers: accept(ans, 2),
+        // read the picture (k); the bars' visible heights; the difference; the ratio upside down
+        options: numOpts(ans, [k, B - A, A / B, (B - s) / A], 2),
+        explanation: `The bars start at ${s}, so their heights are ${A - s} and ${B - s} — that is why one looks ${k} times as tall. The real values are ${B} and ${A}: ${B} ÷ ${A} = ${fx(ans, 4)} ≈ ${nf(ans, 2)}.` };
+    }
+
+    if (mode === "flaw") {
+      const S = pick(FLAW_SCENARIOS)();
+      const ans = FLAW[S.ans];
+      const why = {
+        REP: "The sample was large and the question was neutral, but everyone asked came from one group that is likely to answer differently from the whole population.",
+        SMALL: "The people were chosen fairly and asked fairly, but a handful of answers can swing wildly by chance, so they cannot speak for hundreds or thousands of people.",
+        SOURCE: "The study's design sounds fine, but the company paying for it gains from a good result and no one independent checked it. That is a reason to want outside confirmation.",
+        LEAD: "The sample was large and random, but the wording (\"dangerous\", \"beautiful\", \"terrible\", \"don't you agree\") pushes people toward yes.",
+        CAUSE: "The two things are linked, but something else could drive both (hot weather sells ice cream AND causes sunburn). A link alone does not show cause.",
+        COUNT: "The bigger place will have more of almost everything. Divide by the number of people or users to compare rates.",
+        OK: "The sample is large and chosen at random from the whole group, nothing about how it was measured pushes one answer, and the researcher is independent. The conclusion matches what was measured."
+      }[S.ans];
+      return { subType: mode, forceChoice: true,
+        question: `${S.text} What is the biggest problem with this claim?`,
+        answer: ans,
+        // only categories that this scenario's own details rule out
+        options: opt4(ans, sh(S.out).map(k => FLAW[k])),
+        explanation: why };
+    }
+
+    if (mode === "best-sample") {
+      const n = pick([30, 40, 50, 60, 80, 100]);
+      const c = pick([
+        { pop: `${commas(ri(5, 15) * 100)} students`, topic: "a later school start time", ok: `${n} students picked at random from the full school list`,
+          bad: [`the first ${n} students to arrive in the morning`, `${n} members of the student council`, `${n} students who answer an email poll`] },
+        { pop: `${commas(ri(8, 40) * 1000)} town residents`, topic: "a new dog park", ok: `${n} residents picked at random from the town's address list`,
+          bad: [`${n} people walking dogs in the park`, `${n} people who call in to a radio show`, `${n} of the mayor's friends`] },
+        { pop: `${commas(ri(2, 9) * 1000)} customers of a store`, topic: "the store's opening hours", ok: `${n} customers picked at random from the store's full customer list`,
+          bad: [`${n} customers who chose to leave an online review`, `${n} customers shopping on a Saturday morning`, `${n} customers who complained last month`] },
+        { pop: `${commas(ri(3, 12) * 100)} employees of a company`, topic: "the company cafeteria", ok: `${n} employees picked at random from the company's staff list`,
+          bad: [`${n} employees eating in the cafeteria at noon`, `${n} employees who work in the same department`, `${n} employees who volunteer on a sign-up sheet`] }
+      ]);
+      return { subType: mode, forceChoice: true,
+        question: `Someone wants to know what all ${c.pop} think about ${c.topic}. Which sample is most likely to represent the whole group?`,
+        answer: c.ok,
+        // convenience, self-selected and like-minded samples: each over-represents one kind of person
+        options: opt4(c.ok, c.bad),
+        explanation: `Only a random pick from a list of everyone gives every member the same chance to be chosen. The others favor one kind of person: early arrivers, volunteers, people already in one place, or people who know each other.` };
+    }
+
+    if (mode === "rate-context") {
+      const ev = pick(["bike thefts", "traffic accidents", "house fires", "reported burglaries"]);
+      let pA, pB, rA, rB, cA, cB, guard = 0;
+      do {
+        pA = ri(4, 12) * 10000; pB = ri(1, 3) * 10000;
+        rA = ri(5, 25) / 10; rB = ri(10, 50) / 10;
+        cA = rA * pA / 1000; cB = rB * pB / 1000;
+        guard++;
+      } while (guard < 500 && !(rB >= rA + 0.5 && cA > cB && Number.isInteger(rnd(cA, 6)) && Number.isInteger(rnd(cB, 6))));
+      cA = rnd(cA, 0); cB = rnd(cB, 0);
+      const lab = (t, r) => `Town ${t}, with ${fx(r, 2)} per 1,000 residents`;
+      const ans = lab("B", rB);
+      return { subType: mode, forceChoice: true,
+        question: `Town A had ${commas(cA)} ${ev} last year and Town B had ${commas(cB)}. Town A has ${commas(pA)} residents and Town B has ${commas(pB)}. A headline says Town A has the bigger problem. Which town actually has the higher rate?`,
+        answer: ans,
+        // believed the headline; divided by the wrong population; misplaced the decimal
+        options: opt4(ans, [lab("A", rA), lab("A", rnd(cA / (pB / 1000), 1)), lab("B", rnd(rB * 10, 1)), lab("B", rnd(rB / 10, 2))]),
+        explanation: `Divide each count by the population in thousands. Town A: ${cA} ÷ ${pA / 1000} = ${fx(rA, 1)} per 1,000. Town B: ${cB} ÷ ${pB / 1000} = ${fx(rB, 1)} per 1,000. Town A has more ${ev} only because it has more people.` };
+    }
+
+    if (mode === "mean-median") {
+      const c = pick([
+        { what: "yearly salaries at a small company (in thousands of dollars)", claim: "average salary", unit: "thousand dollars", lo: 32, hi: 58, out: [140, 320] },
+        { what: "prices of the homes sold on one street (in thousands of dollars)", claim: "average home price", unit: "thousand dollars", lo: 180, hi: 260, out: [700, 1200] },
+        { what: "hours each member of a club spent online last week", claim: "average time online", unit: "hours", lo: 6, hi: 20, out: [70, 110] }
+      ]);
+      let vals;
+      do { vals = Array.from({ length: 6 }, () => ri(c.lo, c.hi)); } while (new Set(vals).size < 6);
+      let big = ri(c.out[0], c.out[1]);
+      const sum0 = vals.reduce((p, q) => p + q, 0) + big;
+      big += (7 - sum0 % 7) % 7;                       // make the mean a whole number
+      const list = sh(vals.concat(big));
+      const sorted = list.slice().sort((p, q) => p - q);
+      const total = list.reduce((p, q) => p + q, 0), m = total / 7, med = sorted[3];
+      return { subType: mode,
+        question: `The ${c.what} are: ${list.join(", ")}. An ad quotes the mean, ${m}, as the "${c.claim}". What is the median, which better describes a typical value?`,
+        answer: nf(med), acceptableAnswers: accept(med, 0),
+        // the mean the ad used; the middle of the UNSORTED list; the outlier; the midpoint of the range
+        options: numOpts(med, [m, list[3], big, (sorted[0] + sorted[6]) / 2], 1),
+        explanation: `In order: ${sorted.join(", ")}. The median is the 4th of 7 values: ${med}. The mean (${total} ÷ 7 = ${m}) is pulled up by the one extreme value, ${big}, so it is higher than ${list.filter(v => v < m).length} of the 7 values.` };
+    }
+
+    // check-claim: a short series and the claim that it "rose every time"
+    const daily = Math.random() < 0.4;
+    const labels = daily ? DAYS.slice(0, 5) : MONTHS.slice(ri(0, 6)).slice(0, 5);
+    const thing = daily ? pick(["The high temperature (°F)", "Visitors to a museum"]) : pick(["Monthly sales at a bakery", "Members of a gym", "Downloads of an app"]);
+    const vals = [daily ? ri(55, 70) : ri(200, 400)];
+    for (let i = 1; i < 5; i++) vals.push(vals[i - 1] + ri(2, daily ? 6 : 40));
+    const dip = Math.random() < 0.65 ? ri(1, 4) : 0;  // index that falls below the one before
+    if (dip) vals[dip] = vals[dip - 1] - ri(1, daily ? 4 : 25);
+    // keep later values above the dip so there is exactly one fall
+    for (let i = dip + 1; dip && i < 5; i++) if (vals[i] <= vals[i - 1]) vals[i] = vals[i - 1] + ri(1, 5);
+    const series = labels.map((l, i) => `${l} ${vals[i]}`).join(", ");
+    const per = daily ? "day" : "month";
+    const yes = `Yes, every ${per} is higher than the one before`;
+    const no = (i) => `No, it fell from ${labels[i - 1]} to ${labels[i]}`;
+    const ans = dip ? no(dip) : yes;
+    const wrong = [1, 2, 3, 4].filter(i => i !== dip).map(no);
+    return { subType: "check-claim", forceChoice: true,
+      question: `${thing}: ${series}. A report claims it went up every ${per}. Is the claim supported?`,
+      answer: ans,
+      // a fall between a pair that actually rose; or "yes" when there is a fall
+      options: opt4(ans, dip ? [yes].concat(sh(wrong)) : sh(wrong)),
+      explanation: dip
+        ? `Compare each ${per} with the one before it. From ${labels[dip - 1]} (${vals[dip - 1]}) to ${labels[dip]} (${vals[dip]}) it went down, so "up every ${per}" is not true even though the overall trend is up.`
+        : `Each value is larger than the one before (${vals.join(" < ")}), so the claim is supported.` };
+  });
+
+  // =====================================================================
+  // M-319  Estimation and Reasonableness  (tier 4; plan item 60)
+  // =====================================================================
+  // Round to one non-zero digit ("greatest place value"): 487 → 500, 0.51 → 0.5.
+  const lead = x => { const p = Math.pow(10, Math.floor(Math.log10(Math.abs(x)))); return rnd(Math.round(x / p) * p, 6); };
+  const trunc1 = x => { const p = Math.pow(10, Math.floor(Math.log10(Math.abs(x)))); return Math.floor(x / p) * p; };
+  // Sense-of-size bank: the reasonable value and three that are off by a
+  // factor of ten or more, or in the wrong unit.
+  const MAGNITUDE = [
+    ["the height of a classroom door", "2 m", ["20 m", "0.2 m", "2 km"]],
+    ["the mass of an apple", "150 g", ["150 kg", "15 g", "15 kg"]],
+    ["the amount of water in a drinking glass", "250 mL", ["250 L", "25 mL", "25 L"]],
+    ["the length of a new pencil", "18 cm", ["18 m", "18 mm", "180 cm"]],
+    ["the mass of a family car", "1,500 kg", ["150 kg", "15,000 kg", "1,500 g"]],
+    ["the distance an adult walks in one hour", "5 km", ["50 km", "0.5 km", "5 m"]],
+    ["the height of a two-story house", "8 m", ["80 m", "0.8 m", "8 cm"]],
+    ["the speed of a car on a highway", "100 km/h", ["10 km/h", "1,000 km/h", "100 m/h"]],
+    ["the time it takes to brush your teeth", "2 minutes", ["2 hours", "2 seconds", "2 days"]],
+    ["the mass of a paper clip", "1 g", ["1 kg", "100 g", "1 mg"]],
+    ["the length of a school bus", "12 m", ["120 m", "1.2 m", "12 km"]],
+    ["the height of an adult", "5.5 feet", ["55 feet", "0.5 feet", "5.5 inches"]],
+    ["the weight of a gallon of milk", "8.6 pounds", ["86 pounds", "0.86 pounds", "8.6 ounces"]],
+    ["the area of a classroom floor", "80 m²", ["8 m²", "800 m²", "80 cm²"]],
+    ["the capacity of a car's gas tank", "50 L", ["5 L", "500 L", "50 mL"]],
+    ["the thickness of a smartphone", "8 mm", ["8 cm", "80 mm", "0.8 mm"]]
+  ];
+  const JUDGE = {
+    sign:  "The sign is wrong",
+    size:  "The size is off by a factor of ten",
+    units: "The units are wrong",
+    ok:    "The result is reasonable"
+  };
+
+  _addSkill(4, "Estimation and Reasonableness", "Estimation and Reasonableness", 3, {
+    goalProblem: "A student works out 38.6 × 4.9 and writes 1,891.4. Is that reasonable?",
+    teachingSteps: [
+      { title: "Estimate BEFORE you calculate", explanation: "Round each number to one non-zero digit (its greatest place value) or to a friendly nearby number, and work out the easy version first. That gives you a target to check the real answer against.", visual: "38.6 × 4.9  ≈  40 × 5 = 200" },
+      { title: "Size: is it the right ballpark?", explanation: "Compare your answer with the estimate. If it is about 10 times too big or too small, a decimal point has slipped.", visual: "estimate 200, answer 1,891.4 → about 10× too big ✗\nactual: 38.6 × 4.9 = 189.14 ✓" },
+      { title: "Sign: positive or negative?", explanation: "Decide the sign before you calculate. Multiplying or dividing two numbers with the <strong>same</strong> sign gives a positive; <strong>different</strong> signs give a negative.", visual: "(−4.8) × 2.5 must be negative: −12, not 12" },
+      { title: "Units: does the answer measure the right thing?", explanation: "Area is in square units, speed in distance per time, money in dollars. An answer in the wrong unit is wrong even if the digits are right.", visual: "4.2 m × 3.5 m = 14.7 m²  (not m)" },
+      { title: "Numbers below 1 change size the other way", explanation: "Multiplying by a number between 0 and 1 makes the result <strong>smaller</strong>. Dividing by one makes it <strong>bigger</strong>.", visual: "60 × 0.5 = 30     60 ÷ 0.5 = 120" },
+      { title: "Estimate in scientific notation", explanation: "For very large or small numbers, round the front parts, multiply them, and add the powers of ten.", visual: "(3.9 × 10⁵) × (2.1 × 10³) ≈ 4 × 2 × 10⁸ = 8 × 10⁸" }
+    ],
+    finalAnswer: "No — it should be about 200 (the actual value is 189.14)",
+    answerExplanation: "38.6 × 4.9 ≈ 40 × 5 = 200, so 1,891.4 is about ten times too big. A decimal point slipped; the true product is 189.14.",
+    example: { problem: "Estimate 612 × 0.48.", steps: [
+      { text: "Round each number to one non-zero digit", math: "612 ≈ 600,  0.48 ≈ 0.5" },
+      { text: "Multiply the easy numbers", math: "600 × 0.5 = 300" },
+      { text: "Sense check: × a number below 1 shrinks it", math: "300 < 612 ✓" }
+    ]},
+    keyPoints: [
+      "Estimate first so you have something to check against",
+      "Check size (decimal point), sign and units every time",
+      "Multiplying by a number below 1 shrinks; dividing by one grows",
+      "In scientific notation, multiply the front parts and add the exponents"
+    ],
+    mistakes: [
+      { wrong: "Trusting a calculator answer without an estimate", why: "A mis-typed decimal point gives an answer 10 times off. A quick estimate catches it." },
+      { wrong: "60 ÷ 0.5 ≈ 30", why: "Dividing by a half asks how many halves fit into 60: 120. Division by a number below 1 makes the result bigger." },
+      { wrong: "Area = 14.7 m", why: "Multiplying meters by meters gives square meters. The units are part of the answer." }
+    ],
+    guided: { problem: "Estimate 59.2 × 0.31 ÷ 2.9 by rounding each number to one non-zero digit.", steps: [
+      { label: "Round 59.2", value: "60" },
+      { label: "Round 0.31", value: "0.3" },
+      { label: "Round 2.9", value: "3" },
+      { label: "60 × 0.3", value: "18" },
+      { label: "18 ÷ 3", value: "6" }
+    ], answer: "6", answerLabel: "Estimate =",
+      interactiveSteps: [
+        { prompt: "Round 59.2 to one non-zero digit.", hint: "59.2 is between 50 and 60. Which is it closer to?", answer: "60", acceptableAnswers: ["60"], formatHint: NUM_HINT },
+        { prompt: "Round 0.31 to one non-zero digit.", hint: "The first non-zero digit is in the tenths place.", answer: "0.3", acceptableAnswers: ["0.3", ".3"], formatHint: NUM_HINT },
+        { prompt: "Round 2.9 to one non-zero digit.", hint: "2.9 is very close to a whole number.", answer: "3", acceptableAnswers: ["3"], formatHint: NUM_HINT },
+        { prompt: "Now 60 × 0.3. What do you get?", hint: "60 × 3 = 180, and 0.3 is a tenth of 3.", answer: "18", acceptableAnswers: ["18"], formatHint: NUM_HINT,
+          commonMistakes: { "180": "0.3 is less than 1, so the result must be smaller than 60: 18." } },
+        { prompt: "Finally divide by 3. What is the estimate?", hint: "18 ÷ 3", answer: "6", acceptableAnswers: ["6"], formatHint: NUM_HINT }
+      ] }
+  }, function(){
+    const mode = pick(["round-estimate","compatible","which-reasonable","judge-result","magnitude","sci-estimate","money-estimate"]);
+
+    if (mode === "round-estimate") {
+      let a, b, A, B, guard = 0;
+      do { a = ri(112, 980); b = ri(12, 98); A = lead(a); B = lead(b); guard++; }
+      while (guard < 100 && (A === a || B === b));
+      const ans = A * B;
+      return { subType: mode,
+        question: `Estimate ${a} × ${b} by rounding each number to its greatest place value (one non-zero digit) first.`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 0),
+        // chopped off digits instead of rounding; a zero dropped or added
+        options: numOpts(ans, [trunc1(a) * trunc1(b), ans * 10, ans / 10, ans * 100]),
+        explanation: `${a} rounds to ${A} and ${b} rounds to ${B}. ${A} × ${B} = ${nf(ans)}. (The exact product, ${commas(a * b)}, is close to this.)` };
+    }
+
+    if (mode === "compatible") {
+      let A, B, C, a, b, c, guard = 0;
+      do {
+        A = pick([20, 30, 40, 50, 60, 80]); B = pick([2, 3, 4, 5, 6]); C = pick([0.2, 0.4, 0.5]);
+        a = rnd(A * (1 + ri(-8, 8) / 100), 1); b = rnd(B + ri(-15, 15) / 100, 2); c = rnd(C + ri(-3, 3) / 100, 2);
+        guard++;
+      } while (guard < 200 && (lead(a) !== A || lead(b) !== B || lead(c) !== C || a === A || c === C));
+      const ans = A * B / C;
+      return { subType: mode,
+        question: `Estimate ${fx(a)} × ${fx(b)} ÷ ${fx(c)} by rounding each number to one non-zero digit first.`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 0),
+        // multiplied by the small number instead of dividing; ignored it; decimal slips
+        options: numOpts(ans, [A * B * C, A * B, ans * 10, ans / 10]),
+        explanation: `${fx(a)} ≈ ${A}, ${fx(b)} ≈ ${B}, ${fx(c)} ≈ ${C}. ${A} × ${B} = ${A * B}, and dividing by ${C} makes it BIGGER: ${A * B} ÷ ${C} = ${nf(ans)}.` };
+    }
+
+    if (mode === "which-reasonable") {
+      let ai, bi; do { ai = ri(31, 99); bi = ri(121, 989); } while (ai % 10 === 0 || bi % 10 === 0);   // a = ai/10, b = bi/10, both with a real decimal
+      const a = ai / 10, b = bi / 10, exact = ai * bi / 100;
+      return { subType: mode,
+        question: `Without working it out exactly, which of these is the actual value of ${fx(a)} × ${fx(b)}? Estimate first.`,
+        answer: nf(exact, 2),
+        // the decimal point placed one or two places off; the numbers added
+        options: numOpts(exact, [exact * 10, exact / 10, exact * 100, a + b], 4),
+        explanation: `Estimate: ${fx(a)} ≈ ${lead(a)} and ${fx(b)} ≈ ${lead(b)}, so the product is about ${nf(lead(a) * lead(b))}. Only ${nf(exact, 2)} is near that.` };
+    }
+
+    if (mode === "judge-result") {
+      const ctx = pick(["product", "area", "speed"]);
+      const err = ctx === "product" ? pick(["sign", "size", "ok"]) : pick(["sign", "size", "units", "ok"]);
+      let q, shown, right, why;
+      if (ctx === "product") {
+        let ai, bi; do { ai = ri(21, 95); bi = ri(12, 49); } while (ai % 10 === 0 || bi % 10 === 0);   // (−a) × b, one-decimal factors
+        const v = ai * bi / 100, minus = x => String(x).replace(/^-/, "−");
+        right = minus(nf(-v, 4));
+        shown = err === "sign" ? nf(v, 4) : err === "size" ? minus(nf(-v * pick([10, 0.1]), 4)) : right;
+        q = `A student calculates (−${fx(ai / 10)}) × ${fx(bi / 10)} and gets ${shown}.`;
+        why = `A negative times a positive is negative, and the size should be about ${lead(ai / 10)} × ${lead(bi / 10)} = ${nf(lead(ai / 10) * lead(bi / 10))}. The correct value is ${right}.`;
+      } else if (ctx === "area") {
+        const w = ri(21, 89) / 10, l = ri(21, 89) / 10, v = rnd(w * l, 2);
+        right = `${nf(v, 2)} m²`;
+        shown = err === "sign" ? `−${nf(v, 2)} m²` : err === "size" ? `${nf(v * pick([10, 0.1]), 3)} m²` : err === "units" ? `${nf(v, 2)} m` : right;
+        q = `A rectangular room is ${fx(w)} m by ${fx(l)} m. A student gives its area as ${shown}.`;
+        why = `Area is positive, measured in square meters, and about ${lead(w)} × ${lead(l)} = ${nf(lead(w) * lead(l))}. The correct area is ${right}.`;
+      } else {
+        const t = pick([2, 3, 4, 5]), s = ri(35, 95), d = s * t;
+        right = `${s} km/h`;
+        shown = err === "sign" ? `−${s} km/h` : err === "size" ? `${s * 10} km/h` : err === "units" ? `${s} km` : right;
+        q = `A car travels ${d} km in ${t} hours. A student gives its average speed as ${shown}.`;
+        why = `Speed is distance ÷ time, so the unit is km/h; it is positive, and ${d} ÷ ${t} = ${s}. The correct speed is ${right}.`;
+      }
+      const ans = JUDGE[err];
+      return { subType: mode, forceChoice: true,
+        question: `${q} Without working it out exactly, what is wrong with the answer, if anything?`,
+        answer: ans,
+        options: opt4(ans, Object.keys(JUDGE).filter(k => k !== err).map(k => JUDGE[k])),
+        explanation: `${{ ok: "Nothing is wrong.", sign: "The sign is wrong.", size: "The size is wrong: the decimal point is one place off.", units: "The units are wrong." }[err]} ${why}` };
+    }
+
+    if (mode === "magnitude") {
+      const M = pick(MAGNITUDE);
+      return { subType: mode, forceChoice: true,
+        question: `Which is the most reasonable estimate for ${M[0]}?`,
+        answer: M[1],
+        // ten times too big, ten times too small, or the right number in the wrong unit
+        options: opt4(M[1], M[2]),
+        explanation: `${M[1]} is the sensible size for ${M[0]}. The others are far too big or too small — the kind of answer a slipped decimal point or the wrong unit produces.` };
+    }
+
+    if (mode === "sci-estimate") {
+      const div = Math.random() < 0.4;
+      let A, B, a, b, m, n;
+      if (!div) {
+        do { A = ri(2, 4); B = ri(2, 4); } while (A * B > 9);
+        m = ri(2, 9); n = ri(2, 9);
+      } else {
+        B = ri(2, 4); A = B * ri(2, Math.floor(9 / B));
+        m = ri(6, 12); n = ri(2, m - 2);
+      }
+      // never exactly A or B, so there is always some rounding to do
+      const off = () => pick([-4, -3, -2, -1, 1, 2, 3, 4]) / 10;
+      a = rnd(A + off(), 1); b = rnd(B + off(), 1);
+      const sci = (c, e) => `${c} × 10${sup(e)}`;
+      const P = div ? A / B : A * B, E = div ? m - n : m + n;
+      const ans = sci(P, E);
+      const cands = div
+        ? [sci(P, m + n), sci(A - B, E), sci(P, E + 1), sci(P, E - 1), sci(A * B, E)]   // added exponents; subtracted front parts; off by one
+        : [sci(P, m * n), sci(A + B, E), sci(A + B, m * n), sci(P, E + 1), sci(P, E - 1), sci(P, E + 2)];   // multiplied exponents; added front parts; off by one
+      return { subType: mode, forceChoice: true,
+        question: `Estimate (${fx(a)} × 10${sup(m)}) ${div ? "÷" : "×"} (${fx(b)} × 10${sup(n)}) by rounding the front numbers to whole numbers.`,
+        answer: ans,
+        options: opt4(ans, cands.filter(s => s !== ans && !/\b0 ×/.test(s))),
+        explanation: div
+          ? `${fx(a)} ≈ ${A} and ${fx(b)} ≈ ${B}: ${A} ÷ ${B} = ${P}. Dividing powers of ten subtracts the exponents: 10${sup(m)} ÷ 10${sup(n)} = 10${sup(E)}. Estimate: ${ans}.`
+          : `${fx(a)} ≈ ${A} and ${fx(b)} ≈ ${B}: ${A} × ${B} = ${P}. Multiplying powers of ten adds the exponents: 10${sup(m)} × 10${sup(n)} = 10${sup(E)}. Estimate: ${ans}.` };
+    }
+
+    // money-estimate: round each price to the nearest dollar
+    let prices, guard = 0;
+    do {
+      prices = Array.from({ length: ri(4, 5) }, () => ri(1, 24) * 100 + pick([ri(5, 45), ri(55, 99)]));
+      guard++;
+    } while (guard < 100 && !(prices.some(p => p % 100 < 50) && prices.some(p => p % 100 > 50)));
+    const rounded = prices.map(p => Math.round(p / 100)), ans = rounded.reduce((p, q) => p + q, 0);
+    const truncSum = prices.reduce((s, p) => s + Math.floor(p / 100), 0);
+    const ceilSum = prices.reduce((s, p) => s + Math.ceil(p / 100), 0);
+    const exact = prices.reduce((s, p) => s + p, 0) / 100;
+    const show = prices.map(p => "$" + (p / 100).toFixed(2));
+    return { subType: "money-estimate",
+      question: `You are buying items that cost ${show.join(", ")}. Estimate the total by rounding each price to the nearest dollar first.`,
+      answer: "$" + ans, acceptableAnswers: ["$" + ans, String(ans), ans + ".00", "$" + ans + ".00"],
+      // dropped the cents instead of rounding; always rounded up; rounded to ten dollars
+      options: opt4("$" + ans, ["$" + truncSum, "$" + ceilSum, "$" + Math.round(ans / 10) * 10, "$" + (ans + 10)].filter(s => s !== "$" + ans)),
+      explanation: `Rounded prices: ${rounded.map(r => "$" + r).join(" + ")} = $${ans}. (The exact total is $${exact.toFixed(2)}, close to the estimate.)` };
+  });
+
+  // =====================================================================
+  // M-320  Calculator Fluency  (tier 4; plan item 61)
+  // =====================================================================
+  // Everything is read from text: keystrokes are written out as the keys a
+  // student presses, and (−) is the negative key, distinct from − (subtract).
+  // E notation is printed the way a calculator shows it, "4.7E6" / "3.2E-4".
+  // Standard form of m × 10^k from its digits, so 3.2E-4 is exactly "0.00032"
+  // rather than whatever floating point makes of it.
+  const eToStandard = (mant, k) => {
+    const neg = mant.startsWith("-"); const s = neg ? mant.slice(1) : mant;
+    const [ip, fp = ""] = s.split(".");
+    let digits = ip + fp, point = ip.length + k;
+    if (point <= 0) { digits = "0".repeat(1 - point) + digits; point = 1; }
+    if (point > digits.length) digits = digits + "0".repeat(point - digits.length);
+    let intPart = digits.slice(0, point).replace(/^0+(?=\d)/, ""), frac = digits.slice(point).replace(/0+$/, "");
+    return (neg ? "-" : "") + commas(intPart) + (frac ? "." + frac : "");
+  };
+  const MISKEY = {
+    dec:  "A decimal point was left out",
+    plus: "The plus key was pressed instead of times",
+    div:  "The divide key was pressed instead of times",
+    ok:   "Nothing, the display is correct"
+  };
+  // A calculator shows ten digits; this mimics that for the rounded-display questions.
+  const display10 = x => { let s = x.toPrecision(10); if (s.includes(".")) s = s.replace(/0+$/, "").replace(/\.$/, ""); return s; };
+
+  _addSkill(4, "Calculator Fluency", "Calculator Fluency", 3, {
+    goalProblem: "To find the mean of 84, 91 and 76, Sam types 84 + 91 + 76 ÷ 3 = and gets 200.33. What went wrong, and what is the real mean?",
+    teachingSteps: [
+      { title: "Know how your calculator orders operations", explanation: "A <strong>scientific</strong> calculator follows the order of operations: exponents, then × and ÷, then + and −. A basic four-function calculator often works left to right instead. Test yours with 2 + 3 × 4: order of operations gives 14, left to right gives 20.", visual: "2 + 3 × 4 =   scientific: 14    basic: 20" },
+      { title: "Use parentheses to group", explanation: "A fraction bar groups its whole top and whole bottom. On a calculator you must type those groups with parentheses, or only the last number gets divided.", visual: "(84 + 91 + 76) ÷ 3 = 83.67\n84 + 91 + 76 ÷ 3 = 200.33  ✗" },
+      { title: "Negative key vs subtract key", explanation: "<strong>(−)</strong> makes a number negative; <strong>−</strong> subtracts. Squaring happens before the negative sign, so (−) 3 x² means −(3²) = −9. To square negative three, type ( (−) 3 ) x² = 9.", visual: "(−) 3 x² = −9      ( (−) 3 ) x² = 9      7 − (−) 4 = 11" },
+      { title: "An exponent applies to one number", explanation: "The <strong>^</strong> or <strong>x²</strong> key raises only the number right before it. Put parentheses around anything bigger.", visual: "3 × 2 ^ 4 = 48      ( 3 × 2 ) ^ 4 = 1,296" },
+      { title: "Read E notation", explanation: "When a number is too long for the screen the calculator shows <strong>E</strong>, meaning \"× 10 to the power\". A positive power moves the decimal point right; a negative one moves it left.", visual: "4.7E6 = 4.7 × 10⁶ = 4,700,000\n3.2E-4 = 3.2 × 10⁻⁴ = 0.00032" },
+      { title: "Rounded displays and mis-keys", explanation: "The screen rounds: 2 ÷ 3 shows 0.6666666667. Round the display to what the situation needs (cents, whole buses). And always estimate first — if the display is far from your estimate, something was mis-keyed.", visual: "145 people ÷ 40 per bus = 3.625 → 4 buses\n24.5 × 3.8 ≈ 25 × 4 = 100, display 931 → mis-keyed" }
+    ],
+    finalAnswer: "The ÷ 3 only divided the 76; (84 + 91 + 76) ÷ 3 = 83.67",
+    answerExplanation: "The calculator did 76 ÷ 3 first (order of operations), then added 84 and 91. Parentheses make it add first: (84 + 91 + 76) ÷ 3 = 251 ÷ 3 = 83.666…, which shows as 83.67 to the nearest hundredth.",
+    example: { problem: "What does a scientific calculator show for ( (−) 4 ) x² − 3 × 2 ^ 3 = ?", steps: [
+      { text: "Exponents first: the parentheses make −4 the base", math: "(−4)² = 16" },
+      { text: "2 ^ 3 applies only to the 2", math: "2³ = 8" },
+      { text: "Then multiply", math: "3 × 8 = 24" },
+      { text: "Then subtract", math: "16 − 24 = −8" }
+    ]},
+    keyPoints: [
+      "Scientific calculators follow the order of operations; basic ones may not",
+      "Type a fraction's top and bottom inside parentheses",
+      "(−) is the negative key and − is subtract; (−) 3 x² is −9",
+      "aEb means a × 10ᵇ: positive b moves the point right, negative b left",
+      "Round the display to fit the situation, and estimate to catch mis-keys"
+    ],
+    mistakes: [
+      { wrong: "Typing a + b ÷ c for (a + b) ÷ c", why: "Only c gets divided. Wrap the top in parentheses: ( a + b ) ÷ c." },
+      { wrong: "Reading 3.2E-4 as 32,000", why: "The negative power moves the decimal point LEFT: 3.2E-4 = 0.00032." },
+      { wrong: "Expecting (−) 5 x² to give 25", why: "The calculator squares 5 first, then makes it negative: −25. Use ( (−) 5 ) x² to get 25." }
+    ],
+    guided: { problem: "A calculator display shows 3.06E-3. Write the number in standard form.", steps: [
+      { label: "E-3 means × 10 to the power", value: "-3" },
+      { label: "So move the decimal point left", value: "3 places" },
+      { label: "Standard form", value: "0.00306" }
+    ], answer: "0.00306", answerLabel: "3.06E-3 =",
+      interactiveSteps: [
+        { prompt: "In 3.06E-3, the E means \"× 10 to the power\". What is the power? (Type the exponent, sign included.)", hint: "Read the number after the E.", answer: "-3", acceptableAnswers: ["-3", "−3"], formatHint: NUM_HINT },
+        { prompt: "A negative power moves the decimal point LEFT. How many places does it move?", hint: "The size of the exponent tells you how many places.", answer: "3", acceptableAnswers: ["3", "3 places"], formatHint: NUM_HINT },
+        { prompt: "Move the decimal point in 3.06 three places left. What number does the display stand for?", hint: "3.06 → 0.306 → 0.0306 → ?", answer: "0.00306", acceptableAnswers: ["0.00306", ".00306"], formatHint: NUM_HINT,
+          commonMistakes: { "3060": "That moves the point right. A NEGATIVE power moves it left.", "0.0306": "That is only two places. Move it one more." } }
+      ] }
+  }, function(){
+    const mode = pick(["order-of-ops","parentheses","missing-parentheses","negatives","exponents","e-read","e-write","rounded-display","mis-keyed"]);
+    const SCI = "A scientific calculator follows the order of operations.";
+
+    if (mode === "order-of-ops") {
+      const kind = pick(["a+bc","a-b/c","ab-cd","a+b/c"]);
+      let keys, ans, bad, why;
+      if (kind === "a+bc") {
+        const b = ri(2, 9), c = ri(2, 9); let a; do { a = ri(2, 15); } while (a === b || a === c);   // equal numbers make the slips coincide
+        keys = `${a} + ${b} × ${c} =`; ans = a + b * c; bad = [(a + b) * c, a + b + c, a * b + c, a * (b + c), a * b * c];
+        why = `× comes before +: ${b} × ${c} = ${b * c}, then ${a} + ${b * c} = ${ans}. Working left to right would give ${(a + b) * c}.`;
+      } else if (kind === "a-b/c") {
+        const c = ri(2, 6), b = c * ri(2, 9), a = b + ri(5, 40);
+        keys = `${a} − ${b} ÷ ${c} =`; ans = a - b / c; bad = [(a - b) / c, a - b * c, a - b - c, a - b + c, b / c];
+        why = `÷ comes before −: ${b} ÷ ${c} = ${b / c}, then ${a} − ${b / c} = ${ans}. Left to right gives (${a} − ${b}) ÷ ${c} = ${nf((a - b) / c, 4)}.`;
+      } else if (kind === "ab-cd") {
+        const a = ri(3, 12), b = ri(3, 9), c = ri(2, 6), d = ri(2, 6);
+        keys = `${a} × ${b} − ${c} × ${d} =`; ans = a * b - c * d; bad = [(a * b - c) * d, a * (b - c) * d, a * b - c + d, a * b - c];
+        why = `Both multiplications come first: ${a * b} − ${c * d} = ${ans}. Left to right gives (${a * b} − ${c}) × ${d} = ${(a * b - c) * d}.`;
+      } else {
+        const c = ri(2, 5), b = c * ri(3, 12), a = ri(4, 30);
+        keys = `${a} + ${b} ÷ ${c} =`; ans = a + b / c; bad = [(a + b) / c, a + b * c, a + b - c, b / c, (a + b) * c];
+        why = `÷ comes before +: ${b} ÷ ${c} = ${b / c}, then ${a} + ${b / c} = ${ans}. Left to right gives (${a} + ${b}) ÷ ${c} = ${nf((a + b) / c, 4)}.`;
+      }
+      return { subType: mode,
+        question: `${SCI} What does it display after you press: ${keys}`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 6),
+        // the left-to-right result a basic calculator gives; other slips with the same numbers
+        options: numOpts(ans, bad, 2, true),
+        explanation: why };
+    }
+
+    if (mode === "parentheses") {
+      if (Math.random() < 0.5) {
+        const xs = Array.from({ length: 3 }, () => ri(60, 99)), sum = xs.join(" + ");
+        const ok = `( ${sum} ) ÷ 3 =`;
+        return { subType: mode, forceChoice: true,
+          question: `Which key sequence correctly finds the mean of ${xs.join(", ")}?`,
+          answer: ok,
+          // parentheses missing, wrapped around the wrong part, or closed too late
+          options: opt4(ok, [`${sum} ÷ 3 =`, `${xs[0]} + ${xs[1]} + ( ${xs[2]} ÷ 3 ) =`, `( ${sum} ÷ 3 ) =`]),
+          explanation: `The mean is the total divided by 3, so the whole sum must be grouped: ${ok} gives ${nf(xs.reduce((p, q) => p + q, 0) / 3, 2)}. Without the parentheses only ${xs[2]} is divided by 3.` };
+      }
+      const a = ri(10, 60), b = ri(5, 40), c = ri(12, 30), d = ri(2, 9);
+      const ok = `( ${a} + ${b} ) ÷ ( ${c} − ${d} ) =`;
+      return { subType: mode, forceChoice: true,
+        question: `A fraction has ${a} + ${b} on top and ${c} − ${d} on the bottom. Which key sequence computes it correctly?`,
+        answer: ok,
+        // no grouping; only the top grouped; only the bottom grouped
+        options: opt4(ok, [`${a} + ${b} ÷ ${c} − ${d} =`, `( ${a} + ${b} ) ÷ ${c} − ${d} =`, `${a} + ${b} ÷ ( ${c} − ${d} ) =`]),
+        explanation: `A fraction bar groups the whole top and the whole bottom, so both need parentheses: (${a + b}) ÷ (${c - d}) = ${nf((a + b) / (c - d), 4)}${Number.isInteger((a + b) / (c - d)) ? "" : "…"}.` };
+    }
+
+    if (mode === "missing-parentheses") {
+      const xs = Array.from({ length: 3 }, () => ri(60, 99));
+      const shown = xs[0] + xs[1] + xs[2] / 3, mean = (xs[0] + xs[1] + xs[2]) / 3, total = xs[0] + xs[1] + xs[2];
+      return { subType: mode,
+        question: `To find the mean of ${xs.join(", ")}, Sam presses ${xs.join(" + ")} ÷ 3 = on a scientific calculator. What does the calculator show? Round to the nearest hundredth.`,
+        answer: nf(shown, 2), acceptableAnswers: accept(shown, 2),
+        // the mean Sam wanted; the total; the first two averaged with the third
+        options: numOpts(shown, [mean, total, (xs[0] + xs[1]) / 3 + xs[2], total * 3], 2),
+        explanation: `The calculator divides first: ${xs[2]} ÷ 3 = ${nf(xs[2] / 3, 4)}${xs[2] % 3 ? "…" : ""}, then adds ${xs[0]} + ${xs[1]}: ${nf(shown, 2)}. That is far more than any of the three numbers, which is how you spot the mistake. The mean is ${total} ÷ 3 ${total % 3 ? "≈" : "="} ${nf(mean, 2)}.` };
+    }
+
+    if (mode === "negatives") {
+      const kind = pick(["neg-sq","paren-sq","sub-neg","times-neg"]);
+      const a = ri(3, 12); let b; do { b = ri(2, 20); } while (b === a);   // b = a would make b − a and a − b both 0
+      let keys, ans, bad, why;
+      if (kind === "neg-sq") {
+        keys = `(−) ${a} x² =`; ans = -a * a; bad = [a * a, -2 * a, 2 * a];
+        why = `The calculator squares first, then applies the negative: −(${a}²) = −${a * a}. To square −${a} you need ( (−) ${a} ) x².`;
+      } else if (kind === "paren-sq") {
+        keys = `( (−) ${a} ) x² =`; ans = a * a; bad = [-a * a, -2 * a, 2 * a];
+        why = `The parentheses make −${a} the base: (−${a}) × (−${a}) = ${a * a}. Negative times negative is positive.`;
+      } else if (kind === "sub-neg") {
+        keys = `${b} − (−) ${a} =`; ans = b + a; bad = [b - a, -(b + a), a - b];
+        why = `Subtracting a negative is adding: ${b} − (−${a}) = ${b} + ${a} = ${ans}.`;
+      } else {
+        const c = ri(2, 30);
+        keys = `${b} × (−) ${a} + ${c} =`; ans = -a * b + c; bad = [a * b + c, -a * b - c, -a * (b + c)];
+        why = `Multiply first: ${b} × (−${a}) = −${a * b}. Then −${a * b} + ${c} = ${String(ans).replace("-", "−")}.`;
+      }
+      return { subType: mode,
+        question: `On a scientific calculator, (−) is the negative key and − is the subtract key. What does it display after: ${keys}`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 6).concat(String(ans).replace("-", "−")),
+        // the sign rule applied the wrong way, or doubling instead of squaring
+        options: numOpts(ans, bad, 2, true),
+        explanation: why };
+    }
+
+    if (mode === "exponents") {
+      const kind = pick(["a*b^n","(ab)^n","a+b2","b^n+m"]);
+      let keys, ans, bad, why;
+      if (kind === "a*b^n") {
+        const b = ri(2, 4), n = ri(2, 4); let a; do { a = ri(2, 6); } while (a === b);   // a = b makes the slips coincide
+        keys = `${a} × ${b} ^ ${n} =`; ans = a * Math.pow(b, n); bad = [Math.pow(a * b, n), a * b * n, Math.pow(a, n) * b, a + Math.pow(b, n)];
+        why = `The exponent applies only to ${b}: ${b}^${n} = ${Math.pow(b, n)}, then × ${a} = ${ans}. (${a} × ${b})^${n} would be ${Math.pow(a * b, n)}.`;
+      } else if (kind === "(ab)^n") {
+        const b = ri(2, 4), n = ri(2, 3); let a; do { a = ri(2, 5); } while (a === b);
+        keys = `( ${a} × ${b} ) ^ ${n} =`; ans = Math.pow(a * b, n); bad = [a * Math.pow(b, n), a * b * n, Math.pow(a, n) * b, Math.pow(a, n) + Math.pow(b, n)];
+        why = `The parentheses go first: ${a} × ${b} = ${a * b}, then ${a * b}^${n} = ${ans}.`;
+      } else if (kind === "a+b2") {
+        const a = ri(2, 20), b = ri(3, 12);
+        keys = `${a} + ${b} x² =`; ans = a + b * b; bad = [(a + b) * (a + b), a + 2 * b, (a + b) * 2, b * b, a * a + b * b];
+        why = `x² squares only ${b}: ${b}² = ${b * b}, then ${a} + ${b * b} = ${ans}.`;
+      } else {
+        const b = ri(3, 5), n = ri(2, 3), m = ri(1, 3);       // b = 2 makes b·n + m and b^n + m collide
+        keys = `${b} ^ ${n} + ${m} =`; ans = Math.pow(b, n) + m; bad = [Math.pow(b, n + m), b * n + m, Math.pow(b + m, n), Math.pow(b, n) * m];
+        why = `The exponent is only ${n}: ${b}^${n} = ${Math.pow(b, n)}, then + ${m} = ${ans}. To raise ${b} to the power ${n} + ${m} you would type ${b} ^ ( ${n} + ${m} ).`;
+      }
+      return { subType: mode,
+        question: `${SCI} What does it display after you press: ${keys}`,
+        answer: nf(ans), acceptableAnswers: accept(ans, 6),
+        options: numOpts(ans, bad),
+        explanation: why };
+    }
+
+    if (mode === "e-read") {
+      const mant = fx(ri(11, 99) / 10 + (Math.random() < 0.4 ? ri(1, 9) / 100 : 0), 2);
+      const k = Math.random() < 0.55 ? ri(3, 9) : -ri(1, 6);
+      const ans = eToStandard(mant, k);
+      return { subType: mode,
+        question: `A calculator display shows ${mant}E${k}. What is that number in standard form?`,
+        answer: ans, acceptableAnswers: [ans, ans.replace(/,/g, ""), `${mant} × 10^${k}`],
+        // the point moved one place too far or too few, or in the wrong direction
+        options: opt4(ans, [eToStandard(mant, k + 1), eToStandard(mant, k - 1), eToStandard(mant, -k)]),
+        explanation: `${mant}E${k} means ${mant} × 10${sup(k)}. ${k > 0 ? `Move the decimal point ${k} places right` : `Move the decimal point ${-k} place${k === -1 ? "" : "s"} left`}: ${ans}.` };
+    }
+
+    if (mode === "e-write") {
+      const mant = fx(ri(11, 99) / 10, 1);
+      const k = Math.random() < 0.5 ? ri(5, 9) : -ri(3, 7);
+      const std = eToStandard(mant, k), ans = `${mant}E${k}`;
+      return { subType: mode, forceChoice: true,
+        question: `Which calculator display shows the number ${std}?`,
+        answer: ans,
+        // power off by one either way, or the sign of the power flipped
+        options: opt4(ans, [`${mant}E${k + 1}`, `${mant}E${k - 1}`, `${mant}E${-k}`]),
+        explanation: `Move the decimal point to just after the first non-zero digit: ${mant}. It moved ${Math.abs(k)} places ${k > 0 ? "left, so the power is positive" : "right, so the power is negative"}: ${std} = ${mant} × 10${sup(k)}, shown as ${ans}.` };
+    }
+
+    if (mode === "rounded-display") {
+      const kind = pick(["money","buses","boxes"]);
+      if (kind === "money") {
+        let T, n, guard = 0;
+        do { n = pick([3, 6, 7, 9, 11, 12]); T = ri(20, 250); guard++; } while (guard < 100 && (T * 100) % n === 0);
+        const per = T / n, ans = rnd(per, 2);
+        const other = Math.floor(per * 100) / 100 === ans ? Math.ceil(per * 100) / 100 : Math.floor(per * 100) / 100;
+        return { subType: mode,
+          question: `${n} friends split a $${T} bill equally. The calculator shows ${display10(per)}. How much does each person pay, to the nearest cent?`,
+          answer: money(ans), acceptableAnswers: [money(ans), ans.toFixed(2)],
+          // rounded the wrong way at the cents; read only to the dime; dropped the cents
+          options: moneyOpts(ans, [other, Math.floor(per * 10) / 10, Math.floor(per), per * 10]),
+          explanation: `${T} ÷ ${n} = ${display10(per)}. To the nearest cent look at the third decimal place: ${money(ans)}.` };
+      }
+      const cap = pick([12, 15, 24, 30, 40, 45, 50]);
+      let P; do { P = ri(2 * cap + 1, cap * 9); } while (P % cap === 0);
+      const q = P / cap;
+      if (kind === "buses") {
+        const ans = Math.ceil(q);
+        return { subType: mode,
+          question: `${P} students are going on a trip and each bus holds ${cap}. The calculator shows ${display10(q)}. How many buses are needed?`,
+          answer: String(ans), acceptableAnswers: [String(ans), ans + " buses"],
+          // rounded down and left students behind; copied the display to a tenth or hundredth.
+          // (Not ans + 1 as well: the page re-spaces an answer bracketed by ans ± 1,
+          // which would throw away the round-down choice, the one that matters.)
+          options: numOpts(ans, [Math.floor(q), rnd(q, 1), rnd(q, 2), ans + 2], 2),
+          explanation: `${P} ÷ ${cap} = ${display10(q)}. ${Math.floor(q)} buses carry only ${Math.floor(q) * cap} students, so the remaining ${P - Math.floor(q) * cap} need one more bus: ${ans}. Here you round UP whatever the decimal is.` };
+      }
+      const ans = Math.floor(q);
+      return { subType: mode,
+        question: `A factory packs ${cap} cans into each box and has ${P} cans. The calculator shows ${display10(q)}. How many boxes can be completely filled?`,
+        answer: String(ans), acceptableAnswers: [String(ans), ans + " boxes"],
+        // rounded up (but the last box is not full); kept the decimal (not ans − 1, see buses)
+        options: numOpts(ans, [Math.ceil(q), rnd(q, 1), rnd(q, 2), ans + 2], 2),
+        explanation: `${P} ÷ ${cap} = ${display10(q)}. Only ${ans} boxes can be FULL (${ans * cap} cans); the other ${P - ans * cap} cans do not fill a box. Here you round DOWN whatever the decimal is.` };
+    }
+
+    // mis-keyed: which keying mistake explains the display?
+    let ai, bi, a, b, res, guard = 0;
+    do {
+      ai = ri(112, 489); bi = ri(21, 89);           // a = ai/10 (two-digit whole part), b = bi/10
+      a = ai / 10; b = bi / 10;
+      res = { dec: rnd(ai * b, 4), plus: rnd(a + b, 4), div: a / b, ok: rnd(a * b, 4) };
+      guard++;
+    } while (guard < 100 && (ai % 10 === 0 || bi % 10 === 0 || new Set(Object.values(res).map(v => fx(v, 4))).size < 4));
+    const err = pick(["dec", "plus", "div", "ok"]);
+    const disp = display10(res[err]);
+    const ans = MISKEY[err];
+    return { subType: "mis-keyed", forceChoice: true,
+      question: `Ana needs ${fx(a)} × ${fx(b)}. Her calculator shows ${disp}. Estimate the answer to decide what happened.`,
+      answer: ans,
+      options: opt4(ans, Object.keys(MISKEY).filter(k => k !== err).map(k => MISKEY[k])),
+      explanation: `Estimate: ${fx(a)} × ${fx(b)} ≈ ${lead(a)} × ${lead(b)} = ${nf(lead(a) * lead(b))}. The correct product is ${fx(res.ok, 4)}. ` +
+        `With the decimal point left out (${ai} × ${fx(b)}) it would show ${display10(res.dec)}; with + it would show ${display10(res.plus)}; with ÷ it would show ${display10(a / b)}. ` +
+        `So the display ${disp} means: ${ans.toLowerCase()}.` };
+  });
+
+})();
 // ==== END GRADUATION PLAN CONTENT: CORE-MEASURE-DATA ====
 </script>
 
