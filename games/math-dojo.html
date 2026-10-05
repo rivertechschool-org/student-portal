@@ -52278,6 +52278,1318 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: TRADES-MODELING ====
+// Trades branch, domain 10C Technical Modeling (plan items 87C-94C): eight
+// tier-8 skills that turn the tier 6-7 trade formulas, material estimates and
+// waste factors into the arithmetic a job actually runs on - loads and rates,
+// scaling, crew output, bids, efficiency, spreadsheet estimates, reading spec
+// tables, and a capstone that chains them.
+//
+// Every spec table in here is INVENTED for practice and the question text says
+// so. None of it is code data (electrical ampacity, joist spans, pipe sizing,
+// torque); a student who carried these numbers onto a job would be wrong, so
+// the label is part of what the student reads, not just a comment.
+//
+// Tier 8 answers are TYPED (shouldTypeAnswer). Numeric answers are therefore
+// plain number strings, the rounding is stated in the question, and
+// acceptableAnswers carries the $, comma and unit spellings a student might
+// type ("$1,234.50", "1234.5", "40 min"). Questions that are a choice by
+// nature - which joist, which wire, which formula - are forceChoice with
+// same-kind options. q.question is rendered as textContent with whitespace
+// collapsed, so tables are written inline: rows split by ";", columns by "/".
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (same contract as Group E).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  // ---- number formatting --------------------------------------------------
+  // rnd nudges by 1e-7 before rounding so 2.675 * 100 = 267.49999... still
+  // rounds to 2.68 the way a calculator shows it.
+  const rnd = (x, dp) => { const p = Math.pow(10, dp); return Math.round(x * p + (x >= 0 ? 1e-7 : -1e-7)) / p; };
+  // dp === null means "exact": the generator built the numbers so the answer
+  // terminates (scale drawings, k^2 of a terminating k) and shows it without
+  // padding zeros.
+  const fx = (x, dp) => dp === null ? String(rnd(x, 4)) : rnd(x, dp).toFixed(dp);
+  const commas = s => { const parts = String(s).split(".");
+    return parts[0].replace(/\B(?=(\d{3})+$)/g, ",") + (parts.length > 1 ? "." + parts[1] : ""); };
+  const usd = x => "$" + commas(fx(x, 2));          // money for question/explanation text
+  const nf = (x, dp) => commas(fx(x, dp === undefined ? null : dp));   // display number
+  // Counts round with a tolerance: 50 * 1.1 is 55.000000000000007 in floating
+  // point, and ceil() of that orders a 56th box nobody needs.
+  const up = x => Math.ceil(x - 1e-9);
+  const down = x => Math.floor(x + 1e-9);
+  const ftin = inches => Math.floor(inches / 12) + " ft " + (inches % 12) + " in";
+
+  // Every spelling of one numeric answer a student could fairly type.
+  // typedAnswerIsCorrect already folds case and whitespace, and reads a typed
+  // "$1,234.5" as arithmetic, but a trailing unit ("40 min", "12 amps") only
+  // passes when it is listed here.
+  // NOT listed: "$" WITH a thousands comma. AnswerInterpreter.parseMoney stops
+  // at the comma, so an accepted "$1,582.56" would be read as $1.00 and typed
+  // values near it would grade correct. A student who types "$1,582.56" is
+  // still accepted through the arithmetic fallback against the plain number.
+  function acc(ans, money, units) {
+    const out = [];
+    const add = v => { if (!out.includes(v)) out.push(v); };
+    const short = String(parseFloat(ans));
+    [ans, short, commas(ans), commas(short)].forEach(add);
+    if (money) { [ans, short].forEach(v => add("$" + v)); add(ans + " dollars"); }
+    for (const u of (units || [])) [ans, short, commas(ans)].forEach(v => add(v + " " + u));
+    return out;
+  }
+  // Options for a numeric answer, all in the answer's own format. The named
+  // candidates are the real mistakes (each caller says which); the scaled
+  // fall-backs only fill in when mistakes coincide with each other or with the
+  // answer for particular numbers, so the board never runs short.
+  function numOpts(value, dp, cands) {
+    const ans = fx(value, dp), av = parseFloat(ans);
+    const list = [];
+    const extra = [value * 1.1, value * 0.9, value * 1.25, value * 0.8, value + 1, value + 2, value * 1.5, value + 3, value * 2];
+    for (const c of cands.concat(extra)) {
+      if (!isFinite(c) || c <= 0) continue;
+      const s = fx(c, dp);
+      // A mistake that rounds to 0 ("0.0 hours") reads as a throwaway choice.
+      if (parseFloat(s) <= 0 || Math.abs(parseFloat(s) - av) < 1e-9) continue;
+      list.push(s);
+    }
+    return opt4(ans, list);
+  }
+  function numQ(o) {
+    const answer = fx(o.value, o.dp);
+    return { subType: o.subType, question: o.question, answer,
+      acceptableAnswers: acc(answer, o.money, o.units),
+      options: numOpts(o.value, o.dp, o.cands || []),
+      explanation: o.explanation };
+  }
+  // A selection question: the answer is one of a fixed set (a joist size, a
+  // wire gauge, a formula), so it stays multiple choice at tier 8.
+  function choiceQ(o) {
+    return { subType: o.subType, question: o.question, answer: o.answer, forceChoice: true,
+      options: opt4(o.answer, o.cands), explanation: o.explanation };
+  }
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // =====================================================================
+  // M-376  Load and Rate Calculations  (tier 8)
+  // Prereqs: Trade Formulas (T6), Rates and Speed-Distance-Time (T4).
+  // =====================================================================
+  _addSkill(8, "Load and Rate Calculations", "Load and Rate Calculations", 3, {
+    goalProblem: "A 20-amp, 120-volt circuit will run continuous shop lighting. Using the 80% rule, how many 150-watt fixtures can it carry?",
+    teachingSteps: [
+      { title: "A rate is an amount per unit of time", explanation: "Gallons per minute (GPM), boxes per hour and amps are all rates. One relationship runs every rate problem: <strong>amount = rate × time</strong>, so <strong>time = amount ÷ rate</strong>. Keep the units beside the numbers and they tell you whether to multiply or divide.", visual: "1,200 gal ÷ 40 gal/min = 30 min" },
+      { title: "Fill and drain times", explanation: "Get the volume in gallons first. A tank measured in feet gives cubic feet, and one cubic foot holds about <strong>7.48 gallons</strong>. If water flows in and out at the same time, use the <strong>net rate</strong>: rate in − rate out.", visual: "in 40 GPM, out 10 GPM → net 30 GPM" },
+      { title: "Electrical load", explanation: "Power in watts = volts × amps, so <strong>amps = watts ÷ volts</strong>. Loads on one circuit add: total the watts, then divide by the circuit voltage.", visual: "1,500 W + 300 W = 1,800 W\n1,800 W ÷ 120 V = 15 A" },
+      { title: "The 80% rule", explanation: "A load that runs for 3 hours or more is <strong>continuous</strong>, and a continuous load is kept at or below <strong>80% of the breaker rating</strong>. A 20 A breaker carries 16 A continuous, which is 1,920 W at 120 V. When you count devices, round <strong>down</strong>: rounding up is what overloads the circuit.", visual: "0.8 × 20 A = 16 A\n16 A × 120 V = 1,920 W" },
+      { title: "Weight per square foot", explanation: "Floors and decks are rated in <strong>pounds per square foot (psf)</strong>. Divide the total weight by the area it sits on. Water weighs about <strong>8.34 lb per gallon</strong>, which is why a full hot tub is a structural question and not just a plumbing one.", visual: "4,800 lb ÷ (8 ft × 8 ft) = 75 psf" }
+    ],
+    finalAnswer: "12",
+    answerExplanation: "80% of 20 A is 16 A, and 16 A × 120 V = 1,920 W. Then 1,920 ÷ 150 = 12.8, which rounds DOWN to 12 fixtures — a 13th would push the circuit past its continuous limit.",
+    example: { problem: "A 1,200-gallon tank is filled by a 40 GPM pump while a valve drains 10 GPM. How long until it is full?", steps: [
+      { text: "Water goes in and out at once, so use the net rate", math: "40 − 10 = 30 GPM" },
+      { text: "Time = amount ÷ rate", math: "1,200 ÷ 30 = 40" },
+      { text: "Check units: gallons ÷ (gallons per minute) = minutes", math: "40 minutes" }
+    ]},
+    keyPoints: [
+      "time = amount ÷ rate, and the units tell you which way to divide",
+      "1 cubic foot ≈ 7.48 gallons; 1 gallon of water ≈ 8.34 lb",
+      "amps = watts ÷ volts; add the watts of everything on the circuit first",
+      "Continuous loads stay within 80% of the breaker rating, and device counts round down",
+      "psf = total weight ÷ area it rests on"
+    ],
+    mistakes: [
+      { wrong: "Rounding 12.8 fixtures up to 13", why: "13 × 150 W = 1,950 W, over the 1,920 W continuous limit. Device counts always round down." },
+      { wrong: "Adding the fill and drain rates: 40 + 10 = 50 GPM", why: "The drain works against the pump. The tank only gains 40 − 10 = 30 gallons each minute." },
+      { wrong: "Using the full breaker rating for a continuous load (20 A × 120 V = 2,400 W)", why: "Continuous loads are held to 80% of the rating: 16 A, or 1,920 W on a 120 V circuit." }
+    ],
+    guided: { problem: "A 15-amp, 120-volt circuit will run 100-watt work lights continuously. Using the 80% rule, how many lights can it carry?", steps: [
+      { label: "80% of the breaker rating", value: "0.8 × 15 = 12 A" },
+      { label: "Watts available at 120 V", value: "12 × 120 = 1440 W" },
+      { label: "Lights: 1440 ÷ 100, rounded down", value: "?" }
+    ], answer: "14", answerLabel: "Lights:",
+      interactiveSteps: [
+        { prompt: "What is 80% of the 15-amp breaker rating, in amps?", hint: "Multiply 15 by 0.8.", answer: "12",
+          acceptableAnswers: ["12", "12 A", "12 amps"], formatHint: "Enter amps, e.g. 10",
+          commonMistakes: { "15": "15 A is the full rating. A continuous load only gets 80% of it.", "3": "3 A is the 20% you hold back, not what you can use." } },
+        { prompt: "How many watts is 12 amps at 120 volts?", hint: "Watts = volts × amps.", answer: "1440",
+          acceptableAnswers: ["1440", "1,440", "1440 W", "1440 watts"], formatHint: "Enter watts, e.g. 1000",
+          commonMistakes: { "1800": "1,800 W is 15 A × 120 V — the full rating, not the 80% limit.", "10": "Multiply volts by amps; dividing gives a meaningless number." } },
+        { prompt: "How many whole 100-watt lights fit in 1,440 watts?", hint: "1,440 ÷ 100 = 14.4. Can you run 0.4 of a light without going over?", answer: "14",
+          acceptableAnswers: ["14", "14 lights"], formatHint: "Enter a whole number",
+          commonMistakes: { "15": "15 lights is 1,500 W, over the 1,440 W limit. Round device counts down.", "14.4": "You can't install 0.4 of a light — round down to whole lights." } }
+      ] }
+  }, function(){
+    const t = pick(["fill_time","tank_volume_fill","net_fill","bucket_flow","circuit_amps",
+                    "rule80_count","floor_psf","floor_capacity","pump_drain","conveyor"]);
+    if (t === "fill_time") {
+      const gpm = pick([15,20,25,30,40,50,60,75]);
+      const V = ri(6,60) * 50;
+      const min = V / gpm;
+      return numQ({ subType: t, dp: 1, value: min, units: ["min","minutes"],
+        question: `A ${nf(V)}-gallon water tank is filled by a pump that delivers ${gpm} gallons per minute (GPM). How many minutes does it take to fill? Round to the nearest tenth.`,
+        // hours instead of minutes; treating GPM as gallons per hour (×60);
+        // applying the cubic-foot conversion when the volume was already gallons
+        cands: [min / 60, V * 60 / gpm, V / (gpm * 7.48)],
+        explanation: `Time = amount ÷ rate = ${nf(V)} gal ÷ ${gpm} gal/min = ${fx(min,1)} minutes.` });
+    }
+    if (t === "tank_volume_fill") {
+      const L = ri(4,12), W = ri(3,8), D = ri(3,6), gpm = pick([20,25,30,40,50,60]);
+      const cu = L * W * D, gal = cu * 7.48, min = gal / gpm;
+      return numQ({ subType: t, dp: 1, value: min, units: ["min","minutes"],
+        question: `A rectangular cistern measures ${L} ft long, ${W} ft wide and ${D} ft deep. One cubic foot holds 7.48 gallons. A pump fills it at ${gpm} GPM. How many minutes does filling take? Round to the nearest tenth.`,
+        // forgot the 7.48 gal/ft³ conversion; answered in hours; divided by 7.48
+        cands: [cu / gpm, min / 60, cu / 7.48 / gpm],
+        explanation: `Volume = ${L} × ${W} × ${D} = ${cu} cu ft. Gallons = ${cu} × 7.48 = ${nf(gal,2)}. Time = ${nf(gal,2)} ÷ ${gpm} = ${fx(min,1)} minutes.` });
+    }
+    if (t === "net_fill") {
+      const a = ri(4,16) * 5, b = ri(1, a/5 - 1) * 5, V = ri(8,60) * 50;
+      const min = V / (a - b);
+      const drain = pick([true,false]);
+      const question = drain
+        ? `A sump pit holds ${nf(V)} gallons of floodwater. A pump removes ${a} GPM while groundwater seeps back in at ${b} GPM. How many minutes until the pit is empty? Round to the nearest tenth.`
+        : `A ${nf(V)}-gallon stock tank is filled at ${a} GPM, but a cracked fitting leaks ${b} GPM the whole time. How many minutes until it is full? Round to the nearest tenth.`;
+      return numQ({ subType: t, dp: 1, value: min, units: ["min","minutes"], question,
+        // added the rates; ignored the second flow; used only the second flow
+        cands: [V / (a + b), V / a, V / b],
+        explanation: `The flows work against each other, so the net rate is ${a} − ${b} = ${a - b} GPM. Time = ${nf(V)} ÷ ${a - b} = ${fx(min,1)} minutes.` });
+    }
+    if (t === "bucket_flow") {
+      const size = pick([2,5]), s = ri(10,45);
+      const gpm = size * 60 / s;
+      return numQ({ subType: t, dp: 1, value: gpm, units: ["gpm","GPM","gal/min"],
+        question: `To check a well's flow, a plumber times how long a ${size}-gallon bucket takes to fill: ${s} seconds. What is the flow rate in gallons per minute? Round to the nearest tenth.`,
+        // gallons per second; gallons per hour; seconds per gallon
+        cands: [size / s, gpm * 60, s / size],
+        explanation: `${size} gallons in ${s} seconds is ${size} ÷ ${s} gal/s. There are 60 seconds in a minute: ${size} × 60 ÷ ${s} = ${fx(gpm,1)} GPM.` });
+    }
+    if (t === "circuit_amps") {
+      const at240 = pick([false,false,true]);
+      const pool = at240
+        ? [["a water heater",4500],["an electric dryer",5400],["a baseboard heater",2000],["a well pump",1500],["a kiln",4800],["a welder",3600]]
+        : [["a table saw",1800],["a shop vacuum",1100],["a work light",300],["a radio",60],["a battery charger",180],["a space heater",1500],["a drill press",600],["a router",1200]];
+      const k = at240 ? ri(1,2) : ri(2,3);
+      const items = sh(pool).slice(0, k), V = at240 ? 240 : 120;
+      const W = items.reduce((s, it) => s + it[1], 0), amps = W / V;
+      const list = items.map(it => `${it[0]} (${nf(it[1])} W)`).join(", ");
+      return numQ({ subType: t, dp: 1, value: amps, units: ["A","amps","amperes"],
+        question: `A ${V}-volt circuit runs ${list} at the same time. What total current does it draw, in amps? Round to the nearest tenth.`,
+        // divided by the other voltage; watts ÷ 1000 (kW, not amps); 80% of the current
+        cands: [W / (at240 ? 120 : 240), W / 1000, amps * 0.8],
+        explanation: `Total load = ${items.map(it => nf(it[1])).join(" + ")} = ${nf(W)} W. Amps = watts ÷ volts = ${nf(W)} ÷ ${V} = ${fx(amps,1)} A.` });
+    }
+    if (t === "rule80_count") {
+      const B = pick([15,20,20,30]), V = 120, Wd = pick([60,75,100,150,180,200,250,300]);
+      const limit = 0.8 * B * V, count = down(limit / Wd);
+      return numQ({ subType: t, dp: 0, value: count, units: ["fixtures","lights"],
+        question: `A ${B}-amp, ${V}-volt circuit will run ${Wd}-watt light fixtures continuously (over 3 hours). Using the 80% rule, what is the most fixtures it can carry?`,
+        // used the full rating; rounded the count up; counted the 20% held back
+        cands: [down(B * V / Wd), up(limit / Wd + 0.01), down(0.2 * B * V / Wd)],
+        explanation: `Continuous limit = 0.8 × ${B} A = ${fx(0.8*B,1)} A, and ${fx(0.8*B,1)} × ${V} = ${nf(limit)} W. ${nf(limit)} ÷ ${Wd} = ${fx(limit/Wd,2)}, which rounds DOWN to ${count} fixtures.` });
+    }
+    if (t === "floor_psf") {
+      const dry = ri(10,18) * 50, gal = ri(12,20) * 25, ppl = ri(2,6), side = pick([7,7.5,8]);
+      const water = gal * 8.34, total = dry + water + ppl * 180, area = side * side;
+      const psf = total / area;
+      return numQ({ subType: t, dp: 0, value: psf, units: ["psf","lb/sq ft","lb per sq ft"],
+        question: `A hot tub weighs ${nf(dry)} lb empty, holds ${gal} gallons of water (8.34 lb per gallon) and seats ${ppl} people at 180 lb each. Its footprint is ${side} ft × ${side} ft. What load does it put on the deck, in pounds per square foot? Round to the nearest whole number.`,
+        // left out the water; counted gallons as pounds; divided by the perimeter
+        cands: [(dry + ppl * 180) / area, (dry + gal + ppl * 180) / area, total / (4 * side)],
+        explanation: `Water = ${gal} × 8.34 = ${nf(water,2)} lb. Total = ${nf(dry)} + ${nf(water,2)} + ${ppl} × 180 = ${nf(total,2)} lb. Area = ${side} × ${side} = ${area} sq ft. Load = ${nf(total,2)} ÷ ${area} = ${fx(psf,0)} psf.` });
+    }
+    if (t === "floor_capacity") {
+      const L = ri(6,12), W = ri(4,8), rating = pick([40,50,60,75,100]), bag = pick([50,60,80,94]);
+      const lbs = rating * L * W, bags = down(lbs / bag);
+      return numQ({ subType: t, dp: 0, value: bags, units: ["bags"],
+        question: `A storage loft is ${L} ft × ${W} ft and (in this example) rated for ${rating} pounds per square foot. How many ${bag}-lb bags of mix can it hold without exceeding the rating, spread evenly?`,
+        // rounded up past the rating; used one side instead of the area; per-square-foot count only
+        cands: [up(lbs / bag + 0.01), down(rating * L / bag), down(rating / bag * 10)],
+        explanation: `Allowed weight = ${rating} psf × (${L} × ${W} = ${L*W} sq ft) = ${nf(lbs)} lb. ${nf(lbs)} ÷ ${bag} = ${fx(lbs/bag,2)}, which rounds DOWN to ${bags} bags.` });
+    }
+    if (t === "pump_drain") {
+      const L = ri(15,40), W = ri(12,30), d = pick([6,8,9,10,12,18]), gph = pick([1200,1500,1800,2400]);
+      const gal = L * W * (d / 12) * 7.48, hrs = gal / gph;
+      return numQ({ subType: t, dp: 1, value: hrs, units: ["h","hr","hours"],
+        question: `A ${L} ft × ${W} ft basement has ${d} inches of standing water. One cubic foot is 7.48 gallons. A pump rated ${nf(gph)} gallons per hour runs until it is dry. How many hours does that take? Round to the nearest tenth.`,
+        // left the depth in inches; answered in minutes; skipped the gallon conversion
+        cands: [L * W * d * 7.48 / gph, hrs * 60, L * W * (d / 12) / gph],
+        explanation: `Depth = ${d} ÷ 12 = ${fx(d/12,3)} ft. Volume = ${L} × ${W} × ${fx(d/12,3)} = ${nf(L*W*d/12,1)} cu ft = ${nf(gal,1)} gal. Time = ${nf(gal,1)} ÷ ${nf(gph)} = ${fx(hrs,1)} hours.` });
+    }
+    // conveyor
+    const d = pick([2,2.5,3,4,5,6]), k = ri(8,30), S = d * k, perHr = k * 60;
+    return numQ({ subType: "conveyor", dp: 0, value: perHr, units: ["boxes","boxes/hr","boxes per hour"],
+      question: `A conveyor belt moves at ${nf(S)} feet per minute, and boxes are loaded onto it every ${d} feet. How many boxes reach the end of the line each hour?`,
+      // boxes per minute; feet per hour; multiplied by the spacing
+      cands: [k, S * 60, S * d * 60],
+      explanation: `Boxes per minute = ${nf(S)} ft/min ÷ ${d} ft per box = ${k}. Per hour: ${k} × 60 = ${nf(perHr)} boxes.` });
+  });
+
+  // =====================================================================
+  // M-377  Proportional Scaling  (tier 8)
+  // Prereqs: Similar Figures (T4), Technical Drawings (T6).
+  // =====================================================================
+  _addSkill(8, "Proportional Scaling", "Proportional Scaling", 3, {
+    goalProblem: "A shed plan is enlarged so every length is 1.5 times as long. The original floor is 80 sq ft. What is the new floor area?",
+    teachingSteps: [
+      { title: "The scale factor", explanation: "Similar figures have the same shape and every length multiplied by the same <strong>scale factor k</strong> = new length ÷ old length. k greater than 1 enlarges; k less than 1 reduces.", visual: "old wall 8 ft → new wall 12 ft\nk = 12 ÷ 8 = 1.5" },
+      { title: "Lengths scale by k", explanation: "Every length — sides, perimeter, trim, rafters, pipe runs — is multiplied by k.", visual: "perimeter 36 ft × 1.5 = 54 ft" },
+      { title: "Areas scale by k²", explanation: "Area is length × length, and <strong>both</strong> lengths grew by k. So floor area, paint, sheathing and roofing are multiplied by <strong>k²</strong>. Doubling the lengths needs four times the flooring, not twice.", visual: "k = 1.5 → k² = 2.25\n80 sq ft × 2.25 = 180 sq ft" },
+      { title: "Volumes scale by k³", explanation: "Volume uses three lengths, so concrete, water, soil — and the <strong>weight</strong> of a solid part made of the same material — are multiplied by <strong>k³</strong>.", visual: "k = 2 → k³ = 8\n0.75 cu yd × 8 = 6 cu yd" },
+      { title: "Scale drawings and models", explanation: "A drawing scale such as <strong>1/4 in = 1 ft</strong> means each inch on paper is 4 ft of real building. A model scale such as <strong>1:24</strong> means real = model × 24, in the same units — so convert inches to feet afterwards.", visual: "6 1/2 in at 1/4 in = 1 ft → 6.5 × 4 = 26 ft\n1:24 model, 7 in → 168 in = 14 ft" },
+      { title: "Batches and mix ratios", explanation: "A recipe or batch scales <strong>linearly</strong>: every ingredient is multiplied by new batch ÷ old batch. A mix ratio such as 50:1 fuel-to-oil means oil = fuel ÷ 50, in the same unit.", visual: "6 lb grout per 40 sq ft → 150 sq ft needs 6 × 150/40 = 22.5 lb" }
+    ],
+    finalAnswer: "180",
+    answerExplanation: "k = 1.5, so area is multiplied by k² = 2.25. 80 × 2.25 = 180 sq ft. (Multiplying by 1.5 alone gives 120, which is how much the LENGTHS grew, not the area.)",
+    example: { problem: "A 1:20 scale model of a water tank holds 0.5 gallons. How much does the real tank hold?", steps: [
+      { text: "Scale factor from model to real", math: "k = 20" },
+      { text: "Capacity is a volume, so use k³", math: "20³ = 8,000" },
+      { text: "Multiply the model's volume", math: "0.5 × 8,000 = 4,000 gallons" }
+    ]},
+    keyPoints: [
+      "k = new length ÷ old length",
+      "Lengths × k, areas × k², volumes and weights × k³",
+      "Drawing scale 1/4 in = 1 ft means 1 in on paper = 4 ft real",
+      "A model scale 1:N keeps the units: model inches × N = real inches",
+      "Batches scale linearly: multiply every ingredient by new ÷ old"
+    ],
+    mistakes: [
+      { wrong: "Scaling area by k: 80 × 1.5 = 120 sq ft", why: "Area has two dimensions, each multiplied by 1.5. Use k² = 2.25: 180 sq ft." },
+      { wrong: "Scaling volume by k²", why: "Concrete, water and weight have three dimensions. Use k³." },
+      { wrong: "Reading 1:24 model inches as feet", why: "1:24 keeps the units the same. 7 model inches is 168 real inches, which is 14 ft — not 168 ft." }
+    ],
+    guided: { problem: "A concrete footing is redesigned with every dimension 2 times as large. The original needed 0.75 cubic yards. How many cubic yards does the new one need?", steps: [
+      { label: "Scale factor", value: "k = 2" },
+      { label: "Volume factor k³", value: "2 × 2 × 2 = 8" },
+      { label: "New volume: 0.75 × 8", value: "?" }
+    ], answer: "6", answerLabel: "Cubic yards:",
+      interactiveSteps: [
+        { prompt: "Every dimension doubles. What is the scale factor k?", hint: "k = new length ÷ old length.", answer: "2",
+          acceptableAnswers: ["2", "k = 2", "k=2"], formatHint: "Enter a number" },
+        { prompt: "Concrete is a volume. By what factor does the volume grow (k³)?", hint: "Multiply k by itself three times: 2 × 2 × 2.", answer: "8",
+          acceptableAnswers: ["8"], formatHint: "Enter a number",
+          commonMistakes: { "4": "4 is k², the area factor. Concrete fills three dimensions, so use k³.", "2": "2 is how much the lengths grew. Volume grows by k³." } },
+        { prompt: "How many cubic yards for the new footing (0.75 × 8)?", hint: "Multiply the original volume by the volume factor.", answer: "6",
+          acceptableAnswers: ["6", "6 cu yd", "6 cubic yards", "6 yd"], formatHint: "Enter cubic yards, e.g. 4.5",
+          commonMistakes: { "3": "3 is 0.75 × 4 — that used the area factor k².", "1.5": "1.5 is 0.75 × 2 — that scaled the volume like a length." } }
+      ] }
+  }, function(){
+    const t = pick(["drawing_scale","drawing_reverse","model_scale","area_scale","volume_scale",
+                    "factor_from_lengths","batch_scale","mix_parts","mix_ratio","weight_scale"]);
+    const scales = [["1/4 in = 1 ft", 4], ["1/8 in = 1 ft", 8], ["1/2 in = 1 ft", 2]];
+    if (t === "drawing_scale") {
+      const [lbl, fpi] = pick(scales);
+      const e = ri(12, 96);                       // drawing length in eighths of an inch
+      const whole = Math.floor(e / 8), part = e % 8;
+      const shown = whole + (part ? " " + frac(part, 8) : "") + " in";
+      const inches = e / 8, ft = inches * fpi;
+      return numQ({ subType: t, dp: null, value: ft, units: ["ft","feet"],
+        question: `On a floor plan drawn at ${lbl}, a wall measures ${shown}. How long is the real wall, in feet?`,
+        // divided by the scale instead of multiplying; answered in inches (×12); used the wrong scale
+        cands: [inches / fpi, ft * 12, inches * (fpi === 4 ? 8 : 4)],
+        explanation: `At ${lbl}, each inch on paper is ${fpi} ft. ${shown} = ${fx(inches,null)} in, and ${fx(inches,null)} × ${fpi} = ${fx(ft,null)} ft.` });
+    }
+    if (t === "drawing_reverse") {
+      const [lbl, fpi] = pick(scales);
+      const e = ri(12, 96), inches = e / 8, ft = inches * fpi;
+      return numQ({ subType: t, dp: null, value: inches, units: ["in","inches"],
+        question: `A drafter draws a ${fx(ft,null)}-ft beam at a scale of ${lbl}. How long is the line on the drawing, in inches (as a decimal)?`,
+        // multiplied by the scale; converted to inches first (ft × 12 ÷ scale); used the wrong scale
+        cands: [ft * fpi, ft * 12 / fpi, ft / (fpi === 4 ? 8 : 4)],
+        explanation: `Each inch on paper stands for ${fpi} ft, so divide: ${fx(ft,null)} ÷ ${fpi} = ${fx(inches,null)} in.` });
+    }
+    if (t === "model_scale") {
+      const N = pick([12,16,20,24,48]);
+      if (pick([true,false])) {
+        const m = ri(6, 40) / 2, realFt = m * N / 12;
+        return numQ({ subType: t, dp: 1, value: realFt, units: ["ft","feet"],
+          question: `A 1:${N} scale model of a trailer is ${fx(m,null)} inches long. How long is the real trailer, in feet? Round to the nearest tenth.`,
+          // left it in inches; divided by N; treated model inches as feet
+          cands: [m * N, m / N * 12, m * N / 10],
+          explanation: `1:${N} means real = model × ${N} in the same units: ${fx(m,null)} × ${N} = ${fx(m*N,null)} in. Divide by 12: ${fx(realFt,1)} ft.` });
+      }
+      const realFt = ri(8, 60), modelIn = realFt * 12 / N;
+      return numQ({ subType: t, dp: 1, value: modelIn, units: ["in","inches"],
+        question: `A builder makes a 1:${N} scale model of a barn that is ${realFt} ft long. How long is the model, in inches? Round to the nearest tenth.`,
+        // forgot to convert feet to inches; multiplied by N; converted the wrong way (÷ 12)
+        cands: [realFt / N, realFt * N, realFt / 12 / N * 144],
+        explanation: `Convert first: ${realFt} ft = ${realFt * 12} in. Model = real ÷ ${N} = ${realFt * 12} ÷ ${N} = ${fx(modelIn,1)} in.` });
+    }
+    if (t === "area_scale") {
+      const k = pick([1.5,2,2.5,3,0.5,0.75,1.25]);
+      const ctx = pick([["patio slab","sq ft of pavers"],["deck","sq ft of decking"],["sign","sq ft of sign board"],["roof plan","sq ft of roofing"],["garage floor","sq ft of epoxy coating"]]);
+      const A = ri(8, 60) * 4, newA = A * k * k;
+      const how = k > 1 ? `enlarged so every length is ${k} times as long` : `reduced so every length is ${k * 100}% of the original`;
+      return numQ({ subType: t, dp: null, value: newA, units: ["sq ft","square feet","ft²"],
+        question: `A ${ctx[0]} design covering ${A} sq ft is ${how}. How many ${ctx[1]} does the new design need?`,
+        // scaled area by k; scaled by k³; doubled k instead of squaring it
+        cands: [A * k, A * k * k * k, A * 2 * k],
+        explanation: `Lengths scale by k = ${k}, so area scales by k² = ${fx(k*k,null)}. ${A} × ${fx(k*k,null)} = ${fx(newA,null)} sq ft.` });
+    }
+    if (t === "volume_scale") {
+      const k = pick([1.5,2,3,0.5,2.5]);
+      const ctx = pick([["water tank","gallons",ri(20,200)*5,["gal","gallons"]],
+                        ["concrete footing","cubic yards",ri(2,16)/4,["cu yd","cubic yards","yd³"]],
+                        ["planter box","cubic feet of soil",ri(4,30),["cu ft","cubic feet","ft³"]]]);
+      const V = ctx[2], newV = V * k * k * k;
+      return numQ({ subType: t, dp: 2, value: newV, units: ctx[3],
+        question: `A ${ctx[0]} holding ${fx(V,null)} ${ctx[1]} is rebuilt with every dimension multiplied by ${k}. How many ${ctx[1]} does the new one hold? Round to the nearest hundredth.`,
+        // scaled by k; scaled by k²; multiplied by 3k
+        cands: [V * k, V * k * k, V * 3 * k],
+        explanation: `Volume scales by k³ = ${k}³ = ${fx(k*k*k,null)}. ${fx(V,null)} × ${fx(k*k*k,null)} = ${fx(newV,2)} ${ctx[1]}.` });
+    }
+    if (t === "factor_from_lengths") {
+      const a = pick([4,6,8,10,12]), k = pick([1.5,2,2.5,3,1.25]), b = a * k;
+      const area = pick([true,false]);
+      const f = area ? k * k : k * k * k;
+      return numQ({ subType: t, dp: null, value: f, units: ["times"],
+        question: area
+          ? `A square shed is redesigned from ${a} ft sides to ${fx(b,null)} ft sides. How many times as much floor sheathing will it need?`
+          : `A cube-shaped cistern is redesigned from ${a} ft sides to ${fx(b,null)} ft sides. How many times as much water will it hold?`,
+        // the length ratio; the other power (k³ for area, k² for volume); the difference in feet
+        cands: [k, area ? k * k * k : k * k, Math.abs(b - a)],
+        explanation: `k = ${fx(b,null)} ÷ ${a} = ${k}. ${area ? "Sheathing is an area, so use k²" : "Water fills a volume, so use k³"}: ${area ? `${k}² = ${fx(f,null)}` : `${k}³ = ${fx(f,null)}`}.` });
+    }
+    if (t === "batch_scale") {
+      const A0 = pick([25,40,50]), P0 = pick([5,6,8,10]), A1 = ri(6,40) * 10;
+      const P1 = P0 * A1 / A0;
+      return numQ({ subType: t, dp: 1, value: P1, units: ["lb","lbs","pounds"],
+        question: `The mixing chart says ${P0} lb of grout powder covers ${A0} sq ft of tile. How many pounds are needed for ${A1} sq ft? Round to the nearest tenth.`,
+        // inverted the ratio; added the extra area as pounds; multiplied without dividing
+        cands: [P0 * A0 / A1, P0 + (A1 - A0), P0 * A1 / 10],
+        explanation: `Scale factor = ${A1} ÷ ${A0} = ${fx(A1/A0,3)}. Powder = ${P0} × ${A1} ÷ ${A0} = ${fx(P1,1)} lb.` });
+    }
+    if (t === "mix_parts") {
+      const c = 1, s = pick([2,3]), gr = pick([3,4,5]), V = ri(4,30) * (c + s + gr) / 2;
+      const parts = c + s + gr, which = pick([["sand", s],["gravel", gr],["cement", c]]);
+      const amt = V * which[1] / parts;
+      return numQ({ subType: t, dp: 2, value: amt, units: ["cu ft","cubic feet"],
+        question: `A concrete mix is 1 part cement : ${s} parts sand : ${gr} parts gravel by volume. A batch must total ${fx(V,null)} cubic feet. How many cubic feet of ${which[0]} go in? Round to the nearest hundredth.`,
+        // divided by its own parts; used the part number as the amount; divided by one fewer part
+        cands: [V / which[1], which[1], V * which[1] / (parts - 1)],
+        explanation: `Total parts = 1 + ${s} + ${gr} = ${parts}. One part = ${fx(V,null)} ÷ ${parts} = ${fx(V/parts,3)} cu ft. ${which[0]} = ${which[1]} × ${fx(V/parts,3)} = ${fx(amt,2)} cu ft.` });
+    }
+    if (t === "mix_ratio") {
+      const R = pick([50,40,32,25]), G = pick([1,1.5,2,2.5,3,5]);
+      const oz = G * 128 / R;
+      return numQ({ subType: t, dp: 1, value: oz, units: ["oz","ounces","fl oz"],
+        question: `A two-stroke saw needs fuel mixed ${R}:1 (gasoline to oil). How many fluid ounces of oil go into ${fx(G,null)} gallons of gas? (1 gallon = 128 fl oz.) Round to the nearest tenth.`,
+        // ratio upside down; forgot the 128 oz conversion; multiplied by the ratio
+        cands: [G * R / 128, G / R, G * 128 / (R / 2)],
+        explanation: `${fx(G,null)} gal × 128 = ${fx(G*128,null)} fl oz of gas. ${R}:1 means oil = gas ÷ ${R}: ${fx(G*128,null)} ÷ ${R} = ${fx(oz,1)} fl oz.` });
+    }
+    // weight_scale
+    const k = pick([1.5,2,3,0.5]), W = ri(4, 40) / 2, newW = W * k * k * k;
+    return numQ({ subType: "weight_scale", dp: 2, value: newW, units: ["lb","lbs","pounds"],
+      question: `A solid steel bracket weighs ${fx(W,null)} lb. A heavy-duty version is the same shape with every dimension ${k} times as large. How much does it weigh? Round to the nearest hundredth.`,
+      // weight scaled like a length; like an area; added k to the weight
+      cands: [W * k, W * k * k, W + k],
+      explanation: `Weight follows volume for the same material, so multiply by k³ = ${fx(k*k*k,null)}: ${fx(W,null)} × ${fx(k*k*k,null)} = ${fx(newW,2)} lb.` });
+  });
+
+  // =====================================================================
+  // M-378  Production Rates  (tier 8)
+  // Prereqs: Rates and Speed-Distance-Time (T4), Dimensional Analysis (T4).
+  // =====================================================================
+  _addSkill(8, "Production Rates", "Production Rates", 3, {
+    goalProblem: "One roofer can sheath a garage roof in 6 hours; a second roofer takes 3 hours. Working together, how many hours will it take?",
+    teachingSteps: [
+      { title: "Production rate = output ÷ time", explanation: "A crew that hangs 1,200 sq ft of drywall in 8 hours produces <strong>150 sq ft per hour</strong>. Convert minutes to hours first: 2 h 30 min is <strong>2.5</strong> h, not 2.3 h.", visual: "1,200 sq ft ÷ 8 h = 150 sq ft/h" },
+      { title: "Time to finish = work ÷ rate", explanation: "Divide the work left by the rate. Write the units and cancel them, the way dimensional analysis taught you: sq ft ÷ (sq ft per hour) leaves hours. If several workers each produce r per hour, the crew produces <strong>r × workers</strong>.", visual: "2,400 sq ft ÷ (3 × 50 sq ft/h) = 16 h" },
+      { title: "Combined work: add RATES, not times", explanation: "If A finishes a job in 6 hours, A does <strong>1/6 of the job per hour</strong>. B, at 3 hours, does 1/3 per hour. Together they do 1/6 + 1/3 = 1/2 of the job per hour.", visual: "1/6 + 1/3 = 1/6 + 2/6 = 3/6 = 1/2 job per hour" },
+      { title: "Time together = 1 ÷ combined rate", explanation: "Half a job per hour means the whole job takes 2 hours. A shortcut for two workers: <strong>time = (a × b) ÷ (a + b)</strong>. The answer is always <strong>less</strong> than the faster worker's time alone.", visual: "(6 × 3) ÷ (6 + 3) = 18 ÷ 9 = 2 h" },
+      { title: "Labour-hours and crew size", explanation: "Estimators size jobs in <strong>labour-hours</strong> (one worker for one hour). Crew size = labour-hours ÷ hours available, and it rounds <strong>up</strong>: 7.5 workers means you need 8 to make the deadline.", visual: "300 labour-h ÷ (5 days × 8 h) = 7.5 → 8 workers" }
+    ],
+    finalAnswer: "2",
+    answerExplanation: "Rates: 1/6 + 1/3 = 1/2 of the roof per hour, so the whole roof takes 2 hours. Adding the times (9 h) or averaging them (4.5 h) would mean two roofers are slower than one.",
+    example: { problem: "A job needs 300 labour-hours and must be done in 5 working days of 8 hours. How many workers are needed?", steps: [
+      { text: "Hours one worker can give before the deadline", math: "5 × 8 = 40 h" },
+      { text: "Workers = labour-hours ÷ hours each", math: "300 ÷ 40 = 7.5" },
+      { text: "Round UP — 7 workers would miss the deadline", math: "8 workers" }
+    ]},
+    keyPoints: [
+      "rate = output ÷ time; convert minutes to decimal hours (30 min = 0.5 h)",
+      "time = work ÷ rate; a crew's rate is one worker's rate × workers",
+      "Combined work: add the rates (1/a + 1/b), then take 1 ÷ the total",
+      "Two workers together: (a × b) ÷ (a + b), always faster than either alone",
+      "Crew size and days needed round up"
+    ],
+    mistakes: [
+      { wrong: "Adding the times: 6 + 3 = 9 hours together", why: "Two people can't take longer than one. Add the rates: 1/6 + 1/3 = 1/2 job per hour → 2 hours." },
+      { wrong: "Averaging the times: (6 + 3) ÷ 2 = 4.5 hours", why: "Still slower than the 3-hour roofer working alone. Rates add; times don't." },
+      { wrong: "Rounding 7.5 workers down to 7", why: "7 workers give only 280 labour-hours in the week. Round crew size up." },
+      { wrong: "Writing 2 h 30 min as 2.3 h", why: "30 minutes is half an hour: 2.5 h. Divide minutes by 60." }
+    ],
+    guided: { problem: "Pump A can empty a flooded pit in 4 hours; pump B takes 12 hours. Running both, how long does it take?", steps: [
+      { label: "Pump A's rate (job per hour)", value: "1/4" },
+      { label: "Pump B's rate", value: "1/12" },
+      { label: "Combined rate", value: "1/4 + 1/12 = 4/12 = 1/3" },
+      { label: "Hours together", value: "?" }
+    ], answer: "3", answerLabel: "Hours:",
+      interactiveSteps: [
+        { prompt: "What fraction of the pit does pump A empty in one hour?", hint: "A takes 4 hours for the whole job.", answer: "1/4",
+          acceptableAnswers: ["1/4", "0.25"], formatHint: "e.g. 1/5" },
+        { prompt: "What fraction does pump B empty in one hour?", hint: "B takes 12 hours for the whole job.", answer: "1/12",
+          acceptableAnswers: ["1/12", "0.0833", "0.083"], formatHint: "e.g. 1/5" },
+        { prompt: "Add the rates: 1/4 + 1/12. What fraction of the pit do they empty together each hour?", hint: "1/4 = 3/12.", answer: "1/3",
+          acceptableAnswers: ["1/3", "4/12", "0.333", "0.33"], formatHint: "e.g. 1/5",
+          commonMistakes: { "2/16": "Add fractions over a common denominator: 3/12 + 1/12 = 4/12.", "1/8": "Don't add the denominators. 1/4 = 3/12, so the sum is 4/12." } },
+        { prompt: "At 1/3 of the pit per hour, how many hours to empty it?", hint: "Time = 1 ÷ combined rate.", answer: "3",
+          acceptableAnswers: ["3", "3 h", "3 hours", "3 hr"], formatHint: "Enter hours",
+          commonMistakes: { "16": "16 h is 4 + 12 — adding times. Together they must be faster than pump A alone.", "8": "8 h is the average of the times. Rates add, times don't." } }
+      ] }
+  }, function(){
+    const t = pick(["unit_rate","time_to_finish","combined_two","find_partner","crew_size",
+                    "remaining_work","cycle_parts","days_needed"]);
+    if (t === "unit_rate") {
+      const ctx = pick([["A tile setter laid","sq ft of tile","sq ft per hour",["sq ft/h","sq ft per hour"]],
+                        ["A CNC router cut","cabinet parts","parts per hour",["parts/h","parts per hour","parts"]],
+                        ["An electrician pulled","feet of cable","feet per hour",["ft/h","feet per hour","ft"]],
+                        ["A framing crew nailed off","sheets of sheathing","sheets per hour",["sheets/h","sheets per hour","sheets"]]]);
+      const h = ri(1,6), m = pick([10,15,20,30,40,45,50]), N = ri(40,400);
+      const hrs = h + m / 60, rate = N / hrs;
+      return numQ({ subType: t, dp: 1, value: rate, units: ctx[3],
+        question: `${ctx[0]} ${N} ${ctx[1]} in ${h} h ${m} min. What is the production rate in ${ctx[2]}? Round to the nearest tenth.`,
+        // wrote h:mm as a decimal (2 h 30 min → 2.30); ignored the minutes; hours per unit
+        cands: [N / (h + m / 100), N / h, hrs / N * 100],
+        explanation: `${m} min = ${m} ÷ 60 = ${fx(m/60,3)} h, so the time is ${fx(hrs,3)} h. Rate = ${N} ÷ ${fx(hrs,3)} = ${fx(rate,1)} ${ctx[2]}.` });
+    }
+    if (t === "time_to_finish") {
+      const Q = ri(16,100) * 50, r = pick([30,35,40,45,50,60,75,80]), w = ri(2,5);
+      const hrs = Q / (r * w);
+      return numQ({ subType: t, dp: 1, value: hrs, units: ["h","hr","hours"],
+        question: `A crew of ${w} drywall hangers each hang ${r} sq ft per hour. The job is ${nf(Q)} sq ft. How many hours will the crew take? Round to the nearest tenth.`,
+        // forgot the crew (one worker); added rate and crew; multiplied by the crew
+        cands: [Q / r, Q / (r + w), Q * w / r],
+        explanation: `Crew rate = ${w} × ${r} = ${r*w} sq ft/h. Time = ${nf(Q)} sq ft ÷ ${r*w} sq ft/h = ${fx(hrs,1)} h.` });
+    }
+    if (t === "combined_two") {
+      const a = ri(2,12), b = ri(a + 1, 24), T = a * b / (a + b);
+      const ctx = pick([["Pump A can drain a pond","pump B","Running both pumps"],
+                        ["One painter can paint a house exterior","a second painter","Working together"],
+                        ["An older excavator can dig a foundation","a newer machine","Using both machines"],
+                        ["One installer can wire a small office","another installer","Working together"]]);
+      return numQ({ subType: t, dp: 1, value: T, units: ["h","hr","hours"],
+        question: `${ctx[0]} in ${a} hours; ${ctx[1]} takes ${b} hours. ${ctx[2]}, how many hours does the job take? Round to the nearest tenth.`,
+        // added the times; averaged them; subtracted them
+        cands: [a + b, (a + b) / 2, b - a],
+        explanation: `Rates: 1/${a} + 1/${b} of the job per hour. Time = (${a} × ${b}) ÷ (${a} + ${b}) = ${a*b} ÷ ${a+b} = ${fx(T,1)} h — faster than either alone, as it must be.` });
+    }
+    if (t === "find_partner") {
+      const [a, b, T] = pick([[3,6,2],[4,12,3],[6,12,4],[5,20,4],[10,15,6],[12,24,8],[20,30,12],[8,24,6],[9,18,6],[10,40,8],[12,36,9],[6,30,5],[14,35,10]]);
+      return numQ({ subType: t, dp: 0, value: b, units: ["h","hr","hours"],
+        question: `Working together, two framers can frame a wall section in ${T} hours. The first framer alone takes ${a} hours. How many hours would the second framer take alone?`,
+        // subtracted the times; added them; doubled the joint time
+        cands: [a - T, a + T, 2 * T],
+        explanation: `Second framer's rate = 1/${T} − 1/${a} = (${a} − ${T})/(${a} × ${T}) = ${a - T}/${a*T} = 1/${b} of the job per hour, so alone it takes ${b} hours.` });
+    }
+    if (t === "crew_size") {
+      const D = ri(3,10), hpd = pick([8,8,10]);
+      let H; do { H = ri(12, 96) * 10; } while ((H / (hpd * D)) % 1 === 0 || H / (hpd * D) < 1.2);
+      const crew = up(H / (hpd * D));
+      return numQ({ subType: t, dp: 0, value: crew, units: ["workers","people"],
+        question: `An estimate says a remodel needs ${H} labour-hours. It must finish in ${D} working days of ${hpd} hours. What is the smallest crew that can make the deadline?`,
+        // rounded down; one more than needed; assumed the other day length
+        cands: [down(H / (hpd * D)), crew + 1, up(H / ((hpd === 8 ? 10 : 8) * D))],
+        explanation: `Each worker gives ${D} × ${hpd} = ${D*hpd} hours. ${H} ÷ ${D*hpd} = ${fx(H/(hpd*D),2)} workers, which rounds UP to ${crew}.` });
+    }
+    if (t === "remaining_work") {
+      const Y = ri(60,200), X = ri(Math.ceil(Y / 5), Math.floor(Y / 2)), hrs = ri(2,8);
+      const rem = (Y - X) * hrs / X;
+      return numQ({ subType: t, dp: 1, value: rem, units: ["h","hr","hours"],
+        question: `A crew has installed ${X} of the ${Y} light fixtures in a warehouse in ${hrs} hours. At the same rate, how many more hours will the rest take? Round to the nearest tenth.`,
+        // time for all the fixtures; remaining ÷ hours; fraction remaining × hours so far
+        cands: [Y * hrs / X, (Y - X) / hrs, (Y - X) / Y * hrs],
+        explanation: `Rate = ${X} ÷ ${hrs} = ${fx(X/hrs,3)} fixtures per hour. Remaining = ${Y} − ${X} = ${Y - X}. Time = ${Y - X} ÷ ${fx(X/hrs,3)} = ${fx(rem,1)} h.` });
+    }
+    if (t === "cycle_parts") {
+      const c = pick([12,15,18,20,24,30,36,40,45,48]), brk = pick([15,30,45,60]);
+      const run = 8 - brk / 60, parts = down(run * 3600 / c);
+      return numQ({ subType: t, dp: 0, value: parts, units: ["parts"],
+        question: `A press makes one part every ${c} seconds. In an 8-hour shift it is down for ${brk} minutes of breaks and changeovers. How many complete parts does it make in the shift?`,
+        // ignored the downtime; used minutes as if seconds; parts per hour only
+        cands: [down(8 * 3600 / c), down(run * 60 / c), down(3600 / c)],
+        explanation: `Run time = 8 h − ${brk} min = ${fx(run,2)} h = ${nf(run*3600,0)} seconds. Parts = ${nf(run*3600,0)} ÷ ${c} = ${fx(run*3600/c,2)} → ${parts} complete parts.` });
+    }
+    // days_needed
+    const A = ri(12, 90) * 100 + pick([0, 50]), r = pick([8,10,12,15,18,20]);
+    const sq = A / 100, days = up(sq / r);
+    return numQ({ subType: "days_needed", dp: 0, value: days, units: ["days"],
+      question: `A roofing crew installs ${r} squares of shingles per day (1 square = 100 sq ft). The roof is ${nf(A)} sq ft. How many working days must be scheduled (whole days)?`,
+      // rounded down; forgot to convert to squares (sq ft ÷ rate); one day extra
+      cands: [down(sq / r) || 1, up(A / r), days + 1],
+      explanation: `${nf(A)} sq ft ÷ 100 = ${fx(sq,null)} squares. ${fx(sq,null)} ÷ ${r} = ${fx(sq/r,2)} days, which rounds UP to ${days} days on the schedule.` });
+  });
+
+  // =====================================================================
+  // M-379  Cost Estimation  (tier 8)
+  // Prereqs: Material Estimation (T7), Waste Factors (T7).
+  // Where sales tax applies varies by place, so every question states it.
+  // =====================================================================
+  _addSkill(8, "Cost Estimation", "Cost Estimation", 3, {
+    goalProblem: "A job needs $1,840 of materials and 32 labour-hours at $45 per hour. The contractor adds a 15% markup, then 8% sales tax on the whole price. What is the total bid?",
+    teachingSteps: [
+      { title: "Material cost", explanation: "Quantity × unit price. Take the quantity from your material estimate <strong>with the waste factor added</strong>, and round up to whole units you can actually buy (boxes, sheets, bags) before multiplying.", visual: "520 sq ft × 1.10 = 572 sq ft\n572 ÷ 20 sq ft per box = 28.6 → 29 boxes" },
+      { title: "Labour cost", explanation: "Labour-hours × hourly rate. If you only know a production rate, get the hours first: work ÷ rate. A crew of two for 10 hours is 20 labour-hours.", visual: "32 h × $45/h = $1,440" },
+      { title: "Direct cost", explanation: "Add materials, labour and any equipment or fees. This is what the job costs the contractor.", visual: "$1,840 + $1,440 = $3,280" },
+      { title: "Markup", explanation: "Markup is a percent <strong>of cost</strong> added to cover overhead and profit: price = cost × (1 + markup). Markup is different from margin, which is profit as a percent of the <strong>price</strong>.", visual: "$3,280 × 1.15 = $3,772" },
+      { title: "Tax, on exactly what the job says", explanation: "Apply sales tax to the amount the question names — sometimes the whole price, sometimes materials only. Never add the two percents together (15% + 8% ≠ 23% of cost), because tax is charged on the marked-up price.", visual: "$3,772 × 1.08 = $4,073.76" },
+      { title: "Unit cost and comparing bids", explanation: "Divide a total by its quantity to compare on the same basis — cost per square foot, per linear foot, per fixture. Compare bids only after each includes everything.", visual: "$9,450 ÷ 630 sq ft = $15.00 per sq ft" }
+    ],
+    finalAnswer: "4073.76",
+    answerExplanation: "Labour 32 × $45 = $1,440. Cost $1,840 + $1,440 = $3,280. Markup: $3,280 × 1.15 = $3,772. Tax: $3,772 × 1.08 = $4,073.76.",
+    example: { problem: "Materials $600, labour 10 h at $40/h, 20% markup, then 5% tax on the whole price. Total?", steps: [
+      { text: "Labour", math: "10 × $40 = $400" },
+      { text: "Direct cost", math: "$600 + $400 = $1,000" },
+      { text: "Markup", math: "$1,000 × 1.20 = $1,200" },
+      { text: "Tax", math: "$1,200 × 1.05 = $1,260" }
+    ]},
+    keyPoints: [
+      "Materials: quantity with waste, rounded up to whole units, × unit price",
+      "Labour: hours × rate; hours = work ÷ production rate",
+      "Price = cost × (1 + markup)",
+      "Tax goes on exactly what the job says it goes on",
+      "Compare bids by unit cost, after each includes everything"
+    ],
+    mistakes: [
+      { wrong: "Adding the percents: $3,280 × 1.23 = $4,034.40", why: "Tax is charged on the marked-up price, so the percents multiply: × 1.15 × 1.08 = × 1.242, giving $4,073.76." },
+      { wrong: "Leaving labour out of the marked-up cost", why: "Markup covers the contractor's overhead on the whole job — materials AND labour." },
+      { wrong: "Buying 28.6 boxes", why: "You can't buy part of a box. Round the box count up before pricing it." }
+    ],
+    guided: { problem: "Materials cost $750 and the job takes 12 labour-hours at $50/h. Add a 20% markup, then 6% sales tax on the whole price. What is the total?", steps: [
+      { label: "Labour cost", value: "12 × 50 = 600" },
+      { label: "Direct cost", value: "750 + 600 = 1350" },
+      { label: "With 20% markup", value: "1350 × 1.2 = 1620" },
+      { label: "With 6% tax", value: "?" }
+    ], answer: "1717.20", answerLabel: "Total ($):",
+      interactiveSteps: [
+        { prompt: "What is the labour cost for 12 hours at $50 per hour, in dollars?", hint: "Hours × rate.", answer: "600",
+          acceptableAnswers: ["600", "$600", "600.00", "$600.00"], formatHint: "Enter dollars, e.g. 450" },
+        { prompt: "Add materials ($750) and labour. What is the direct cost?", hint: "750 + 600.", answer: "1350",
+          acceptableAnswers: ["1350", "1,350", "$1350", "$1,350", "1350.00"], formatHint: "Enter dollars" },
+        { prompt: "Apply the 20% markup. What is the price before tax?", hint: "Multiply the cost by 1.20.", answer: "1620",
+          acceptableAnswers: ["1620", "1,620", "$1620", "$1,620", "1620.00"], formatHint: "Enter dollars",
+          commonMistakes: { "270": "$270 is the markup amount alone. Add it to the cost: price = cost × 1.20.", "1370": "Add 20 PERCENT, not $20: 1350 × 1.20." } },
+        { prompt: "Apply the 6% sales tax to the whole price. What is the total bid?", hint: "Multiply 1,620 by 1.06.", answer: "1717.20",
+          acceptableAnswers: ["1717.20", "1717.2", "1,717.20", "$1717.20", "$1,717.20"], formatHint: "Enter dollars and cents",
+          commonMistakes: { "1701": "That is 1350 × 1.26 — the percents added. Tax goes on the marked-up price: 1620 × 1.06.", "97.20": "That is the tax alone. Add it to the price." } }
+      ] }
+  }, function(){
+    const t = pick(["bid_tax_on_total","bid_tax_on_materials","labour_from_rate","material_cost_waste",
+                    "unit_cost","compare_bids","find_markup"]);
+    const rates = [35,40,45,50,55,60,65,75];
+    if (t === "bid_tax_on_total") {
+      const M = ri(20,250) * 10, h = ri(6,60), R = pick(rates), m = pick([10,12,15,18,20,25]), tx = pick([5,6,7,8]);
+      const L = h * R, cost = M + L, price = cost * (1 + m / 100), total = price * (1 + tx / 100);
+      return numQ({ subType: t, dp: 2, value: total, money: true,
+        question: `A bathroom job needs ${usd(M)} of materials and ${h} labour-hours at ${usd(R)} per hour. The contractor adds a ${m}% markup to the total cost, then ${tx}% sales tax on the whole price. What is the final bid, in dollars?`,
+        // added the two percents; forgot the tax; marked up and taxed materials only
+        cands: [cost * (1 + (m + tx) / 100), price, M * (1 + m / 100) * (1 + tx / 100) + L],
+        explanation: `Labour = ${h} × ${usd(R)} = ${usd(L)}. Cost = ${usd(M)} + ${usd(L)} = ${usd(cost)}. Markup: × ${fx(1+m/100,2)} = ${usd(price)}. Tax: × ${fx(1+tx/100,2)} = ${usd(total)}.` });
+    }
+    if (t === "bid_tax_on_materials") {
+      const M = ri(20,250) * 10, h = ri(6,60), R = pick(rates), m = pick([10,12,15,18,20,25]), tx = pick([5,6,7,8]);
+      const L = h * R, cost = M * (1 + tx / 100) + L, total = cost * (1 + m / 100);
+      return numQ({ subType: t, dp: 2, value: total, money: true,
+        question: `A contractor pays ${tx}% sales tax on ${usd(M)} of materials (labour is not taxed here). Labour is ${h} hours at ${usd(R)}/h. The bid is the taxed materials plus labour, with a ${m}% markup on that total. What is the bid, in dollars?`,
+        // taxed the labour too; left off the markup; marked up only the materials
+        cands: [(M + L) * (1 + tx / 100) * (1 + m / 100), cost, M * (1 + tx / 100) * (1 + m / 100) + L],
+        explanation: `Materials with tax = ${usd(M)} × ${fx(1+tx/100,2)} = ${usd(M*(1+tx/100))}. Plus labour ${h} × ${usd(R)} = ${usd(L)} gives ${usd(cost)}. Markup: × ${fx(1+m/100,2)} = ${usd(total)}.` });
+    }
+    if (t === "labour_from_rate") {
+      // Area is a whole number of half-hours of crew work, so the hours shown in
+      // the working are exact and the cost can be checked by hand.
+      const p = pick([20,25,30,40,50]), A = p * ri(8,60) / 2, w = pick([2,3]), R = pick(rates);
+      const hrs = A / p, cost = hrs * w * R;
+      return numQ({ subType: t, dp: 2, value: cost, money: true,
+        question: `A ${w}-person crew installs ${p} sq ft of flooring per hour (the whole crew together). Each crew member is paid ${usd(R)} per hour. What is the labour cost to install ${nf(A)} sq ft?`,
+        // paid only one worker; gave each worker the crew's output (divided hours by w); quoted hours, not dollars
+        cands: [hrs * R, hrs / w * R, hrs * w],
+        explanation: `Crew hours = ${nf(A)} ÷ ${p} = ${fx(hrs,2)} h. Labour-hours = ${fx(hrs,2)} × ${w} workers = ${fx(hrs*w,2)}. Cost = ${fx(hrs*w,2)} × ${usd(R)} = ${usd(cost)}.` });
+    }
+    if (t === "material_cost_waste") {
+      const ctx = pick([["laminate flooring","box", pick([18,20,22,24]),"boxes"],["porcelain tile","carton", pick([10,12,15]),"cartons"],["vinyl plank","box", pick([20,24,28]),"boxes"]]);
+      const A = ri(15,90) * 10, w = pick([5,10,12,15]), c = ctx[2], price = ri(2200,6500) / 100;
+      const units = up(A * (1 + w / 100) / c), cost = units * price;
+      return numQ({ subType: t, dp: 2, value: cost, money: true,
+        question: `A room needs ${nf(A)} sq ft of ${ctx[0]}. Add ${w}% for waste. Each ${ctx[1]} covers ${c} sq ft and costs ${usd(price)}; only whole ${ctx[3]} can be bought. What is the material cost, in dollars?`,
+        // no waste; didn't round up to whole units; subtracted the waste
+        cands: [up(A / c) * price, A * (1 + w / 100) / c * price, up(A * (1 - w / 100) / c) * price],
+        explanation: `With waste: ${nf(A)} × ${fx(1+w/100,2)} = ${fx(A*(1+w/100),1)} sq ft. ${fx(A*(1+w/100),1)} ÷ ${c} = ${fx(A*(1+w/100)/c,2)} → ${units} ${ctx[3]}. Cost = ${units} × ${usd(price)} = ${usd(cost)}.` });
+    }
+    if (t === "unit_cost") {
+      const Q = ri(20,90) * 10, per = ri(900,3200) / 100, F = pick([150,250,300,450]);
+      const T = rnd(Q * per + F, 2), unit = (T - F) / Q;
+      return numQ({ subType: t, dp: 2, value: unit, money: true, units: ["per sq ft","/sq ft"],
+        question: `A deck bid totals ${usd(T)} for ${Q} sq ft, and that total includes a ${usd(F)} permit fee. Not counting the permit, what is the cost per square foot, in dollars?`,
+        // left the permit in; added it twice; divided the area by the cost
+        cands: [T / Q, (T + F) / Q, Q / (T - F) * 10],
+        explanation: `Without the permit: ${usd(T)} − ${usd(F)} = ${usd(T - F)}. Per sq ft: ${usd(T - F)} ÷ ${Q} = ${usd(unit)}.` });
+    }
+    if (t === "compare_bids") {
+      // Redrawn until the bids differ by at least $50, so "which is cheaper"
+      // is never a near-tie decided by rounding.
+      let A, p1, M2, h2, R2, b1, b2;
+      do {
+        A = ri(30,90) * 10; p1 = ri(1100,2400) / 100; M2 = ri(30,160) * 25; h2 = ri(16,80); R2 = pick(rates);
+        b1 = A * p1; b2 = M2 + h2 * R2;
+      } while (Math.abs(b1 - b2) < 50);
+      const diff = Math.abs(b1 - b2);
+      return numQ({ subType: t, dp: 2, value: diff, money: true,
+        question: `Two fence bids for ${A} linear feet. Bid A: ${usd(p1)} per foot, all-in. Bid B: ${usd(M2)} in materials plus ${h2} labour-hours at ${usd(R2)}/h. How many dollars does the cheaper bid save?`,
+        // forgot Bid B's labour; compared with Bid B's labour only; the cheaper bid's total
+        cands: [Math.abs(b1 - M2), Math.abs(b1 - h2 * R2), Math.min(b1, b2)],
+        explanation: `Bid A = ${A} × ${usd(p1)} = ${usd(b1)}. Bid B = ${usd(M2)} + ${h2} × ${usd(R2)} = ${usd(b2)}. Bid ${b1 < b2 ? "A" : "B"} is cheaper by ${usd(diff)}.` });
+    }
+    // find_markup
+    const C = ri(40,500) * 10, m = pick([12,15,18,20,25,30,35]);
+    const P = Math.round(C * (1 + m / 100) + ri(-20, 20)), mk = (P - C) / C * 100;
+    return numQ({ subType: "find_markup", dp: 1, value: mk, units: ["%","percent"],
+      question: `A job costs the contractor ${usd(C)} and is sold for ${usd(P)}. What is the markup as a percent of cost? Round to the nearest tenth of a percent.`,
+      // margin (÷ price); price as a percent of cost; profit in dollars ÷ 100
+      cands: [(P - C) / P * 100, P / C * 100, (P - C) / 100],
+      explanation: `Profit = ${usd(P)} − ${usd(C)} = ${usd(P - C)}. Markup = profit ÷ COST = ${usd(P - C)} ÷ ${usd(C)} = ${fx(mk/100,4)} → ${fx(mk,1)}%. (Dividing by the price gives margin, ${fx((P-C)/P*100,1)}%.)` });
+  });
+
+  // =====================================================================
+  // M-380  Efficiency  (tier 8)
+  // Prereqs: Production Rates (T8), Percentages (T3).
+  // =====================================================================
+  _addSkill(8, "Efficiency", "Efficiency", 3, {
+    goalProblem: "A pump motor draws 2,000 W of electrical power and delivers 1,700 W of useful mechanical power. What is its efficiency?",
+    teachingSteps: [
+      { title: "Efficiency is a percent of the input", explanation: "<strong>Efficiency = useful output ÷ input × 100%</strong>. Output and input must be in the same units (watts and watts, BTU and BTU). Real machines are always below 100% — the rest is lost as heat, noise and friction.", visual: "1,700 W ÷ 2,000 W = 0.85 = 85%" },
+      { title: "Working backwards: input needed", explanation: "If you know the output you need and the efficiency, <strong>input = output ÷ efficiency</strong> (as a decimal). The input is always bigger than the output, so dividing by a number less than 1 must make it bigger.", visual: "3 kW ÷ 0.80 = 3.75 kW" },
+      { title: "Losses", explanation: "What doesn't come out as useful work is lost: <strong>loss = input − output</strong>, or input × (1 − efficiency). Losses usually show up as heat a space or a motor housing has to get rid of.", visual: "2,000 W − 1,700 W = 300 W of heat" },
+      { title: "Fuel economy", explanation: "Vehicles: <strong>miles per gallon = miles ÷ gallons</strong>; fuel needed = miles ÷ mpg. Equipment such as excavators and generators is rated in <strong>gallons per hour</strong>: fuel = hours × gal/h.", visual: "420 mi ÷ 24 mpg = 17.5 gal" },
+      { title: "Energy cost", explanation: "Utilities bill <strong>kilowatt-hours</strong>: kWh = kilowatts × hours, and cost = kWh × price per kWh. Divide watts by 1,000 to get kilowatts. For motors, 1 horsepower ≈ 746 W of output.", visual: "1,500 W = 1.5 kW\n1.5 × 8 h × 30 days = 360 kWh\n360 × $0.15 = $54.00" },
+      { title: "Comparing machines", explanation: "Put two machines on the same basis — cost per year, fuel per cubic yard, energy per part — then compare. A furnace that is 95% efficient buys the same heat with less fuel than one at 80%.", visual: "heat needed ÷ efficiency = fuel bought" }
+    ],
+    finalAnswer: "85",
+    answerExplanation: "Efficiency = 1,700 ÷ 2,000 × 100% = 85%. The other 300 W becomes heat.",
+    example: { problem: "A 1,500 W heater runs 8 hours a day for 30 days. Electricity costs $0.15 per kWh. What does it cost to run?", steps: [
+      { text: "Watts to kilowatts", math: "1,500 ÷ 1,000 = 1.5 kW" },
+      { text: "Energy used", math: "1.5 × 8 × 30 = 360 kWh" },
+      { text: "Cost", math: "360 × $0.15 = $54.00" }
+    ]},
+    keyPoints: [
+      "Efficiency = output ÷ input × 100%, same units top and bottom",
+      "Input = output ÷ efficiency; the input is always the bigger number",
+      "Loss = input − output",
+      "kWh = kW × hours; cost = kWh × rate; kW = W ÷ 1,000",
+      "1 hp ≈ 746 W; mpg = miles ÷ gallons"
+    ],
+    mistakes: [
+      { wrong: "Dividing input by output: 2,000 ÷ 1,700 = 117.6%", why: "Efficiency can't be over 100%. Useful output goes on top: 1,700 ÷ 2,000 = 85%." },
+      { wrong: "Finding input by multiplying: 3 kW × 0.80 = 2.4 kW", why: "The input must be larger than the output. Divide: 3 ÷ 0.80 = 3.75 kW." },
+      { wrong: "Multiplying watts by hours and the rate without dividing by 1,000", why: "Rates are per kilowatt-hour. 1,500 W is 1.5 kW; skipping that makes the bill 1,000 times too big." }
+    ],
+    guided: { problem: "A pump motor delivers 3 kW of useful power at 80% efficiency. It runs 6 hours a day for 20 days, and power costs $0.12 per kWh. What is the energy cost?", steps: [
+      { label: "Input power: 3 ÷ 0.80", value: "3.75 kW" },
+      { label: "Energy: 3.75 × 6 × 20", value: "450 kWh" },
+      { label: "Cost: 450 × 0.12", value: "?" }
+    ], answer: "54.00", answerLabel: "Cost ($):",
+      interactiveSteps: [
+        { prompt: "What power does the motor draw from the line, in kW? (Output 3 kW, efficiency 80%.)", hint: "Input = output ÷ efficiency as a decimal.", answer: "3.75",
+          acceptableAnswers: ["3.75", "3.75 kW", "3.75kw"], formatHint: "Enter kW, e.g. 2.5",
+          commonMistakes: { "2.4": "2.4 kW is 3 × 0.8 — smaller than the output. The input must be bigger: 3 ÷ 0.8.", "3.6": "Adding 20% to the output isn't the same as dividing by 0.8." } },
+        { prompt: "How many kWh does it use running 6 hours a day for 20 days?", hint: "kW × hours per day × days.", answer: "450",
+          acceptableAnswers: ["450", "450 kWh", "450kwh"], formatHint: "Enter kWh",
+          commonMistakes: { "360": "360 kWh uses the 3 kW output. The meter measures what the motor DRAWS: 3.75 kW." } },
+        { prompt: "At $0.12 per kWh, what does that energy cost?", hint: "kWh × price.", answer: "54.00",
+          acceptableAnswers: ["54.00", "54", "$54", "$54.00"], formatHint: "Enter dollars and cents" }
+      ] }
+  }, function(){
+    const t = pick(["eff_percent","crew_efficiency","input_needed","losses","mpg",
+                    "trip_fuel_cost","equipment_fuel","energy_cost","motor_amps","furnace_savings"]);
+    if (t === "eff_percent") {
+      const btu = pick([true,false]);
+      const inp = btu ? ri(30,120) * 1000 : ri(16,100) * 50;
+      const out = Math.round(inp * ri(70,96) / 100 / (btu ? 100 : 1)) * (btu ? 100 : 1);
+      const e = out / inp * 100;
+      const question = btu
+        ? `A water heater burns fuel at ${nf(inp)} BTU per hour and delivers ${nf(out)} BTU per hour into the water. What is its efficiency, as a percent? Round to the nearest tenth.`
+        : `A motor draws ${nf(inp)} W from the line and delivers ${nf(out)} W of mechanical power. What is its efficiency, as a percent? Round to the nearest tenth.`;
+      return numQ({ subType: t, dp: 1, value: e, units: ["%","percent"], question,
+        // input over output (over 100%); the loss percent; loss compared with the output.
+        // (The decimal 0.85 is NOT offered: the grader rightly reads it as 85%.)
+        cands: [inp / out * 100, (inp - out) / inp * 100, (inp - out) / out * 100],
+        explanation: `Efficiency = output ÷ input × 100% = ${nf(out)} ÷ ${nf(inp)} × 100% = ${fx(e,1)}%.` });
+    }
+    if (t === "crew_efficiency") {
+      const s = pick([30,40,45,50,60]), hrs = ri(4,10), N = Math.round(s * hrs * ri(65,115) / 100);
+      const e = N / hrs / s * 100;
+      return numQ({ subType: t, dp: 1, value: e, units: ["%","percent"],
+        question: `The estimating guide says a painter should cover ${s} sq ft per hour. On site, a painter covered ${N} sq ft in ${hrs} hours. What was the painter's efficiency against the guide, as a percent? Round to the nearest tenth.`,
+        // standard over actual; forgot the hours; actual rate as a plain number
+        cands: [s / (N / hrs) * 100, N / s * 100, N / hrs],
+        explanation: `Actual rate = ${N} ÷ ${hrs} = ${fx(N/hrs,2)} sq ft/h. Efficiency = ${fx(N/hrs,2)} ÷ ${s} × 100% = ${fx(e,1)}%.` });
+    }
+    if (t === "input_needed") {
+      const out = pick([1.5,2,3,4.5,5,7.5,10,12]), e = pick([75,80,85,88,90,92,95]);
+      const inp = out / (e / 100);
+      return numQ({ subType: t, dp: 2, value: inp, units: ["kW","kw"],
+        question: `A machine must deliver ${fx(out,null)} kW of useful power. It is ${e}% efficient. How much power must it draw, in kW? Round to the nearest hundredth.`,
+        // multiplied by the efficiency; added the loss percent to the output; divided by the loss fraction
+        cands: [out * e / 100, out * (1 + (100 - e) / 100), out / ((100 - e) / 100)],
+        explanation: `Input = output ÷ efficiency = ${fx(out,null)} ÷ ${fx(e/100,2)} = ${fx(inp,2)} kW. It is larger than the output, as it must be.` });
+    }
+    if (t === "losses") {
+      const inp = ri(10,80) * 100, e = pick([72,78,80,84,86,88,90,92,94]);   // whole-watt output
+      const loss = inp * (1 - e / 100);
+      return numQ({ subType: t, dp: 0, value: loss, units: ["W","watts"],
+        question: `A transformer takes in ${nf(inp)} W and is ${e}% efficient. How many watts are lost as heat? Round to the nearest watt.`,
+        // the useful output; output ÷ efficiency; the loss percent as watts
+        cands: [inp * e / 100, inp / (e / 100) - inp, 100 - e],
+        explanation: `Useful output = ${nf(inp)} × ${fx(e/100,2)} = ${nf(inp*e/100,0)} W. Loss = ${nf(inp)} − ${nf(inp*e/100,0)} = ${nf(loss,0)} W (the same as ${nf(inp)} × ${fx(1-e/100,2)}).` });
+    }
+    if (t === "mpg") {
+      const mi = ri(120,620), gal = ri(80,400) / 10;
+      const mpg = mi / gal;
+      return numQ({ subType: t, dp: 1, value: mpg, units: ["mpg","miles per gallon"],
+        question: `A service truck drove ${mi} miles on ${fx(gal,1)} gallons of fuel. What was its fuel economy in miles per gallon? Round to the nearest tenth.`,
+        // gallons per mile × 100; multiplied; per 10 gallons
+        cands: [gal / mi * 100, mi * gal / 100, mi / gal * 10],
+        explanation: `mpg = miles ÷ gallons = ${mi} ÷ ${fx(gal,1)} = ${fx(mpg,1)}.` });
+    }
+    if (t === "trip_fuel_cost") {
+      const D = ri(40,450), mpg = ri(12,32), price = ri(299,489) / 100, round = pick([true,false]);
+      const miles = round ? 2 * D : D, cost = miles / mpg * price;
+      return numQ({ subType: t, dp: 2, value: cost, money: true,
+        question: `A job site is ${D} miles away${round ? ", and the crew truck makes the round trip" : " (one way only)"}. The truck gets ${mpg} mpg and fuel costs ${usd(price)} per gallon. What does the fuel cost, in dollars?`,
+        // gallons, not dollars; the other trip length; multiplied by mpg instead of dividing
+        cands: [miles / mpg, (round ? D : 2 * D) / mpg * price, miles * mpg * price / 100],
+        explanation: `Miles = ${miles}. Gallons = ${miles} ÷ ${mpg} = ${fx(miles/mpg,3)}. Cost = ${fx(miles/mpg,3)} × ${usd(price)} = ${usd(cost)}.` });
+    }
+    if (t === "equipment_fuel") {
+      const gph = ri(30,90) / 10, hrs = ri(10,40) / 2, days = ri(3,12), price = ri(329,499) / 100;
+      const cost = gph * hrs * days * price;
+      return numQ({ subType: t, dp: 2, value: cost, money: true,
+        question: `An excavator burns ${fx(gph,1)} gallons of diesel per hour. It runs ${fx(hrs,1)} hours a day for ${days} days, and diesel is ${usd(price)} per gallon. What is the fuel cost, in dollars?`,
+        // one day only; gallons, not dollars; forgot the hours per day
+        cands: [gph * hrs * price, gph * hrs * days, gph * days * price],
+        explanation: `Gallons = ${fx(gph,1)} × ${fx(hrs,1)} × ${days} = ${fx(gph*hrs*days,2)}. Cost = ${fx(gph*hrs*days,2)} × ${usd(price)} = ${usd(cost)}.` });
+    }
+    if (t === "energy_cost") {
+      const W = pick([500,750,1000,1200,1500,2000,3500,4500]), h = ri(2,10), days = pick([20,22,30]);
+      const rate = pick([0.11,0.12,0.13,0.14,0.15,0.16,0.18]);
+      const kwh = W / 1000 * h * days, cost = kwh * rate;
+      return numQ({ subType: t, dp: 2, value: cost, money: true,
+        question: `A ${nf(W)} W shop heater runs ${h} hours a day for ${days} days. Electricity costs ${usd(rate)} per kWh. What does it cost to run, in dollars?`,
+        // never converted W to kW; one day only; kWh, not dollars
+        cands: [W * h * days * rate, W / 1000 * h * rate, kwh],
+        explanation: `${nf(W)} W = ${fx(W/1000,null)} kW. Energy = ${fx(W/1000,null)} × ${h} × ${days} = ${fx(kwh,null)} kWh. Cost = ${fx(kwh,null)} × ${usd(rate)} = ${usd(cost)}.` });
+    }
+    if (t === "motor_amps") {
+      const hp = pick([0.5,0.75,1,1.5,2,3,5]), e = pick([72,75,78,80,84,86,88]), V = hp <= 1 ? pick([120,230]) : 230;
+      const amps = hp * 746 / (e / 100) / V;
+      return numQ({ subType: t, dp: 1, value: amps, units: ["A","amps"],
+        question: `A ${fx(hp,null)} hp motor (1 hp = 746 W of output) runs at ${e}% efficiency on ${V} V. How many amps does it draw? Round to the nearest tenth.`,
+        // ignored efficiency; multiplied by efficiency; used the other voltage
+        cands: [hp * 746 / V, hp * 746 * (e / 100) / V, hp * 746 / (e / 100) / (V === 230 ? 120 : 230)],
+        explanation: `Output = ${fx(hp,null)} × 746 = ${nf(hp*746)} W. Input = ${nf(hp*746)} ÷ ${fx(e/100,2)} = ${nf(hp*746/(e/100),1)} W. Amps = ${nf(hp*746/(e/100),1)} ÷ ${V} = ${fx(amps,1)} A.` });
+    }
+    // furnace_savings
+    const H = ri(8,24) * 50, eo = pick([60,65,70,78,80]), en = pick([92,95,96,97,98]), p = ri(90,160) / 100;
+    // Each year's bill is rounded to the cent before subtracting, the way the
+    // two bills would actually be compared.
+    const save = rnd(H / (eo / 100) * p, 2) - rnd(H / (en / 100) * p, 2);
+    return numQ({ subType: "furnace_savings", dp: 2, value: save, money: true,
+      question: `A house needs ${nf(H)} therms of delivered heat a year. Its old furnace is ${eo}% efficient; a new one is ${en}% efficient. Gas costs ${usd(p)} per therm. How many dollars a year does the new furnace save?`,
+      // percentage-point difference × the heat bill; the old furnace's whole bill; ignored efficiency on the new one
+      cands: [H * p * (en - eo) / 100, H / (eo / 100) * p, H / (eo / 100) * p - H * p],
+      explanation: `Old: ${nf(H)} ÷ ${fx(eo/100,2)} = ${nf(H/(eo/100),2)} therms × ${usd(p)} = ${usd(H/(eo/100)*p)}. New: ${nf(H)} ÷ ${fx(en/100,2)} = ${nf(H/(en/100),2)} therms × ${usd(p)} = ${usd(H/(en/100)*p)}. Savings = ${usd(save)}.` });
+  });
+
+  // =====================================================================
+  // M-381  Spreadsheet Estimating  (tier 8)
+  // Prereqs: Spreadsheet Formulas (T5), Cost Estimation (T8).
+  // The sheet is described in words, one row per ";", columns split by "/".
+  // =====================================================================
+  const SHEET_ITEMS = [["2x4x8 stud",3,5],["2x6x12 joist",9,14],["1/2 in drywall sheet",12,17],["3/4 in plywood sheet",38,62],
+    ["80 lb concrete mix bag",5,8],["joint compound bucket",14,22],["construction adhesive tube",4,8],["drywall screws, 5 lb box",24,36],
+    ["R-13 insulation bundle",38,55],["framing nails, 30 lb box",60,90],["house wrap roll",150,190],["deck screws, 5 lb box",30,45]];
+  // k invented line items: quantity, unit cost to the cent, exact line total.
+  function sheetRows(k) {
+    return sh(SHEET_ITEMS).slice(0, k).map(([name, lo, hi]) => {
+      const qty = hi > 100 ? ri(1,4) : hi > 30 ? ri(2,24) : ri(6,80);
+      const cost = ri(lo * 100, hi * 100) / 100;
+      return { name, qty, cost, total: rnd(qty * cost, 2) };
+    });
+  }
+  const SHEET_HEAD = "Example estimate sheet. Columns: A = Item, B = Qty, C = Unit cost ($), D = Line total. ";
+  // Rows start at 2 (row 1 is the header). dCell(i) is what column D holds.
+  const sheetText = (rows, dCell) => rows.map((r, i) =>
+    `Row ${i + 2}: ${r.name} / ${r.qty} / ${fx(r.cost,2)} / ${dCell(r, i + 2)}`).join("; ") + ".";
+
+  _addSkill(8, "Spreadsheet Estimating", "Spreadsheet Estimating", 3, {
+    goalProblem: "Row 2 of an estimate sheet: B2 = 48 (studs), C2 = 3.85 (unit cost). D2 holds =B2*C2. What does D2 display?",
+    teachingSteps: [
+      { title: "One row per item", explanation: "An estimate sheet gives each material its own row and each kind of number its own column: <strong>item, quantity, unit cost, line total</strong>. A cell is named by column letter then row number, so <strong>C4</strong> is the unit cost on row 4.", visual: "     A            B     C       D\n1  Item         Qty   Unit $  Total\n2  2x4x8 stud    48   3.85    =B2*C2" },
+      { title: "The line-total formula", explanation: "<strong>=B2*C2</strong> multiplies quantity by unit cost. The sheet shows the result, not the formula: 48 × 3.85 = 184.80.", visual: "=B2*C2 → 184.80" },
+      { title: "A waste column", explanation: "Keep the waste factor in ONE cell (say F1 = 0.10) and point at it. <strong>=ROUNDUP(B2*(1+$F$1),0)</strong> adds the waste and rounds up to whole units, because you can't buy 52.8 sheets.", visual: "B2 = 48, F1 = 0.10\n48 × 1.10 = 52.8 → 53" },
+      { title: "SUM a column — all of it", explanation: "<strong>=SUM(D2:D6)</strong> adds D2 through D6, both ends included. The classic estimating error is a range that stops one row short after someone inserts a line: the item is on the sheet but not in the bid.", visual: "=SUM(D2:D6) = D2 + D3 + D4 + D5 + D6" },
+      { title: "Filling down: relative vs absolute", explanation: "When a formula is filled down, <strong>relative</strong> references (B2) move with the row: row 5 gets B5. <strong>Absolute</strong> references with dollar signs ($F$1) stay put. That is why the waste or tax rate cell must be written $F$1 — without the $, row 5 would read F4, an empty cell.", visual: "D2: =B2*$F$1  →  filled to D5: =B5*$F$1" },
+      { title: "Building to the total", explanation: "Below the line items, each total is a formula on the cells above it: subtotal =SUM(...), marked-up price =subtotal*(1+markup cell), total =price*(1+tax cell). Change one quantity and the whole bid updates.", visual: "D5: =SUM(D2:D4)\nD6: =D5*(1+G1)\nD7: =D6*(1+G2)" }
+    ],
+    finalAnswer: "184.80",
+    answerExplanation: "D2 multiplies the quantity in B2 by the unit cost in C2: 48 × 3.85 = 184.80.",
+    example: { problem: "B3 = 52 (sheets of drywall) and F1 = 0.12 (waste). E3 holds =ROUNDUP(B3*(1+$F$1),0). What does E3 display?", steps: [
+      { text: "Add the waste", math: "52 × 1.12 = 58.24" },
+      { text: "ROUNDUP to 0 decimal places always goes up", math: "58.24 → 59" },
+      { text: "E3 displays", math: "59" }
+    ]},
+    keyPoints: [
+      "Line total = quantity × unit cost: =B2*C2",
+      "Waste and tax rates live in one cell, referenced with $ signs ($F$1)",
+      "=SUM(D2:D6) includes both ends; check the range covers every item",
+      "Filling down shifts relative references and leaves absolute ones alone",
+      "ROUNDUP(x,0) rounds up to a whole number of units"
+    ],
+    mistakes: [
+      { wrong: "=B2+C2 for a line total", why: "Quantity and unit cost multiply: 48 studs at $3.85 each is 48 × 3.85, not 48 + 3.85." },
+      { wrong: "Writing the waste cell as F1 instead of $F$1, then filling down", why: "Row 3's copy points at F2, row 4's at F3 — empty cells, so the waste silently becomes 0." },
+      { wrong: "A subtotal of =SUM(D2:D5) when items run to row 6", why: "Row 6 is on the sheet but not in the total. The bid comes in short by exactly that line." }
+    ],
+    guided: { problem: "Rows 2–4: drywall sheets 36 at 14.50; screw boxes 3 at 29.00; compound buckets 4 at 18.25. Column D holds =B*C for each row. D5 holds =SUM(D2:D4) and D6 holds =D5*(1+G1), where G1 = 0.08 (tax). What does D6 display?", steps: [
+      { label: "D2 = 36 × 14.50", value: "522.00" },
+      { label: "D3 and D4", value: "87.00 and 73.00" },
+      { label: "D5 = SUM(D2:D4)", value: "682.00" },
+      { label: "D6 = D5 × 1.08", value: "?" }
+    ], answer: "736.56", answerLabel: "D6 =",
+      interactiveSteps: [
+        { prompt: "What does D2 display (=B2*C2 with 36 sheets at 14.50)?", hint: "Multiply quantity by unit cost.", answer: "522",
+          acceptableAnswers: ["522", "522.00", "$522", "$522.00"], formatHint: "Enter a number, e.g. 120.50",
+          commonMistakes: { "50.5": "That is B2 + C2. The line total multiplies: 36 × 14.50." } },
+        { prompt: "D3 = 3 × 29.00 = 87.00 and D4 = 4 × 18.25 = 73.00. What does D5 (=SUM(D2:D4)) display?", hint: "Add D2, D3 and D4.", answer: "682",
+          acceptableAnswers: ["682", "682.00", "$682", "$682.00"], formatHint: "Enter a number",
+          commonMistakes: { "609": "That leaves out D4. D2:D4 includes both ends.", "595": "That leaves out D3. Add all three rows." } },
+        { prompt: "What does D6 (=D5*(1+G1), G1 = 0.08) display?", hint: "Multiply 682 by 1.08.", answer: "736.56",
+          acceptableAnswers: ["736.56", "$736.56"], formatHint: "Enter dollars and cents",
+          commonMistakes: { "682.08": "That is D5 + G1 — adding 0.08 dollars. The formula multiplies by (1 + 0.08).", "54.56": "That is the tax alone (D5 × G1). D6 is the total with tax." } }
+      ] }
+  }, function(){
+    const t = pick(["line_total","sum_range","range_error","waste_roundup","fill_down",
+                    "which_formula","grand_total","filled_value"]);
+    if (t === "line_total") {
+      const rows = sheetRows(ri(3,4)), i = ri(0, rows.length - 1), r = rows[i];
+      return numQ({ subType: t, dp: 2, value: r.total, money: true,
+        question: SHEET_HEAD + sheetText(rows, (x, n) => `=B${n}*C${n}`) + ` What value does D${i + 2} display?`,
+        // read a neighbouring row; added quantity and cost
+        cands: rows.filter((x, j) => j !== i).map(x => x.total).concat([r.qty + r.cost]),
+        explanation: `D${i + 2} = B${i + 2} × C${i + 2} = ${r.qty} × ${fx(r.cost,2)} = ${fx(r.total,2)}.` });
+    }
+    if (t === "sum_range") {
+      const rows = sheetRows(ri(4,5)), last = rows.length + 1;
+      const tot = rows.reduce((s, x) => s + x.total, 0);
+      return numQ({ subType: t, dp: 2, value: tot, money: true,
+        question: SHEET_HEAD + sheetText(rows, x => fx(x.total,2)) + ` Row ${last + 1}: Subtotal / / / =SUM(D2:D${last}). What value does D${last + 1} display?`,
+        // range one row short at each end; last row counted twice
+        cands: [tot - rows[rows.length - 1].total, tot - rows[0].total, tot + rows[rows.length - 1].total],
+        explanation: `SUM(D2:D${last}) adds every line from row 2 to row ${last}, both included: ${rows.map(x => fx(x.total,2)).join(" + ")} = ${fx(tot,2)}.` });
+    }
+    if (t === "range_error") {
+      const rows = sheetRows(5), tot = rows.reduce((s, x) => s + x.total, 0), part = tot - rows[4].total;
+      const base = SHEET_HEAD + sheetText(rows, (x, n) => `=B${n}*C${n}`) + ` Row 7: Subtotal / / / =SUM(D2:D5).`;
+      if (pick([true,false])) return numQ({ subType: t, dp: 2, value: rows[4].total, money: true,
+        question: base + ` The subtotal is supposed to cover every item. By how many dollars is D7 short?`,
+        // another row's total; the full correct subtotal; what D7 shows
+        cands: [rows[3].total, rows[0].total, tot, part],
+        explanation: `=SUM(D2:D5) stops at row 5, so row 6 (${rows[4].name}) is left out. It is short by D6 = ${rows[4].qty} × ${fx(rows[4].cost,2)} = ${fx(rows[4].total,2)}. The fix is =SUM(D2:D6).` });
+      return numQ({ subType: t, dp: 2, value: part, money: true,
+        question: base + ` What value does D7 actually display?`,
+        // the subtotal it was meant to show; one more row dropped
+        cands: [tot, part - rows[3].total, part + rows[0].total],
+        explanation: `D7 adds only D2 through D5: ${rows.slice(0,4).map(x => fx(x.total,2)).join(" + ")} = ${fx(part,2)}. Row 6 is missing from the range — it should be =SUM(D2:D6) = ${fx(tot,2)}.` });
+    }
+    if (t === "waste_roundup") {
+      const w = pick([0.05,0.08,0.1,0.12,0.15]), r = ri(2,9);
+      let q; do { q = ri(12,140); } while (Math.abs(q * (1 + w) - Math.round(q * (1 + w))) < 1e-6);
+      const ans = up(q * (1 + w));
+      return numQ({ subType: t, dp: 0, value: ans, units: ["sheets","units"],
+        question: `Example estimate sheet: F1 holds the waste factor ${fx(w,2)}. B${r} holds ${q} (sheets of sheathing). E${r} holds =ROUNDUP(B${r}*(1+$F$1),0). What does E${r} display?`,
+        // rounded to nearest instead of up; no waste; the waste alone, rounded up
+        cands: [Math.round(q * (1 + w)), q, up(q * w), ans + 1],
+        explanation: `B${r} × (1 + F1) = ${q} × ${fx(1+w,2)} = ${fx(q*(1+w),2)}. ROUNDUP(…,0) always rounds up to a whole number: ${ans}.` });
+    }
+    if (t === "fill_down") {
+      const k = ri(4,14), tpl = pick(["line","waste","tax"]);
+      let start, ans, cands, colName;
+      if (tpl === "line") {
+        colName = "D"; start = "=B2*C2"; ans = `=B${k}*C${k}`;
+        // nothing shifted; only one reference shifted (either way)
+        cands = ["=B2*C2", `=B2*C${k}`, `=B${k}*C2`];
+      } else if (tpl === "waste") {
+        colName = "E"; start = "=ROUNDUP(B2*(1+$F$1),0)"; ans = `=ROUNDUP(B${k}*(1+$F$1),0)`;
+        // what a missing $ would give; the absolute cell wrongly shifted; nothing shifted
+        cands = [`=ROUNDUP(B${k}*(1+F${k - 1}),0)`, `=ROUNDUP(B${k}*(1+$F$${k}),0)`, "=ROUNDUP(B2*(1+$F$1),0)"];
+      } else {
+        colName = "E"; start = "=D2*$H$2"; ans = `=D${k}*$H$2`;
+        // the absolute cell wrongly shifted; what a missing $ would give; nothing shifted
+        cands = [`=D${k}*$H$${k}`, `=D${k}*H${k}`, "=D2*$H$2"];
+      }
+      return choiceQ({ subType: t, answer: ans, cands,
+        question: `In an estimate sheet, cell ${colName}2 holds ${start}. It is filled down to row ${k}. Which formula ends up in ${colName}${k}?`,
+        explanation: `Filling down moves every RELATIVE reference by the same number of rows (row 2 → row ${k}), and leaves references with dollar signs fixed. So ${start} becomes ${ans}.` });
+    }
+    if (t === "which_formula") {
+      const last = ri(5,12), S = last + 1, sc = pick(["subtotal","tax","order","markup"]);
+      if (sc === "subtotal") return choiceQ({ subType: t, answer: `=SUM(D2:D${last})`,
+        // range one short; adds quantities; adds only the end rows
+        cands: [`=SUM(D2:D${last - 1})`, `=SUM(B2:B${last})`, `=D2+D${last}`],
+        question: `An estimate sheet lists line totals in D2 through D${last}. Which formula in D${S} gives the subtotal?`,
+        explanation: `SUM over D2:D${last} adds every line total, both ends included. B holds quantities, not dollars, and =D2+D${last} adds only two rows.` });
+      if (sc === "tax") return choiceQ({ subType: t, answer: `=D${S}*(1+G1)`,
+        // adds the rate as dollars; tax amount only; double-counts the subtotal
+        cands: [`=D${S}+G1`, `=D${S}*G1`, `=SUM(D2:D${S})*(1+G1)`],
+        question: `D${S} holds the subtotal and G1 holds the sales tax rate as a decimal (0.07). Which formula in D${S + 1} gives the total including tax?`,
+        explanation: `Total with tax = subtotal × (1 + rate): =D${S}*(1+G1). =D${S}*G1 is only the tax; =D${S}+G1 adds 7 cents; SUM(D2:D${S}) counts the subtotal on top of the lines it already adds.` });
+      if (sc === "order") { const r = ri(2, last); return choiceQ({ subType: t, answer: `=E${r}*C${r}`,
+        // priced the quantity before waste; added; sums the cells between
+        cands: [`=B${r}*C${r}`, `=E${r}+C${r}`, `=SUM(C${r}:E${r})`],
+        question: `On row ${r} of an estimate sheet, B${r} is the quantity needed, E${r} is the order quantity with waste (rounded up), and C${r} is the unit cost. Which formula in D${r} prices what will actually be bought?`,
+        explanation: `You pay for what you order, which includes the waste: order quantity × unit cost = =E${r}*C${r}. =B${r}*C${r} prices the material before waste and under-bids.` }); }
+      return choiceQ({ subType: t, answer: `=D${S}*G2`,
+        // marked-up price, not the markup; adds the rate; upside down
+        cands: [`=D${S}*(1+G2)`, `=D${S}+G2`, `=G2/D${S}`],
+        question: `D${S} is the subtotal and G2 holds the markup rate (0.15). Which formula in D${S + 1} gives the markup AMOUNT in dollars?`,
+        explanation: `Markup amount = subtotal × rate: =D${S}*G2. =D${S}*(1+G2) is the marked-up PRICE (subtotal plus markup), which belongs in a different cell.` });
+    }
+    if (t === "grand_total") {
+      const rows = sheetRows(3), sub = rows.reduce((s, x) => s + x.total, 0);
+      const m = pick([0.1,0.12,0.15,0.18,0.2]), tx = pick([0.05,0.06,0.07,0.08]);
+      const total = sub * (1 + m) * (1 + tx);
+      return numQ({ subType: t, dp: 2, value: total, money: true,
+        question: SHEET_HEAD + sheetText(rows, (x, n) => `=B${n}*C${n}`) + ` D5 holds =SUM(D2:D4). G1 holds ${fx(m,2)} (markup) and G2 holds ${fx(tx,2)} (tax). D6 holds =D5*(1+G1) and D7 holds =D6*(1+G2). What value does D7 display, to the cent?`,
+        // rates added; no tax; no markup
+        cands: [sub * (1 + m + tx), sub * (1 + m), sub * (1 + tx)],
+        explanation: `D5 = ${rows.map(x => fx(x.total,2)).join(" + ")} = ${fx(sub,2)}. D6 = ${fx(sub,2)} × ${fx(1+m,2)} = ${fx(sub*(1+m),4)}. D7 = D6 × ${fx(1+tx,2)} = ${fx(total,2)}.` });
+    }
+    // filled_value
+    const rows = sheetRows(4), h = pick([0.05,0.06,0.065,0.07,0.075,0.08]), i = ri(1,3), r = rows[i];
+    const val = r.total * h;
+    return numQ({ subType: "filled_value", dp: 2, value: val, money: true,
+      question: SHEET_HEAD + sheetText(rows, x => fx(x.total,2)) + ` H1 holds the tax rate ${h}. E2 holds =D2*$H$1, filled down to E5. What value does E${i + 2} display, to the cent?`,
+      // row 2's value (reference didn't shift); total with tax instead of tax; added the rate
+      cands: [rows[0].total * h, r.total * (1 + h), r.total + h],
+      explanation: `Filled down to row ${i + 2}, the formula is =D${i + 2}*$H$1 (D shifts, $H$1 stays). ${fx(r.total,2)} × ${h} = ${fx(val,2)}.` });
+  });
+
+  // =====================================================================
+  // M-382  Technical Charts  (tier 8)
+  // Prereqs: Trade Formulas (T6), Decimal Tolerances (T6).
+  // Every table is generated fresh per question with plausible SHAPE (bigger
+  // joists span further, thicker wire carries more, longer pipe runs carry
+  // less) but invented numbers, and is labelled as an example in the text.
+  // =====================================================================
+  const EX = "EXAMPLE TABLE (invented for practice, not code data)";
+  // Joist spans in inches for 2x6, 2x8, 2x10, 2x12 at 12 / 16 / 24 in spacing.
+  function spanTable() {
+    const b16 = [ri(112,122), ri(146,156), ri(180,192), ri(212,226)];
+    return b16.map(b => [Math.round(b * 1.1), b, Math.round(b * 0.82)]);
+  }
+  const JOISTS = ["2x6","2x8","2x10","2x12"], SPACINGS = [12,16,24];
+  const spanText = tb => `${EX} — maximum joist span at 12 in / 16 in / 24 in spacing: ` +
+    JOISTS.map((j, i) => `${j}: ${tb[i].map(ftin).join(" / ")}`).join("; ") + ".";
+
+  _addSkill(8, "Technical Charts", "Technical Charts", 3, {
+    goalProblem: "Using the example span table below, what is the smallest joist that can span 13 ft 0 in at 16 in spacing?<br>2x6: 10 ft 9 in / 9 ft 9 in / 8 ft 0 in<br>2x8: 13 ft 9 in / 12 ft 6 in / 10 ft 3 in<br>2x10: 17 ft 0 in / 15 ft 6 in / 12 ft 8 in<br>(columns: 12 in / 16 in / 24 in spacing — invented numbers for practice)",
+    teachingSteps: [
+      { title: "Find the row and the column first", explanation: "A spec table is a grid: one input picks the <strong>row</strong>, another picks the <strong>column</strong>, and the answer is where they cross. Before reading any number, say out loud which row and which column you need. Most chart errors are a right number from the wrong column.", visual: "row = joist size, column = spacing\n2x8 at 16 in → 12 ft 6 in" },
+      { title: "Smallest that works", explanation: "When a table gives a <strong>maximum</strong> (span, amps, flow), go down the right column and stop at the <strong>first</strong> entry that is at least what you need. A smaller one fails; a bigger one works but costs more.", visual: "need 13 ft 0 in at 16 in:\n2x6 9 ft 9 in ✗, 2x8 12 ft 6 in ✗, 2x10 15 ft 6 in ✓" },
+      { title: "Mind the units in the cell", explanation: "<strong>12 ft 6 in is not 12.6 ft.</strong> Convert feet-and-inches to inches (12 × 12 + 6 = 150 in) or to decimal feet (12.5 ft) before comparing or calculating.", visual: "12 ft 6 in = 150 in = 12.5 ft" },
+      { title: "Read the notes", explanation: "Table notes change the number you use: \"size wire for 125% of a continuous load\", \"reduce torque 25% for lubricated threads\", \"use the next longer length column\". Apply the note before you look up the row, or after, exactly as it says.", visual: "15 A continuous × 1.25 = 18.75 A → look up 18.75 A" },
+      { title: "Interpolating between rows", explanation: "When your input falls between two rows of a performance table, assume a straight line between them. Find how far along you are (a fraction), and move that fraction of the way between the two outputs.", visual: "head 20 ft → 40 GPM, 30 ft → 32 GPM\nat 25 ft: halfway → 40 − 0.5 × 8 = 36 GPM" }
+    ],
+    finalAnswer: "2x10",
+    answerExplanation: "In the 16 in column: 2x6 spans 9 ft 9 in and 2x8 spans 12 ft 6 in — both short of 13 ft 0 in. The first that reaches is 2x10 at 15 ft 6 in. (Reading the 12 in column by mistake would wrongly pick 2x8.)",
+    example: { problem: "Example pump table: at 20 ft of head the pump moves 40 GPM; at 30 ft it moves 32 GPM. Estimate the flow at 26 ft.", steps: [
+      { text: "How far from 20 to 30 is 26?", math: "(26 − 20) ÷ (30 − 20) = 0.6" },
+      { text: "Change in flow over that row gap", math: "32 − 40 = −8 GPM" },
+      { text: "Move 0.6 of the way", math: "40 + 0.6 × (−8) = 35.2 GPM" }
+    ]},
+    keyPoints: [
+      "Name the row and the column before reading a number",
+      "For a maximum, pick the first entry that meets or beats the need",
+      "Feet-and-inches are not decimals: 12 ft 6 in = 12.5 ft",
+      "Apply the table's notes (125%, lubricated threads, next length column)",
+      "Interpolate: fraction of the way along × the change in output"
+    ],
+    mistakes: [
+      { wrong: "Reading the 12 in spacing column when the joists are 16 in apart", why: "Wider spacing means each joist carries more, so spans shrink. Use the column for your spacing." },
+      { wrong: "Treating 12 ft 6 in as 12.6 ft", why: "6 inches is half a foot: 12.5 ft, or 150 in." },
+      { wrong: "Thinking 14 AWG wire is thicker than 10 AWG", why: "Gauge numbers run backwards: the smaller the number, the thicker the wire and the more current it carries." }
+    ],
+    guided: { problem: "Example pump table: at 10 ft of head the pump moves 52 GPM; at 20 ft it moves 44 GPM. Interpolate the flow at 13 ft of head.", steps: [
+      { label: "Fraction of the way from 10 to 20", value: "(13 − 10) ÷ 10 = 0.3" },
+      { label: "Change in flow", value: "44 − 52 = −8" },
+      { label: "Flow at 13 ft: 52 + 0.3 × (−8)", value: "?" }
+    ], answer: "49.6", answerLabel: "GPM:",
+      interactiveSteps: [
+        { prompt: "How far along from 10 ft to 20 ft is 13 ft, as a decimal fraction?", hint: "(13 − 10) ÷ (20 − 10).", answer: "0.3",
+          acceptableAnswers: ["0.3", ".3", "3/10"], formatHint: "Enter a decimal, e.g. 0.5" },
+        { prompt: "By how many GPM does the flow change from 10 ft to 20 ft? (Use a negative number for a drop.)", hint: "Later value minus earlier value: 44 − 52.", answer: "-8",
+          acceptableAnswers: ["-8", "−8"], formatHint: "e.g. -5",
+          commonMistakes: { "8": "The flow DROPS as head rises, so the change is −8." } },
+        { prompt: "What is the flow at 13 ft? (52 + 0.3 × the change)", hint: "0.3 × (−8) = −2.4.", answer: "49.6",
+          acceptableAnswers: ["49.6", "49.6 GPM", "49.6 gpm"], formatHint: "Enter GPM",
+          commonMistakes: { "54.4": "That added 2.4. The flow is dropping, so subtract.", "46.4": "That moved 0.3 back from the 44 GPM end — measure from 10 ft, where the flow is 52." } }
+      ] }
+  }, function(){
+    const t = pick(["span_pick","span_value","ampacity_pick","pipe_pick","torque_lookup","interpolate","fastener_count"]);
+    if (t === "span_pick") {
+      const tb = spanTable(), c = ri(0,2), i = ri(0,3);
+      const lo = i === 0 ? tb[0][c] - 30 : tb[i - 1][c] + 1;
+      const need = ri(lo, tb[i][c]);
+      return choiceQ({ subType: t, answer: JOISTS[i], cands: JOISTS.filter(j => j !== JOISTS[i]),
+        question: `${spanText(tb)} The joists will be ${SPACINGS[c]} in apart and must span ${ftin(need)}. What is the smallest joist size that works?`,
+        explanation: `Use the ${SPACINGS[c]} in column. ` + JOISTS.slice(0, i + 1).map((j, k) =>
+          `${j}: ${ftin(tb[k][c])} ${tb[k][c] >= need ? "✓ reaches" : "✗ too short"}`).join(", ") +
+          ` for ${ftin(need)}. The first that reaches is ${JOISTS[i]}.` });
+    }
+    if (t === "span_value") {
+      const tb = spanTable(), c = ri(0,2), i = ri(0,3), v = tb[i][c];
+      const ft = Math.floor(v / 12), inch = v % 12;
+      return numQ({ subType: t, dp: 0, value: v, units: ["in","inches"],
+        question: `${spanText(tb)} What is the maximum span of a ${JOISTS[i]} at ${SPACINGS[c]} in spacing, in inches?`,
+        // a neighbouring column; the next row; read "ft in" as a decimal (12 ft 6 in → 12.6 ft)
+        cands: [tb[i][(c + 1) % 3], tb[(i + 1) % 4][c], (ft + inch / 10) * 12],
+        explanation: `Row ${JOISTS[i]}, column ${SPACINGS[c]} in: ${ftin(v)} = ${ft} × 12 + ${inch} = ${v} in.` });
+    }
+    if (t === "ampacity_pick") {
+      const gauges = [14,12,10,8,6];
+      const amp = [ri(16,18), ri(21,24), ri(29,33), ri(40,46), ri(54,60)];
+      const V = pick([120,240]), j = ri(1,4);
+      // A continuous load that, after the 125% note, lands between gauge j-1
+      // and gauge j, so the student must apply the note to get the right row.
+      let W, need; do { W = ri(Math.ceil(amp[j-1] / 1.25 * V / 100), Math.floor(amp[j] / 1.25 * V / 100)) * 100; need = W / V * 1.25; }
+      while (!(need > amp[j-1] && need <= amp[j]));
+      const ans = gauges[j] + " AWG", win = j >= 3 ? [1,2,3,4] : [0,1,2,3];
+      return choiceQ({ subType: t, answer: ans, cands: win.filter(k => k !== j).map(k => gauges[k] + " AWG"),
+        question: `${EX} — wire ampacity, copper: 14 AWG ${amp[0]} A; 12 AWG ${amp[1]} A; 10 AWG ${amp[2]} A; 8 AWG ${amp[3]} A; 6 AWG ${amp[4]} A. Note: size the wire for 125% of a continuous load. A ${nf(W)} W heater runs continuously on ${V} V. Which is the smallest wire that the table allows?`,
+        explanation: `Current = ${nf(W)} ÷ ${V} = ${fx(W/V,2)} A. With the note: ${fx(W/V,2)} × 1.25 = ${fx(need,2)} A. The first gauge rated at least ${fx(need,2)} A is ${ans} (${amp[j]} A). Smaller gauge NUMBERS are thicker wire.` });
+    }
+    if (t === "pipe_pick") {
+      const sizes = ["1/2 in","3/4 in","1 in","1 1/4 in"], lens = [25,50,100];
+      const b = [ri(6,8), ri(13,16), ri(24,28), ri(40,46)];
+      const tb = b.map(x => [x, Math.round(x * 0.72), Math.round(x * 0.5)]);
+      const fix = [["kitchen sink",2.2],["bathroom sink",1.5],["shower",2.5],["hose bib",5],["washing machine",4],["dishwasher",1.8],["bathtub",4.5]];
+      let use, gpm, run, col, i;
+      do {
+        use = sh(fix).slice(0, ri(2,4)); gpm = rnd(use.reduce((s, f) => s + f[1], 0), 1);
+        run = ri(15,95); col = run <= 25 ? 0 : run <= 50 ? 1 : 2;
+        i = tb.findIndex(r => r[col] >= gpm);
+      } while (i < 0);
+      return choiceQ({ subType: t, answer: sizes[i], cands: sizes.filter(s => s !== sizes[i]),
+        question: `${EX} — supply pipe capacity in GPM for runs up to 25 ft / 50 ft / 100 ft: ` +
+          sizes.map((s, k) => `${s}: ${tb[k].join(" / ")}`).join("; ") +
+          `. Note: if the run falls between columns, use the next longer one. A ${run} ft run must serve ${use.map(f => `a ${f[0]} (${f[1]} GPM)`).join(", ")} at once. What is the smallest pipe size that works?`,
+        explanation: `Demand = ${use.map(f => f[1]).join(" + ")} = ${gpm} GPM. A ${run} ft run uses the ${lens[col]} ft column. The first size carrying at least ${gpm} GPM there is ${sizes[i]} (${tb[i][col]} GPM).` });
+    }
+    if (t === "torque_lookup") {
+      const dia = ["1/4","5/16","3/8","7/16","1/2"];
+      const g5 = [ri(7,9), ri(15,18), ri(28,32), ri(45,50), ri(70,78)];
+      const tb = g5.map(v => [Math.round(v * 0.65), v, Math.round(v * 1.4)]);   // grade 2 / 5 / 8
+      const i = ri(0,4), c = ri(0,2), grade = [2,5,8][c], v = tb[i][c];
+      const head = `${EX} — dry torque in ft-lb for grade 2 / 5 / 8 bolts: ` +
+        dia.map((d, k) => `${d} in: ${tb[k].join(" / ")}`).join("; ") + ".";
+      const mode = pick(["lube","inlb","plain"]);
+      if (mode === "lube") {
+        const val = v * 0.75;
+        return numQ({ subType: t, dp: 2, value: val, units: ["ft-lb","ft lb","ft·lb"],
+          question: `${head} Note: for lubricated threads, use 75% of the table value. What torque should a ${dia[i]} in grade ${grade} bolt with oiled threads get, in ft-lb? Round to the nearest hundredth.`,
+          // forgot the note; reduced by 75% instead of to 75%; read the next grade over
+          cands: [v, v * 0.25, tb[i][(c + 1) % 3] * 0.75],
+          explanation: `Row ${dia[i]} in, grade ${grade} column: ${v} ft-lb dry. Lubricated: ${v} × 0.75 = ${fx(val,2)} ft-lb.` });
+      }
+      if (mode === "inlb") return numQ({ subType: t, dp: 0, value: v * 12, units: ["in-lb","in lb","in·lb"],
+        question: `${head} A torque wrench reads in inch-pounds. What setting matches the table for a ${dia[i]} in grade ${grade} bolt, in in-lb? (1 ft-lb = 12 in-lb.)`,
+        // didn't convert; divided by 12; converted the wrong grade
+        cands: [v, v / 12, tb[i][(c + 1) % 3] * 12],
+        explanation: `Table: ${v} ft-lb. ${v} × 12 = ${v * 12} in-lb.` });
+      return numQ({ subType: t, dp: 0, value: v, units: ["ft-lb","ft lb","ft·lb"],
+        question: `${head} What dry torque does the table give for a ${dia[i]} in grade ${grade} bolt, in ft-lb?`,
+        // the next grade over; the next size down the table; a row and column both off
+        cands: [tb[i][(c + 1) % 3], tb[(i + 1) % 5][c], tb[(i + 4) % 5][(c + 2) % 3]],
+        explanation: `Row ${dia[i]} in, column grade ${grade}: ${v} ft-lb.` });
+    }
+    if (t === "interpolate") {
+      const heads = [10,20,30,40,50], g0 = ri(48,64);
+      const flows = [g0]; for (let k = 1; k < 5; k++) flows.push(flows[k - 1] - ri(4,9));
+      const i = ri(0,3), h = heads[i] + ri(1,9), f = (h - heads[i]) / 10;
+      const val = flows[i] + f * (flows[i + 1] - flows[i]);
+      return numQ({ subType: t, dp: 1, value: val, units: ["gpm","GPM"],
+        question: `${EX} — pump performance, total head (ft) → flow (GPM): ` + heads.map((x, k) => `${x} ft → ${flows[k]}`).join("; ") +
+          `. Interpolate the flow at ${h} ft of head. Round to the nearest tenth.`,
+        // the row below; the row above; measured the fraction from the wrong end; the midpoint
+        cands: [flows[i], flows[i + 1], flows[i + 1] + f * (flows[i] - flows[i + 1]), (flows[i] + flows[i + 1]) / 2],
+        explanation: `${h} ft is between ${heads[i]} and ${heads[i + 1]} ft, ${fx(f,1)} of the way along. Flow changes by ${flows[i + 1]} − ${flows[i]} = ${flows[i + 1] - flows[i]} GPM over that gap. ${flows[i]} + ${fx(f,1)} × (${flows[i + 1] - flows[i]}) = ${fx(val,1)} GPM.` });
+    }
+    // fastener_count
+    const wall = ri(28,36), ceil = ri(36,46), floor = ri(48,60), box = pick([250,500,1000]);
+    const nw = ri(10,60), nc = ri(6,40), total = nw * wall + nc * ceil, boxes = up(total / box);
+    return numQ({ subType: "fastener_count", dp: 0, value: boxes, units: ["boxes"],
+      question: `${EX} — screws per 4x8 sheet: walls ${wall}; ceilings ${ceil}; floor sheathing ${floor}. Screws come ${box} to a box. A job has ${nw} wall sheets and ${nc} ceiling sheets. How many boxes of screws are needed?`,
+      // wall rate used for every sheet; rounded down; used the floor row for the ceiling
+      cands: [up((nw + nc) * wall / box), down(total / box) || 1, up((nw * wall + nc * floor) / box)],
+      explanation: `Walls: ${nw} × ${wall} = ${nf(nw * wall)}. Ceilings: ${nc} × ${ceil} = ${nf(nc * ceil)}. Total ${nf(total)} screws ÷ ${box} = ${fx(total / box,2)} → ${boxes} boxes (round up).` });
+  });
+
+  // =====================================================================
+  // M-383  Technical Capstone  (tier 8)
+  // Prereqs: Cost Estimation (T8), Pythagorean Layout (T7), Applied
+  // Trigonometry (T7), Technical Charts (T8).
+  // Each question is a whole small project, but asks for ONE well-defined
+  // final quantity so it can be typed and checked; the explanation walks
+  // every intermediate step so a wrong answer shows where it went wrong.
+  // =====================================================================
+  _addSkill(8, "Technical Capstone", "Technical Capstone", 4, {
+    goalProblem: "A 12 ft × 10 ft deck: joists 16 in apart along the 12 ft side, each 10 ft long, priced from an example table (2x8 spans up to 12 ft 6 in, $16.40 each). Decking costs $3.25 per sq ft plus 10% waste. Sales tax is 7%. What is the material cost with tax?",
+    teachingSteps: [
+      { title: "Plan before you calculate", explanation: "Write the parts down in order: <strong>geometry → quantities → table lookups → waste and rounding → cost → markup/tax</strong>. Each answer feeds the next, so a wrong early step travels all the way to the bottom line. Label every number with its unit.", visual: "area → joists → decking → $ → tax" },
+      { title: "Geometry", explanation: "Areas, perimeters and volumes come first. Sloped parts — rafters, stair stringers, ramps — are the hypotenuse of a right triangle: <strong>length = √(rise² + run²)</strong>. Convert inches to feet (or the reverse) before mixing them.", visual: "run 6 ft, rise 4 ft → √(36 + 16) = 7.21 ft" },
+      { title: "Counting things on a spacing", explanation: "Members on a spacing need one more than the number of gaps: <strong>count = (length ÷ spacing, rounded up) + 1</strong>. 12 ft at 16 in: 144 ÷ 16 = 9 gaps → 10 joists.", visual: "|---|---|---|  3 gaps, 4 posts" },
+      { title: "Tables, waste, rounding", explanation: "Pick sizes from the spec table (smallest that works). Add the waste factor to bulk materials, then round up to units you can buy. Things sold by the square foot or cubic yard may round to their own increments (ready-mix concrete comes in quarter yards).", visual: "120 sq ft × 1.10 = 132 sq ft of decking" },
+      { title: "Cost, then tax", explanation: "Quantity × unit price for each line, add the lines, then markup and tax exactly as the job states. Sanity-check the result: does $2,000 for a small deck sound right? A bottom line off by 10× usually means a units slip.", visual: "joists + decking = subtotal → × 1.07" }
+    ],
+    finalAnswer: "634.51",
+    answerExplanation: "Joists: 144 in ÷ 16 in = 9 gaps → 10 joists; a 10 ft span needs a 2x8 (good to 12 ft 6 in), so 10 × $16.40 = $164.00. Decking: 120 sq ft × 1.10 = 132 sq ft × $3.25 = $429.00. Subtotal $593.00 × 1.07 = $634.51.",
+    example: { problem: "A stair rises 105 in total. Risers may be at most 7.75 in, and each tread is 10 in deep. How long is the stringer?", steps: [
+      { text: "Risers: 105 ÷ 7.75 = 13.5 → round up", math: "14 risers" },
+      { text: "Treads are one fewer than risers", math: "13 treads × 10 in = 130 in of run" },
+      { text: "Stringer is the hypotenuse", math: "√(105² + 130²) = √27,925 ≈ 167.1 in" }
+    ]},
+    keyPoints: [
+      "Order: geometry → quantities → tables → waste/rounding → cost → tax",
+      "Sloped length = √(rise² + run²)",
+      "Members on a spacing: gaps rounded up, plus one",
+      "Round purchases up to units you can buy",
+      "Sanity-check the bottom line against what the job should cost"
+    ],
+    mistakes: [
+      { wrong: "Forgetting the end joist (or post): 12 ft at 16 in = 9 joists", why: "9 is the number of GAPS. Members sit at both ends, so there are 10." },
+      { wrong: "Adding rise and run for a sloped length", why: "Rise and run are legs of a right triangle. The slope is the hypotenuse: √(rise² + run²), always less than rise + run." },
+      { wrong: "Counting as many treads as risers", why: "The top riser lands on the floor above, so a stair has one fewer tread than risers." }
+    ],
+    guided: { problem: "A stair rises 98 in. Risers may be at most 7.75 in and treads are 10 in deep. How long is the stringer, to the nearest tenth of an inch?", steps: [
+      { label: "Risers: 98 ÷ 7.75 = 12.6, round up", value: "13" },
+      { label: "Treads = risers − 1", value: "12" },
+      { label: "Total run = 12 × 10", value: "120 in" },
+      { label: "Stringer = √(98² + 120²)", value: "?" }
+    ], answer: "154.9", answerLabel: "Stringer (in):",
+      interactiveSteps: [
+        { prompt: "How many risers are needed? (98 in total rise, 7.75 in maximum each)", hint: "98 ÷ 7.75 = 12.6. Can a riser be taller than 7.75 in?", answer: "13",
+          acceptableAnswers: ["13", "13 risers"], formatHint: "Enter a whole number",
+          commonMistakes: { "12": "12 risers would each be 8.17 in — over the 7.75 in limit. Round up." } },
+        { prompt: "How many treads does a 13-riser stair have?", hint: "The top riser steps onto the upper floor.", answer: "12",
+          acceptableAnswers: ["12", "12 treads"], formatHint: "Enter a whole number",
+          commonMistakes: { "13": "One fewer tread than risers — the floor above is the last step." } },
+        { prompt: "Total run is 12 × 10 = 120 in. How long is the stringer, √(98² + 120²), to the nearest tenth of an inch?", hint: "98² = 9,604 and 120² = 14,400.", answer: "154.9",
+          acceptableAnswers: ["154.9", "154.9 in", "154.9 inches"], formatHint: "Enter inches, e.g. 150.2",
+          commonMistakes: { "218": "That is 98 + 120. The stringer is the hypotenuse, not the sum of the legs.", "162.8": "That uses 13 treads (130 in of run). There are only 12." } }
+      ] }
+  }, function(){
+    const t = pick(["deck_total","slab_cost","fence_cost","roof_bundles","stair_stringer","ramp_length","circuit_plan","paint_bid"]);
+    if (t === "deck_total") {
+      const L = ri(10,20), W = pick([8,9,10,11,12,13,14]);
+      const spans = [ri(108,118), ri(144,154), ri(176,188)], names = ["2x6","2x8","2x10"];
+      const prices = [ri(900,1200) / 100, ri(1400,1800) / 100, ri(2000,2600) / 100];
+      const j = spans.findIndex(s => s >= W * 12);
+      const n = up(L * 12 / 16) + 1, deckRate = ri(250,575) / 100, w = pick([5,10,15]), tx = pick([5,6,7,8]);
+      const joists = n * prices[j], decking = L * W * (1 + w / 100) * deckRate;
+      const sub = rnd(joists, 2) + rnd(decking, 2), total = sub * (1 + tx / 100);
+      return numQ({ subType: t, dp: 2, value: total, money: true,
+        question: `Deck: ${L} ft along the house × ${W} ft out. Joists run the ${W} ft direction, 16 in apart along the ${L} ft side (count both ends). ${EX}: max span and price per joist — ${names.map((nm, k) => `${nm}: ${ftin(spans[k])}, ${usd(prices[k])}`).join("; ")}. Use the smallest joist that spans ${W} ft. Decking: ${usd(deckRate)} per sq ft of deck, plus ${w}% waste. Sales tax ${tx}% on all materials. What is the total material cost with tax, in dollars?`,
+        // forgot the end joist; no waste; no tax; the next joist size up
+        cands: [((n - 1) * prices[j] + decking) * (1 + tx / 100), (joists + L * W * deckRate) * (1 + tx / 100), sub,
+                (n * prices[Math.min(j + 1, 2)] + decking) * (1 + tx / 100)],
+        explanation: `Joist size: ${W} ft = ${W * 12} in, so ${names[j]} (${ftin(spans[j])}). Count: ${L * 12} in ÷ 16 = ${fx(L * 12 / 16, 2)} → ${up(L * 12 / 16)} gaps + 1 = ${n} joists × ${usd(prices[j])} = ${usd(joists)}. Decking: ${L} × ${W} = ${L * W} sq ft × ${fx(1 + w / 100, 2)} = ${fx(L * W * (1 + w / 100), 1)} sq ft × ${usd(deckRate)} = ${usd(decking)}. Subtotal ${usd(sub)} × ${fx(1 + tx / 100, 2)} = ${usd(total)}.` });
+    }
+    if (t === "slab_cost") {
+      const L = ri(10,30), W = ri(8,24), th = pick([4,5,6]), w = pick([5,8,10]), price = ri(29,37) * 5, fee = pick([0,65,85,120]);
+      const yd = L * W * (th / 12) / 27 * (1 + w / 100), order = up(yd * 4) / 4, cost = order * price + fee;
+      return numQ({ subType: t, dp: 2, value: cost, money: true,
+        question: `A ${L} ft × ${W} ft slab, ${th} in thick. Add ${w}% for waste and spillage. Ready-mix is ordered in quarter-yard steps (round up to the next 0.25 cu yd) at ${usd(price)} per cubic yard${fee ? `, plus a ${usd(fee)} delivery fee` : ", delivery included"}. What does the concrete cost, in dollars?`,
+        // no quarter-yard rounding; no waste; thickness left in inches ÷ 10
+        cands: [yd * price + fee, up(L * W * (th / 12) / 27 * 4) / 4 * price + fee, up(L * W * (th / 10) / 27 * (1 + w / 100) * 4) / 4 * price + fee],
+        explanation: `Volume = ${L} × ${W} × (${th} ÷ 12) = ${fx(L * W * th / 12, 2)} cu ft ÷ 27 = ${fx(L * W * th / 12 / 27, 3)} cu yd. With waste: × ${fx(1 + w / 100, 2)} = ${fx(yd, 3)} → order ${fx(order, 2)} cu yd. Cost = ${fx(order, 2)} × ${usd(price)}${fee ? ` + ${usd(fee)}` : ""} = ${usd(cost)}.` });
+    }
+    if (t === "fence_cost") {
+      const F = ri(6,25) * 8 + pick([0, ri(1,7)]), sp = pick([4,6]), pp = ri(1800,2800) / 100, pr = ri(700,1100) / 100, pk = ri(220,480) / 100, tx = pick([5,6,7,8]);
+      const sections = up(F / 8), posts = sections + 1, rails = sections * 2, pickets = up(F * 12 / sp);
+      const sub = posts * pp + rails * pr + pickets * pk, total = sub * (1 + tx / 100);
+      return numQ({ subType: t, dp: 2, value: total, money: true,
+        question: `A straight ${F} ft fence: posts at most 8 ft apart (one at each end), two 8 ft rails per section, and pickets every ${sp} in on center. Prices: post ${usd(pp)}, rail ${usd(pr)}, picket ${usd(pk)}. Sales tax ${tx}%. What is the material cost with tax, in dollars?`,
+        // missed the end post; one rail per section; no tax
+        cands: [(sub - pp) * (1 + tx / 100), (sub - sections * pr) * (1 + tx / 100), sub],
+        explanation: `Sections: ${F} ÷ 8 = ${fx(F / 8, 3)} → ${sections}; posts ${sections} + 1 = ${posts}; rails ${sections} × 2 = ${rails}; pickets ${F * 12} in ÷ ${sp} = ${fx(F * 12 / sp, 2)} → ${pickets}. Subtotal = ${posts} × ${usd(pp)} + ${rails} × ${usd(pr)} + ${pickets} × ${usd(pk)} = ${usd(sub)}. With tax: × ${fx(1 + tx / 100, 2)} = ${usd(total)}.` });
+    }
+    if (t === "roof_bundles") {
+      const L = ri(24,48), W = pick([20,22,24,26,28,30,32]), p = pick([4,5,6,7,8,9,10,12]), w = pick([10,15]);
+      const run = W / 2 + 1, rafter = run * Math.sqrt(1 + (p / 12) * (p / 12)), area = 2 * rafter * (L + 2);
+      const squares = area * (1 + w / 100) / 100, bundles = up(squares * 3);
+      return numQ({ subType: t, dp: 0, value: bundles, units: ["bundles"],
+        question: `A gable roof covers a ${L} ft × ${W} ft building with a ${p}/12 pitch. Each side's slope runs from the ridge to 1 ft past the wall (run = ${W}/2 + 1 ft), and the roof overhangs 1 ft at each gable end (roof length ${L} + 2 ft). Add ${w}% waste. Shingles come 3 bundles per square (100 sq ft). How many bundles must be ordered?`,
+        // ignored the pitch (flat footprint); no waste; one bundle per square
+        cands: [up(2 * run * (L + 2) * (1 + w / 100) / 100 * 3), up(area / 100 * 3), up(squares)],
+        explanation: `Rise = ${fx(run, 1)} × ${p}/12 = ${fx(run * p / 12, 3)} ft. Rafter = √(${fx(run, 1)}² + ${fx(run * p / 12, 3)}²) = ${fx(rafter, 3)} ft. Area = 2 × ${fx(rafter, 3)} × ${L + 2} = ${nf(area, 1)} sq ft. With waste: × ${fx(1 + w / 100, 2)} ÷ 100 = ${fx(squares, 3)} squares × 3 = ${fx(squares * 3, 2)} → ${bundles} bundles.` });
+    }
+    if (t === "stair_stringer") {
+      const H = ri(150,250) / 2, tread = pick([10,10.5,11]);
+      const n = up(H / 7.75), runIn = (n - 1) * tread, len = Math.sqrt(H * H + runIn * runIn);
+      return numQ({ subType: t, dp: 1, value: len, units: ["in","inches"],
+        question: `A stair must climb ${fx(H, null)} in. Code in this example caps risers at 7.75 in, and each tread is ${tread} in deep. Using the fewest risers allowed, how long is the stringer (the straight line from bottom to top of the run)? Round to the nearest tenth of an inch.`,
+        // counted as many treads as risers; added rise and run; used one riser too few (rounded down)
+        cands: [Math.sqrt(H * H + (n * tread) * (n * tread)), H + runIn, Math.sqrt(H * H + Math.pow((n - 2) * tread, 2))],
+        explanation: `Risers: ${fx(H, null)} ÷ 7.75 = ${fx(H / 7.75, 2)} → ${n}. Treads: ${n} − 1 = ${n - 1}, run = ${n - 1} × ${tread} = ${fx(runIn, null)} in. Stringer = √(${fx(H, null)}² + ${fx(runIn, null)}²) = ${fx(len, 1)} in.` });
+    }
+    if (t === "ramp_length") {
+      const R = ri(12,36), slope = pick([12,16,20]);
+      const runFt = R * slope / 12, lenFt = Math.sqrt(R * R + (R * slope) * (R * slope)) / 12;
+      return numQ({ subType: t, dp: 2, value: lenFt, units: ["ft","feet"],
+        question: `An access ramp must rise ${R} in at a slope of 1:${slope} (1 in of rise per ${slope} in of run). How long is the sloped ramp surface, in feet? Round to the nearest hundredth.`,
+        // the horizontal run only; rise + run in feet; left in inches
+        cands: [runFt, (R + R * slope) / 12, lenFt * 12],
+        explanation: `Run = ${R} × ${slope} = ${R * slope} in. Surface = √(${R}² + ${R * slope}²) = ${fx(lenFt * 12, 2)} in. ÷ 12 = ${fx(lenFt, 2)} ft.` });
+    }
+    if (t === "circuit_plan") {
+      const Wf = pick([40,50,64,75,100,150,200]), B = pick([15,20]);
+      const perCirc = down(0.8 * B * 120 / Wf), n = ri(perCirc + 1, perCirc * 5), circuits = up(n / perCirc);
+      return numQ({ subType: t, dp: 0, value: circuits, units: ["circuits"],
+        question: `A warehouse needs ${n} light fixtures at ${Wf} W each, all on continuously. They go on ${B}-amp, 120-volt circuits, each loaded to no more than 80% of its rating, and a fixture can't be split between circuits. How many circuits are needed?`,
+        // ignored the 80% rule; split watts across circuits as if fixtures were divisible; rounded down
+        cands: [up(n / down(B * 120 / Wf)), up(n * Wf / (0.8 * B * 120)), down(n / perCirc) || 1],
+        explanation: `Each circuit carries 0.8 × ${B} × 120 = ${nf(0.8 * B * 120)} W → ${nf(0.8 * B * 120)} ÷ ${Wf} = ${fx(0.8 * B * 120 / Wf, 2)} → ${perCirc} fixtures per circuit (round down). Circuits = ${n} ÷ ${perCirc} = ${fx(n / perCirc, 2)} → ${circuits} (round up).` });
+    }
+    // paint_bid
+    const L = ri(10,24), W = ri(10,18), H = pick([8,9,10]), doors = ri(1,3), wins = ri(1,4);
+    const gross = 2 * (L + W) * H, net = gross - doors * 21 - wins * 15;
+    const gal = up(net * 2 / 350), pp = ri(3200,6200) / 100, rate = pick([120,150,175,200]), wage = pick([28,32,35,40]), m = pick([15,20,25]);
+    const hrs = net * 2 / rate, cost = gal * pp + hrs * wage, bid = cost * (1 + m / 100);
+    return numQ({ subType: "paint_bid", dp: 2, value: bid, money: true,
+      question: `Paint the walls of a ${L} ft × ${W} ft room with ${H} ft ceilings: subtract ${doors} door${doors > 1 ? "s" : ""} (21 sq ft each) and ${wins} window${wins > 1 ? "s" : ""} (15 sq ft each). Two coats. Paint covers 350 sq ft per gallon, costs ${usd(pp)} a gallon, and is bought in whole gallons. A painter covers ${rate} sq ft per hour (per coat) at ${usd(wage)}/h. Add a ${m}% markup to paint plus labour. What is the bid, in dollars?`,
+      // one coat; openings not subtracted; markup left off
+      cands: [(up(net / 350) * pp + net / rate * wage) * (1 + m / 100), (up(gross * 2 / 350) * pp + gross * 2 / rate * wage) * (1 + m / 100), cost],
+      explanation: `Walls = 2 × (${L} + ${W}) × ${H} = ${gross} sq ft − ${doors * 21} − ${wins * 15} = ${net} sq ft. Two coats = ${net * 2} sq ft. Paint: ${net * 2} ÷ 350 = ${fx(net * 2 / 350, 2)} → ${gal} gal × ${usd(pp)} = ${usd(gal * pp)}. Labour: ${net * 2} ÷ ${rate} = ${fx(hrs, 3)} h × ${usd(wage)} = ${usd(hrs * wage)}. Cost ${usd(cost)} × ${fx(1 + m / 100, 2)} = ${usd(bid)}.` });
+  });
+
+})();
 // ==== END GRADUATION PLAN CONTENT: TRADES-MODELING ====
 </script>
 
