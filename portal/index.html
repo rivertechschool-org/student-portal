@@ -25640,6 +25640,10 @@ Students you had withdrawn stay withdrawn.`)) {
                               <button class="btn btn-primary small" onclick="app.gradeSubmission('${submission.id}', '${assignmentId}')">
                                 ${isExcused ? '✏️ Edit Status' : (isGraded ? '✏️ Edit Grade' : '📝 Grade')}
                               </button>
+                              ${isExcused ? '' : `
+                              <button class="btn btn-secondary small" onclick="app.excuseStudent('${submission.student_id}', '${assignmentId}')">
+                                ✋ Excuse
+                              </button>`}
                             ` : `
                               <span style="color: var(--muted); font-size: 12px;">No submission</span>
                               <button class="btn btn-primary small" onclick="app.gradeNonSubmitted('${student.id}', '${assignmentId}')">
@@ -27401,7 +27405,14 @@ Students you had withdrawn stay withdrawn.`)) {
             .select('title')
             .eq('id', assignmentId)
             .single());
-          
+
+          // Excuse is also offered on work already handed in (Jordan,
+          // 2026-10-06). The row is the one the list showed, so studentId is
+          // the submission's own student_id, whichever id that is.
+          const existing = await this.loadSubmissionToExcuse(studentId, assignmentId);
+          const hasWork = this.submissionHasWork(existing);
+          const fileName = existing?.file_name ? this.escapeHtml(existing.file_name) : '';
+
           const modalContent = `
             <div>
               <h3>Excuse Assignment</h3>
@@ -27416,8 +27427,13 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>
               
               <div class="card" style="background: var(--warning); color: black; padding: 10px; margin: 15px 0;">
-                <p>This will mark the assignment as excused and it won't count toward the student's grade.</p>
+                <p style="color: black;">This will mark the assignment as excused and it won't count toward the student's grade.</p>
               </div>
+              ${hasWork ? `
+              <div class="card" style="border: 2px solid var(--danger); padding: 10px; margin: 15px 0;">
+                <strong style="color: var(--danger);">⚠️ This work has already been handed in.</strong>
+                <p style="margin-top: 5px; color: var(--text);">Excusing it deletes what was submitted${fileName ? `, including the file <strong>${fileName}</strong>` : ''}${existing.status === 'graded' ? ', and its grade and feedback' : ''}. The student and their parents will no longer see it.</p>
+              </div>` : ''}
             </div>
             
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -27436,10 +27452,74 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
       
+      // The student's row for this assignment, if there is one. Read with its
+      // file fields so an excuse can remove what was handed in.
+      async loadSubmissionToExcuse(studentId, assignmentId) {
+        const { data } = await this.supabaseQuery(() => this.auth.supabase
+          .from('assignment_submissions')
+          .select('id, status, content, file_url, file_name, drive_file_id, file_path, points_earned')
+          .eq('assignment_id', assignmentId)
+          .eq('student_id', studentId)
+          .maybeSingle());
+        return data || null;
+      }
+
+      // True when a row holds something the student handed in, or a grade.
+      // A row the Gradebook wrote for a typed grade counts: excusing it clears
+      // that grade the same way.
+      submissionHasWork(sub) {
+        if (!sub || sub.status === 'excused') return false;
+        return !!(sub.file_url || sub.drive_file_id || sub.file_path
+          || (sub.content && sub.content.trim()) || sub.points_earned != null);
+      }
+
       async submitExcuseStudent(studentId, assignmentId) {
         try {
           const excuseReason = document.getElementById('excuse-reason').value;
-          
+          const excused = {
+            status: 'excused',
+            excused_by: this.userInfo.user.id,
+            excused_at: new Date().toISOString(),
+            excuse_reason: excuseReason || null
+          };
+
+          // Already handed in: delete the work, then excuse the same row.
+          //
+          // The file goes first, and is awaited: once the row below is
+          // cleared, the portal has no record of the file left to remove it
+          // by. Trash, not delete, like every other submission file: the
+          // school account can restore it from the Drive trash for 30 days.
+          const existing = await this.loadSubmissionToExcuse(studentId, assignmentId);
+          if (this.submissionHasWork(existing)) {
+            if (existing.drive_file_id) {
+              try {
+                await this.trashDriveFile(existing.drive_file_id);
+              } catch (e) {
+                console.warn('Could not remove the submitted file:', e);
+                const go = confirm(`The submitted file could not be removed from Google Drive (${e.message}).\n\nExcuse the assignment anyway? The file would stay in the school Drive.`);
+                if (!go) return;
+              }
+            }
+            const { error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_submissions')
+              .update({
+                ...excused,
+                content: 'Assignment excused by teacher',
+                file_url: null, file_name: null, drive_file_id: null, file_path: null,
+                storage_type: null, submission_type: null, submitted_at: null,
+                grade: null, points_earned: null, feedback: null, graded_at: null,
+                grade_override: false
+              })
+              .eq('id', existing.id));
+            if (error) throw error;
+
+            this.showNotification('Assignment excused and the submitted work deleted', 'success');
+            this.closeModal('excuse-student');
+            this.closeModal('view-submissions');
+            setTimeout(() => this.viewSubmissions(assignmentId), 100);
+            return;
+          }
+
           // Upsert, not insert.
           //
           // This is only offered on a row with no submission, which is why a
@@ -27456,10 +27536,7 @@ Students you had withdrawn stay withdrawn.`)) {
               assignment_id: assignmentId,
               student_id: studentId,
               content: 'Assignment excused by teacher',
-              status: 'excused',
-              excused_by: this.userInfo.user.id,
-              excused_at: new Date().toISOString(),
-              excuse_reason: excuseReason || null
+              ...excused
             }, { onConflict: 'assignment_id,student_id' }));
           
           if (error) throw error;

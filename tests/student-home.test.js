@@ -230,6 +230,10 @@ ok('each needs-attention skill has a practise button by subject',
   skillsHtml.includes('data-home-practice="Math"') && skillsHtml.includes('data-home-practice="Reading"'));
 ok('and names where it will open', st.includes('in 🥋 Math Dojo') && st.includes('in ✒️ English Lyceum'));
 ok('recently mastered is listed', st.includes('Equivalent Fractions'));
+ok('the summary keeps the totals and the attention count in sight while folded',
+  /^<summary>🌟 Skills <small>14 mastered · 4 in progress · 2 need attention<\/small><\/summary>/.test(skillsHtml));
+ok('the Skills card is a fold that starts closed',
+  /<details class="card home-card home-fold" id="home-skills" hidden><\/details>/.test(html));
 const noSkills = text(portal.homeRenderSkills({}));
 ok('no skills -> says how to start', noSkills.includes('No skills started yet'));
 ok('nothing stuck or fading -> says so', noSkills.includes('Nothing needs attention'));

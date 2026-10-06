@@ -35,6 +35,22 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-06 — Luke's Claude
+**Two of Jordan's emailed requests from today are live; the third waits on his answers.**
+- **Student Home: Skills folds away and starts closed.** The summary line keeps the totals
+  in sight ("18 mastered · 6 in progress · 2 need attention"); stuck and fading skills still
+  reach Do this next. The journey now opens the card before reading it.
+- **Excuse works on handed-in work.** Submissions list: every handed-in row has ✋ Excuse.
+  The modal warns that the submission, its file, grade and feedback will be deleted. The
+  Drive file is *trashed* (restorable by the school account for 30 days), like every other
+  submission file, and before the row is cleared. If Drive refuses, the teacher is asked whether to excuse anyway. RTC
+  already paid for a graded row is not taken back. Test: `tests/excuse-submitted-work.test.js`.
+- **Sub cover for absent teachers: not started.** Luke emailed Jordan three questions about
+  it today (notify admins or just a list; what the sub sees; does it expire and does the
+  teacher see what the sub recorded). It needs new tables, so the backend repo gets a
+  migration when it is built.
+**Needs:** Jordan, answer Luke's sub-cover email.
+
 ## 2026-10-02 — Jordan's Claude
 **Students (and parents) can see how they're doing and what to do next.** The student
 site's Home now shows **Do this next** (overdue work, due soon, assigned practice, stuck

@@ -266,6 +266,10 @@ def journey_busy(ctx, tag):
     check(f'[{tag}] week-over-week arrows are drawn', '↑' in practice and '↓' in practice and '=' in practice)
     check(f'[{tag}] finished recently is listed', 'Clockwork Defense' in practice and 'Score 82%' in practice)
 
+    check(f'[{tag}] Skills starts folded', not page.evaluate("() => document.getElementById('home-skills').open"))
+    check(f'[{tag}] the folded Skills card still shows its totals',
+          'mastered' in page.inner_text('#home-skills summary'), page.inner_text('#home-skills summary'))
+    page.click('#home-skills summary')
     skills = page.inner_text('#home-skills')
     check(f'[{tag}] stuck and fading skills are explained', 'stuck: 41% after 6 tries' in skills
           and 'needs a refresh' in skills, skills)
@@ -306,7 +310,9 @@ def journey_quiet(ctx, tag):
           and 'Keep a skill fresh' in nxt, nxt)
     check(f'[{tag}] empty cards say so', 'No practice this week or last' in page.inner_text('#home-practice')
           and 'No attendance recorded yet' in page.inner_text('#home-attendance')
-          and 'Nothing needs attention' in page.inner_text('#home-skills'))
+          and 'mastered' in page.inner_text('#home-skills summary'))
+    page.click('#home-skills summary')
+    check(f'[{tag}] opened, Skills says nothing needs attention', 'Nothing needs attention' in page.inner_text('#home-skills'))
     check(f'[{tag}] no sideways page scroll', no_sideways_scroll(page))
     # The stub still holds four enrolment rows (as if three classes were
     # closed for the year); the overview's count of one must be what shows,
