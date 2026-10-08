@@ -35,6 +35,21 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-08 — Luke's Claude
+**Sub cover, built to Jordan's answers of 2026-10-07.** A class's teacher (or an admin)
+presses **🙋 Sub Days** on the class, flags the days they will be away (only days the class
+meets are added) and leaves notes for each day. Admins see them on the **🙋 Sub Cover**
+dashboard card, with no notification, and pick a sub per day. On that day only, the class
+appears under **Covering today** at the top of the sub's Classes page: the register,
+the assignments (read only) and the teacher's notes, plus a box for notes back that cannot
+be edited once added. The teacher sees who covered and their notes under Sub Days.
+The class tile count in `tests/class-actions-grouping.test.js` went from 10 to 11 for it.
+Journey: `debug-tools/sub-cover-journeys.mjs`. Unit: `tests/sub-cover.test.js`.
+**Needs (Luke):** apply the backend migration `…_a_substitute_covers_a_class_for_the_day.sql`
+(backend repo, committed 2026-10-08). Until then the buttons say "Sub cover is not switched
+on yet" and nothing else changes. The backend repo also gained `tools/local-db.sh`, a
+throwaway local database for testing rules as real people; its README-style header says how.
+
 ## 2026-10-06 — Luke's Claude
 **Two of Jordan's emailed requests from today are live; the third waits on his answers.**
 - **Student Home: Skills folds away and starts closed.** The summary line keeps the totals
@@ -45,11 +60,8 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
   Drive file is *trashed* (restorable by the school account for 30 days), like every other
   submission file, and before the row is cleared. If Drive refuses, the teacher is asked whether to excuse anyway. RTC
   already paid for a graded row is not taken back. Test: `tests/excuse-submitted-work.test.js`.
-- **Sub cover for absent teachers: not started.** Luke emailed Jordan three questions about
-  it today (notify admins or just a list; what the sub sees; does it expire and does the
-  teacher see what the sub recorded). It needs new tables, so the backend repo gets a
-  migration when it is built.
-**Needs:** Jordan, answer Luke's sub-cover email.
+- **Sub cover:** see the 2026-10-08 entry.
+**Needs:** nothing.
 
 ## 2026-10-02 — Jordan's Claude
 **Students (and parents) can see how they're doing and what to do next.** The student

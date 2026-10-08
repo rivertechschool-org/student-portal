@@ -91,13 +91,16 @@ const KEPT = [
   ['Class Notes', 'app.showClassNotes('],
   ['Award RTC', 'app.showClassRTCAward('],
   ['Progress', 'app.showClassProgress('],
+  ['Sub Days', 'app.showCoverDays('],
 ];
 for (const [label, call] of KEPT) ok(`${label} still in the grid`, grid.includes(call));
 
 // Nine tiles for a teacher after the regrouping, plus 📈 Progress (2026-10-01):
 // a class-level screen of its own, not something done inside another tile.
+// Plus 🙋 Sub Days (2026-10-08): flagging the days the class needs a sub is
+// done to the class itself, which is where Jordan asked for it.
 const teacherTiles = (teacherTilesSlice.match(/<button class="btn btn-(primary|secondary)"/g) || []).length;
-check(`the teacher grid is the regrouped nine plus Progress`, teacherTiles, 10);
+check(`the teacher grid is the regrouped nine plus Progress and Sub Days`, teacherTiles, 11);
 
 // ---- the moves did not break the people who never had these ------------
 console.log('\n== students and parents are unaffected ==\n');

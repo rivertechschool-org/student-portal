@@ -2031,6 +2031,8 @@
                 </div>
               </div>
   
+              <!-- Classes this teacher is covering as a sub today (renderCoverToday) -->
+              <div id="cover-today" hidden></div>
               <div id="classes-content">
                 <!-- Classes will be loaded here -->
               </div>
@@ -17577,6 +17579,9 @@
 
         console.log('🔍 Rendering classes, userType:', userType, 'classes count:', this.classes?.length);
 
+        // A class being covered today sits above the teacher's own week.
+        if (isTeacherOrAdmin) this.renderCoverToday();
+
         // Apply user-set subject/grade filters before all the existing
         // status/enrollment splits. Filters are applied to the input list so
         // the "active" / "closed" / "withdrawn" buckets only contain matches.
@@ -19185,6 +19190,10 @@
                 ${showTeacherFeatures ? `
                   <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}')">
                     📋 Class Attendance
+                  </button>
+                  <button class="btn btn-secondary" onclick="app.showCoverDays('${classId}')"
+                    title="Flag the days this class needs a sub, with notes for each day">
+                    🙋 Sub Days
                   </button>
                 ` : ''}
                 <button class="btn btn-secondary" onclick="app.viewAssignments('${classId}')"
@@ -34773,6 +34782,18 @@ Students you had withdrawn stay withdrawn.`)) {
                     </div>
                   </div>
                 </div>
+
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #3498db; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(52, 152, 219, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.showCoverBoard()">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">🙋</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Sub Cover</div>
+                      <div style="color: var(--muted); font-size: 11px;">Days a teacher is away; assign a sub</div>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           `;
@@ -44673,6 +44694,346 @@ Students you had withdrawn stay withdrawn.`)) {
 
     // ==================== CLASS ATTENDANCE (Teacher) ====================
 
+    // ==================== SUB COVER ====================
+    // Jordan, 2026-10-06/07. A teacher (or an admin) flags the days a class's
+    // teacher will be away and leaves notes for each day. The days wait on the
+    // admin Sub Cover board, with no notification, until an admin assigns a
+    // sub. On the day, and only that day, the class shows at the top of the
+    // sub's Classes page: the register, the assignments (read only) and the
+    // teacher's notes, plus a box for notes back. The sub cannot change
+    // assignments, grades or the teacher's notes; their own notes cannot be
+    // edited once left. Every write is an rt_cover_* call, which decides who
+    // may make it; the buttons here are only the way in.
+
+    async _coverRpc(fn, args = {}) {
+      const { data, error } = await this.supabaseQuery(() => this.auth.supabase.rpc(fn, args));
+      // PGRST202: the function is not in the database yet. The page can go
+      // live before the backend migration is applied; say so in words.
+      if (error && (error.code === 'PGRST202' || /could not find the function/i.test(error.message || ''))) {
+        throw new Error('Sub cover is not switched on yet. It needs one more step on the database.');
+      }
+      if (error) throw error;
+      if (!data || data.success === false) throw new Error(data?.error || 'That did not work. Please try again.');
+      return data;
+    }
+
+    // "Thu, Oct 8" for a YYYY-MM-DD, read at noon so no time zone moves it.
+    coverDateLabel(iso) {
+      const d = new Date(String(iso) + 'T12:00:00');
+      if (isNaN(d)) return String(iso || '');
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+
+    // Every date from..to (inclusive) that falls on one of `days` (0 = Sunday).
+    // Capped at 120 days so a mistyped year cannot flag a whole decade.
+    coverExpandDates(from, to, days) {
+      const out = [];
+      if (!from) return out;
+      if (!to || to < from) to = from;
+      const d = new Date(from + 'T12:00:00');
+      const end = new Date(to + 'T12:00:00');
+      for (let i = 0; d <= end && i < 120; i++) {
+        if (days.has(d.getDay())) out.push(this._localDateStr(d));
+        d.setDate(d.getDate() + 1);
+      }
+      return out;
+    }
+
+    // The weekdays a class meets: its timetable (what the register reads),
+    // else its "meets on" boxes, else Monday to Friday.
+    async _coverMeetingDays(classId) {
+      const { data: sched } = await this.supabaseQuery(() => this.auth.supabase
+        .from('class_schedule').select('day_of_week').eq('class_id', classId));
+      const days = new Set((sched || []).map(r => Number(r.day_of_week)).filter(n => n >= 0 && n <= 6));
+      if (days.size) return days;
+      const { data: cls } = await this.supabaseQuery(() => this.auth.supabase
+        .from('classes').select('*').eq('id', classId).maybeSingle());
+      ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+        .forEach((n, i) => { if (cls && cls['meets_' + n]) days.add(i); });
+      return days.size ? days : new Set([1, 2, 3, 4, 5]);
+    }
+
+    // The sub's notes back to the teacher, oldest first. Pure.
+    coverSubNotesHtml(notes) {
+      const list = Array.isArray(notes) ? notes : [];
+      if (!list.length) return '';
+      return `<div class="cover-sub-notes" style="margin-top: 10px;">
+          <div style="font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;">From the sub</div>
+          ${list.map(n => `
+            <div style="border-left: 3px solid var(--accent-2); padding: 4px 10px; margin-top: 6px;">
+              <div style="white-space: pre-wrap; overflow-wrap: anywhere;">${this.escapeHtml(n.note || '')}</div>
+              <div style="font-size: 11px; color: var(--muted);">${this.escapeHtml(n.name || 'Sub')}${n.at ? ' · ' + this.escapeHtml(new Date(n.at).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' })) : ''}</div>
+            </div>`).join('')}
+        </div>`;
+    }
+
+    // One flagged day, for the teacher's Sub Days list. Pure.
+    coverDayHtml(d, today, editable) {
+      const id = this.escapeHtml(d.id);
+      const who = d.sub_name
+        ? `<span style="color: var(--accent-2);">Sub: ${this.escapeHtml(d.sub_name)}</span>`
+        : `<span style="color: var(--warning);">Needs a sub</span>`;
+      return `
+        <div class="card cover-day" data-cover-id="${id}" style="margin: 10px 0; padding: 12px;">
+          <div style="display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: baseline;">
+            <strong>${this.escapeHtml(this.coverDateLabel(d.date))}${d.date === today ? ' · today' : ''}</strong>
+            <span style="font-size: 13px;">${who}</span>
+          </div>
+          ${editable ? `
+            <label style="display: block; margin-top: 8px; font-size: 13px; color: var(--muted);">Notes for the sub</label>
+            <textarea class="cover-note" rows="3" style="width: 100%;" placeholder="What to do, where things are, anyone who needs something">${this.escapeHtml(d.notes_for_sub || '')}</textarea>
+            <div style="display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 6px;">
+              <button class="btn btn-secondary small" onclick="app.removeCoverDay('${id}', '${this.escapeHtml(d.class_id)}')">Remove day</button>
+              <button class="btn btn-primary small" onclick="app.saveCoverNote('${id}', this)">Save notes</button>
+            </div>`
+          : (d.notes_for_sub ? `<p style="white-space: pre-wrap; margin: 8px 0 0; overflow-wrap: anywhere;">${this.escapeHtml(d.notes_for_sub)}</p>` : '')}
+          ${this.coverSubNotesHtml(d.sub_notes)}
+        </div>`;
+    }
+
+    // Teacher (or admin): flag days for a class and write the notes for each.
+    async showCoverDays(classId) {
+      this.showLoading('Loading sub days...');
+      try {
+        const res = await this._coverRpc('rt_cover_list', { p_class_id: classId, p_since: null });
+        const today = res.today;
+        const days = res.days || [];
+        const own = (this.classes || []).find(c => c.id === classId);
+        let name = own?.name || days[0]?.class_name;
+        if (!name) {
+          const { data: cls } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes').select('name').eq('id', classId).maybeSingle());
+          name = cls?.name || 'this class';
+        }
+        const upcoming = days.filter(d => d.date >= today);
+        const past = days.filter(d => d.date < today).reverse();
+        const html = `
+          <p style="color: var(--muted); margin-top: 0;">Flag the days this class's teacher will be away. An admin assigns a sub. On the day, the class appears on the sub's Classes page with the register, the assignments and your notes.</p>
+          <div class="card" style="padding: 12px;">
+            <strong>Add days</strong>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px;">
+              <label style="font-size: 13px;">From<br><input type="date" id="cover-from" min="${today}" value="${today}"></label>
+              <label style="font-size: 13px;">To<br><input type="date" id="cover-to" min="${today}" value="${today}"></label>
+            </div>
+            <p style="font-size: 12px; color: var(--muted); margin: 6px 0;">Only the days this class meets are added.</p>
+            <textarea id="cover-new-note" rows="2" style="width: 100%;" placeholder="Notes for the sub (optional, copied to each new day)"></textarea>
+            <div style="text-align: right; margin-top: 6px;">
+              <button class="btn btn-primary" onclick="app.addCoverDays('${this.escapeHtml(classId)}')">Add days</button>
+            </div>
+          </div>
+          <h4 style="margin: 16px 0 0;">Coming up</h4>
+          ${upcoming.length ? upcoming.map(d => this.coverDayHtml(d, today, true)).join('')
+            : '<p style="color: var(--muted);">No days flagged.</p>'}
+          ${past.length ? `<h4 style="margin: 16px 0 0;">Recent</h4>${past.map(d => this.coverDayHtml(d, today, false)).join('')}` : ''}`;
+        this.showModal('cover-days', `🙋 Sub Days - ${this.escapeHtml(name)}`, html, true);
+      } catch (e) {
+        this.hideLoading();
+        this.showNotification(e.message, 'error');
+      }
+    }
+
+    async addCoverDays(classId) {
+      const from = document.getElementById('cover-from')?.value;
+      const to = document.getElementById('cover-to')?.value;
+      const note = document.getElementById('cover-new-note')?.value || '';
+      if (!from) { this.showNotification('Pick a day first.', 'error'); return; }
+      try {
+        const dates = this.coverExpandDates(from, to, await this._coverMeetingDays(classId));
+        if (!dates.length) { this.showNotification('This class does not meet on any of those days.', 'error'); return; }
+        const res = await this._coverRpc('rt_cover_request', { p_class_id: classId, p_dates: dates, p_note: note });
+        const added = Number(res.added) || 0;
+        this.showNotification(added ? `Added ${added} day${added === 1 ? '' : 's'}.` : 'Those days were already on the list.', 'success');
+        this.showCoverDays(classId);
+      } catch (e) {
+        this.showNotification(e.message, 'error');
+      }
+    }
+
+    async saveCoverNote(dayId, btn) {
+      const box = btn?.closest('.cover-day')?.querySelector('.cover-note');
+      try {
+        await this._coverRpc('rt_cover_set_note', { p_id: dayId, p_note: box ? box.value : '' });
+        this.showNotification('Notes saved.', 'success');
+      } catch (e) {
+        this.showNotification(e.message, 'error');
+      }
+    }
+
+    async removeCoverDay(dayId, classId, fromBoard = false) {
+      if (!confirm('Take this day off the list? If a sub was assigned, they will no longer cover it.')) return;
+      try {
+        await this._coverRpc('rt_cover_remove', { p_id: dayId });
+        this.showNotification('Day removed.', 'success');
+        if (fromBoard) this.showCoverBoard(); else this.showCoverDays(classId);
+      } catch (e) {
+        this.showNotification(e.message, 'error');
+      }
+    }
+
+    // Admin: every flagged day from today on, with a sub picker on each.
+    // The last two weeks fold away underneath as the record of who covered.
+    async showCoverBoard() {
+      this.showLoading('Loading sub cover...');
+      try {
+        const [res, staff, classes] = await Promise.all([
+          this._coverRpc('rt_cover_list', { p_class_id: null, p_since: null }),
+          this.supabaseQuery(() => this.auth.supabase.from('user_profiles')
+            .select('id, first_name, last_name').in('user_type', ['teacher', 'admin'])
+            .order('last_name').order('first_name')),
+          this.supabaseQuery(() => this.auth.supabase.from('classes')
+            .select('id, name').eq('is_active', true).order('name'))
+        ]);
+        const today = res.today;
+        const days = res.days || [];
+        const people = staff.data || [];
+        const upcoming = days.filter(d => d.date >= today);
+        const past = days.filter(d => d.date < today).reverse();
+        const need = upcoming.filter(d => !d.sub_id).length;
+        const e = (v) => this.escapeHtml(v == null ? '' : String(v));
+        const row = (d, editable) => `
+          <div class="list-item cover-board-row" data-cover-id="${e(d.id)}" style="flex-wrap: wrap; gap: 10px; align-items: flex-start;">
+            <div class="list-item-content" style="min-width: 200px; flex: 1;">
+              <div class="list-item-title">${e(this.coverDateLabel(d.date))}${d.date === today ? ' · today' : ''} · ${e(d.class_name)}</div>
+              <div class="list-item-meta">Teacher: ${e(d.teacher_name || '-')}</div>
+              ${d.notes_for_sub ? `<details style="margin-top: 4px;"><summary style="cursor: pointer; font-size: 12px; color: var(--muted);">Notes for the sub</summary><div style="white-space: pre-wrap; font-size: 13px; overflow-wrap: anywhere;">${e(d.notes_for_sub)}</div></details>` : ''}
+              ${this.coverSubNotesHtml(d.sub_notes)}
+            </div>
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              ${editable ? `
+                <select class="cover-sub-pick" aria-label="Sub for ${e(d.class_name)} on ${e(d.date)}"
+                        onchange="app.assignCoverSub('${e(d.id)}', this.value)"
+                        style="max-width: 220px; ${d.sub_id ? '' : 'border-color: var(--warning);'}">
+                  <option value="">Needs a sub</option>
+                  ${people.map(p => `<option value="${e(p.id)}"${p.id === d.sub_id ? ' selected' : ''}>${e(`${p.first_name || ''} ${p.last_name || ''}`.trim())}</option>`).join('')}
+                  ${d.sub_id && !people.some(p => p.id === d.sub_id) ? `<option value="${e(d.sub_id)}" selected>${e(d.sub_name || 'Assigned')}</option>` : ''}
+                </select>
+                <button class="btn btn-secondary small" onclick="app.removeCoverDay('${e(d.id)}', '${e(d.class_id)}', true)" title="Take this day off the list">✕</button>`
+              : `<span style="font-size: 13px;">${d.sub_name ? 'Covered by ' + e(d.sub_name) : '<span style="color: var(--warning);">Nobody assigned</span>'}</span>`}
+            </div>
+          </div>`;
+        const html = `
+          <p style="color: var(--muted); margin-top: 0;">Days a class's teacher will be away. Pick a sub for each; on the day the class appears on that person's Classes page.</p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px;">
+            <select id="cover-board-class" style="max-width: 260px;">
+              <option value="">Flag days for a class...</option>
+              ${(classes.data || []).map(c => `<option value="${e(c.id)}">${e(c.name)}</option>`).join('')}
+            </select>
+            <button class="btn btn-secondary" onclick="const v = document.getElementById('cover-board-class').value; if (v) app.showCoverDays(v);">Open</button>
+          </div>
+          <h4 style="margin: 0 0 6px;">Coming up${need ? ` · <span style="color: var(--warning);">${need} need${need === 1 ? 's' : ''} a sub</span>` : ''}</h4>
+          ${upcoming.length ? upcoming.map(d => row(d, true)).join('') : '<p style="color: var(--muted);">No days flagged.</p>'}
+          ${past.length ? `<details style="margin-top: 14px;"><summary style="cursor: pointer;">Last two weeks (${past.length})</summary>${past.map(d => row(d, false)).join('')}</details>` : ''}`;
+        this.showModal('cover-board', '🙋 Sub Cover', html);
+      } catch (err) {
+        this.hideLoading();
+        this.showNotification(err.message, 'error');
+      }
+    }
+
+    async assignCoverSub(dayId, subId) {
+      try {
+        await this._coverRpc('rt_cover_assign', { p_id: dayId, p_sub: subId || null });
+        this.showNotification(subId ? 'Sub assigned.' : 'Sub removed.', 'success');
+      } catch (e) {
+        this.showNotification(e.message, 'error');
+      }
+      this.showCoverBoard();
+    }
+
+    // The sub's side: classes covered today, above their own week. Called
+    // from renderClasses; quietly shows nothing if the call fails, because
+    // a teacher with no cover today should not see an error about it.
+    async renderCoverToday() {
+      const box = document.getElementById('cover-today');
+      if (!box) return;
+      let days = [];
+      try {
+        days = (await this._coverRpc('rt_cover_mine_today')).days || [];
+      } catch (e) {
+        console.warn('Cover list unavailable:', e);
+      }
+      this.coverToday = days;
+      box.innerHTML = days.length ? this.coverTodayHtml(days) : '';
+      box.hidden = !days.length;
+    }
+
+    coverTodayHtml(days) {
+      const e = (v) => this.escapeHtml(v == null ? '' : String(v));
+      return `
+        <div class="card" style="margin-bottom: 16px; border-left: 4px solid var(--accent);">
+          <h3 style="margin-top: 0;">🙋 Covering today</h3>
+          ${days.map(d => `
+            <div class="list-item" style="flex-wrap: wrap; gap: 10px;">
+              <div class="list-item-content" style="min-width: 180px; flex: 1;">
+                <div class="list-item-title">${e(d.class_name)}</div>
+                <div class="list-item-meta">For ${e(d.teacher_name || 'the class teacher')} · today only</div>
+              </div>
+              <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="btn btn-primary small" onclick="app.showClassAttendance('${e(d.class_id)}', '${e(d.date)}')">📋 Attendance</button>
+                <button class="btn btn-secondary small" onclick="app.showCoverAssignments('${e(d.class_id)}')">📝 Assignments</button>
+                <button class="btn btn-secondary small" onclick="app.showCoverNotes('${e(d.id)}')">🗒️ Notes${d.notes_for_sub && d.teacher_name ? ' from ' + e(d.teacher_name) : ''}</button>
+              </div>
+            </div>`).join('')}
+        </div>`;
+    }
+
+    // Read only: no grading, editing or submissions. The server shows the sub
+    // this class's assignments on the day and refuses any change to them.
+    async showCoverAssignments(classId) {
+      const d = (this.coverToday || []).find(x => x.class_id === classId);
+      this.showLoading('Loading assignments...');
+      try {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('assignments').select('id, title, description, due_date, max_points, is_published, assignment_type')
+          .eq('class_id', classId).order('due_date', { ascending: false, nullsFirst: false }).limit(60));
+        if (error) throw error;
+        const e = (v) => this.escapeHtml(v == null ? '' : String(v));
+        const rows = (data || []).map(a => `
+          <div class="list-item" style="align-items: flex-start;">
+            <div class="list-item-content">
+              <div class="list-item-title">${e(a.title)}${a.is_published === false ? ' <span style="font-size: 11px; color: var(--muted);">(draft)</span>' : ''}</div>
+              <div class="list-item-meta">${a.due_date ? 'Due ' + e(this.coverDateLabel(String(a.due_date).slice(0, 10))) : 'No due date'}${a.max_points ? ' · ' + e(a.max_points) + ' pts' : ''}</div>
+              ${a.description ? `<div style="font-size: 13px; margin-top: 4px; white-space: pre-wrap; overflow-wrap: anywhere;">${e(String(a.description).slice(0, 400))}${String(a.description).length > 400 ? '...' : ''}</div>` : ''}
+            </div>
+          </div>`).join('');
+        this.showModal('cover-assignments', `📝 Assignments - ${e(d?.class_name || 'Class')}`,
+          `<p style="color: var(--muted); margin-top: 0;">For reference while you cover. Grading and changes stay with the class's teacher.</p>
+           ${rows || '<p style="color: var(--muted);">No assignments yet.</p>'}`, true);
+      } catch (err) {
+        this.hideLoading();
+        this.showNotification(err.message, 'error');
+      }
+    }
+
+    showCoverNotes(dayId) {
+      const d = (this.coverToday || []).find(x => x.id === dayId);
+      if (!d) { this.showNotification('That day is no longer on your list.', 'error'); return; }
+      const e = (v) => this.escapeHtml(v == null ? '' : String(v));
+      this.showModal('cover-notes', `🗒️ Notes - ${e(d.class_name)}`, `
+        <div style="font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em;">From ${e(d.teacher_name || 'the teacher')}</div>
+        <div style="white-space: pre-wrap; margin: 6px 0 14px; overflow-wrap: anywhere;">${d.notes_for_sub ? e(d.notes_for_sub) : '<span style="color: var(--muted);">No notes left for today.</span>'}</div>
+        ${this.coverSubNotesHtml(d.sub_notes)}
+        <label for="cover-note-back" style="display: block; margin-top: 14px; font-weight: 600;">Leave a note for the teacher</label>
+        <p style="font-size: 12px; color: var(--muted); margin: 2px 0 6px;">The teacher sees it under Sub Days for this class. A note can't be changed once added.</p>
+        <textarea id="cover-note-back" rows="3" style="width: 100%;" placeholder="How it went, who was absent, anything to follow up"></textarea>
+        <div style="text-align: right; margin-top: 6px;">
+          <button class="btn btn-primary" onclick="app.addCoverNoteForTeacher('${e(d.id)}')">Add note</button>
+        </div>`, true);
+    }
+
+    async addCoverNoteForTeacher(dayId) {
+      const note = (document.getElementById('cover-note-back')?.value || '').trim();
+      if (!note) { this.showNotification('Write the note first.', 'error'); return; }
+      try {
+        await this._coverRpc('rt_cover_add_note_for_teacher', { p_id: dayId, p_note: note });
+        this.showNotification('Note left for the teacher.', 'success');
+        await this.renderCoverToday();
+        this.showCoverNotes(dayId);
+      } catch (e) {
+        this.showNotification(e.message, 'error');
+      }
+    }
+
     async showClassAttendance(classId, dateStr = null, selectedPeriod = null) {
       // Close existing class attendance modal first to prevent stacking
       this.closeModal('class-attendance');
@@ -44685,8 +45046,10 @@ Students you had withdrawn stay withdrawn.`)) {
       const dayName = dayNames[dayOfWeek];
 
       try {
-        // Get class info
-        const classData = this.classes.find(c => c.id === classId);
+        // Get class info. A class covered today is not one of this
+        // teacher's own, so its name comes from the cover list.
+        const classData = this.classes.find(c => c.id === classId)
+          || (this.coverToday || []).map(d => ({ id: d.class_id, name: d.class_name })).find(c => c.id === classId);
         const className = classData?.name || 'Class';
 
         // Get class schedule to see if class meets on this day
