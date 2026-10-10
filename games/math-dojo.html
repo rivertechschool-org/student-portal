@@ -74001,6 +74001,1115 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: READINESS-FUNCTIONS ====
+// Two Stage-7 readiness skills (data/math_graduation_plan.json items 71 and
+// 73): analysing nonlinear functions, and choosing / building / judging
+// nonlinear models.
+//
+// These sit one level above the CORE-ALGEBRA skills they depend on (Quadratic
+// Graphs and Vertices, Exponential Growth and Decay, Comparing Function
+// Families): there the student finds a vertex or names a family; here they
+// read every feature off polynomials in factored form, absolute value and
+// shifted exponentials a·b^x + k, and build models from data and judge them.
+//
+// Tier 7 means students TYPE. Three kinds of answer cannot be typed reliably
+// and are forceChoice instead: interval notation with ∞ (no ∞ key, and
+// AnswerInterpreter files "(-∞, 3]" as text), end behaviour (arrows), and
+// "which model and why" choices. Equations are graded by validate(), which
+// evaluates what the student wrote at several x-values, as in CORE-ALGEBRA.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  // Returns 4 distinct shuffled options, or undefined when the caller could not
+  // supply enough genuinely different distractors (generateQuestion then tops
+  // the set up itself).
+  const opt4 = (ans, cands) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) { push(c); if (out.length >= 4) break; }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---- shared helpers (copied from CORE-ALGEBRA: each block is its own IIFE) ----
+  // A number as a student would write it: no trailing zeros, at most 4 dp.
+  const fmt = v => String(parseFloat((Math.round(v * 10000) / 10000).toFixed(4)));
+  // The same question never comes up twice in a row.
+  const noRepeat = fn => { let last = null; return function(){
+    let q = fn();
+    for (let i = 0; i < 30 && q.question === last; i++) q = fn();
+    last = q.question; return q; }; };
+  // Picks a subType uniformly, so every part of the scope is practised.
+  const choose = table => { const k = pick(Object.keys(table)); const q = table[k](); q.subType = q.subType || k; return q; };
+
+  // Reads a typed one-variable expression into a function of that variable, or
+  // null. A small parser rather than eval/Function: no code from an input box,
+  // and it works under a strict CSP. Same grammar as CORE-ALGEBRA's parseFn.
+  function parseFn(str, v) {
+    let s = String(str).toLowerCase().replace(/[−–]/g, "-").replace(/[×·⋅]/g, "*")
+      .replace(/÷/g, "/").replace(/²/g, "^2").replace(/³/g, "^3").replace(/\s+/g, "")
+      .replace(/(\d),(?=\d{3}(?!\d))/g, (m, d) => d);
+    const sides = s.split("=");
+    if (sides.length > 2) return null;
+    if (sides.length === 2) {
+      const lhs = /^[a-z](\([a-z]\))?$/;
+      if (lhs.test(sides[0]) && sides[0][0] !== v) s = sides[1];
+      else if (lhs.test(sides[1]) && sides[1][0] !== v) s = sides[0];
+      else return null;
+    }
+    const toks = [];
+    for (let i = 0; i < s.length;) {
+      const c = s[i];
+      if (/[\d.]/.test(c)) {
+        let j = i; while (j < s.length && /[\d.]/.test(s[j])) j++;
+        const n = Number(s.slice(i, j)); if (isNaN(n)) return null;
+        toks.push({ t: "n", v: n }); i = j; continue;
+      }
+      if (c === v) { toks.push({ t: "v" }); i++; continue; }
+      if ("+-*/^()".includes(c)) { toks.push({ t: c }); i++; continue; }
+      return null;
+    }
+    let p = 0;
+    const peek = () => toks[p] && toks[p].t;
+    const expr = () => {
+      let f = term(); if (!f) return null;
+      while (peek() === "+" || peek() === "-") {
+        const op = toks[p++].t, r = term(); if (!r) return null;
+        const l = f; f = op === "+" ? (x => l(x) + r(x)) : (x => l(x) - r(x));
+      }
+      return f;
+    };
+    const term = () => {
+      let f = unary(); if (!f) return null;
+      for (;;) {
+        const k = peek();
+        if (k === "*" || k === "/") {
+          p++; const r = unary(); if (!r) return null;
+          const l = f; f = k === "*" ? (x => l(x) * r(x)) : (x => l(x) / r(x));
+        } else if (k === "n" || k === "v" || k === "(") {
+          const r = power(); if (!r) return null;
+          const l = f; f = x => l(x) * r(x);
+        } else break;
+      }
+      return f;
+    };
+    const unary = () => {
+      if (peek() === "-") { p++; const f = unary(); return f && (x => -f(x)); }
+      if (peek() === "+") { p++; return unary(); }
+      return power();
+    };
+    const power = () => {
+      const b = primary(); if (!b) return null;
+      if (peek() === "^") { p++; const e = unary(); if (!e) return null; return x => Math.pow(b(x), e(x)); }
+      return b;
+    };
+    const primary = () => {
+      const k = peek();
+      if (k === "n") { const n = toks[p++].v; return () => n; }
+      if (k === "v") { p++; return x => x; }
+      if (k === "(") { p++; const f = expr(); if (!f || peek() !== ")") return null; p++; return f; }
+      return null;
+    };
+    const f = expr();
+    return (f && p === toks.length) ? f : null;
+  }
+  // True when the typed expression agrees with target at every sample input.
+  const sameFn = (typed, target, v, xs) => {
+    const f = parseFn(typed, v); if (!f) return false;
+    return xs.every(x => { const a = f(x), b = target(x);
+      return isFinite(a) && Math.abs(a - b) <= 1e-6 * Math.max(1, Math.abs(b)); });
+  };
+  const asPoint = s => {
+    const parts = String(s).replace(/[−–]/g, "-").replace(/[()\[\]\s]/g, "").split(",");
+    if (parts.length !== 2) return null;
+    const num = t => /^[+-]?\d+(\.\d+)?$/.test(t) ? Number(t)
+      : (t.match(/^([+-]?\d+)\/(\d+)$/) ? Number(t.split("/")[0]) / Number(t.split("/")[1]) : null);
+    const x = num(parts[0]), y = num(parts[1]);
+    return (x === null || y === null) ? null : [x, y];
+  };
+  const pointIs = (x, y) => typed => { const q = asPoint(typed); return !!q && Math.abs(q[0] - x) < 1e-9 && Math.abs(q[1] - y) < 1e-9; };
+  const numsIn = s => (String(s).replace(/[−–]/g, "-").match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+
+  // ---- formatting, written the way students write it (ASCII minus) ----
+  const pt = (x, y) => `(${fmt(x)}, ${fmt(y)})`;
+  const sg = k => k > 0 ? ` + ${fmt(k)}` : k < 0 ? ` - ${fmt(-k)}` : "";      // a trailing "+ k"
+  const lead = a => a === 1 ? "" : a === -1 ? "-" : fmt(a);
+  const inner = h => h === 0 ? "x" : h > 0 ? `x - ${fmt(h)}` : `x + ${fmt(-h)}`;
+  const fac = r => r === 0 ? "x" : `(${inner(r)})`;
+  const quadEq = (a, h, k, n) => `${n || "f(x)"} = ${lead(a)}${h === 0 ? "x²" : `(${inner(h)})²`}${sg(k)}`;
+  const absEq = (a, h, k, n) => `${n || "f(x)"} = ${lead(a)}|${inner(h)}|${sg(k)}`;
+  const stdEq = (a, b, c) => `f(x) = ${lead(a)}x²${b ? (b > 0 ? " + " : " - ") + (Math.abs(b) === 1 ? "" : fmt(Math.abs(b))) + "x" : ""}${sg(c)}`;
+  // roots: [[r, multiplicity], ...]; a bare x factor goes first ("x(x - 2)").
+  const polyEq = (a, roots, n) => {
+    const rs = roots.slice().sort((p, q) => (q[0] === 0) - (p[0] === 0));
+    return `${n || "f(x)"} = ${lead(a)}${rs.map(([r, m]) => fac(r) + (m === 2 ? "²" : m === 3 ? "³" : "")).join("")}`;
+  };
+  const polyAt = (a, roots, x) => roots.reduce((acc, [r, m]) => acc * Math.pow(x - r, m), a);
+  // Exponential bases: B.v is the value, B.t how it is printed.
+  const BASES_UP = [{ v: 2, t: "2" }, { v: 3, t: "3" }, { v: 4, t: "4" }];
+  const BASES_DN = [{ v: 0.5, t: "1/2" }, { v: 1 / 3, t: "1/3" }, { v: 0.25, t: "1/4" }];
+  const expEq = (a, B, k, n) => {
+    const base = B.v > 1 ? `${B.t}^x` : `(${B.t})^x`;
+    const c = a === 1 ? "" : (B.v > 1 ? `${fmt(a)}·` : fmt(a));        // "3·2^x" but "3(1/2)^x"
+    return `${n || "f(x)"} = ${c}${base}${sg(k)}`;
+  };
+  const randExp = () => {
+    const a = pick([2, 3, 4, 5, 6, 10, -2, -3, -4, -5]);
+    const B = pick(Math.random() < 0.5 ? BASES_UP : BASES_DN), k = ri(-9, 9);
+    return { a, B, k, eq: expEq(a, B, k) };
+  };
+  // Interval notation. ∞ always takes a round bracket.
+  const ivl = (lo, hi, lc, hc) => (lo === -Infinity ? "(-∞" : (lc ? "[" : "(") + fmt(lo)) + ", " + (hi === Infinity ? "∞)" : fmt(hi) + (hc ? "]" : ")"));
+  const ALL = "(-∞, ∞)";
+  // A list of x-values as a typed answer: "x = 1 or x = 5" for two, the set
+  // "{-3, 1, 4}" for three. AnswerInterpreter compares an "x = a or x = b"
+  // answer on its first two values only, and grades a comma list of three
+  // "x = " values equal to the same list with signs changed ("x = -6, x = 2,
+  // x = 4" passes for "x = -6, x = -4, x = 2"), so three roots in either form
+  // would mark wrong lists right. A roster set is compared as exact text.
+  // Every other spelling a student types is accepted through xsValidate.
+  const listX = xs => { const s = xs.slice().sort((p, q) => p - q);
+    return s.length >= 3 ? `{${s.map(fmt).join(", ")}}` : s.map(x => "x = " + fmt(x)).join(" or "); };
+  // A number for the middle of a worked line: "5 - (-2)", never "5 - -2".
+  const P = v => v < 0 ? `(${fmt(v)})` : fmt(v);
+  // Grades a list of x-intercepts in any order and spelling: "x = -3, x = 4",
+  // "-3 and 4", or as points "(-3, 0), (4, 0)". A repeated root may be typed
+  // once or twice; a missing or extra value is wrong.
+  const xsValidate = xs => {
+    const want = [...new Set(xs)].sort((p, q) => p - q);
+    return typed => {
+      const s = String(typed).replace(/[−–]/g, "-");
+      const pairs = [...s.matchAll(/\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/g)];
+      let got;
+      if (pairs.length) { if (pairs.some(p => Number(p[2]) !== 0)) return false; got = pairs.map(p => Number(p[1])); }
+      else got = numsIn(s);
+      got = [...new Set(got)].sort((p, q) => p - q);
+      return got.length === want.length && got.every((x, i) => Math.abs(x - want[i]) < 1e-9);
+    };
+  };
+  const coef = m => m === 1 ? "" : m === -1 ? "-" : fmt(m);
+  const lin = (m, b) => {
+    if (m === 0) return `y = ${fmt(b)}`;
+    let s = `y = ${coef(m)}x`;
+    if (b > 0) s += ` + ${fmt(b)}`; else if (b < 0) s += ` - ${fmt(-b)}`;
+    return s;
+  };
+  // Typed model answers use ^ (there is a ^ key; ² has a button but ^2 is what
+  // most students reach for). parseFn accepts both.
+  const vq = (a, h, k) => `y = ${lead(a)}${h === 0 ? "x^2" : `(${inner(h)})^2`}${sg(k)}`;
+  const ex = (a, b) => `y = ${fmt(a)}(${fmt(b)})^x`;
+  const diffs = ys => ys.slice(1).map((v, i) => v - ys[i]);
+
+  // =====================================================================
+  // M-410  Nonlinear Function Analysis  (tier 7, grades 10-11)
+  // Plan item 71: domain, range, intercepts, extrema, increasing/decreasing
+  // and end behaviour of quadratic, polynomial, exponential and absolute-value
+  // functions, from equations, tables and words, and comparing two functions.
+  // =====================================================================
+  _addSkill(7, "Nonlinear Function Analysis", "Nonlinear Function Analysis", 5, function(){
+    const a = pick([1, 2, 3]), h = pick([1, 2, 3, 4, -1, -2]), d = pick([2, 3, 4]), k = -a * d;
+    const lo = h - d, hi = h + d;
+    const xsAns = `x = ${lo} or x = ${hi}`;
+    const steps = [
+      { prompt: `f(x) = ${lead(a)}|${inner(h)}| - ${a * d}. At what x-value is the corner (the vertex) of the V?`, hint: "The inside of the absolute value is zero at the corner.", answer: String(h), acceptableAnswers: [String(h), `x = ${h}`], formatHint: "Enter a number",
+        commonMistakes: { [String(-h)]: `|${inner(h)}| is zero when x = ${h}, not ${-h}.` } },
+      { prompt: "a is positive, so the corner is the lowest point. What is the minimum value of f?", hint: "The minimum is the y-coordinate of the corner.", answer: String(k), acceptableAnswers: [String(k)], formatHint: "Enter a number",
+        commonMistakes: h !== k ? { [String(h)]: "That is the x-coordinate of the corner. The minimum VALUE is its y-coordinate." } : {} },
+      { prompt: `Set f(x) = 0 and solve for the absolute value. |${inner(h)}| equals what number?`, hint: `Add ${a * d} to both sides${a !== 1 ? `, then divide by ${a}` : ""}.`, answer: String(d), acceptableAnswers: [String(d)], formatHint: "Enter a number",
+        commonMistakes: a !== 1 ? { [String(a * d)]: `Divide by ${a} too: ${a * d} ÷ ${a} = ${d}.` } : {} },
+      { prompt: "Give both x-intercepts.", hint: `${inner(h)} = ${d} or ${inner(h)} = -${d}`, answer: xsAns,
+        acceptableAnswers: [xsAns, `x = ${hi} or x = ${lo}`, `${lo} or ${hi}`, `${hi} or ${lo}`, `${lo}, ${hi}`, `${hi}, ${lo}`, `${lo} and ${hi}`, `x = ${lo}, x = ${hi}`, `x=${lo} or x=${hi}`],
+        formatHint: "e.g., x = 1 or x = 5", commonMistakes: {} }
+    ];
+    return {
+      goalProblem: "For f(x) = −2(x − 1)² + 8, find the domain, range, maximum, intercepts, where f increases and decreases, and its end behaviour.",
+      teachingSteps: [
+        { title: "Domain, range and interval notation", explanation: "The <strong>domain</strong> is every x you may put in; the <strong>range</strong> is every y that comes out. Quadratic, polynomial, exponential and absolute-value formulas accept any x, so their domain is <strong>(−∞, ∞)</strong> unless the situation limits it (time cannot be negative). In interval notation <strong>[ ]</strong> includes the endpoint, <strong>( )</strong> leaves it out, and ∞ always takes a round bracket.", visual: "y ≥ 3 → [3, ∞)     y > 3 → (3, ∞)     x < 2 → (−∞, 2)" },
+        { title: "The vertex gives the maximum, minimum and range", explanation: "For <strong>a(x − h)² + k</strong> and <strong>a|x − h| + k</strong> the turning point is <strong>(h, k)</strong>. If a &gt; 0 it is a <strong>minimum</strong> and the range is <strong>[k, ∞)</strong>; if a &lt; 0 it is a <strong>maximum</strong> and the range is <strong>(−∞, k]</strong>. The range is built from the y-coordinate k, never from h.", visual: "f(x) = −2(x − 1)² + 8: maximum 8 at x = 1, range (−∞, 8]" },
+        { title: "Increasing and decreasing", explanation: "Read the graph left to right. A parabola or V with a &gt; 0 falls until x = h and rises after it: <strong>decreasing on (−∞, h)</strong>, <strong>increasing on (h, ∞)</strong>. With a &lt; 0 it is the other way round. These intervals are x-values. (We use open intervals.)", visual: "f(x) = −2(x − 1)² + 8: increasing on (−∞, 1), decreasing on (1, ∞)" },
+        { title: "Intercepts", explanation: "For <strong>x-intercepts</strong> set f(x) = 0; in factored form each factor gives one, and a squared factor gives an intercept where the graph only touches the axis. For the <strong>y-intercept</strong> set x = 0.", visual: "f(x) = (x + 2)(x − 1)(x − 4): x = −2, 1, 4; f(0) = (2)(−1)(−4) = 8" },
+        { title: "End behaviour of polynomials", explanation: "Multiply out in your head: the <strong>degree</strong> is the total of the exponents on the factors, and the <strong>leading coefficient</strong> is a. Even degree: both ends point the same way (up if a &gt; 0). Odd degree: the ends point opposite ways (a &gt; 0: down on the left, up on the right).", visual: "−2(x − 1)²(x + 3): degree 3, a &lt; 0 → as x → −∞, f → ∞; as x → ∞, f → −∞" },
+        { title: "Exponentials a·bˣ + k", explanation: "a·bˣ is never 0 and never changes sign, so the graph approaches the <strong>horizontal asymptote y = k</strong> but never reaches it. Range <strong>(k, ∞)</strong> if a &gt; 0, <strong>(−∞, k)</strong> if a &lt; 0. The y-intercept is a + k, because b⁰ = 1. It increases everywhere when a &gt; 0 and b &gt; 1 (or a &lt; 0 and b &lt; 1), and decreases everywhere otherwise.", visual: "f(x) = 3·2ˣ − 5: asymptote y = −5, range (−5, ∞), y-intercept −2" }
+      ],
+      finalAnswer: "Domain (−∞, ∞); range (−∞, 8]; maximum 8 at x = 1; x-intercepts −1 and 3; y-intercept (0, 6); increasing on (−∞, 1), decreasing on (1, ∞); both ends go to −∞",
+      answerExplanation: "Vertex (1, 8) with a = −2 &lt; 0, so 8 is the maximum and the range is (−∞, 8]. f(x) = 0 gives (x − 1)² = 4, so x = −1 or 3. f(0) = −2 + 8 = 6. Rising to the vertex, falling after it; degree 2 with a &lt; 0, so both ends go down.",
+      example: { problem: "Analyse g(x) = 2·3ˣ − 18.", steps: [
+        { text: "Horizontal asymptote and range", math: "y = −18; a = 2 > 0, so range (−18, ∞)" },
+        { text: "y-intercept (x = 0, 3⁰ = 1)", math: "2 − 18 = −16 → (0, −16)" },
+        { text: "x-intercept (g = 0)", math: "2·3ˣ = 18 → 3ˣ = 9 → x = 2" },
+        { text: "Increasing or decreasing", math: "a > 0 and b = 3 > 1: increasing on (−∞, ∞)" },
+        { text: "End behaviour", math: "as x → −∞, g → −18; as x → ∞, g → ∞" }
+      ]},
+      keyPoints: [
+        "Domain of these families is (−∞, ∞) unless the situation limits it",
+        "Vertex (h, k): range [k, ∞) if a > 0, (−∞, k] if a < 0 — use k, not h",
+        "Factored polynomial: one x-intercept per factor; degree and sign of a give the end behaviour",
+        "a·bˣ + k: asymptote y = k (never reached, so a round bracket), y-intercept a + k"
+      ],
+      mistakes: [
+        { wrong: "Writing the range of y = (x − 2)² + 5 as [2, ∞)", why: "2 is the x-coordinate of the vertex. The lowest y-value is 5, so the range is [5, ∞)." },
+        { wrong: "Writing the range of y = 2·3ˣ − 18 as [−18, ∞)", why: "The asymptote is never reached, so −18 is not a value: (−18, ∞)." },
+        { wrong: "Calling −2(x − 1)²(x + 3) even degree because it has two factors", why: "The squared factor counts twice: degree 3, odd." },
+        { wrong: "Giving the y-intercept of 4·2ˣ + 1 as 1", why: "At x = 0, 2⁰ = 1, so the a·bˣ part is 4, not 0: 4 + 1 = 5." }
+      ],
+      guided: {
+        problem: `For f(x) = ${lead(a)}|${inner(h)}| − ${a * d}, find the minimum value and the x-intercepts.`,
+        steps: [
+          { label: "Corner (h, k)", value: pt(h, k) },
+          { label: "Minimum value", value: String(k) },
+          { label: "Set f(x) = 0", value: `|${inner(h)}| = ${d}` },
+          { label: "Solve both cases", value: xsAns }
+        ],
+        answer: xsAns, answerLabel: "x-intercepts:",
+        interactiveSteps: steps
+      }
+    };
+  }, noRepeat(function(){
+    const A = () => pick([1, 2, 3, -1, -2, -3, 0.5, -0.5]);
+    // h and k kept apart so "used h instead of k" is always a distinct slip.
+    const vtx = () => { const a = A(), h = ri(-6, 6); let k = ri(-9, 9); if (k === h) k = h + pick([2, -3]); return { a, h, k }; };
+    return choose({
+      range: () => {
+        if (Math.random() < 0.4) {
+          const E = randExp(), up = E.a > 0;
+          const ans = up ? ivl(E.k, Infinity) : ivl(-Infinity, E.k);
+          return {
+            question: `What is the range of ${E.eq}? (Use interval notation.)`,
+            answer: ans, forceChoice: true,
+            options: opt4(ans, [
+              up ? ivl(E.k, Infinity, true) : ivl(-Infinity, E.k, false, true),              // treated the asymptote as a value the graph reaches
+              up ? ivl(-Infinity, E.k) : ivl(E.k, Infinity),                                  // ignored the sign of a
+              up ? ivl(E.a + E.k, Infinity, true) : ivl(-Infinity, E.a + E.k, false, true),   // started the range at the y-intercept
+              ivl(0, Infinity),                                                                // forgot the shift k: the range of a plain b^x
+              ALL]),                                                                           // gave the domain
+            explanation: `The part ${fmt(E.a)}·(${E.B.t})^x is never 0 and is always ${up ? "positive" : "negative"}, so f(x) is always ${up ? "above" : "below"} ${fmt(E.k)} and gets as close to it as you like: y = ${fmt(E.k)} is a horizontal asymptote that is never reached. Range ${ans}, with a round bracket at ${fmt(E.k)}.`
+          };
+        }
+        const kind = pick(["quadratic", "abs"]), { a, h, k } = vtx(), up = a > 0;
+        const eq = kind === "quadratic" ? quadEq(a, h, k) : absEq(a, h, k);
+        const ans = up ? ivl(k, Infinity, true) : ivl(-Infinity, k, false, true);
+        return {
+          question: `What is the range of ${eq}? (Use interval notation.)`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [
+            up ? ivl(h, Infinity, true) : ivl(-Infinity, h, false, true),   // built the range from h, the x-coordinate of the vertex
+            up ? ivl(-Infinity, k, false, true) : ivl(k, Infinity, true),   // ignored the sign of a
+            up ? ivl(k, Infinity) : ivl(-Infinity, k),                      // round bracket, though the vertex value is reached
+            ALL]),                                                          // gave the domain
+          explanation: `The ${kind === "abs" ? "corner" : "vertex"} is (${fmt(h)}, ${fmt(k)}). a = ${fmt(a)} is ${up ? "positive, so it opens up and " + fmt(k) + " is the minimum" : "negative, so it opens down and " + fmt(k) + " is the maximum"}. Every y ${up ? "from " + fmt(k) + " up" : "from " + fmt(k) + " down"} is reached, including ${fmt(k)} itself: ${ans}.`
+        };
+      },
+      domain: () => {
+        const v = pick(["formula", "formula", "ball", "fence"]);
+        if (v === "formula") {
+          if (Math.random() < 0.5) {
+            const E = randExp(), rng = E.a > 0 ? ivl(E.k, Infinity) : ivl(-Infinity, E.k);
+            return {
+              question: `What is the domain of ${E.eq}?`,
+              answer: ALL, forceChoice: true,
+              options: opt4(ALL, [rng,                      // gave the range
+                ivl(0, Infinity, true),                     // thought x cannot be negative
+                ivl(0, Infinity),
+                E.a > 0 ? ivl(-Infinity, E.k) : ivl(E.k, Infinity)]),
+              explanation: `Any x can be put into ${E.eq}: a power like (${E.B.t})^x is defined for every real x, negative and fractional included. The domain is ${ALL}. (${rng} is the range: the y-values.)`
+            };
+          }
+          const { a, h, k } = vtx(), up = a > 0, abs = Math.random() < 0.5;
+          const rng = up ? ivl(k, Infinity, true) : ivl(-Infinity, k, false, true);
+          return {
+            question: `What is the domain of ${abs ? absEq(a, h, k) : quadEq(a, h, k)}?`,
+            answer: ALL, forceChoice: true,
+            options: opt4(ALL, [rng,                                            // gave the range
+              up ? ivl(h, Infinity, true) : ivl(-Infinity, h, false, true),     // started at the vertex's x
+              ivl(0, Infinity, true),                                           // thought x cannot be negative
+              ivl(0, Infinity),
+              up ? ivl(-Infinity, k, false, true) : ivl(k, Infinity, true)]),
+            explanation: `There is no division by x and no square root, so every x works: the domain is ${ALL}. The vertex limits the y-values instead — that is the range, ${rng}.`
+          };
+        }
+        if (v === "ball") {
+          const r = ri(2, 5); let m = ri(1, 3); if (m >= r) m = r - 1;     // roots t = r and t = -m, b > 0
+          const b = 16 * (r - m), c = 16 * r * m, tTop = (r - m) / 2, top = c + 16 * tTop * tTop;
+          const ans = ivl(0, r, true, true);
+          return {
+            question: `A ball is thrown upward from a ${c}-foot platform. Its height is h(t) = -16t² + ${b}t + ${c} feet, t seconds after the throw, until it hits the ground. What is the domain of h in this situation?`,
+            answer: ans, forceChoice: true,
+            options: opt4(ans, [ivl(-m, r, true, true),       // kept the negative root of h = 0
+              ivl(0, tTop, true, true),                        // stopped at the highest point
+              ivl(0, top, true, true),                         // gave the heights (the range)
+              ALL]),                                           // the formula's domain, ignoring the situation
+            explanation: `h(t) = 0 when -16(t - ${r})(t + ${m}) = 0: t = ${r} or t = ${-m}. Time starts at the throw, t = 0, and the model stops when the ball lands at t = ${r}. Domain ${ans}.`
+          };
+        }
+        const F = pick([20, 24, 32, 40, 60, 80, 100]), L = F / 2;
+        const ans = ivl(0, L);
+        return {
+          question: `A rectangular pen uses ${F} m of fence. Its area is A(x) = x(${L} - x) square meters, where x is the width. Widths that give no pen at all (zero or negative sides) are not allowed. What is the domain of A in this situation?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [ivl(0, F),                       // used the whole fence as the longest side
+            ivl(0, L / 2),                                     // stopped at the best width
+            ivl(0, L * L / 4, false, true),                    // gave the areas (the range)
+            ALL]),
+          explanation: `The width x must be positive, and the length ${L} - x must be positive too, so x < ${L}. Domain ${ans}.`
+        };
+      },
+      x_intercepts: () => {
+        const v = pick(["poly", "poly", "abs", "exp", "quad"]);
+        if (v === "exp") {
+          const B = pick([2, 2, 3]), n = ri(1, B === 2 ? 5 : 3), a = pick([1, 2, 3, 4, 5, -2, -3]);
+          const k = -a * Math.pow(B, n), eq = expEq(a, { v: B, t: String(B) }, k);
+          return {
+            question: `At what x-value does the graph of ${eq} cross the x-axis?`,
+            // "x = n", not a bare n: AnswerInterpreter grades the point "(0, n)"
+            // as equal to the number n, which would pass the y-axis point for
+            // an x-intercept. xsValidate still takes "n" and "(n, 0)".
+            answer: `x = ${n}`, validate: xsValidate([n]),
+            options: opt4(`x = ${n}`, [`x = ${Math.pow(B, n)}`,  // stopped at the value of b^x
+              `x = ${n + 1}`, `x = ${n - 1}`, `x = ${-n}`]),
+            explanation: `Set f(x) = 0: ${a === 1 ? "" : fmt(a) + "·"}${B}^x = ${fmt(-k)}${a === 1 ? "" : `, so ${B}^x = ${fmt(-k)} ÷ ${P(a)} = ${Math.pow(B, n)}`}. ${B}^${n} = ${Math.pow(B, n)}, so x = ${n}.`
+          };
+        }
+        let eq, xs, expl, cands;
+        if (v === "poly") {
+          const sq = Math.random() < 0.35;
+          const rs = sh([-6, -5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6]).slice(0, sq ? 2 : 3);
+          const roots = rs.map((r, i) => [r, sq && i === 0 ? 2 : 1]), a = pick([1, 1, -1, 2, -2, 3]);
+          eq = polyEq(a, roots); xs = rs;
+          expl = `A product is zero when one of its factors is zero. ${roots.map(([r]) => `${fac(r)} = 0 gives x = ${r}`).join("; ")}.${sq ? ` The squared factor gives one intercept, where the graph touches the axis and turns back.` : ""}`;
+          cands = [listX(rs.map(x => -x))];                                   // read each root with the sign in the factor
+          rs.forEach((r, i) => { if (r !== 0) cands.push(listX(rs.map((y, j) => j === i ? -y : y))); });   // one sign slip
+          cands.push(listX(rs.map(x => x + 1)));
+        } else if (v === "abs") {
+          const a = pick([1, 2, 3, -1, -2]), h = ri(-5, 5), d = ri(1, 5), k = -a * d;
+          eq = absEq(a, h, k); xs = [h - d, h + d];
+          expl = `Set f(x) = 0: ${a === 1 ? "" : a === -1 ? "-" : fmt(a)}|${inner(h)}| = ${fmt(-k)}, so |${inner(h)}| = ${d}. Then ${inner(h)} = ${d} or ${inner(h)} = -${d}: x = ${h + d} or x = ${h - d}.`
+          cands = [listX([-h - d, -h + d]),                 // sign of h
+            listX([h - Math.abs(k), h + Math.abs(k)]),       // forgot to divide by a
+            listX([h + d]),                                  // forgot the negative case
+            listX([k - d, k + d])];                          // centred on k instead of h
+        } else {
+          const a = pick([1, 2, -1, -2, 3]), h = ri(-5, 5), d = ri(1, 5), k = -a * d * d;
+          eq = quadEq(a, h, k); xs = [h - d, h + d];
+          expl = `Set f(x) = 0: ${a === 1 ? "" : fmt(a)}(${inner(h)})² = ${fmt(-k)}, so (${inner(h)})² = ${d * d} and ${inner(h)} = ±${d}: x = ${h - d} or x = ${h + d}.`
+          cands = [listX([-h - d, -h + d]),                 // sign of h
+            listX([h - d * d, h + d * d]),                   // forgot the square root
+            listX([h + d]),                                  // only the positive root
+            listX([h - Math.abs(k), h + Math.abs(k)])];      // forgot to divide by a
+        }
+        // A candidate with a repeated value is not a believable list; drop it.
+        cands = cands.filter(c => { const n = numsIn(c); return new Set(n).size === n.length; });
+        const ans = listX(xs);
+        return {
+          question: `What are the x-intercepts of ${eq}? Give every x-value.`,
+          answer: ans, validate: xsValidate(xs),     // also takes "-3, 1, 4", "(-3, 0), (1, 0), (4, 0)"
+          options: opt4(ans, cands.concat([listX(xs.map(x => x - 1)), listX(xs.map(x => x + 2))])),   // off-by-one fallbacks when slips coincide
+          explanation: expl
+        };
+      },
+      y_intercept: () => {
+        const v = pick(["poly", "exp", "abs", "quad"]);
+        let eq, c, cands;
+        if (v === "poly") {
+          const sq = Math.random() < 0.35;
+          const rs = sh([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5]).slice(0, sq ? 2 : 3);
+          const roots = rs.map((r, i) => [r, sq && i === 0 ? 2 : 1]), a = pick([1, -1, 2, -2, 3]);
+          eq = polyEq(a, roots); c = polyAt(a, roots, 0);
+          cands = [pt(0, -c),                                          // lost a sign multiplying the negatives
+            pt(c, 0),                                                  // x and y swapped
+            pt(0, a),                                                  // took the leading coefficient
+            pt(0, roots.reduce((s, [r, m]) => s * Math.pow(-r, 1), a))];   // squared factor used only once
+        } else if (v === "exp") {
+          const E = randExp(); eq = E.eq; c = E.a + E.k;
+          cands = [pt(0, E.k),                                         // thought a·b^0 is 0
+            pt(0, E.a),                                                // forgot k
+            pt(0, E.a * E.B.v + E.k),                                  // used b^1
+            pt(c, 0)];
+        } else if (v === "abs") {
+          const a = pick([1, 2, 3, -1, -2]), h = ri(-6, 6) || 2, k = ri(-8, 8);
+          eq = absEq(a, h, k); c = a * Math.abs(h) + k;
+          cands = [pt(0, k),                                           // took the corner's y-value
+            pt(0, -a * Math.abs(h) + k),                               // treated |0 - h| as a negative number
+            pt(c, 0), pt(0, a + k)];
+        } else {
+          const a = pick([1, 2, -1, -2, 3]), h = ri(-5, 5) || -3, k = ri(-9, 9);
+          eq = quadEq(a, h, k); c = a * h * h + k;
+          cands = [pt(0, k),                                           // took the vertex's y-value
+            pt(0, -a * h * h + k),                                     // squared a negative and got a negative
+            pt(0, -a * h + k),                                         // forgot to square
+            pt(c, 0)];
+        }
+        const ans = pt(0, c);
+        return {
+          question: `Where does the graph of ${eq} cross the y-axis? Give the point (x, y).`,
+          answer: ans,
+          // the point, or just its y-value ("y = 6")
+          validate: typed => pointIs(0, c)(typed) || (!/,/.test(typed) && numsIn(typed).length === 1 && Math.abs(numsIn(typed)[0] - c) < 1e-9),
+          options: opt4(ans, cands.concat([pt(0, -c), pt(0, c + 1), pt(0, c - 1)])),   // sign slip, then an arithmetic slip, when the named slips coincide
+          explanation: `On the y-axis x = 0. Substituting x = 0 into ${eq}${v === "exp" ? " (any base to the power 0 is 1)" : ""} gives y = ${fmt(c)}, so the y-intercept is ${ans}.`
+        };
+      },
+      extremum: () => {
+        const v = pick(["vtx_value", "std_point", "fac_value", "abs_point", "table", "maxmin_choice"]);
+        if (v === "vtx_value") {
+          const { a, h, k } = vtx(), hh = h || 2, word = a > 0 ? "minimum" : "maximum";
+          return {
+            question: `What is the ${word} value of ${quadEq(a, hh, k)}?`,
+            answer: fmt(k),
+            options: opt4(fmt(k), [fmt(hh),       // gave the x-coordinate of the vertex
+              fmt(-k), fmt(a * hh * hh + k),        // used the y-intercept
+              fmt(k + a), fmt(k - a),
+              fmt(-hh), fmt(k * a)]),
+            explanation: `Vertex form a(x - h)² + k has its vertex at (${fmt(hh)}, ${fmt(k)}). a = ${fmt(a)} is ${a > 0 ? "positive, so the vertex is the lowest point" : "negative, so the vertex is the highest point"}: the ${word} value is ${fmt(k)}, at x = ${fmt(hh)}.`
+          };
+        }
+        if (v === "std_point") {
+          const a = pick([1, -1, 2, -2, 3, -3]), h = ri(1, 5) * pick([1, -1]), k = ri(-12, 12);
+          const b = -2 * a * h, c = a * h * h + k, word = a > 0 ? "minimum" : "maximum";
+          return {
+            question: `${stdEq(a, b, c)}. At what point does f reach its ${word}? Give (x, y).`,
+            answer: pt(h, k), validate: pointIs(h, k),
+            options: opt4(pt(h, k), [pt(-h, a * h * h + b * -h + c),   // sign slip in -b ÷ 2a
+              pt(h, c),                                                // took c as the y-value
+              pt(k, h), pt(h, -k),
+              pt(-h, k), pt(h, k + a)]),
+            explanation: `x = -b ÷ (2a) = ${fmt(-b)} ÷ ${fmt(2 * a)} = ${h}. f(${h}) = ${fmt(a)}(${h})² ${b < 0 ? "- " + fmt(-b) : "+ " + fmt(b)}(${h}) ${c < 0 ? "- " + fmt(-c) : "+ " + fmt(c)} = ${k}. a ${a > 0 ? "> 0, so this is a minimum" : "< 0, so this is a maximum"}: ${pt(h, k)}.`
+          };
+        }
+        if (v === "fac_value") {
+          const a = pick([1, -1, 2, -2]), p = ri(-7, 4), q = p + 2 * ri(1, 4);
+          const hh = (p + q) / 2, dd = (q - p) / 2, val = -a * dd * dd, word = a > 0 ? "minimum" : "maximum";
+          const eq = `f(x) = ${lead(a)}${fac(p)}${fac(q)}`;
+          return {
+            question: `What is the ${word} value of ${eq}?`,
+            answer: fmt(val),
+            options: opt4(fmt(val), [fmt(a * p * q),     // the y-intercept
+              fmt(hh),                                    // where it happens, not the value
+              fmt(-val), fmt(p * q), fmt(2 * val)]),
+            explanation: `The roots are ${p} and ${q}; the vertex is halfway, at x = (${p} + ${P(q)}) ÷ 2 = ${fmt(hh)}. f(${fmt(hh)}) = ${fmt(a)}(${fmt(hh - p)})(${fmt(hh - q)}) = ${fmt(val)}. a ${a > 0 ? "> 0, so it is the minimum" : "< 0, so it is the maximum"}.`
+          };
+        }
+        if (v === "abs_point") {
+          const a = pick([1, 2, 3, -1, -2, -3]), h = ri(-6, 6); let k = ri(-9, 9); if (k === h) k = h + 3;
+          const word = a > 0 ? "minimum" : "maximum";
+          return {
+            question: `At what point does ${absEq(a, h, k)} reach its ${word}? Give (x, y).`,
+            answer: pt(h, k), validate: pointIs(h, k),
+            options: opt4(pt(h, k), [pt(-h, k),           // sign of h
+              pt(k, h),                                    // coordinates swapped
+              pt(h, -k), pt(0, a * Math.abs(h) + k),       // the y-intercept
+              pt(h, k + a),                                // the point one step from the corner
+              pt(h + 1, k), pt(-k, h)]),
+            explanation: `The corner of a|x - h| + k is (h, k) = ${pt(h, k)}. a = ${a} is ${a > 0 ? "positive, so the V opens up and the corner is the minimum" : "negative, so the V opens down and the corner is the maximum"}.`
+          };
+        }
+        if (v === "table") {
+          // Vertex halfway between two table entries, so the extreme value is
+          // NOT in the table and has to be worked out.
+          const x0 = ri(-3, 2), h = x0 + 2.5, a = pick([4, -4, 8, -8]), k = ri(-10, 12);
+          const xs = [0, 1, 2, 3, 4, 5].map(i => x0 + i), ys = xs.map(x => a * (x - h) * (x - h) + k);
+          const word = a > 0 ? "minimum" : "maximum", d2 = 2 * a;
+          const askX = Math.random() < 0.35;
+          const ans = askX ? fmt(h) : fmt(k);
+          return {
+            question: `A quadratic function f has these values:  x: ${xs.join(", ")}   f(x): ${ys.map(fmt).join(", ")}. ${askX ? `At what x-value does f reach its ${word}?` : `What is the ${word} value of f?`}`,
+            answer: ans,
+            options: askX
+              ? opt4(ans, [fmt(x0 + 2), fmt(x0 + 3),                 // picked a table entry instead of halfway
+                  fmt(k), fmt(ys[2]), fmt(-h)])
+              : opt4(ans, [fmt(ys[2]),                               // the most extreme value IN the table
+                  fmt(h), fmt(-k), fmt(ys[0]), fmt(k + a)]),
+            explanation: `f(${x0 + 2}) = f(${x0 + 3}) = ${fmt(ys[2])}, so by symmetry the vertex is halfway, at x = ${fmt(h)}. The second differences are ${d2}, so a = ${d2} ÷ 2 = ${a}, and f(x) = ${a}(${inner(h)})² + k. From x = ${x0 + 2}: ${fmt(ys[2])} = ${a}(0.5)² + k = ${fmt(a / 4)} + k, so k = ${fmt(k)}. The ${word} is ${fmt(k)} at x = ${fmt(h)}.`
+          };
+        }
+        const { a, h, k } = vtx(), abs = Math.random() < 0.5, eq = abs ? absEq(a, h, k) : quadEq(a, h, k);
+        const word = a > 0 ? "minimum" : "maximum", other = a > 0 ? "maximum" : "minimum";
+        const say = (w, val, x) => `${w} of ${fmt(val)} at x = ${fmt(x)}`;
+        const ans = say(word, k, h);
+        return {
+          subType: "extremum",
+          question: `Which describes the turning point of ${eq}?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [say(other, k, h),     // ignored the sign of a
+            say(word, h, k),                         // swapped the coordinates
+            say(word, k, -h),                        // sign of h
+            say(other, h, k)]),
+          explanation: `The ${abs ? "corner" : "vertex"} is (${fmt(h)}, ${fmt(k)}). a = ${fmt(a)} ${a > 0 ? "> 0, so the graph opens up and the turning point is a minimum" : "< 0, so the graph opens down and the turning point is a maximum"}: ${ans}.`
+        };
+      },
+      increase_decrease: () => {
+        const askInc = Math.random() < 0.5, word = askInc ? "increasing" : "decreasing";
+        if (Math.random() < 0.3) {
+          const E = randExp(), inc = (E.a > 0) === (E.B.v > 1);
+          const never = askInc ? "nowhere: it is decreasing for every x" : "nowhere: it is increasing for every x";
+          const ans = askInc === inc ? ALL : never;
+          return {
+            question: `On which interval is ${E.eq} ${word}?`,
+            answer: ans, forceChoice: true,
+            options: opt4(ans, [ALL, never,
+              ivl(E.k, Infinity),          // used the asymptote as an x-value
+              ivl(0, Infinity),            // only looked at positive x
+              ivl(-Infinity, E.k)]),
+            explanation: `a = ${fmt(E.a)} is ${E.a > 0 ? "positive" : "negative"} and the base ${E.B.t} is ${E.B.v > 1 ? "greater than 1" : "between 0 and 1"}, so ${E.B.v > 1 ? "b^x grows" : "b^x shrinks"} as x increases and f ${inc ? "rises" : "falls"} for every x. An exponential never turns around. ${askInc === inc ? `It is ${word} on ${ALL}.` : `It is ${word} nowhere.`}`
+          };
+        }
+        const { a, h, k } = vtx(), up = a > 0, abs = Math.random() < 0.5;
+        const right = askInc === up;          // the asked-for behaviour is to the right of the vertex
+        const ans = right ? ivl(h, Infinity) : ivl(-Infinity, h);
+        return {
+          question: `On which interval is ${abs ? absEq(a, h, k) : quadEq(a, h, k)} ${word}? (Use open intervals.)`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [right ? ivl(k, Infinity) : ivl(-Infinity, k),   // used the y-coordinate of the vertex
+            right ? ivl(-Infinity, h) : ivl(h, Infinity),                     // the other side: ignored the sign of a
+            ALL,
+            right ? ivl(-h, Infinity) : ivl(-Infinity, -h)]),                 // sign of h
+          explanation: `The ${abs ? "corner" : "vertex"} is at x = ${fmt(h)}. a = ${fmt(a)} ${up ? "> 0, so the graph falls until x = " + fmt(h) + " and rises after it" : "< 0, so the graph rises until x = " + fmt(h) + " and falls after it"}. These intervals are x-values: ${word} on ${ans}.`
+        };
+      },
+      end_behaviour: () => {
+        const EB = (L, R) => `as x → -∞, f(x) → ${L}; as x → ∞, f(x) → ${R}`;
+        const opp = s => s === "∞" ? "-∞" : "∞";
+        const all4 = [EB("∞", "∞"), EB("-∞", "-∞"), EB("-∞", "∞"), EB("∞", "-∞")];
+        const v = pick(["poly", "poly", "poly", "exp", "exp", "vtx"]);
+        if (v === "poly") {
+          const n = pick([2, 3, 3, 4]), sq = Math.random() < 0.4;
+          const rs = sh([-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]).slice(0, n - (sq ? 1 : 0));
+          const roots = rs.map((r, i) => [r, sq && i === 0 ? 2 : 1]), a = pick([1, -1, 2, -2, 3, -3]);
+          const deg = roots.reduce((s, [, m]) => s + m, 0);
+          const R = a > 0 ? "∞" : "-∞", L = deg % 2 === 0 ? R : opp(R), ans = EB(L, R);
+          return {
+            question: `Describe the end behaviour of ${polyEq(a, roots)}.`,
+            answer: ans, forceChoice: true,
+            options: opt4(ans, sh(all4.filter(s => s !== ans))),   // the other three: wrong parity (e.g. counted factors, not degree) or wrong sign of a
+            explanation: `Multiplying out, the highest power is x^${deg} (add the exponents on the factors${sq ? "; the squared factor counts twice" : ""}) with coefficient ${a}. ${deg % 2 === 0 ? "Even degree: both ends point the same way" : "Odd degree: the ends point opposite ways"}, and a ${a > 0 ? "> 0 sends the right end up" : "< 0 sends the right end down"}. So ${ans}.`
+          };
+        }
+        if (v === "exp") {
+          const E = randExp(), grow = E.B.v > 1, big = E.a > 0 ? "∞" : "-∞", kk = fmt(E.k);
+          const ans = grow ? EB(kk, big) : EB(big, kk);
+          return {
+            question: `Describe the end behaviour of ${E.eq}.`,
+            answer: ans, forceChoice: true,
+            options: opt4(ans, [grow ? EB(big, kk) : EB(kk, big),       // flattened on the wrong side (mixed up b > 1 and b < 1)
+              grow ? EB("0", big) : EB(big, "0"),                        // asymptote taken as y = 0, ignoring k
+              grow ? EB(kk, opp(big)) : EB(opp(big), kk),                // ignored the sign of a
+              EB("-∞", "∞")]),                                           // treated it like a line
+            explanation: `The base ${E.B.t} is ${grow ? "greater than 1, so b^x grows huge as x → ∞ and shrinks to 0 as x → -∞" : "between 0 and 1, so b^x shrinks to 0 as x → ∞ and grows huge as x → -∞"}. Where it shrinks, f(x) settles toward k = ${kk}; where it grows, a = ${fmt(E.a)} sends f(x) to ${big}. So ${ans}.`
+          };
+        }
+        const { a, h, k } = vtx(), abs = Math.random() < 0.5, big = a > 0 ? "∞" : "-∞", ans = EB(big, big);
+        return {
+          question: `Describe the end behaviour of ${abs ? absEq(a, h, k) : quadEq(a, h, k)}.`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, sh(all4.filter(s => s !== ans))),
+          explanation: `${abs ? "A V shape" : "A parabola"} goes the same way at both ends. a = ${fmt(a)} ${a > 0 ? "> 0, so both ends go up" : "< 0, so both ends go down"}: ${ans}.`
+        };
+      },
+      asymptote: () => {
+        const v = pick(["eq", "eq", "table", "words"]);
+        if (v === "eq") {
+          const E = randExp();
+          return {
+            question: `The graph of ${E.eq} has a horizontal asymptote, the line y = c. What is c?`,
+            answer: fmt(E.k),
+            options: opt4(fmt(E.k), [fmt(E.a),       // took the coefficient a
+              fmt(E.a + E.k),                         // the y-intercept
+              fmt(-E.k), "0",                         // sign slip; assumed the x-axis
+              fmt(E.B.v),                             // took the base
+              fmt(E.a * E.B.v + E.k),                 // f(1), a value on the curve
+              fmt(-E.a)]),
+            explanation: `${fmt(E.a)}·(${E.B.t})^x gets as close to 0 as you like (on the ${E.B.v > 1 ? "left" : "right"}) but never reaches it, so f(x) gets as close as you like to the constant term, ${fmt(E.k)}. The asymptote is y = ${fmt(E.k)}.`
+          };
+        }
+        if (v === "table") {
+          const [a0, B, bt] = pick([[48, 0.5, "1/2"], [64, 0.5, "1/2"], [80, 0.5, "1/2"], [96, 0.5, "1/2"], [160, 0.5, "1/2"], [81, 1 / 3, "1/3"], [162, 1 / 3, "1/3"], [243, 1 / 3, "1/3"]]);
+          const k = ri(-10, 25), ys = [0, 1, 2, 3, 4].map(x => Math.round(a0 * Math.pow(B, x) + k));
+          const d = diffs(ys);
+          return {
+            question: `A table for f(x) = a·b^x + k shows  x: 0, 1, 2, 3, 4   f(x): ${ys.join(", ")}. The graph has a horizontal asymptote y = c. What is c?`,
+            answer: fmt(k),
+            options: opt4(fmt(k), [fmt(ys[4]),       // the last value in the table: stopped before the values finish falling
+              "0",                                    // assumed the x-axis
+              fmt(ys[0]), fmt(-k),
+              fmt(a0),                                // took a, the amount that decays away
+              fmt(ys[3]), fmt(k + 1)]),
+            explanation: `The drops are ${d.map(x => -x).join(", ")}: each is ${B === 0.5 ? "half" : "one third of"} the one before, so b = ${bt}. f(0) - f(1) = a - a·${bt} = ${fmt(1 - B)}a = ${-d[0]}, so a = ${a0}. Then k = f(0) - a = ${ys[0]} - ${a0} = ${k}. The values close in on ${k}: asymptote y = ${k}.`
+          };
+        }
+        if (Math.random() < 0.5) {
+          const R = pick([68, 70, 72, 75]), S = pick([160, 170, 180, 190, 200]), b = pick(["0.8", "0.85", "0.9"]);
+          return {
+            question: `The temperature of a cup of coffee is T(t) = ${R} + ${S - R}(${b})^t degrees Fahrenheit, t minutes after it is poured. As t grows, the temperature levels off. Its graph has horizontal asymptote T = c. What is c?`,
+            answer: String(R),
+            options: opt4(String(R), [String(S),    // the starting temperature
+              String(S - R), "0", b]),
+            explanation: `(${b})^t shrinks toward 0 as t grows, so ${S - R}(${b})^t dies away and T(t) approaches ${R}°F — room temperature. The asymptote is T = ${R}.`
+          };
+        }
+        const L = pick([4, 5, 6, 8]), A0 = pick([30, 40, 60, 80]);
+        return {
+          subType: "asymptote",
+          question: `A drip keeps a medicine in the blood: A(t) = ${L} + ${A0}(0.5)^t milligrams after t hours. In the long run the amount levels off at a value c (the horizontal asymptote A = c). What is c?`,
+          answer: String(L),
+          options: opt4(String(L), [String(L + A0),  // the starting amount, A(0)
+            String(A0), "0", "0.5"]),
+          explanation: `(0.5)^t halves every hour and approaches 0, so A(t) approaches ${L} mg. The asymptote is A = ${L}.`
+        };
+      },
+      compare: () => {
+        const v = pick(["max", "min", "yint", "asym"]);
+        let fTxt, gTxt, fv, gv, feat, big = true;
+        for (let tries = 0; tries < 30; tries++) {
+          if (v === "max") {
+            const a = pick([-1, -2, -3]), h = ri(-4, 4), k = ri(-5, 12);
+            fTxt = quadEq(a, h, k); fv = k;
+            const gh = ri(-2, 3), gk = ri(-5, 12), ga = pick([1, 2, 3]), xs = [gh - 2, gh - 1, gh, gh + 1, gh + 2];
+            gTxt = `g is an absolute-value function with this table:  x: ${xs.join(", ")}   g(x): ${xs.map(x => -ga * Math.abs(x - gh) + gk).join(", ")}`;
+            gv = gk; feat = "a maximum of";
+          } else if (v === "min") {
+            const a = pick([1, 2, 3]), h = ri(-5, 5), k = ri(-9, 9);
+            fTxt = absEq(a, h, k); fv = k;
+            const gh = ri(-5, 5), gk = ri(-9, 9);
+            gTxt = `g is a quadratic whose graph opens upward with its vertex at (${gh}, ${gk})`;
+            gv = gk; feat = "a minimum of"; big = false;
+          } else if (v === "yint") {
+            const E = randExp(); fTxt = E.eq; fv = E.a + E.k;
+            const rs = sh([-4, -3, -2, -1, 1, 2, 3, 4]).slice(0, 3), roots = rs.map(r => [r, 1]), ga = pick([1, -1, 2]);
+            gTxt = polyEq(ga, roots, "g(x)"); gv = polyAt(ga, roots, 0); feat = "a y-intercept of";
+          } else {
+            const E = randExp(); fTxt = E.eq; fv = E.k;
+            const [a0, bt] = pick([[3, "2"], [5, "3"], [-2, "1/2"], [4, "1/3"]]), gk = ri(-9, 9);
+            gTxt = expEq(a0, bt.includes("/") ? { v: 0.5, t: bt } : { v: 2, t: bt }, gk, "g(x)"); gv = gk; feat = "a horizontal asymptote at y =";
+          }
+          if (fv !== gv) break;
+        }
+        const featName = { "a maximum of": "greater maximum value", "a minimum of": "smaller minimum value", "a y-intercept of": "greater y-intercept", "a horizontal asymptote at y =": "higher horizontal asymptote" }[feat];
+        const fWins = big ? fv > gv : fv < gv;
+        const lab = (nm, val) => `${nm}(x), with ${feat} ${fmt(val)}`;
+        const ans = fWins ? lab("f", fv) : lab("g", gv);
+        return {
+          question: `${fTxt}. ${gTxt}. Which function has the ${featName}?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [fWins ? lab("g", gv) : lab("f", fv),   // picked the other one (compared the wrong way)
+            lab("f", gv), lab("g", fv)]),                             // mixed up which value belongs to which
+          explanation: `Find the same feature for each. f(x) has ${feat} ${fmt(fv)}; g(x) has ${feat} ${fmt(gv)}. ${big ? "The greater" : "The smaller"} is ${fWins ? "f" : "g"}: ${ans}.`
+        };
+      },
+      from_words: () => {
+        const v = pick(["quad", "abs", "exp", "poly"]);
+        if (v === "quad") {
+          const a = pick([-1, -2, -3, 1, 2, 3]), p = ri(-6, 2), q = p + 2 * ri(1, 4);
+          const hh = (p + q) / 2, dd = (q - p) / 2, X = q + 1, Y = a * (X - p) * (X - q), val = -a * dd * dd;
+          const word = a > 0 ? "minimum" : "maximum";
+          return {
+            question: `A quadratic function f has x-intercepts at x = ${p} and x = ${q}, and its graph passes through (${X}, ${Y}). What is the ${word} value of f?`,
+            answer: fmt(val),
+            options: opt4(fmt(val), [fmt(-val),     // sign of a
+              fmt(hh),                               // where it happens, not the value
+              fmt(-dd * dd),                         // left a out (took a = 1)
+              fmt(Y),                                // the y-value of the given point
+              fmt(a * p * q)]),                      // the y-intercept
+            explanation: `f(x) = a${fac(p)}${fac(q)}. Through (${X}, ${Y}): ${Y} = a(${X - p})(${X - q}), so a = ${a}. The vertex is halfway between the roots, x = ${fmt(hh)}: f(${fmt(hh)}) = ${a}(${fmt(hh - p)})(${fmt(hh - q)}) = ${fmt(val)}. a ${a > 0 ? "> 0, so this is a minimum" : "< 0, so this is a maximum"}.`
+          };
+        }
+        if (v === "abs") {
+          const a = pick([1, 2, 3, -1, -2]), h = pick([-4, -3, -2, -1, 1, 2, 3, 4, 5]), k = ri(-6, 6);
+          const c = a * Math.abs(h) + k;
+          return {
+            question: `f is an absolute-value function. Its V-shaped graph has its corner at (${h}, ${k}) and passes through (${h + 2}, ${k + 2 * a}). What is the y-intercept value f(0)?`,
+            answer: fmt(c),
+            options: opt4(fmt(c), [fmt(k),           // took the corner's y-value
+              fmt(-a * Math.abs(h) + k),              // went the wrong way from the corner
+              fmt(k + 2 * a),                         // the y-value of the given point
+              fmt(a + k), fmt(c + a)]),
+            explanation: `From the corner to (${h + 2}, ${k + 2 * a}) the graph rises ${fmt(2 * a)} over 2, so a = ${a} and f(x) = ${lead(a)}|${inner(h)}|${sg(k)}. f(0) = ${a}·|${-h}| ${k < 0 ? "- " + (-k) : "+ " + k} = ${a}·${Math.abs(h)} ${k < 0 ? "- " + (-k) : "+ " + k} = ${fmt(c)}.`
+          };
+        }
+        if (v === "exp") {
+          const B = pick(["2", "3", "1/2"]), k = ri(-8, 8) || 4; let a = pick([2, 3, 4, 5, 6, 8, -2, -3, -5]);
+          const c = a + k;
+          return {
+            question: `f(x) = a·(${B})^x + k has a horizontal asymptote at y = ${k} and a y-intercept of ${c}. What is a?`,
+            answer: fmt(a),
+            options: opt4(fmt(a), [fmt(c),           // took the y-intercept as a
+              fmt(c + k),                             // added k instead of subtracting
+              fmt(k), fmt(-a), fmt(a + 1)]),
+            explanation: `The asymptote gives k = ${k}. At x = 0, (${B})^0 = 1, so f(0) = a + k: ${c} = a + ${k < 0 ? "(" + k + ")" : k}, and a = ${c} - ${k < 0 ? "(" + k + ")" : k} = ${a}.`
+          };
+        }
+        const r1 = pick([-3, -2, -1, 1, 2, 3]); let r2 = pick([-4, -2, 1, 3, 4, 5]); if (r2 === r1) r2 = r1 + 3;
+        const a = pick([1, -1, 2, -2]), roots = [[r1, 2], [r2, 1]], c = polyAt(a, roots, 0);
+        return {
+          question: `A cubic polynomial with leading coefficient ${a} touches the x-axis at x = ${r1} without crossing it, and crosses the x-axis at x = ${r2}. What is its y-intercept value?`,
+          answer: fmt(c),
+          options: opt4(fmt(c), [fmt(-c),            // sign slip
+            fmt(a * -r1 * -r2),                       // used (x - r1) only once, not squared
+            fmt(a === 1 ? 2 * c : c / a),             // left a out
+            fmt(c + a),
+            fmt(a * r1 * r1 * r2),                    // dropped the sign of (0 - r2)
+            fmt(c - a), fmt(2 * c)]),                 // arithmetic slips, used only when the named ones coincide
+          explanation: `Touching without crossing means a squared factor: f(x) = ${polyEq(a, roots).slice(7)}. f(0) = ${P(a)}·(${-r1})²·(${-r2}) = ${P(a)}·${r1 * r1}·${P(-r2)} = ${fmt(c)}.`
+        };
+      }
+    });
+  }));
+
+  // =====================================================================
+  // M-411  Nonlinear Modeling  (tier 7, grades 10-11)
+  // Plan item 73: choose linear, quadratic or exponential from a table or a
+  // situation; build the model from points; predict; judge which fits better;
+  // and recognise where a model stops being reasonable. No logs or rational
+  // models.
+  // =====================================================================
+  _addSkill(7, "Nonlinear Modeling", "Nonlinear Modeling", 5, function(){
+    const a = pick([2, 3, -2, -3]), h = pick([1, 2, 3, 4]), k = pick([1, 2, 5, 10]), d = pick([2, 3]);
+    const px = h + d, py = a * d * d + k;
+    return {
+      goalProblem: "A table shows x: 0, 1, 2, 3 and y: 5, 15, 45, 135. Which kind of model fits, what is it, and what does it predict at x = 5?",
+      teachingSteps: [
+        { title: "Three families, three table tests", explanation: "With x going up in <strong>equal steps</strong>: constant <strong>first differences</strong> → linear; constant <strong>second differences</strong> (differences of the differences) → quadratic; constant <strong>ratios</strong> (each y ÷ the one before) → exponential.", visual: "3, 7, 11, 15 (+4 each) · 2, 5, 10, 17 (3, 5, 7 → +2 each) · 3, 6, 12, 24 (×2 each)" },
+        { title: "Reading a situation", explanation: "The same <strong>amount</strong> each step is linear. The same <strong>percent</strong> or factor each step is exponential. A turning point (thrown objects, revenue that peaks), an area, or a quantity 'proportional to the square' is quadratic.", visual: "+$40 a month → linear · +6% a year → exponential · rises then falls → quadratic" },
+        { title: "Build a linear model", explanation: "Slope m = change in y ÷ change in x — divide by the x-step, not just the change in y. Then b = y − mx using any point.", visual: "(2, 13), (5, 22): m = 9 ÷ 3 = 3, b = 13 − 6 = 7 → y = 3x + 7" },
+        { title: "Build a quadratic from the vertex", explanation: "Start from <strong>y = a(x − h)² + k</strong> with the vertex (h, k), substitute one more point, and solve for a.", visual: "vertex (3, 1), point (5, 9): 9 = a·2² + 1 → a = 2 → y = 2(x − 3)² + 1" },
+        { title: "Build an exponential from two points", explanation: "In <strong>y = a·bˣ</strong>, a is the value at x = 0. Otherwise divide the y-values: y₂ ÷ y₁ = b^(x₂ − x₁), so take the root for the number of steps between them. Then a = y₁ ÷ b^x₁.", visual: "(1, 12), (3, 108): b² = 9 → b = 3; a = 12 ÷ 3 = 4 → y = 4(3)ˣ" },
+        { title: "Predict, judge the fit, know the limits", explanation: "Substitute to predict. To compare two models on real data, add up the sizes of the errors |actual − predicted| for each: the smaller total fits better. A model only holds where the situation does — no negative water, no ball below the ground, no growth past a physical limit.", visual: "errors 1 + 0 + 2 = 3 beats 4 + 3 + 6 = 13" }
+      ],
+      finalAnswer: "Exponential: y = 5(3)ˣ; at x = 5 it predicts 1215",
+      answerExplanation: "First differences 10, 30, 90 are not constant, nor are the second differences 20, 60, but every ratio is 3: exponential. a = 5 (the value at x = 0), b = 3. y = 5·3⁵ = 5 × 243 = 1215.",
+      example: { problem: "A ball's height is a parabola with its highest point (2, 20) and it starts at (0, 8). Build the model and predict the height at x = 5 seconds.", steps: [
+        { text: "Vertex form", math: "y = a(x − 2)² + 20" },
+        { text: "Substitute (0, 8)", math: "8 = a·4 + 20 → a = −3" },
+        { text: "Model", math: "y = −3(x − 2)² + 20" },
+        { text: "Predict at x = 5", math: "−3·9 + 20 = −7" },
+        { text: "Judge it", math: "a negative height is below the ground: the ball has already landed, so x = 5 is outside the model's domain" }
+      ]},
+      keyPoints: [
+        "Equal x-steps: constant differences → linear, constant second differences → quadratic, constant ratios → exponential",
+        "Linear: m = Δy ÷ Δx, then b; quadratic: vertex form plus one point; exponential: ratio, then root",
+        "Compare models by adding |actual − predicted|; smaller total fits better",
+        "Use a model only inside the domain the situation allows"
+      ],
+      mistakes: [
+        { wrong: "Extending 2, 5, 10, 17 by adding 7 again to get 24", why: "That uses first differences on quadratic data. The differences grow by 2, so the next one is 9: 26." },
+        { wrong: "Taking b = 9 from (1, 12) and (3, 108)", why: "108 ÷ 12 = 9 is the factor over TWO steps. Each step is √9 = 3." },
+        { wrong: "Slope 9 from rows (2, 13) and (5, 22)", why: "The x-values go up by 3, so the slope is 9 ÷ 3 = 3." },
+        { wrong: "Trusting a prediction of −7 m for a ball's height", why: "The situation stops when the ball lands; the model does not apply past that." }
+      ],
+      guided: {
+        problem: `A parabola has its vertex at (${h}, ${k}) and passes through (${px}, ${py}). In y = a(x − ${h})² + ${k}, what is a?`,
+        steps: [
+          { label: `x − h at x = ${px}`, value: `${px} − ${h} = ${d}` },
+          { label: "Square it", value: `${d}² = ${d * d}` },
+          { label: "y − k", value: `${py} − ${k} = ${py - k}` },
+          { label: "a = (y − k) ÷ (x − h)²", value: `${py - k} ÷ ${d * d} = ${a}` }
+        ],
+        answer: String(a), answerLabel: "a =",
+        interactiveSteps: [
+          { prompt: `Substitute the point (${px}, ${py}). What is x − h, that is ${px} − ${h}?`, hint: "Subtract the vertex's x-coordinate.", answer: String(d), acceptableAnswers: [String(d)], formatHint: "Enter a number", commonMistakes: {} },
+          { prompt: `What is (x − h)² = ${d}²?`, hint: `${d} × ${d}`, answer: String(d * d), acceptableAnswers: [String(d * d)], formatHint: "Enter a number", commonMistakes: { [String(2 * d)]: `Squaring means ${d} × ${d}, not ${d} × 2.` } },
+          { prompt: `The equation is now ${py} = a·${d * d} + ${k}. Subtract ${k}: what is ${py} − ${k}?`, hint: "Take the vertex's y-value off both sides.", answer: String(py - k), acceptableAnswers: [String(py - k)], formatHint: "Enter a number", commonMistakes: {} },
+          { prompt: `So ${py - k} = a·${d * d}. What is a?`, hint: `Divide ${py - k} by ${d * d}.`, answer: String(a), acceptableAnswers: [String(a)], formatHint: "Enter a number",
+            commonMistakes: { [String(-a)]: "Check the sign: is the point above or below the vertex?" } }
+        ]
+      }
+    };
+  }, noRepeat(function(){
+    return choose({
+      choose_from_table: () => {
+        const fam = pick(["linear", "quadratic", "exponential"]);
+        const x0 = pick([0, 0, 1, 2]), step = pick([1, 1, 1, 2]);
+        const xs = [0, 1, 2, 3, 4].map(i => x0 + i * step);
+        let ys;
+        if (fam === "linear") { const m = pick([2, 3, 4, 5, 6, 7, 8, -2, -3, -4, -5, -6]); const b0 = ri(1, 20) + (m < 0 ? 70 : 0); ys = xs.map(x => m * x + b0); }
+        else if (fam === "quadratic") {
+          // The vertex is sometimes outside the table, so the values only rise
+          // (or only fall) and "speeding up" cannot be told from exponential by eye.
+          const a = pick([1, 2, 3, -1, -2]), hh = pick([x0 + step * ri(1, 3), x0 - step * ri(1, 2), x0 + step * 5]);
+          const k = ri(-5, 30) + (a < 0 ? 60 : 0); ys = xs.map(x => a * (x - hh) * (x - hh) + k);
+        } else {
+          const [a, r] = pick([[2, 2], [3, 2], [5, 2], [6, 2], [1, 3], [2, 3], [4, 3], [64, 0.5], [96, 0.5], [243, 1 / 3], [16, 1.5], [32, 1.5], [625, 0.2]]);
+          ys = [0, 1, 2, 3, 4].map(i => Math.round(a * Math.pow(r, i)));
+        }
+        const d1 = diffs(ys), d2 = diffs(d1);
+        const R = { linear: "linear: the first differences are all equal", quadratic: "quadratic: the second differences are all equal", exponential: "exponential: each y-value is the one before times the same number" };
+        const TRAP = { linear: "exponential: y changes by the same amount each step",   // mixed up 'same amount' with 'same factor'
+          quadratic: "exponential: the values change faster and faster",                // took any speeding up for exponential
+          exponential: "quadratic: the first differences keep changing" };             // stopped at 'not linear' without testing ratios
+        const ans = R[fam];
+        let expl = `First differences: ${d1.join(", ")}. `;
+        if (fam === "linear") expl += "All equal, so the model is linear.";
+        else if (fam === "quadratic") expl += `Not equal. Second differences: ${d2.join(", ")} — all equal, so the model is quadratic.`;
+        else expl += `Not equal, and the second differences (${d2.join(", ")}) are not equal either. Ratios: ${ys.slice(1).map((y, i) => fmt(y / ys[i])).join(", ")} — all equal, so the model is exponential.`;
+        return {
+          question: `Which kind of model fits this table, and why?  x: ${xs.join(", ")}   y: ${ys.join(", ")}`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, sh([...Object.keys(R).filter(f => f !== fam).map(f => R[f]), TRAP[fam]])),
+          explanation: expl
+        };
+      },
+      choose_from_situation: () => {
+        const SIT = [
+          [() => `A phone plan costs $${pick([20, 25, 30])} a month plus $${pick([5, 8, 10])} for each gigabyte of data. Model: monthly cost against gigabytes used.`, "linear"],
+          [() => `A pool is drained at a steady ${pick([150, 200, 250])} gallons per hour. Model: water left against hours.`, "linear"],
+          [() => `A taxi charges $${pick(["3", "3.50", "4"])} plus $${pick(["2.25", "2.50", "2.75"])} per mile. Model: fare against miles.`, "linear"],
+          [() => `An elevator goes down at ${pick([2, 3, 4])} meters per second. Model: height against time.`, "linear"],
+          [() => `A painting's value rises ${pick([4, 6, 8])}% every year. Model: value against years.`, "exponential"],
+          [() => `A medical tracer loses half of what is left every ${pick([6, 8, 12])} hours. Model: amount left against time.`, "exponential"],
+          [() => `An account gains ${pick([10, 12, 15])}% more followers every month. Model: followers against months.`, "exponential"],
+          [() => `Each round of a tournament knocks out half of the remaining ${pick([64, 128, 256])} players. Model: players left against rounds.`, "exponential"],
+          [() => `A diver jumps up from a ${pick([3, 5, 10])} m board, rises, then falls into the pool. Model: height against time.`, "quadratic"],
+          [() => `A shop sells ${pick([200, 300, 400])} T-shirts a week at $10 and sells ${pick([10, 15, 20])} fewer for every $1 the price goes up. Model: weekly revenue against the price increase.`, "quadratic"],
+          [() => `A car's stopping distance is proportional to the square of its speed. Model: stopping distance against speed.`, "quadratic"],
+          [() => `A square photo ${pick([4, 5, 6])} inches on a side gets a frame of width x all round. Model: total area against x.`, "quadratic"]];
+        const [mk, fam] = pick(SIT), s = mk();
+        const R = { linear: "linear: it changes by the same amount each step", exponential: "exponential: it changes by the same percent (factor) each step", quadratic: "quadratic: it has a turning point or a squared quantity" };
+        const TRAP = { linear: "quadratic: the total keeps building up over time",                  // any accumulation read as curved
+          exponential: "linear: the same percent each step is a constant rate of change",           // percent read as a constant amount
+          quadratic: "exponential: it speeds up as time goes on" };                                 // speeding up read as exponential
+        const ans = R[fam];
+        return {
+          question: `Which kind of model fits, and why?  ${s}`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, sh([...Object.keys(R).filter(f => f !== fam).map(f => R[f]), TRAP[fam]])),
+          explanation: {
+            linear: "The quantity changes by the same AMOUNT for each unit, so the model is linear, y = mx + b.",
+            exponential: "The quantity is multiplied by the same FACTOR each period (a fixed percent or a half), so the model is exponential, y = a·b^x. A fixed percent of a changing amount is not a fixed amount.",
+            quadratic: "Height of a thrown object, revenue when price and sales trade off, area, and anything proportional to a square all give a squared term: quadratic, with a turning point."
+          }[fam]
+        };
+      },
+      build_linear: () => {
+        const m = pick([2, 3, 4, 5, 6, -2, -3, -4, -5]), b0 = ri(-10, 30) + (m < 0 ? 40 : 0);
+        const x0 = ri(1, 4), step = pick([2, 3, 4, 5]);
+        const xs = [0, 1, 2, 3].map(i => x0 + i * step), ys = xs.map(x => m * x + b0);
+        const ans = lin(m, b0);
+        return {
+          question: `This table is linear:  x: ${xs.join(", ")}   y: ${ys.join(", ")}. Write the model y = mx + b.`,
+          answer: ans, validate: typed => sameFn(typed, x => m * x + b0, "x", [0, 1, 2, 5, -3]),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(m * step, b0),     // slope per row: forgot to divide by the x-step
+            lin(m, ys[0]),                            // used the first y-value as b, though x is not 0 there
+            lin(-m, b0), lin(m, -b0)]),
+          explanation: `m = (${ys[1]} - ${P(ys[0])}) ÷ (${xs[1]} - ${xs[0]}) = ${ys[1] - ys[0]} ÷ ${step} = ${m}. b = y - mx = ${ys[0]} - ${P(m)}·${xs[0]} = ${b0}. Model: ${ans}.`
+        };
+      },
+      build_quadratic: () => {
+        let a, h, k, px, py, q;
+        if (Math.random() < 0.6) {
+          a = pick([1, 2, 3, -1, -2, -3, 0.5, -0.5]); h = ri(-5, 5); k = ri(-9, 9);
+          const d = a === 0.5 || a === -0.5 ? pick([2, -2, 4]) : pick([1, 2, 3, -1, -2]);
+          px = h + d; py = k + a * d * d;
+          q = `A parabola has its vertex at ${pt(h, k)} and passes through ${pt(px, py)}. Write its equation in the form y = a(x - h)² + k.`;
+        } else {
+          a = -16; h = pick([1, 1.5, 2, 2.5, 3]); const s = pick([4, 5, 6, 8, 10]); k = 16 * h * h + s; px = 0; py = s;
+          q = `A ball thrown upward reaches its greatest height, ${fmt(k)} ft, after ${fmt(h)} second${h === 1 ? "" : "s"}. It left the thrower's hand ${s} ft above the ground at time 0, and its height follows a parabola. Write y, the height in feet after x seconds, in the form y = a(x - h)² + k.`;
+        }
+        const d = px - h, ans = vq(a, h, k);
+        return {
+          question: q,
+          answer: ans, validate: typed => sameFn(typed, x => a * (x - h) * (x - h) + k, "x", [-2, 0, 1, 3, 6]),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [vq(-a, h, k),           // sign of a
+            vq(py - k, h, k),                          // forgot to divide by (x - h)²
+            vq(a, -h, k),                              // sign of h in (x - h)
+            vq((py - k) / d, h, k),                    // divided by (x - h), not its square
+            vq(a, h, py),                              // used the given point's y as k
+            vq(a, k, h),                               // swapped h and k
+            vq(a, h + 1, k), vq(a, h, k + 1)]),        // arithmetic slips, used only when the named ones coincide
+          explanation: `Start from y = a(${inner(h)})²${sg(k)}. Substitute ${pt(px, py)}: ${fmt(py)} = a(${fmt(px)} - ${h < 0 ? "(" + fmt(h) + ")" : fmt(h)})²${sg(k)}, so ${fmt(py - k)} = a·${fmt(d * d)} and a = ${fmt(a)}. Model: ${ans}.`
+        };
+      },
+      build_exponential: () => {
+        let a, b, x1, x2, ctx;
+        if (Math.random() < 0.5) {
+          [a, b, x2] = pick([[2, 3, 2], [5, 2, 3], [3, 4, 2], [10, 2, 3], [40, 3, 2], [100, 1.2, 2], [16, 1.5, 2], [8, 1.5, 3], [400, 0.5, 2], [320, 0.5, 3], [500, 0.8, 2], [625, 0.8, 2], [500, 0.2, 2]]);
+          x1 = 0;
+        } else {
+          [a, b] = pick([[3, 2], [5, 2], [2, 3], [4, 3], [6, 2], [128, 0.5], [256, 0.5], [16, 1.5], [7, 2]]);
+          x1 = 1; x2 = 3;
+        }
+        const y1 = a * Math.pow(b, x1), y2 = a * Math.pow(b, x2), gap = x2 - x1, ratio = y2 / y1;
+        ctx = pick([
+          `An exponential model y = a·b^x passes through (${fmt(x1)}, ${fmt(y1)}) and (${fmt(x2)}, ${fmt(y2)}). Write the model.`,
+          `A population grows (or shrinks) by the same factor every year. It is ${fmt(y1)} in year ${x1} and ${fmt(y2)} in year ${x2}. Write y = a·b^x for the population in year x.`]);
+        const ans = ex(a, b);
+        const m = (y2 - y1) / gap, c0 = y1 - m * x1;
+        return {
+          question: ctx,
+          answer: ans, validate: typed => sameFn(typed, x => a * Math.pow(b, x), "x", [0, 1, 2, 3, -1]),
+          acceptableAnswers: [ans.replace(/\s+/g, "")],
+          options: opt4(ans, [lin(m, c0),             // treated the two points as linear data
+            ex(a, ratio),                              // used the whole ratio as b, not the per-step factor
+            ex(a, ratio / gap),                        // divided the ratio by the steps instead of taking a root
+            x1 ? ex(y1, b) : ex(b, a)]),               // used y at x = 1 as a / swapped a and b
+          explanation: `${fmt(y2)} ÷ ${fmt(y1)} = ${fmt(ratio)} over ${gap} steps, so b^${gap} = ${fmt(ratio)} and b = ${fmt(b)}. ${x1 ? `a = ${fmt(y1)} ÷ ${fmt(b)} = ${fmt(a)}` : `a is the value at x = 0: ${fmt(a)}`}. Model: ${ans}.`
+        };
+      },
+      predict: () => {
+        const v = pick(["exp_table", "quad_table", "vertex_then_predict"]);
+        if (v === "exp_table") {
+          const [a, r] = pick([[2, 2], [3, 2], [5, 2], [7, 2], [1, 3], [2, 3], [4, 3], [5, 3], [128, 0.5], [256, 0.5], [320, 0.5], [448, 0.5]]);
+          const X = pick([5, 6]), ys = [0, 1, 2, 3].map(x => a * Math.pow(r, x)), ans = a * Math.pow(r, X);
+          const last = ys[3] - ys[2];
+          return {
+            question: `x: 0, 1, 2, 3   y: ${ys.join(", ")}. Choose the model that fits this table and use it to predict y when x = ${X}.`,
+            answer: fmt(ans),
+            options: opt4(fmt(ans), [fmt(ys[3] + (X - 3) * last),    // extended it linearly with the last difference
+              fmt(a * Math.pow(r, X - 1)),                             // one step short
+              fmt(a * Math.pow(r, X + 1)),
+              fmt(a * r * X)]),                                        // multiplied by r·x instead of raising r to the power x
+            explanation: `Each y is ${fmt(r)} times the one before: exponential, y = ${a === 1 ? "" : fmt(a)}(${fmt(r)})^x. At x = ${X}: ${fmt(a)} × ${fmt(r)}^${X} = ${fmt(ans)}. (Adding the last difference, ${fmt(last)}, each step would treat it as linear.)`
+          };
+        }
+        if (v === "quad_table") {
+          const a = pick([1, 2, 3, -1, -2]), h = ri(-1, 3), k = ri(-5, 15);
+          const f = x => a * (x - h) * (x - h) + k, ys = [0, 1, 2, 3, 4].map(f), X = 6, ans = f(X);
+          const d1 = diffs(ys), d2 = 2 * a;
+          return {
+            question: `x: 0, 1, 2, 3, 4   y: ${ys.join(", ")}. Choose the model that fits this table and use it to predict y when x = ${X}.`,
+            answer: fmt(ans),
+            options: opt4(fmt(ans), [fmt(ys[4] + 2 * d1[3]),          // first differences on quadratic data: added the last difference twice
+              fmt(f(5)),                                               // stopped at x = 5
+              fmt(ys[4] + d1[3] + d2),                                 // only one more step
+              fmt(ans + d2)]),
+            explanation: `First differences ${d1.join(", ")}; second differences all ${d2}: quadratic. Keep the second difference: the next first differences are ${d1[3] + d2} and ${d1[3] + 2 * d2}, so y(5) = ${f(5)} and y(6) = ${f(5)} + ${P(d1[3] + 2 * d2)} = ${fmt(ans)}.`
+          };
+        }
+        const a = pick([1, 2, 3, -1, -2]), h = ri(-3, 3), k = ri(-8, 12), d = pick([1, 2, -1, -2]);
+        const px = h + d, py = a * d * d + k, X = h + pick([3, 4, -3]), ans = a * (X - h) * (X - h) + k;
+        const slope = (py - k) / d;
+        return {
+          subType: "predict",
+          question: `A quadratic model has its vertex at ${pt(h, k)} and passes through ${pt(px, py)}. Build it and predict y at x = ${X}.`,
+          answer: fmt(ans),
+          options: opt4(fmt(ans), [fmt(-a * (X - h) * (X - h) + k),     // sign of a
+            fmt(k + slope * (X - h)),                                    // drew a straight line through the two points
+            fmt((X - h) * (X - h) + k),                                  // left a out
+            fmt(a * (X - h) + k),                                        // forgot to square
+            fmt(a * (X - h) * (X - h) - k),                              // sign of k
+            fmt(ans + a)]),
+          explanation: `y = a(${inner(h)})²${sg(k)}; through ${pt(px, py)}: ${py} = a·${d * d}${sg(k)}, so a = ${a}. At x = ${X}: ${a}(${fmt(X - h)})²${sg(k)} = ${fmt(ans)}.`
+        };
+      },
+      judge_fit: () => {
+        const xs = [1, 2, 3, 4];
+        let actual, pa, pb, famA, famB, eA, eB;
+        for (let tries = 0; tries < 40; tries++) {
+          const truth = pick(["exponential", "quadratic", "linear"]);
+          const noise = () => pick([-2, -1, 0, 0, 1, 2]);
+          if (truth === "exponential") {
+            const a = pick([3, 4, 5, 6]); actual = xs.map(x => a * Math.pow(2, x) + noise());
+            pb = xs.map(x => a * Math.pow(2, x)); famB = "exponential";
+          } else if (truth === "quadratic") {
+            const a = pick([2, 3, 4]), c = ri(0, 10); actual = xs.map(x => a * x * x + c + noise());
+            pb = xs.map(x => a * x * x + c); famB = "quadratic";
+          } else {
+            const m = pick([6, 8, 10, 12]), c = ri(5, 20); actual = xs.map(x => m * x + c + noise());
+            pb = xs.map(x => Math.round(c * Math.pow(1.6, x))); famB = "exponential";
+          }
+          // Model A is the straight line through the first and last data
+          // points; Model B the curved candidate. Rounded predictions, and the
+          // errors are worked from exactly the numbers shown.
+          const m = (actual[3] - actual[0]) / 3;
+          pa = xs.map(x => Math.round(actual[0] + m * (x - 1))); famA = "linear";
+          if (truth === "linear") { const t = pa; pa = pb; pb = t; const f = famA; famA = famB; famB = f; }
+          eA = actual.reduce((s, y, i) => s + Math.abs(y - pa[i]), 0);
+          eB = actual.reduce((s, y, i) => s + Math.abs(y - pb[i]), 0);
+          if (eA !== eB) break;
+        }
+        const head = `Data:  x: ${xs.join(", ")}   y: ${actual.join(", ")}. Model A (${famA}) predicts ${pa.join(", ")}. Model B (${famB}) predicts ${pb.join(", ")}.`;
+        if (Math.random() < 0.4) {
+          const which = pick(["A", "B"]), p = which === "A" ? pa : pb, e = which === "A" ? eA : eB, other = which === "A" ? eB : eA;
+          const signed = actual.reduce((s, y, i) => s + (y - p[i]), 0);
+          const maxOne = Math.max(...actual.map((y, i) => Math.abs(y - p[i])));
+          return {
+            subType: "judge_fit",
+            question: `${head} What is Model ${which}'s total error, the sum of |actual - predicted| over the four points?`,
+            answer: String(e),
+            options: opt4(String(e), [String(signed),     // let positive and negative errors cancel
+              String(other),                               // the other model's total
+              String(maxOne),                              // only the largest single error
+              String(e + 1), String(e + 2)]),
+            explanation: `Errors for Model ${which}: ${actual.map((y, i) => `|${y} - ${p[i]}| = ${Math.abs(y - p[i])}`).join(", ")}. Total ${e}. Sizes are added, so errors above and below cannot cancel.`
+          };
+        }
+        const win = eA < eB ? "A" : "B", lose = win === "A" ? "B" : "A", eW = Math.min(eA, eB), eL = Math.max(eA, eB);
+        const lab = (m, e) => `Model ${m}, with a total error of ${e}`;
+        const ans = lab(win, eW);
+        return {
+          question: `${head} Add up |actual - predicted| for each model. Which model fits the data better?`,
+          answer: ans, forceChoice: true,
+          options: opt4(ans, [lab(lose, eL),     // chose the larger total
+            lab(win, eL), lab(lose, eW)]),       // mixed up which total belongs to which model
+          explanation: `Model A: ${actual.map((y, i) => Math.abs(y - pa[i])).join(" + ")} = ${eA}. Model B: ${actual.map((y, i) => Math.abs(y - pb[i])).join(" + ")} = ${eB}. The smaller total, ${eW}, belongs to Model ${win}, so it fits better.`
+        };
+      },
+      domain_limits: () => {
+        const v = pick(["tank", "ball", "revenue", "choice"]);
+        if (v === "tank") {
+          const r = pick([15, 20, 25, 40]), T = ri(8, 30), V0 = r * T;
+          return {
+            question: `A tank holds ${V0} liters and drains so that V = ${V0} - ${r}t liters after t minutes. The model only makes sense while there is water to drain. What is the largest t for which it makes sense?`,
+            answer: String(T),
+            options: opt4(String(T), [String(V0),      // gave the volume, not the time
+              String(r), String(T + 1), String(T * 60)]),
+            explanation: `The water runs out when V = 0: ${V0} - ${r}t = 0, so t = ${V0} ÷ ${r} = ${T}. After that the model gives negative water, which cannot happen: domain 0 ≤ t ≤ ${T}.`
+          };
+        }
+        if (v === "ball") {
+          const r = ri(2, 5); let m = ri(1, 3); if (m >= r) m = r - 1;
+          const b = 16 * (r - m), c = 16 * r * m;
+          return {
+            question: `A ball is thrown from a ${c}-foot cliff: h = -16t² + ${b}t + ${c} feet after t seconds. The model stops being reasonable once the ball hits the ground. Up to what time t, in seconds, does it make sense?`,
+            answer: String(r),
+            options: opt4(String(r), [String(-m),       // the negative root of h = 0
+              String((r - m) / 2),                       // time of the highest point
+              String(r + m), String(c)]),
+            explanation: `h = 0 when -16(t - ${r})(t + ${m}) = 0: t = ${r} or t = ${-m}. Time cannot be negative, so the ball lands at t = ${r}; after that the model would put it underground. It makes sense for 0 ≤ t ≤ ${r}.`
+          };
+        }
+        if (v === "revenue") {
+          const c = pick([2, 4, 5, 10]), P = pick([20, 25, 30, 40, 50]), N = c * P;
+          return {
+            question: `A theater sells ${N} - ${c}p tickets when the price is p dollars, so its revenue is R = p(${N} - ${c}p). A price above some value would mean selling a negative number of tickets. What is the highest price, in dollars, for which the model makes sense?`,
+            answer: String(P),
+            options: opt4(String(P), [String(P / 2),    // the price that gives the MOST revenue, not the limit
+              String(N), String(c), String(N * c)]),
+            explanation: `Tickets sold = ${N} - ${c}p must not be negative: ${N} - ${c}p ≥ 0, so p ≤ ${N} ÷ ${c} = ${P}. Above $${P} the model stops making sense. (The best price, $${fmt(P / 2)}, is halfway between the roots 0 and ${P} — a different question.)`
+          };
+        }
+        const c = pick([
+          () => { const A = pick([500, 600, 800]), wk = Math.ceil(Math.log2(A / 2)), y9 = 2 * Math.pow(2, wk + 1);
+            return { q: `Lily pads cover 2 m² of a ${A} m² pond and double every week: y = 2(2)^x. The model predicts ${y9} m² after ${wk + 1} weeks. Is that reasonable?`,
+              a: `No: the pond is only ${A} m², so the model must stop by week ${wk}`,
+              d: ["Yes: exponential growth continues forever", "No: the pads should grow by 2 m² a week instead", "Yes: the equation gives that value, so it must be right"] }; },
+          () => { const g = pick([5, 6, 7]), h0 = pick([105, 110, 115]), age = pick([35, 40, 50]), y = h0 + g * (age - 5);
+            return { q: `A child is ${h0} cm tall at age 5 and grows ${g} cm a year: h = ${h0} + ${g}(x - 5). The model predicts ${y} cm at age ${age}. Is that reasonable?`,
+              a: "No: people stop growing in their late teens, so the model only fits childhood",
+              d: ["Yes: a linear model works for any age", "No: the model should make the height shrink", `Yes: ${y} cm is a normal adult height`] }; },
+          () => { const a = pick([500, 800, 1000]), yrs = pick([60, 80, 100]);
+            return { q: `A phone game had ${a} players and grew 15% a month: y = ${a}(1.15)^x. After ${yrs} months the model predicts more players than there are people on Earth. What does that show?`,
+              a: "The model only fits the early months; growth has to slow as players run out",
+              d: ["The game will really have that many players", "The rate should have been 1.15%, not 15%", "Exponential models can never be used for real data"] }; }]);
+        const r = c();
+        return {
+          subType: "domain_limits",
+          question: r.q, answer: r.a, forceChoice: true,
+          options: opt4(r.a, r.d),
+          explanation: `A model fitted to some data is only trustworthy inside the situation it came from. ${r.a}.`
+        };
+      }
+    });
+  }));
+})();
 // ==== END GRADUATION PLAN CONTENT: READINESS-FUNCTIONS ====
 </script>
 </body>
