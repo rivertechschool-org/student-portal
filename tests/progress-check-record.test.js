@@ -51,7 +51,7 @@ function stubDb() {
 }
 
 const CHECK = {
-  at: '2026-10-05T09:59:00.000Z', complete: true, reason: 'edge', duration_seconds: 412,
+  at: '2026-10-05T09:59:00.000Z', kind: 'college_prep', complete: true, reason: 'edge', duration_seconds: 412,
   items: [
     { code: '7', title: 'Percent Change', section: 'core', kind: 'frontier', correct: 2, total: 2, status: 'secure', skills: ['Percent Change'] },
     { code: '22', title: 'Slope', section: 'core', kind: 'frontier', correct: 1, total: 2, status: 'shaky', skills: ['Slope'] },
@@ -92,6 +92,8 @@ const CHECK = {
     const target = { postMessage: (m) => { sent = m; } };
     await method(h.file, 'sendDojoProgressHistory').call(self, target, { subject: 'Math' });
     ok('history is sent back', sent && sent.type === 'PROGRESS_HISTORY_FOR_DOJO');
+    // 'kind' on the summary entry is its tag; the check type travels as check_kind.
+    check('  a College Prep Check comes back as one', sent.checks[0].kind, 'college_prep');
     const back = sent.checks[0];
     check('  the check comes back as it was taken',
       [back.at, back.complete, back.reason, back.items.map(i => [i.code, i.status]), back.summary],

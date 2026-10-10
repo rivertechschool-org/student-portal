@@ -4629,3 +4629,22 @@ endSessionTracking, which would have marked every asked skill in_progress
 (i.e. unlocked). Item statuses: secure / shaky / notyet / notseen / notreached;
 the summary entry also carries `edge` and `reason`. Branches are not part of
 it. The teacher card shows the edge per check.
+
+### 2026-10-10: Stage 7 and the College Prep Check
+
+Stage 7, **College & Assessment Readiness** (items 66-73), sits after the 65
+core items and before the branches (`readiness` in
+`data/math_graduation_plan.json`; skill class `readiness`). It is never
+counted in the core 65. Five new skills fill what existing ones did not cover:
+Quadratics by Square Roots, Rational Expression Arithmetic, Extraneous
+Solutions, Nonlinear Function Analysis, Nonlinear Modeling (content in the
+`READINESS-*` blocks). Several former STEM-branch skills (Polynomial
+Operations, Function Transformations, ...) are now readiness and still count
+toward their STEM items.
+
+The **Progress Check** is the 65 core items only. The **College Prep Check**
+is the extended version: the 65, then Stage 7, same edge rule, so a student
+only reaches Stage 7 by getting through the core. Saved rows carry
+`check_kind` ('progress' | 'college_prep') on the summary entry - not `kind`,
+which is that entry's own tag (a duplicate key there briefly wiped the
+summary).

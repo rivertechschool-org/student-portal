@@ -1465,19 +1465,20 @@
         </div>
 
         <div id="progress-setup-screen" class="screen">
-            <header class="header"><h1>📈 Progress Check</h1><p>The 65 graduation core skills, easiest first, two questions each. It stops where the topics become new to you.</p></header>
+            <header class="header"><h1>📈 Progress Check</h1><p>The 65 graduation core skills, easiest first, two questions each - or the extended College Prep Check, which adds Stage 7. It stops where the topics become new to you.</p></header>
             <div class="pc-wrap">
                 <div class="pc-card" id="progress-setup-plan"></div>
                 <div class="pc-card"><h3>Your past checks</h3><div id="progress-history"></div></div>
                 <div style="display:flex;gap:1rem;justify-content:center;margin-top:1.5rem">
                     <button class="btn btn-ghost" onclick="goToModeSelect()">← Back</button>
-                    <button id="start-progress-btn" class="btn btn-primary" onclick="startProgressCheck()" disabled>Start Check</button>
+                    <button id="start-progress-btn" class="btn btn-primary" onclick="startProgressCheck(false)" disabled>Start Progress Check</button>
+                    <button id="start-collegeprep-btn" class="btn btn-cyan" onclick="startProgressCheck(true)" disabled>Start College Prep Check</button>
                 </div>
             </div>
         </div>
 
         <div id="progress-result-screen" class="screen">
-            <header class="header"><h1>📈 Progress Check Results</h1><p id="progress-result-sub"></p></header>
+            <header class="header"><h1 id="progress-result-title">📈 Progress Check Results</h1><p id="progress-result-sub"></p></header>
             <div class="pc-wrap">
                 <div class="pc-card" id="progress-result-summary"></div>
                 <div class="pc-card" id="progress-result-items"></div>
@@ -45240,12 +45241,15 @@ function progressHistory() {
 // The 65 core items in difficulty order, each with the two skills its
 // questions come from. Locked skills are asked too: this measures what the
 // student can do, not what the Dojo has opened for them.
-function buildProgressCheck() {
+// Two kinds, same rules:
+//   Progress Check      the 65 core items
+//   College Prep Check  extended: the 65, then Stage 7 College & Assessment
+//                       Readiness (66-73). The edge rule runs across both, so
+//                       a student only reaches Stage 7 by getting through the
+//                       core.
+function buildProgressCheck(extended) {
     if (typeof MATH_PLAN === 'undefined') return null;
     loadSkillTreeData();
-    // The 65 core items, then Stage 7 (66-73), each group easiest first. The
-    // same edge rule runs across both, so only a student who gets through the
-    // core reaches the readiness items.
     const build = (section, list) => list.map((it, idx) => {
         const skills = it.skills.map(id => {
             const n = MATH_GRAPH_V2.nodes[id];
@@ -45258,24 +45262,31 @@ function buildProgressCheck() {
                  picks: [pool[0], pool[1] || pool[0]], results: [], notSeen: false };
     }).filter(Boolean).sort((a, b) => a.level - b.level || a.idx - b.idx);
     const items = build('core', planItems(MATH_PLAN.core))
-        .concat(MATH_PLAN.readiness ? build('R', planItems(MATH_PLAN.readiness)) : []);
-    return { items };
+        .concat(extended && MATH_PLAN.readiness ? build('R', planItems(MATH_PLAN.readiness)) : []);
+    return { items, kind: extended ? 'college_prep' : 'progress' };
 }
 
 function initProgressSetup() {
-    const built = buildProgressCheck();
+    const built = buildProgressCheck(false);
+    const extended = buildProgressCheck(true);
     const planEl = document.getElementById('progress-setup-plan');
     const btn = document.getElementById('start-progress-btn');
-    progressState = { items: built ? built.items : [], block: [], next: 0, entry: null, stopped: null, startTime: null };
+    const btnPrep = document.getElementById('start-collegeprep-btn');
+    progressState = { items: [], kind: 'progress', block: [], next: 0, entry: null, stopped: null, startTime: null };
     if (!built || !built.items.length) {
         planEl.innerHTML = '<h3>The Progress Check is not available</h3><p class="pc-muted">The graduation plan did not load. Try reloading the page.</p>';
         btn.disabled = true;
+        btnPrep.disabled = true;
     } else {
-        const nCore = built.items.filter(i => i.section === 'core').length, nR = built.items.length - nCore;
-        planEl.innerHTML = `<h3>All ${nCore} graduation core skills, easiest first${nR ? `, then the ${nR} Stage 7 readiness skills` : ''}</h3>
+        const nCore = built.items.length;
+        const nR = extended ? extended.items.length - nCore : 0;
+        planEl.innerHTML = `<h3>Choose a check</h3>
+            <p class="pc-muted"><strong>Progress Check</strong>: all ${nCore} graduation core skills, easiest first.</p>
+            <p class="pc-muted"><strong>College Prep Check</strong> (extended): the same ${nCore}, then the ${nR || 8} Stage 7 College &amp; Assessment Readiness skills (66-73), for students heading to college, placement or assessment. You only reach Stage 7 by getting through the core.</p>
             <p class="pc-muted">Two questions on each. If you have never seen a question's topic, press <strong>🆕 Never seen this</strong> - it is not counted as wrong. When you reach topics you have not learned yet, the check notices and finishes there, so nobody has to sit through work they have not been taught.</p>
             <p class="pc-muted">Nothing about your skills changes. Every check is saved so you can see what has moved since the last one.</p>`;
         btn.disabled = false;
+        btnPrep.disabled = !nR;
     }
     renderProgressHistory();
     requestProgressHistory();
@@ -45299,14 +45310,17 @@ function renderProgressHistory() {
         const total = coreItems.length;
         const when = new Date(c.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
         const edge = c.summary && c.summary.edge ? ` · edge ${escapeHtml(c.summary.edge.code)}. ${escapeHtml(c.summary.edge.title)}` : '';
-        return `<div class="pc-history-row"><span>${escapeHtml(when)}</span>
+        return `<div class="pc-history-row"><span>${escapeHtml(when)}${c.kind === 'college_prep' ? ' <span class="plan-tag ready">College Prep</span>' : ''}</span>
             <span><span class="pc-status secure">${k.secure}${total ? '/' + total : ''} secure</span> · <span class="pc-status shaky">${k.shaky} shaky</span> · <span class="pc-status notyet">${k.notyet + k.notseen} not yet</span>${k.notreached ? ` · <span class="pc-muted">${k.notreached} not reached</span>` : ''}</span>
             <span class="pc-muted">${edge}</span></div>`;
     }).join('');
 }
 
-function startProgressCheck() {
-    if (!progressState.items.length) return;
+function startProgressCheck(extended) {
+    const built = buildProgressCheck(!!extended);
+    if (!built || !built.items.length) return;
+    progressState.items = built.items;
+    progressState.kind = built.kind;
     initScores();
     startSessionTracking('progress');
     state.mode = 'progress';
@@ -45444,6 +45458,7 @@ function endProgressCheck(reason) {
     const answered = items.filter(i => i.status !== 'notreached');
     const record = {
         at: new Date().toISOString(),
+        kind: progressState.kind || 'progress',
         complete: reason === 'complete' || reason === 'edge',
         reason,
         items,
@@ -45453,6 +45468,7 @@ function endProgressCheck(reason) {
                    readiness: { total: items.filter(i => i.section === 'R').length, ...progressCounts(items.filter(i => i.section === 'R')) } },
         duration_seconds: Math.round((Date.now() - (progressState.startTime || Date.now())) / 1000)
     };
+    // The core is the same in both kinds, so either kind is a fair "last time".
     const previous = progressHistory().slice(-1)[0] || null;
     if (answered.length) {
         saveProgressHistoryLocal(progressHistoryLocal().concat([record]));
@@ -45490,6 +45506,7 @@ function renderProgressResults(record, previous) {
         : record.reason === 'complete' ? 'Saved. You went through every graduation core skill.'
         : 'Ended early. What you answered is saved.';
     document.getElementById('progress-result-sub').textContent = sub;
+    document.getElementById('progress-result-title').textContent = record.kind === 'college_prep' ? '🎓 College Prep Check Results' : '📈 Progress Check Results';
     document.getElementById('progress-result-summary').innerHTML = `
         <div class="pc-counts">
             <div class="pc-count pc-secure"><b>${k.secure}</b>secure of ${total}</div>
