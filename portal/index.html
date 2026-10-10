@@ -9864,10 +9864,12 @@
                     const items = det.filter(d => d && d.kind === 'item').map(d => ({
                         code: d.code, title: d.skill, section: d.section, correct: d.correct, total: d.total, status: d.status, skills: d.skills || []
                     }));
+                    // Counts are over the 65 core items; Stage 7 (section 'R') on its own.
                     const counts = { secure: 0, shaky: 0, notyet: 0, notseen: 0, notreached: 0 };
-                    items.forEach(i => { counts[i.status] = (counts[i.status] || 0) + 1; });
+                    const r7 = { total: 0, secure: 0, shaky: 0, notyet: 0, notseen: 0, notreached: 0 };
+                    items.forEach(i => { const c = i.section === 'R' ? r7 : counts; c[i.status] = (c[i.status] || 0) + 1; if (i.section === 'R') r7.total++; });
                     return { at: sum.at || r.created_at, complete: !!sum.complete, reason: sum.reason || null, items,
-                        summary: { core_done: sum.core_done || 0, core_total: sum.core_total || 65, edge: sum.edge || null, ...counts } };
+                        summary: { core_done: sum.core_done || 0, core_total: sum.core_total || 65, edge: sum.edge || null, ...counts, readiness: r7 } };
                 });
           target.postMessage({ type: 'PROGRESS_HISTORY_FOR_DOJO', owner: userId, checks }, '*');
         } catch (e) { console.warn('Progress history:', e); }
@@ -41691,9 +41693,12 @@ Students you had withdrawn stay withdrawn.`)) {
             const det = Array.isArray(r.skill_details) ? r.skill_details : [];
             const items = det.filter(d => d && d.kind === 'item');
             const sum = det.find(d => d && d.kind === 'summary') || {};
+            // The 65 core items are counted apart from Stage 7 (section 'R').
             const c = { secure: 0, shaky: 0, notyet: 0, notseen: 0, notreached: 0 };
-            items.forEach(i => { c[i.status] = (c[i.status] || 0) + 1; });
-            return { at: r.created_at, items, c, total: items.length, edge: sum.edge || null, reason: sum.reason || null,
+            const r7 = { total: 0, secure: 0 };
+            items.forEach(i => { if (i.section === 'R') { r7.total++; if (i.status === 'secure') r7.secure++; } else c[i.status] = (c[i.status] || 0) + 1; });
+            const coreN = items.filter(i => i.section !== 'R').length;
+            return { at: r.created_at, items, c, r7, total: coreN, edge: sum.edge || null, reason: sum.reason || null,
                      coreDone: sum.core_done, coreTotal: sum.core_total || 65, complete: sum.complete !== false };
           });
           if (!checks.length) {
@@ -41710,7 +41715,7 @@ Students you had withdrawn stay withdrawn.`)) {
             const weak = ch.items.filter(x => x.status === 'shaky' || x.status === 'notyet').map(x => `${x.code}. ${x.skill}`);
             return `<tr style="border-top: 1px solid var(--border);">
                 <td style="padding: 6px 8px; white-space: nowrap;">${esc(new Date(ch.at).toLocaleDateString())}${ch.complete ? '' : ' <span style="color: var(--muted);">(ended early)</span>'}</td>
-                <td style="padding: 6px 8px;"><span style="color: #10b981;">${ch.c.secure}${ch.total ? '/' + ch.total : ''} secure</span> · <span style="color: #d97706;">${ch.c.shaky} shaky</span> · <span style="color: #ef4444;">${ch.c.notyet + ch.c.notseen} not yet</span>${ch.c.notreached ? ` · <span style="color: var(--muted);">${ch.c.notreached} not reached</span>` : ''}</td>
+                <td style="padding: 6px 8px;"><span style="color: #10b981;">${ch.c.secure}${ch.total ? '/' + ch.total : ''} secure</span> · <span style="color: #d97706;">${ch.c.shaky} shaky</span> · <span style="color: #ef4444;">${ch.c.notyet + ch.c.notseen} not yet</span>${ch.c.notreached ? ` · <span style="color: var(--muted);">${ch.c.notreached} not reached</span>` : ''}${ch.r7.total && ch.items.some(x => x.section === 'R' && x.status !== 'notreached') ? ` · <span style="color: #0891b2;">Stage 7: ${ch.r7.secure}/${ch.r7.total} secure</span>` : ''}</td>
                 <td style="padding: 6px 8px;">${ch.edge ? esc(ch.edge.code + '. ' + ch.edge.title) : (ch.reason === 'complete' ? 'went through all' : '—')}</td>
                 <td style="padding: 6px 8px; white-space: nowrap;">${prev ? `${up ? '<span style="color:#10b981;">▲ ' + up + '</span> ' : ''}${down ? '<span style="color:#ef4444;">▼ ' + down + '</span>' : ''}${!up && !down ? '—' : ''}` : 'first'}</td>
                 <td style="padding: 6px 8px; font-size: 12px; color: var(--muted);">${weak.length ? esc(weak.slice(0, 6).join(', ')) + (weak.length > 6 ? ' …' : '') : 'all secure'}</td>

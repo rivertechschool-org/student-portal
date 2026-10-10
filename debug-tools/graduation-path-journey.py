@@ -86,6 +86,14 @@ with sync_playwright() as p:
     ok('path lists all 65 core items', r['coreItems'] == 65, r['coreItems'])
     ok('path marks the same items complete', r['doneItems'] == expected, f"{r['doneItems']} vs {expected}")
     ok('core is marked Required, solid edge', r['coreKicker'].startswith('Required') and r['coreBorder'] == 'solid', f"{r['coreKicker']} / {r['coreBorder']}")
+    r7 = pg.evaluate("""() => { const sec = document.querySelector('.plan-ready');
+      const order = [...document.querySelectorAll('#grad-path-body > section')].map(x => x.className);
+      return { exists: !!sec, items: sec ? sec.querySelectorAll('.plan-item').length : 0,
+               codes: sec ? [...sec.querySelectorAll('.plan-code')].map(x => x.textContent) : [],
+               order, kicker: sec ? sec.querySelector('.plan-kicker').textContent : '' }; }""")
+    ok('Stage 7 College & Assessment Readiness: items 66-73', r7['exists'] and r7['codes'] == [str(c) for c in range(66, 74)], r7['codes'])
+    ok('  between the core and the branches', r7['order'][:2] == ['plan-core', 'plan-ready'] and all(o == 'plan-branch' for o in r7['order'][2:]), r7['order'])
+    ok('  and never counted in the core 65', r['coreItems'] == 65 and 'Stage 7' in r7['kicker'])
     ok('four branch sections, each dashed and marked Branch',
        len(r['branches']) == 4 and all(x['style'] == 'dashed' and x['kicker'].startswith('Branch') for x in r['branches']), r['branches'])
 
@@ -133,6 +141,7 @@ with sync_playwright() as p:
       return c && c.className; }""")
     ok('and its chip on the path is open, not locked', chip is not None and 'locked' not in chip and 'soon' not in chip, chip)
 
+    ok('home shows Stage 7 progress', 'Stage 7 Readiness' in pg.evaluate("(renderGradPathSummary(), document.getElementById('grad-path-summary').innerText)"))
     print('\n== badges in Training Grounds ==')
     pg.evaluate("goToModeSelect(); selectMode('learning'); selectLearningTier(6)"); pg.wait_for_timeout(300)
     r = pg.evaluate("""() => { const cards = [...document.querySelectorAll('#skill-grid .skill-card')];
@@ -141,6 +150,9 @@ with sync_playwright() as p:
                branch: cards.filter(c => c.classList.contains('branch-skill') && getComputedStyle(c).borderTopStyle === 'dashed').length }; }""")
     ok('tier 6 cards carry core badges', r['core'] > 0, r)
     ok('and branch cards are dashed', r['branch'] > 0, r)
+    pg.evaluate("selectLearningTier(7)"); pg.wait_for_timeout(200)
+    ready = pg.evaluate("[...document.querySelectorAll('#skill-grid .skill-card')].filter(c => c.querySelector('.plan-tag.ready')).map(c => c.querySelector('.skill-name').textContent)")
+    ok('tier 7 readiness skills carry a Ready badge', 'Function Transformations' in ready and 'Polynomial Operations' in ready, ready[:6])
 
     print('\n== phone ==')
     pg.close(); pg, errs3 = fresh(b, 390, 844); errs += errs3
