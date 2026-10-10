@@ -6,10 +6,12 @@
 // this exists for: the answer checker's loose readers have marked wrong typed
 // answers right - "x = 8" for "x = 4", "$678,976" for "$678,400",
 // "(x+3)/(x+2)" for "(x+3)/(x-2)". Found 36 such groups when written
-// (2026-10-10); 13 skills (18 question types) remained after that day's fixes (integrals, some factored
-// forms, two-value comma lists, literal equations in letters other than x,
-// a few word answers) - work for another day, listed by this tool. 16 after
-// equations were compared by meaning (same day).
+// (2026-10-10), all fixed the same day: the loose reader that kept one x
+// coefficient and one constant now compares text as written, expressions are
+// compared by value, solution lists as sets, and generateQuestion drops any
+// choice the checker counts as equal to the answer (commuted factors,
+// reordered roots). tests/answer-checker-false-accepts.test.js pins them.
+// Expect "No findings."; anything listed is a new hole.
 //
 // Usage: node debug-tools/typed-wrong-answer-sweep.js        (RUNS=200 default)
 const fs = require('fs');

@@ -1599,6 +1599,10 @@ const TIERS = {
 // INTELLIGENT ANSWER INTERPRETER (T1-T10)
 // ========================================
 // Comprehensive answer matching with semantic equivalence for all tier levels
+// An angle classification as a whole answer: "acute", "a right angle", "obtuse triangle".
+// Unit words, which the value comparers must never read as letters multiplied together.
+const UNIT_TOKEN_RE = /\b(?:cm|mm|km|in|ft|yd|mi|kg|lbs?|oz|ml|hr|hrs|min|sec|mph)\b/i;
+const ANGLE_TYPE_RE = /^(?:an?\s+)?(?:acute|obtuse|right|straight|reflex)(?:\s+(?:angle|triangle)s?)?\.?$/i;
 const AnswerInterpreter = {
     // Word-to-number mappings
     wordNumbers: {
@@ -1844,7 +1848,9 @@ const AnswerInterpreter = {
 
         // Angle
         if (/\d+\s*°|degrees?$/i.test(ans)) return 'angle';
-        if (/acute|obtuse|right|straight|reflex/i.test(ans)) return 'angle_type';
+        // The whole answer, not a word inside one: "brightness" contains
+        // "right", and every sentence with it graded as the same right angle.
+        if (ANGLE_TYPE_RE.test(String(ans).trim())) return 'angle_type';
 
         // Pure number (integer or decimal)
         if (/^-?\d+\.?\d*$/.test(ans.replace(/,/g, ''))) return 'number';
@@ -2106,11 +2112,21 @@ const AnswerInterpreter = {
         // A list of solutions ("x=-6,x=2,x=4", "x=1;x=-1"): the loose reading
         // below added the terms up, so different lists could grade equal.
         // Compared as a set through lhs; the coefficients are left at zero.
+        // "x = 6, 6", "x = 1/2, 5", "x = 3 ± √2" listed out: each value
+        // evaluated, a repeated root counted once.
         const sols = s.split(/[,;]|or|and/).filter(Boolean);
-        if (sols.length >= 2 && sols.every(t => /^[a-z]=-?\d+(\.\d+)?$/.test(t))) {
-            const vals = sols.map(t => parseFloat(t.split('=')[1])).sort((a, b) => a - b);
-            return { x2Coef: 0, xCoef: 0, constant: 0, lhs: 'set:' + vals.join(','), normalized: 'set:' + vals.join(',') };
+        if (sols.length >= 2 && /^[a-z]=/.test(sols[0])) {
+            const nums = sols.map(t => this.parseArithmetic(t.replace(/^[a-z]=/, '')));
+            if (nums.every(v => v !== null && isFinite(v))) {
+                const vals = [...new Set(nums.map(v => Number(v.toPrecision(10))))].sort((a, b) => a - b);
+                return { x2Coef: 0, xCoef: 0, constant: 0, lhs: 'set:' + vals.join(','), normalized: 'set:' + vals.join(',') };
+            }
         }
+        // Anything else is compared as written (spaces dropped). The loose
+        // reading that used to follow kept one x coefficient and one constant,
+        // so "e^x + C" passed for "ln|x| + C", "UX" for "GX", "x = 12, 0" for
+        // "x = 6, 6" and "exactly 2" for "exactly 1".
+        if (s) return { x2Coef: 0, xCoef: 0, constant: 0, lhs: 'raw:' + s, normalized: 'raw:' + s };
         // Simplified: extract coefficient of x terms
         const xTerms = s.match(/([+-]?\d*)x\^?(\d*)/g) || [];
         const constMatch = s.match(/([+-]\d+)(?![x\d])|^(\d+)(?![x])/);
@@ -2200,11 +2216,68 @@ const AnswerInterpreter = {
         } catch (e) { return null; }
     },
 
+    // A typed scientific-notation answer must be in that form: the number in
+    // front from 1 up to 10 ("57 × 10^6" is not scientific notation for
+    // 5.7 × 10^7), and when the expected one keeps a trailing zero after the
+    // point ("8.10 × 10^5", significant figures) the student's must match it.
+    sciFormOk(user, expected) {
+        const mant = v => { const m = String(v).trim().match(/^(-?\d+(?:\.\d+)?)\s*(?:[×x*·]|e)/i); return m ? m[1] : null; };
+        const um = mant(user), em = mant(expected);
+        if (um === null || em === null) return true;
+        const a = Math.abs(parseFloat(um));
+        if (a !== 0 && (a < 1 || a >= 10)) return false;
+        if ((/\.\d*0$/.test(em) || /\.\d*0$/.test(um)) && um.replace(/^-/, '') !== em.replace(/^-/, '')) return false;
+        return true;
+    },
+
+    // One expression against another, by value ("x^6/6 + C" = "(1/6)x^6 + C",
+    // "x^(5/4)" vs "x^(4/5)"). Only for lowercase algebra with no list,
+    // equation or word in it: capitals are segment and angle names ("GX" is
+    // not G times X) and a run of letters that is not sin/cos/... is a word
+    // ("exactly 1"). Returns true / false, or null to leave it to the other
+    // readers. Integration constants are just another variable.
+    expressionsMatch(userInput, expected) {
+        const ok = v => {
+            const t = String(v).trim();
+            if (!t || /[=,;<>\u2264\u2265\u2260{}\[\]]|[A-Z]|\b(or|and)\b/.test(t.replace(/\+\s*C\s*$/, ''))) return false;
+            if (/[a-z]{3,}/.test(t.replace(/\+\s*C\s*$/, '').replace(/sin|cos|tan|sqrt|ln|log|abs/g, ' '))) return false;
+            // Units are not variables: "11 ft 2 in" read as 11·f·t·2·i·n
+            // equalled "2 ft 11 in", and "1 cm / 2.54 in" its upside-down twin.
+            if (UNIT_TOKEN_RE.test(t)) return false;
+            // A variable is required: with numbers only ("log(6) - log(5)")
+            // the question is about the FORM, and every form has one value.
+            return /[a-z]/.test(t.replace(/sin|cos|tan|sqrt|ln|log|abs/g, ''));
+        };
+        if (!ok(expected) || !ok(userInput)) return null;
+        const prep = v => String(v).trim().replace(/\+\s*C\s*$/, '+c');
+        const E = this.parseExpr(prep(expected)), U = this.parseExpr(prep(userInput));
+        if (!E || !U) return null;
+        const same = [...E.vars].length === [...U.vars].length && [...E.vars].every(x => U.vars.has(x));
+        if (!same) return false;
+        const vars = [...E.vars];
+        const SAMPLES = [0.37, 1.73, 2.61, 0.83, 3.29, 1.19, 2.07];
+        const close = (a, b) => Math.abs(a - b) <= 1e-7 * Math.max(1, Math.abs(a), Math.abs(b));
+        let used = 0;
+        for (let i = 0; i < 7; i++) {
+            const env = Object.fromEntries(vars.map((v, j) => [v, SAMPLES[(i + j * 3) % SAMPLES.length] + j * 0.11]));
+            const a = U.f(env), b = E.f(env);
+            if (!isFinite(a) || !isFinite(b)) continue;
+            used++;
+            if (!close(a, b)) return false;
+        }
+        return used >= 4;
+    },
+
     equationsMatch(userInput, expected) {
         const split = v => {
             const str = String(v).trim();
             if ((str.match(/=/g) || []).length !== 1 || /[<>\u2264\u2265\u2260]|\b(or|and)\b|[,;]/.test(str)) return null;
             const [l, r] = str.split('=');
+            // Words and units are not products of letters: "minimum of 0 at
+            // x = -3" read as 0 = -3 and, sign-flipped, equalled "... x = 3".
+            // Function names come out first, so "2abcos(C)" is ab times cos.
+            const wordy = t => UNIT_TOKEN_RE.test(t) || /[A-Za-z]{3,}/.test(t.replace(/sin|cos|tan|sqrt|ln|log|abs/gi, ' '));
+            if (wordy(l) || wordy(r)) return null;
             const L = this.parseExpr(l), R = this.parseExpr(r);
             if (!L || !R) return null;
             const lone = side => { const t = side.replace(/\s+/g, ''); return /^[A-Za-z]$/.test(t) ? t : null; };
@@ -2803,6 +2876,7 @@ const AnswerInterpreter = {
                 break;
             }
             case 'angle_type': {
+                if (!ANGLE_TYPE_RE.test(String(s).trim())) break;
                 if (/acute/i.test(s)) return { type: 'angle_type', value: 'acute', original: s };
                 if (/obtuse/i.test(s)) return { type: 'angle_type', value: 'obtuse', original: s };
                 if (/right/i.test(s)) return { type: 'angle_type', value: 'right', original: s };
@@ -2817,23 +2891,33 @@ const AnswerInterpreter = {
                 // first angle let "30°" pass for both.
                 if (/,|and|or/.test(s)) break;
                 const angleMatch = s.match(/(-?\d+(?:\.\d+)?)\s*°?/);
-                if (angleMatch) return { type: 'angle', value: parseFloat(angleMatch[1]), original: s };
+                // The words around the number count too: "rotation 90°
+                // counterclockwise" is not "rotation 90° clockwise".
+                const angleWords = (s.toLowerCase().replace(/counter-?clockwise|anti-?clockwise|ccw/g, ' ccw ').match(/[a-z]+/g) || [])
+                    .filter(w => !/^(degrees?|deg|angle|the|a|an|is|of|measures?|by)$/.test(w)).join(' ');
+                if (angleMatch) return { type: 'angle', value: parseFloat(angleMatch[1]), words: angleWords, original: s };
                 break;
             }
             case 'geometry': {
                 const geoTerms = ['parallel', 'perpendicular', 'intersecting', 'vertical', 'horizontal',
                     'triangle', 'square', 'rectangle', 'circle', 'pentagon', 'hexagon', 'octagon',
                     'equilateral', 'isosceles', 'scalene', 'prime', 'composite'];
-                for (const term of geoTerms) {
-                    if (s.includes(term)) return { type: 'geometry', value: term, original: s };
-                }
+                // Every word must be a shape term or filler. Taking the first
+                // term found made "isosceles triangle" equal "scalene triangle"
+                // (both "triangle") and any sentence with "perpendicular" in it
+                // equal any other.
+                const filler = new Set(['a', 'an', 'the', 'it', 'is', 'its', 'are', 'they', 'line', 'lines', 'shape', 'shapes', 'number', 'numbers']);
+                const words = (s.toLowerCase().match(/[a-z]+/g) || []).filter(w => !filler.has(w)).map(w => geoTerms.includes(w.replace(/s$/, '')) ? w.replace(/s$/, '') : w);
+                if (words.length && words.every(w => geoTerms.includes(w))) return { type: 'geometry', value: words.join(' '), original: s };
                 break;
             }
         }
         // Default: normalized text
         // Punctuation is dropped, but not a comma or point between digits:
         // stripping those made "{-11, 1}" equal "{-1, 11}" and "3.5" equal "35".
-        return { type: 'text', value: s.replace(/\s+/g, '').replace(/(?<!\d)[.,]|[.,](?!\d)/g, '').replace(/[!?]/g, ''), original: s };
+        // "!" before a letter or bracket is logical NOT and stays: dropping it
+        // made "!a && b" equal "!a && !b".
+        return { type: 'text', value: s.replace(/\s+/g, '').replace(/(?<!\d)[.,]|[.,](?!\d)/g, '').replace(/\?|!(?![a-z(])/gi, ''), original: s };
     },
 
     // Greatest common divisor
@@ -2848,6 +2932,7 @@ const AnswerInterpreter = {
             switch (normA.type) {
                 case 'number': case 'fraction': case 'percent': case 'money':
                 case 'time': case 'measurement': case 'angle': case 'pi_expression': {
+                    if (normA.type === 'angle' && (normA.words || '') !== (normB.words || '')) return false;
                     // The flat tolerance is too loose for small values (0.0069
                     // passed for 0.00685, 1.01% for 1%), so it shrinks to 0.1%
                     // of the size of the numbers when that is smaller.
@@ -2857,7 +2942,8 @@ const AnswerInterpreter = {
                 }
 
                 case 'scientific_notation':
-                    return Math.abs(normA.value - normB.value) < Math.abs(normA.value * 0.0001);
+                    return Math.abs(normA.value - normB.value) < Math.abs(normA.value * 0.0001)
+                        && this.sciFormOk(normA.original, normB.original);
 
                 case 'radical':
                     return normA.coefficient === normB.coefficient && normA.radicand === normB.radicand && normA.index === normB.index;
@@ -2982,12 +3068,29 @@ const AnswerInterpreter = {
         // n = (t - y)/x.
         const eqMatch = this.equationsMatch(userInput, expectedAnswer);
         if (eqMatch !== null) return { correct: eqMatch, matchType: eqMatch ? 'equivalent' : 'none' };
+        const exMatch = this.expressionsMatch(userInput, expectedAnswer);
+        if (exMatch !== null) return { correct: exMatch, matchType: exMatch ? 'equivalent' : 'none' };
 
         const userNorm = this.normalize(userInput, type);
         const expectedNorm = this.normalize(expectedAnswer, type);
 
         if (this.isEquivalent(userNorm, expectedNorm, tolerance)) {
             return { correct: true, matchType: 'exact' };
+        }
+
+        // Solutions as a set, whichever way each side was written: "x = 5 or
+        // x = 1/2" for "x = 1/2, 5" (the "or" sends the typed answer to
+        // another reader above), and "x = 6" for the double root "x = 6, 6".
+        if (/=/.test(String(expectedAnswer)) && /=/.test(String(userInput))) {
+            const asSet = v => {
+                const n = this.normalize(v, 'algebraic');
+                if (!n || n.type !== 'algebraic') return null;
+                if (n.lhs && n.lhs.startsWith('set:')) return n.lhs;
+                if (n.lhs === '=0' && n.x2Coef === 0 && n.xCoef === 1) return 'set:' + Number((-n.constant).toPrecision(10));
+                return null;
+            };
+            const us = asSet(userInput), es = asSet(expectedAnswer);
+            if (us && es && us === es) return { correct: true, matchType: 'equivalent' };
         }
 
         // A set or "or" list matches in any order: "{-11, 1}", "x = 3 + 2√5 or
@@ -3000,7 +3103,12 @@ const AnswerInterpreter = {
             if (/^\(.*\)$/.test(t)) return null;
             const worded = /\b(or|and)\b/.test(t);
             const parts = t.split(/\s*(?:,|;|\bor\b|\band\b)\s*/).map(x => x.replace(/^[a-z]\s*=\s*/, '').replace(/\s+/g, '')).filter(Boolean);
-            if (parts.length < 2 || !(braced || worded || parts.length >= 3)) return null;
+            // Order-free only for a set in braces, or an "or"/"and" list of
+            // values. A bare list is an ORDER ("candle, book, surfboard"
+            // shortest to longest) and a sentence with "or" in it is not a
+            // list: both used to match any rearrangement of themselves.
+            if (parts.length < 2) return null;
+            if (!braced && !(worded && parts.every(x => /[\d√π]/.test(x)))) return null;
             return parts.sort();
         };
         const uList = listOf(userInput), eList = listOf(expectedAnswer);
@@ -3040,14 +3148,18 @@ const AnswerInterpreter = {
             // Number with trailing units/labels (e.g., "14 units²", "14 sq units", "14 square units")
             if (expectedNorm.type === 'number' && userNorm.type === 'text') {
                 const leading = String(userInput).trim().match(/^-?\d+\.?\d*/);
-                if (leading) {
+                // Only a unit or label may follow, never more maths: "1/√3"
+                // read as 1 followed by "/√3" and passed for an expected 1.
+                const rest = leading ? String(userInput).trim().slice(leading[0].length).trim() : '';
+                if (leading && /[\/*^√+\-=\d(]/.test(rest.charAt(0))) { /* not a unit */ }
+                else if (leading) {
                     const userNum = parseFloat(leading[0]);
                     if (!isNaN(userNum) && Math.abs(userNum - expectedNorm.value) < tolerance) {
                         return { correct: true, matchType: 'equivalent' };
                     }
                 }
             }
-            if (expectedNorm.type === 'scientific_notation') {
+            if (expectedNorm.type === 'scientific_notation' && this.sciFormOk(userInput, expectedAnswer)) {
                 let val = (userNorm && userNorm.type === 'number') ? userNorm.value : null;
                 if (val === null) {
                     // "3.5 x 10^4" and "3.5*10^4" never detect as scientific
@@ -3070,6 +3182,15 @@ const AnswerInterpreter = {
             // Pi expression equivalence with number
             if (expectedNorm.type === 'pi_expression' && userNorm.type === 'number') {
                 if (Math.abs(userNorm.value - expectedNorm.value) < tolerance) {
+                    return { correct: true, matchType: 'equivalent' };
+                }
+            }
+            // Radicals the radical reader cannot hold ("1/√3", "√3/3", "3 - √2"):
+            // both evaluated. Rationalised and unrationalised forms are equal.
+            if (/√/.test(String(expectedAnswer)) && expectedNorm.type !== 'radical') {
+                const ev = this.parseArithmetic(this.unifyNotation(expectedAnswer));
+                const uv = this.parseArithmetic(this.unifyNotation(userInput));
+                if (ev !== null && uv !== null && isFinite(ev) && isFinite(uv) && Math.abs(ev - uv) < 1e-9 * Math.max(1, Math.abs(ev))) {
                     return { correct: true, matchType: 'equivalent' };
                 }
             }
@@ -41818,6 +41939,14 @@ function generateQuestion(tier, domain = null) {
             if (Number.isFinite(target) && Math.abs(v - target) < 1e-9) continue;
             if (values.some(w => Math.abs(w - v) < 1e-9)) continue;
         }
+        // A choice the answer checker would mark right is a second right
+        // answer: "(x+5)(x+1)" beside "(x+1)(x+5)", "x = 5, -5" beside
+        // "x = -5, 5". Found by debug-tools/typed-wrong-answer-sweep.js.
+        if (!aboutForm && k !== answerKey) {
+            let same = false;
+            try { same = AnswerInterpreter.checkAnswer(String(o), q.answer).correct; } catch (e) { same = false; }
+            if (same) continue;
+        }
         seen.add(k); opts.push(o);
         if (Number.isFinite(v)) values.push(v);
     }
@@ -52502,7 +52631,11 @@ if ('speechSynthesis' in window) {
   }, function(){
     const mode = pick(["degree","add","leading"]);
     if (mode === "add") {
-      const a = ri(1,6), b = ri(-6,6), c = ri(1,6), d = ri(-6,6);
+      // Constants are never 0 and never cancel: "(1x² + 0)" and an answer of
+      // "2x^2 + 0" made "2x^2" a second right choice.
+      const nz = () => pick([-6,-5,-4,-3,-2,-1,1,2,3,4,5,6]);
+      const a = ri(1,6), b = nz(), c = ri(1,6);
+      let d = nz(); while (b + d === 0) d = nz();
       const s1 = a + c, s2 = b + d;
       const ans = `${s1}x^2 ${sgn(s2)}`;
       return {

@@ -4663,3 +4663,35 @@ longer reveals a number's sign or that it is one digit.
 the Dojo for wrong answers being accepted. 36 groups on the old checker; 13
 skills (18 question types) remain - integrals, some factored forms, two-value
 comma lists, literal equations in letters other than x, a few word answers.
+
+### 2026-10-10: every known wrong-answer hole in the Dojo checker closed
+
+The wrong-answer sweep is at **No findings** (was 16 groups after the equation
+fix). One cause behind most of them: when the exact readers could not read an
+answer with an `x` in it, a last-resort reader kept only one x coefficient and
+one constant, so `e^x + C` passed for `ln|x| + C`, `UX` for `GX`, `x = 12, 0`
+for `x = 6, 6`. That reader is gone; such answers are now compared as written.
+Alongside it:
+
+- single expressions in lowercase letters are compared **by value**
+  (`expressionsMatch`), so `(1/6)x^6 + C` still passes for `x^6/6 + C`; numbers
+  only (`log(6) - log(5)`), capitals (segment names), words and units are left
+  to the other readers, because there the form is the answer
+- solution lists are sets of values: `x = 5 or x = 1/2` passes for
+  `x = 1/2, 5`, and `x = 6` for the double root `x = 6, 6`
+- a bare comma list is an **order**, no longer a set (ordering questions
+  accepted any order); only braces or an "or" list of values are order-free
+- angle types and shape words must be the whole answer: "brightness" contains
+  "right", and "isosceles triangle" read as just "triangle"
+- angles keep their direction words (clockwise vs counterclockwise), `!` stays
+  as logical NOT, "number + unit" no longer swallows `1/√3` as 1, `√3/3`
+  equals `1/√3`
+- scientific notation needs 1 to 10 in front, and trailing zeros must match
+  (significant figures)
+- `generateQuestion` drops any multiple-choice option the checker counts as
+  equal to the answer, so `(x+5)(x+1)` beside `(x+1)(x+5)` is no longer a
+  second right choice
+
+Pinned by `tests/answer-checker-false-accepts.test.js` (45 cases). Deliberate:
+`5.70 × 10^7` is not accepted for `5.7 × 10^7` (it claims another significant
+figure).
