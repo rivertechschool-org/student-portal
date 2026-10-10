@@ -1112,10 +1112,10 @@
                 <div class="mode-card progress" onclick="selectMode('progress')">
                     <div class="mode-icon">📈</div><h3>Progress Check</h3>
                     <div class="mode-subtitle">See How Far You've Come</div>
-                    <div class="mode-description">A short check on your graduation skills, saved every time so you and your teacher can see what has moved.</div>
+                    <div class="mode-description">The 65 graduation core skills, easiest first, saved every time so you and your teacher can see what has moved.</div>
                     <div class="mode-features">
-                        <div class="mode-feature"><span class="check">✓</span> Skills you're working on</div>
-                        <div class="mode-feature"><span class="check">✓</span> Re-checks ones you finished</div>
+                        <div class="mode-feature"><span class="check">✓</span> Two questions per skill</div>
+                        <div class="mode-feature"><span class="check">✓</span> Stops where topics are new to you</div>
                         <div class="mode-feature"><span class="check">✓</span> Compared with last time</div>
                         <div class="mode-feature"><span class="check">✓</span> Never changes your skills</div>
                     </div>
@@ -1455,7 +1455,7 @@
         </div>
 
         <div id="progress-setup-screen" class="screen">
-            <header class="header"><h1>📈 Progress Check</h1><p>Two questions on each graduation skill you are working on, plus a re-check of some you have finished</p></header>
+            <header class="header"><h1>📈 Progress Check</h1><p>The 65 graduation core skills, easiest first, two questions each. It stops where the topics become new to you.</p></header>
             <div class="pc-wrap">
                 <div class="pc-card" id="progress-setup-plan"></div>
                 <div class="pc-card"><h3>Your past checks</h3><div id="progress-history"></div></div>
@@ -44787,6 +44787,8 @@ function _submitDiagIDK(idkType, outcome, feedbackText) {
 }
 
 function submitNeverSeen() {
+    // In a Progress Check it marks the item not seen and moves on.
+    if (state.mode === 'progress') { progressNeverSeen(); return; }
     _submitDiagIDK('never', 'never', "That's okay — we'll teach this from the start");
 }
 
@@ -45147,21 +45149,30 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(refreshGradPath, 
 // ========================================
 // PROGRESS CHECK
 // ========================================
-// A repeatable check on the graduation plan, saved every time. The Belt Test
-// is a placement tool and a poor yardstick: it seeds itself from what it
-// already believes, only ever raises skills, and asks a different set of
+// A repeatable check on the 65-item graduation core, saved every time. The
+// Belt Test is a placement tool and a poor yardstick: it seeds itself from what
+// it already believes, only ever raises skills, and asks a different set of
 // questions each time, so two results cannot be compared. A Progress Check:
-//   * asks two questions on each core item the student is working on (up to
-//     12), re-checks up to 6 they have finished, and up to 4 branch items
-//     they have started
-//   * scores each item secure (2/2), shaky (1/2) or not yet (0/2)
+//   * walks ALL 65 core items, easiest first (by the average Dojo tier of each
+//     item's skills - plan order jumps about in difficulty, e.g. item 35
+//     Measurement is K-2 work), two questions per item
+//   * asks in blocks of three items (A B C, then A B C again) so an item's
+//     two questions are never back to back
+//   * "Never seen this" on a question marks the whole item not seen and skips
+//     its other question
+//   * finds the student's edge and stops there: after 4 items in a row that
+//     were never seen or got both questions wrong, the rest of the 65 are
+//     recorded as "not reached" - not wrong
+//   * scores each item secure (2/2), shaky (1/2), not yet (0/2), not seen, or
+//     not reached; the same 65 every time, so checks line up
 //   * changes no skill - no BKT update, no promotion; the record is the result
 //   * is saved by the host as a math_dojo_sessions row, mode 'progress_check'
 //     (skill_details: one entry per item plus a summary), and kept locally so
 //     the next check can say what moved.
+// Branch skills are not part of it.
 
-const PROGRESS_LIMITS = { frontier: 12, recheck: 6, branch: 4, perItem: 2 };
-let progressState = { items: [], queue: [], pos: 0, startTime: null };
+const PROGRESS_LIMITS = { perItem: 2, block: 3, edgeRun: 4 };
+let progressState = { items: [], block: [], next: 0, entry: null, stopped: null, startTime: null };
 
 function progressHistoryLocal() {
     const blob = readOwnedBlob('math_progress_checks');
@@ -45178,75 +45189,50 @@ function progressHistory() {
     return [...all.values()].sort((a, b) => a.at < b.at ? -1 : 1);
 }
 
+// The 65 core items in difficulty order, each with the two skills its
+// questions come from. Locked skills are asked too: this measures what the
+// student can do, not what the Dojo has opened for them.
 function buildProgressCheck() {
     if (typeof MATH_PLAN === 'undefined') return null;
     loadSkillTreeData();
-    // Nothing on record yet: a check could only ask the few skills with no
-    // prerequisites and report "not yet" on them. The Belt Test is the start.
-    const anyEvidence = Object.values(skillTreeData.skills || {})
-        .some(v => v && ['in_progress', 'activated', 'mastered', 'needs_review'].includes(v.state));
-    if (!anyEvidence) return null;
-    const usable = s => s.unlocked && s.playable;
-    const items = [];
-    const core = planItems(MATH_PLAN.core).map(planItem);
-    // Working on: not complete, with something open to ask.
-    for (const p of core) {
-        if (items.length >= PROGRESS_LIMITS.frontier) break;
-        if (!p.done && p.skills.some(usable)) items.push({ p, section: 'core', kind: 'frontier' });
-    }
-    // Re-check: finished items, the longest since practice first.
-    const lastPracticed = p => Math.max(0, ...p.skills.map(s => Date.parse(skillTreeData.skills[s.title]?.last_practiced || '') || 0));
-    core.filter(p => p.done && p.skills.some(usable))
-        .sort((a, b) => lastPracticed(a) - lastPracticed(b))
-        .slice(0, PROGRESS_LIMITS.recheck)
-        .forEach(p => items.push({ p, section: 'core', kind: 'recheck' }));
-    // Branches: items with a branch skill already started.
-    const started = s => ['in_progress', 'activated', 'mastered', 'needs_review'].includes(s.state);
-    let nb = 0;
-    for (const b of MATH_PLAN.branches) {
-        for (const it of planItems(b)) {
-            if (nb >= PROGRESS_LIMITS.branch) break;
-            const p = planItem(it);
-            const branchSkills = p.skills.filter(s => MATH_GRAPH_V2.nodes[s.id].tr === 'branch');
-            if (branchSkills.some(s => usable(s) && started(s))) { items.push({ p, section: b.id, kind: p.done ? 'recheck' : 'frontier' }); nb++; }
-        }
-    }
-    if (items.length < 3) return null;
-    // Two questions per item, on its open skills (unfinished ones first when
-    // the item is still being worked on). Asked in two passes so the two
-    // questions on one item are never back to back.
-    const plan = items.map(({ p, section, kind }) => {
-        const open = p.skills.filter(usable);
-        const ordered = kind === 'frontier' ? open.filter(s => !s.done).concat(open.filter(s => s.done)) : shuffle(open);
-        const picks = [ordered[0], ordered[1] || ordered[0]];
-        return { code: p.item.code, title: p.item.title, section, kind, picks, results: [] };
-    });
-    const queue = [];
-    for (let k = 0; k < PROGRESS_LIMITS.perItem; k++) plan.forEach((it, i) => queue.push({ i, skill: it.picks[k] }));
-    return { items: plan, queue };
+    const order = [];
+    MATH_PLAN.core.domains.forEach(d => d.items.forEach(it => order.push(it)));
+    const items = order.map((it, idx) => {
+        const skills = it.skills.map(id => {
+            const n = MATH_GRAPH_V2.nodes[id];
+            return { id, title: n.t, dojo: n.ds, tier: n.dt };
+        }).filter(s => lessons[s.tier] && generators[s.tier] && generators[s.tier][s.dojo]);
+        if (!skills.length) return null;
+        const level = skills.reduce((t, s) => t + s.tier, 0) / skills.length;
+        const pool = shuffle(skills);
+        return { code: it.code, title: it.title, level, idx,
+                 picks: [pool[0], pool[1] || pool[0]], results: [], notSeen: false };
+    }).filter(Boolean);
+    items.sort((a, b) => a.level - b.level || a.idx - b.idx);
+    return { items };
 }
 
 function initProgressSetup() {
     const built = buildProgressCheck();
     const planEl = document.getElementById('progress-setup-plan');
     const btn = document.getElementById('start-progress-btn');
-    progressState = built ? { ...built, pos: 0, startTime: null } : { items: [], queue: [], pos: 0, startTime: null };
-    if (!built) {
-        planEl.innerHTML = '<h3>Not enough to check yet</h3><p class="pc-muted">A Progress Check looks at graduation skills you have opened. Take the Belt Test first so the Dojo knows where you are, then come back.</p>';
+    progressState = { items: built ? built.items : [], block: [], next: 0, entry: null, stopped: null, startTime: null };
+    if (!built || !built.items.length) {
+        planEl.innerHTML = '<h3>The Progress Check is not available</h3><p class="pc-muted">The graduation plan did not load. Try reloading the page.</p>';
         btn.disabled = true;
     } else {
-        const n = k => built.items.filter(i => i.kind === k && i.section === 'core').length;
-        const nb = built.items.filter(i => i.section !== 'core').length;
-        planEl.innerHTML = `<h3>This check: ${built.items.length} skills, ${built.queue.length} questions</h3>
-            <p class="pc-muted">${n('frontier')} you are working on · ${n('recheck')} you finished, re-checked${nb ? ` · ${nb} from your branches` : ''}. No skills change: this only measures, and it is saved so you can see what moves.</p>`;
+        planEl.innerHTML = `<h3>All ${built.items.length} graduation core skills, easiest first</h3>
+            <p class="pc-muted">Two questions on each. If you have never seen a question's topic, press <strong>🆕 Never seen this</strong> - it is not counted as wrong. When you reach topics you have not learned yet, the check notices and finishes there, so nobody has to sit through work they have not been taught.</p>
+            <p class="pc-muted">Nothing about your skills changes. Every check is saved so you can see what has moved since the last one.</p>`;
         btn.disabled = false;
     }
     renderProgressHistory();
     requestProgressHistory();
 }
 
+const PROGRESS_STATUS_LABEL = { secure: '✓ Secure', shaky: '~ Shaky', notyet: '✗ Not yet', notseen: '🆕 Not seen', notreached: '· Not reached' };
 function progressCounts(items) {
-    const c = { secure: 0, shaky: 0, notyet: 0 };
+    const c = { secure: 0, shaky: 0, notyet: 0, notseen: 0, notreached: 0 };
     items.forEach(it => { c[it.status] = (c[it.status] || 0) + 1; });
     return c;
 }
@@ -45258,21 +45244,26 @@ function renderProgressHistory() {
     if (!hist.length) { el.innerHTML = '<p class="pc-muted">No checks yet. Your first one becomes the starting line.</p>'; return; }
     el.innerHTML = hist.slice(0, 10).map(c => {
         const k = progressCounts(c.items || []);
+        const total = (c.items || []).length;
         const when = new Date(c.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+        const edge = c.summary && c.summary.edge ? ` · edge ${escapeHtml(c.summary.edge.code)}. ${escapeHtml(c.summary.edge.title)}` : '';
         return `<div class="pc-history-row"><span>${escapeHtml(when)}</span>
-            <span><span class="pc-status secure">${k.secure} secure</span> · <span class="pc-status shaky">${k.shaky} shaky</span> · <span class="pc-status notyet">${k.notyet} not yet</span></span>
-            <span class="pc-muted">Core ${c.summary ? c.summary.core_done : '?'}/${c.summary ? c.summary.core_total : 65}</span></div>`;
+            <span><span class="pc-status secure">${k.secure}${total ? '/' + total : ''} secure</span> · <span class="pc-status shaky">${k.shaky} shaky</span> · <span class="pc-status notyet">${k.notyet + k.notseen} not yet</span>${k.notreached ? ` · <span class="pc-muted">${k.notreached} not reached</span>` : ''}</span>
+            <span class="pc-muted">${edge}</span></div>`;
     }).join('');
 }
 
 function startProgressCheck() {
-    if (!progressState.queue.length) return;
+    if (!progressState.items.length) return;
     initScores();
     startSessionTracking('progress');
     state.mode = 'progress';
-    progressState.pos = 0;
+    progressState.items.forEach(it => { it.results = []; it.notSeen = false; });
+    progressState.block = [];
+    progressState.next = 0;
+    progressState.entry = null;
+    progressState.stopped = null;
     progressState.startTime = Date.now();
-    progressState.items.forEach(it => { it.results = []; });
     setupTestUI(true);
     const endBtn = document.getElementById('end-session-btn');
     if (endBtn) endBtn.textContent = 'End Check';
@@ -45281,54 +45272,134 @@ function startProgressCheck() {
     loadProgressQuestion();
 }
 
-function loadProgressQuestion() {
-    while (progressState.pos < progressState.queue.length) {
-        const entry = progressState.queue[progressState.pos];
-        const q = generateQuestion(entry.skill.tier, entry.skill.dojo);
-        if (q) {
-            state.currentQuestion = q;
-            state.selectedAnswer = null;
-            renderQuestion();
-            startTimer();
-            updateProgress();
-            const tierDisplay = document.getElementById('current-tier-display');
-            const it = progressState.items[entry.i];
-            if (tierDisplay) tierDisplay.textContent = `Progress Check · ${it.code}. ${it.title} · question ${progressState.pos + 1} of ${progressState.queue.length}`;
-            return;
-        }
-        progressState.pos++;   // a generator that could not draw: skip it
+// An item is "beyond" the student when they had never seen it, or got both
+// of its questions wrong.
+function progressItemBeyond(it) {
+    return it.notSeen || (it.results.length >= PROGRESS_LIMITS.perItem && it.results.every(r => !r));
+}
+
+// The run of beyond items at the end of the items resolved so far, in order
+// (stopping at the first one still waiting on a question). Four in a row is
+// the edge. Checked before every question, so "never seen" four times stops
+// the check straight away rather than at the end of a block.
+function progressItemResolved(it) {
+    return it.notSeen || it.results.length >= PROGRESS_LIMITS.perItem;
+}
+function progressEdgeRun() {
+    let run = 0;
+    for (let i = 0; i < progressState.next; i++) {
+        const it = progressState.items[i];
+        if (!progressItemResolved(it)) break;
+        run = progressItemBeyond(it) ? run + 1 : 0;
     }
-    endProgressCheck('complete');
+    return run;
+}
+
+function loadProgressQuestion() {
+    for (;;) {
+        if (progressEdgeRun() >= PROGRESS_LIMITS.edgeRun) { endProgressCheck('edge'); return; }
+        if (!progressState.block.length) {
+            if (progressState.next >= progressState.items.length) { endProgressCheck('complete'); return; }
+            // The next block: first question of each item, then the second.
+            const start = progressState.next;
+            const end = Math.min(start + PROGRESS_LIMITS.block, progressState.items.length);
+            progressState.next = end;
+            for (let k = 0; k < PROGRESS_LIMITS.perItem; k++) {
+                for (let i = start; i < end; i++) progressState.block.push({ i, k });
+            }
+        }
+        const entry = progressState.block.shift();
+        const it = progressState.items[entry.i];
+        if (it.notSeen) continue;   // "never seen" on its first question
+        // A generator that cannot draw (vanishingly rare) falls back to the
+        // item's other skill; failing that the slot is skipped, never counted
+        // as wrong.
+        let skill = it.picks[entry.k];
+        let q = generateQuestion(skill.tier, skill.dojo);
+        if (!q) { skill = it.picks[1 - entry.k]; q = generateQuestion(skill.tier, skill.dojo); }
+        if (!q) continue;
+        progressState.entry = entry;
+        state.currentQuestion = q;
+        state.selectedAnswer = null;
+        renderQuestion();
+        startTimer();
+        updateProgress();
+        // The never-seen button is shown in this mode; setupTestUI hides it
+        // for every other mode with a timer.
+        const ns = document.getElementById('idk-never-btn');
+        if (ns) ns.style.display = 'inline-flex';
+        const done = progressState.items.filter(x => x.notSeen || x.results.length >= PROGRESS_LIMITS.perItem).length;
+        const tierDisplay = document.getElementById('current-tier-display');
+        if (tierDisplay) tierDisplay.textContent = `Progress Check · ${it.code}. ${it.title} · skill ${Math.min(done + 1, progressState.items.length)} of ${progressState.items.length}`;
+        return;
+    }
 }
 
 function recordProgressResult(correct) {
-    const entry = progressState.queue[progressState.pos];
+    const entry = progressState.entry;
     if (!entry) return;
     progressState.items[entry.i].results.push(!!correct);
-    progressState.pos++;
+    progressState.entry = null;
+}
+
+// "Never seen this": the whole item is not seen; its other question is skipped.
+function progressNeverSeen() {
+    const entry = progressState.entry;
+    if (!entry) return;
+    stopTimer();
+    progressState.items[entry.i].notSeen = true;
+    progressState.entry = null;
+    recordQuestionResult(state.currentQuestion.domain, state.currentQuestion.tier, false, 0);
+    loadProgressQuestion();
+}
+
+function progressItemStatus(it) {
+    if (it.notSeen) return 'notseen';
+    const t = it.results.length;
+    if (!t) return 'notreached';
+    const c = it.results.filter(Boolean).length;
+    if (c === 0) return 'notyet';
+    // Secure needs both questions right; one right answer is not enough.
+    return (c === t && t >= PROGRESS_LIMITS.perItem) ? 'secure' : 'shaky';
 }
 
 function endProgressCheck(reason) {
     stopTimer();
-    endSessionTracking({ promote: false });
-    const answered = progressState.items.filter(it => it.results.length > 0);
-    const items = answered.map(it => {
-        const c = it.results.filter(Boolean).length, t = it.results.length;
-        const status = c === t ? 'secure' : c === 0 ? 'notyet' : 'shaky';
-        return { code: it.code, title: it.title, section: it.section, kind: it.kind, correct: c, total: t,
-                 status: t < PROGRESS_LIMITS.perItem && status === 'secure' ? 'shaky' : status,
-                 skills: [...new Set(it.picks.map(s => s.dojo))] };
-    });
+    // Report the time (homework minutes) and nothing else. endSessionTracking
+    // would mark every skill asked as in_progress - and in_progress counts as
+    // unlocked - so a check over all 65 items would open skills the student
+    // has never been taught.
+    reportDojoSessionSummary();
+    sessionData = { startTime: null, questions: [], skillProgress: {}, mode: null };
+    const ordered = progressState.items;
+    const items = ordered.map(it => ({
+        code: it.code, title: it.title, section: 'core', level: Math.round(it.level * 10) / 10,
+        correct: it.results.filter(Boolean).length, total: it.results.length,
+        status: progressItemStatus(it),
+        skills: [...new Set(it.picks.map(s => s.dojo))]
+    }));
+    // The edge: the first item of the run that ended the check.
+    let edge = null;
+    if (reason === 'edge') {
+        let first = null, run = 0;
+        for (let i = 0; i < progressState.next; i++) {
+            if (!progressItemResolved(ordered[i])) break;
+            if (progressItemBeyond(ordered[i])) { run++; if (run === 1) first = ordered[i]; } else run = 0;
+        }
+        if (first) edge = { code: first.code, title: first.title };
+    }
     const coreAll = planItems(MATH_PLAN.core).map(planItem);
+    const answered = items.filter(i => i.status !== 'notreached');
     const record = {
         at: new Date().toISOString(),
-        complete: reason === 'complete',
+        complete: reason === 'complete' || reason === 'edge',
+        reason,
         items,
-        summary: { core_done: coreAll.filter(p => p.done).length, core_total: coreAll.length, ...progressCounts(items) },
+        summary: { core_done: coreAll.filter(p => p.done).length, core_total: coreAll.length, edge, ...progressCounts(items) },
         duration_seconds: Math.round((Date.now() - (progressState.startTime || Date.now())) / 1000)
     };
     const previous = progressHistory().slice(-1)[0] || null;
-    if (items.length) {
+    if (answered.length) {
         saveProgressHistoryLocal(progressHistoryLocal().concat([record]));
         if (window.parent && window.parent !== window) {
             window.parent.postMessage({ type: 'DOJO_PROGRESS_CHECK', subject: 'Math', owner: getUserId(), check: record }, '*');
@@ -45340,35 +45411,43 @@ function endProgressCheck(reason) {
 }
 
 function renderProgressResults(record, previous) {
-    const rank = { notyet: 0, shaky: 1, secure: 2 };
+    const rank = { notreached: -1, notseen: 0, notyet: 0, shaky: 1, secure: 2 };
     const before = new Map(((previous && previous.items) || []).map(i => [i.code, i.status]));
     const k = record.summary;
     let up = 0, down = 0;
-    const rows = record.items.map(it => {
+    const asked = record.items.filter(it => it.status !== 'notreached');
+    const rows = asked.map(it => {
         let change = '';
-        if (before.has(it.code)) {
-            const d = rank[it.status] - rank[before.get(it.code)];
+        const was = before.get(it.code);
+        if (was && was !== 'notreached') {
+            const d = rank[it.status] - rank[was];
             if (d > 0) { up++; change = '<span class="pc-change up">▲ up</span>'; }
             else if (d < 0) { down++; change = '<span class="pc-change down">▼ slipped</span>'; }
         } else if (previous) change = '<span class="pc-change">new</span>';
-        const label = { secure: '✓ Secure', shaky: '~ Shaky', notyet: '✗ Not yet' }[it.status];
-        const where = it.section === 'core' ? '' : ` <span class="pc-muted">(${escapeHtml((MATH_PLAN.branches.find(b => b.id === it.section) || {}).short || 'Branch')})</span>`;
+        const cls = it.status === 'notseen' ? 'notyet' : it.status;
         return `<div class="pc-row"><span class="pc-code">${escapeHtml(it.code)}</span>
-            <span>${escapeHtml(it.title)}${where} <span class="pc-muted">· ${it.correct}/${it.total}</span>${change}</span>
-            <span class="pc-status ${it.status}">${label}</span></div>`;
+            <span>${escapeHtml(it.title)} <span class="pc-muted">· ${it.status === 'notseen' ? 'never seen' : it.correct + '/' + it.total}</span>${change}</span>
+            <span class="pc-status ${cls}">${PROGRESS_STATUS_LABEL[it.status]}</span></div>`;
     }).join('');
-    document.getElementById('progress-result-sub').textContent = record.complete ? 'Saved. Here is where you stand.' : 'Ended early. What you answered is saved.';
+    const total = record.items.length;
+    const sub = record.reason === 'edge' ? 'Saved. The check stopped where the topics became new to you.'
+        : record.reason === 'complete' ? 'Saved. You went through every graduation core skill.'
+        : 'Ended early. What you answered is saved.';
+    document.getElementById('progress-result-sub').textContent = sub;
     document.getElementById('progress-result-summary').innerHTML = `
         <div class="pc-counts">
-            <div class="pc-count pc-secure"><b>${k.secure}</b>secure</div>
+            <div class="pc-count pc-secure"><b>${k.secure}</b>secure of ${total}</div>
             <div class="pc-count pc-shaky"><b>${k.shaky}</b>shaky</div>
-            <div class="pc-count pc-notyet"><b>${k.notyet}</b>not yet</div>
+            <div class="pc-count pc-notyet"><b>${k.notyet + k.notseen}</b>not yet</div>
+            <div class="pc-count"><b style="color:var(--slate-300)">${k.notreached}</b>not reached</div>
         </div>
-        <p class="pc-muted">Graduation core: ${k.core_done} of ${k.core_total} complete.${previous
+        ${k.edge ? `<p class="pc-muted">Your edge right now: around <strong>${escapeHtml(k.edge.code)}. ${escapeHtml(k.edge.title)}</strong>. That is where to keep learning.</p>` : ''}
+        <p class="pc-muted">Graduation core completed in the Dojo: ${k.core_done} of ${k.core_total}.${previous
             ? ` Since your last check on ${escapeHtml(new Date(previous.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}: ${up} moved up, ${down} slipped.`
             : ' This is your first check: the next one will show what moved.'}</p>
         ${k.shaky + k.notyet ? '<p class="pc-muted">Shaky and not-yet skills are the ones to practice next in Training Grounds.</p>' : ''}`;
-    document.getElementById('progress-result-items').innerHTML = `<h3>Skill by skill</h3>${rows || '<p class="pc-muted">Nothing was answered.</p>'}`;
+    document.getElementById('progress-result-items').innerHTML = `<h3>Skill by skill (easiest first)</h3>${rows || '<p class="pc-muted">Nothing was answered.</p>'}
+        ${k.notreached ? `<p class="pc-muted" style="margin-top:0.5rem">${k.notreached} harder skill${k.notreached === 1 ? '' : 's'} not reached this time.</p>` : ''}`;
 }
 
 // Past checks from the host (all devices). The reply is

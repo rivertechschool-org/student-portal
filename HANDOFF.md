@@ -4613,3 +4613,19 @@ answer lives in `visual.data.targetPoint` and Submit read `target`. Fixed.
 
 Harnesses: `debug-tools/progress-check-journey.py` (port 8793),
 `tests/progress-check-record.test.js`.
+
+### 2026-10-10: Progress Check covers all 65 core skills and stops at the edge
+
+The Progress Check now walks **all 65 graduation core items, easiest first**
+(by the average Dojo tier of each item's skills; plan order jumps about in
+difficulty), **two questions each**, in blocks of three so an item's two
+questions are never back to back. "🆕 Never seen this" marks the item not seen
+and skips its other question. **After 4 items in a row that were never seen or
+got both questions wrong, the check stops**: that first item is the student's
+"edge", and everything after it is recorded as *not reached*, not wrong. Locked
+skills are asked too (it measures, it does not gate), and a student with no
+history can take it. It still changes no skill; ending it no longer runs
+endSessionTracking, which would have marked every asked skill in_progress
+(i.e. unlocked). Item statuses: secure / shaky / notyet / notseen / notreached;
+the summary entry also carries `edge` and `reason`. Branches are not part of
+it. The teacher card shows the edge per check.

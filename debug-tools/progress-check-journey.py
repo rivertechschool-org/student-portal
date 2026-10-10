@@ -2,6 +2,10 @@
 # Math Dojo: the Belt Test opens everything beneath what a student showed, and
 # the Progress Check measures without moving skills and remembers each result.
 #
+# 2026-10-10: the check covers all 65 core skills easiest first, two questions
+# each, and stops at the student's edge (4 skills in a row never seen or both
+# wrong); later skills are "not reached".
+#
 # Reported 2026-10-05:
 #   * "a student can get most of their skills around T3 and T1 is still
 #     locked" - the Belt Test only opened tiers strictly below a placement
@@ -91,66 +95,99 @@ with sync_playwright() as p:
     ok('and opening is not crediting: none of tiers 1-2 became mastered', not r['credited'], r['credited'][:5])
     pg.close()
 
-    print('\n== Progress Check ==')
+    print('\n== Progress Check: the 65 core skills, easiest first ==')
     pg, errs2 = fresh(b); errs += errs2
     pg.evaluate("""() => {
       skillTreeData.skills = {};
       for (const n of Object.values(MATH_GRAPH_V2.nodes)) if (n.dt <= 3) skillTreeData.skills[n.t] = { state: 'mastered', mastery_score: 100, p_mastered: 0.97 };
-      for (const t of ['Slope', 'Percent Change', 'Two-Step Equations']) skillTreeData.skills[t] = { state: 'in_progress', mastery_score: 40, p_mastered: 0.4 };
       saveSkillTreeData();
       try { localStorage.removeItem(dojoOwnedKey('math_progress_checks')); } catch (e) {}
     }""")
     pg.evaluate("selectMode('progress')"); pg.wait_for_timeout(300)
-    plan = pg.evaluate("({ text: document.getElementById('progress-setup-plan').innerText, disabled: document.getElementById('start-progress-btn').disabled, n: progressState.items.length, q: progressState.queue.length, kinds: progressState.items.map(i => i.kind) })")
-    ok('the setup screen plans a check', not plan['disabled'] and plan['n'] >= 3, plan['text'][:120])
-    ok('two questions per skill', plan['q'] == 2 * plan['n'], f"{plan['q']} for {plan['n']}")
-    ok('it includes skills being worked on AND re-checks', 'frontier' in plan['kinds'] and 'recheck' in plan['kinds'], plan['kinds'])
+    plan = pg.evaluate("""() => ({ disabled: document.getElementById('start-progress-btn').disabled,
+        n: progressState.items.length, levels: progressState.items.map(i => i.level),
+        codes: new Set(progressState.items.map(i => i.code)).size })""")
+    ok('the setup screen plans all 65 core skills', not plan['disabled'] and plan['n'] == 65 and plan['codes'] == 65, plan['n'])
+    ok('easiest first', all(plan['levels'][i] <= plan['levels'][i + 1] for i in range(len(plan['levels']) - 1)))
     ok('no history yet', 'No checks yet' in pg.inner_text('#progress-history'))
 
-    before = pg.evaluate("JSON.stringify(Object.fromEntries(Object.entries(skillTreeData.skills).map(([k, v]) => [k, [v.state, v.p_mastered]])))")
-    pg.evaluate("startProgressCheck()"); pg.wait_for_timeout(200)
-    hdr = pg.inner_text('#current-tier-display')
-    ok('the test screen says which skill is being checked', hdr.startswith('Progress Check'), hdr[:90])
-    # First pass right, second pass wrong: every item ends 1/2 = shaky.
-    total = plan['q']
-    for k in range(total):
-        pg.evaluate(ANSWER, k < total // 2)
-        pg.evaluate("nextQuestion()")
-    pg.wait_for_timeout(300)
-    res = pg.evaluate("""() => ({ screen: document.querySelector('.screen.active').id,
-        summary: document.getElementById('progress-result-summary').innerText,
-        rows: document.querySelectorAll('#progress-result-items .pc-row').length,
-        hist: progressHistoryLocal() })""")
-    ok('it ends on the results screen', res['screen'] == 'progress-result-screen', res['screen'])
-    ok('every skill is listed', res['rows'] == plan['n'], res['rows'])
-    first = res['hist'][-1] if res['hist'] else {}
-    ok('first pass right, second wrong: every skill shaky', first.get('summary', {}).get('shaky') == plan['n'], first.get('summary'))
-    ok('the check is saved on this device', len(res['hist']) == 1)
-    after = pg.evaluate("JSON.stringify(Object.fromEntries(Object.entries(skillTreeData.skills).map(([k, v]) => [k, [v.state, v.p_mastered]])))")
-    b_, a_ = json.loads(before), json.loads(after)
-    changed = [k for k in b_ if b_[k] != a_.get(k)]
-    ok('no skill state or mastery estimate changed', not changed, changed[:5])
+    STATES = "JSON.stringify(Object.fromEntries(Object.entries(skillTreeData.skills).map(([k, v]) => [k, [v.state, v.p_mastered]])))"
 
-    print('\n== a second check shows what moved ==')
-    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(300)
-    ok('the first check is in the history', 'shaky' in pg.inner_text('#progress-history'), pg.inner_text('#progress-history')[:100])
-    pg.evaluate("startProgressCheck()")
-    n2 = pg.evaluate("progressState.queue.length")
-    for k in range(n2):
-        pg.evaluate(ANSWER, True)
-        pg.evaluate("nextQuestion()")
-    pg.wait_for_timeout(300)
+    def run_check(policy, limit=400):
+        """Answer until the check ends. policy(item_position, question_no) -> 'right' | 'wrong' | 'never'."""
+        pg.evaluate("startProgressCheck()")
+        asked, seen_pairs = 0, []
+        while asked < limit and pg.evaluate("document.querySelector('.screen.active').id") == 'test-screen':
+            e = pg.evaluate("progressState.entry && { i: progressState.entry.i, k: progressState.entry.k }")
+            if not e: break
+            seen_pairs.append((e['i'], e['k']))
+            act = policy(e['i'], e['k'])
+            if act == 'never':
+                pg.evaluate("submitNeverSeen()")
+            else:
+                pg.evaluate(ANSWER, act == 'right')
+                pg.evaluate("nextQuestion()")
+            asked += 1
+        pg.wait_for_timeout(200)
+        return asked, seen_pairs, pg.evaluate("progressHistoryLocal().slice(-1)[0]")
+
+    print('\n== a student who knows it all goes through every skill ==')
+    before = pg.evaluate(STATES)
+    asked, pairs, rec = run_check(lambda i, k: 'right')
+    ok('130 questions: two on each of the 65', asked == 130, asked)
+    ok('the two questions on one skill are never back to back',
+       all(pairs[j][0] != pairs[j + 1][0] for j in range(len(pairs) - 1)))
+    ok('it ends as complete, all 65 secure', rec['reason'] == 'complete' and rec['summary']['secure'] == 65, rec['summary'])
+    ok('no edge when everything was reached', rec['summary']['edge'] is None)
+    ok('no skill state or mastery estimate changed', pg.evaluate(STATES) == before)
+
+    print('\n== a student who reaches topics they have never seen ==')
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    # Right on the first 20 skills (in difficulty order), then "never seen".
+    asked, pairs, rec = run_check(lambda i, k: 'right' if i < 20 else 'never')
+    k = rec['summary']
+    ok('it stops at the edge', rec['reason'] == 'edge', rec['reason'])
+    ok('the edge is the first never-seen skill',
+       k['edge'] and k['edge']['code'] == rec['items'][20]['code'], (k['edge'], rec['items'][20]['code']))
+    beyond = [it for it in rec['items'][20:] if it['status'] == 'notseen']
+    ok('it stops right after the 4th never-seen skill', len(beyond) == 4, len(beyond))
+    ok('"never seen" skips that skill\'s second question',
+       not any(i >= 20 and kk == 1 for i, kk in pairs), [p for p in pairs if p[0] >= 20][:6])
+    ok('everything after is "not reached", not wrong',
+       all(it['status'] == 'notreached' for it in rec['items'][20 + len(beyond):]) and k['notreached'] == 65 - 20 - len(beyond), k)
+    ok('the first 20 are secure', k['secure'] == 20, k['secure'])
+    s = pg.inner_text('#progress-result-summary')
+    ok('the results name the edge', 'Your edge right now' in s and k['edge']['title'] in s, s.replace('\n', ' ')[:160])
+
+    print('\n== wrong answers find the edge too ==')
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    asked, pairs, rec = run_check(lambda i, k: 'right' if i < 30 else 'wrong')
+    ok('both wrong four times in a row also stops', rec['reason'] == 'edge' and rec['summary']['edge']['code'] == rec['items'][30]['code'], rec['summary'].get('edge'))
+    ok('those count as not yet, not not-seen', rec['summary']['notseen'] == 0 and rec['summary']['notyet'] >= 4, rec['summary'])
+
+    print('\n== one wrong answer is not the edge ==')
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    # Second question of every skill wrong: every skill shaky, none "beyond".
+    asked, pairs, rec = run_check(lambda i, k: 'right' if k == 0 else 'wrong')
+    ok('shaky everywhere, so it goes all the way through', rec['reason'] == 'complete' and rec['summary']['shaky'] == 65, rec['summary'])
+
+    print('\n== the next check shows what moved ==')
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    ok('past checks are listed', 'secure' in pg.inner_text('#progress-history'))
+    asked, pairs, rec = run_check(lambda i, k: 'right')
     s2 = pg.inner_text('#progress-result-summary')
-    ok('all right this time: skills report moving up', 'moved up' in s2 and 'Since your last check' in s2, s2.replace('\n', ' ')[:160])
-    ok('two checks saved', len(pg.evaluate("progressHistoryLocal()")) == 2)
+    ok('all right after an all-shaky check: 65 moved up', 'Since your last check' in s2 and '65 moved up' in s2, s2.replace('\n', ' ')[:200])
 
     print('\n== ending early ==')
     pg.evaluate("goToModeSelect(); selectMode('progress'); startProgressCheck()")
-    pg.evaluate(ANSWER, True); pg.evaluate("nextQuestion()")
+    for _ in range(4):
+        pg.evaluate(ANSWER, True); pg.evaluate("nextQuestion()")
     pg.evaluate("endTest()"); pg.wait_for_timeout(300)
-    ok('ending early still saves what was answered', 'Ended early' in pg.inner_text('#progress-result-sub') and len(pg.evaluate("progressHistoryLocal()")) == 3)
+    rec = pg.evaluate("progressHistoryLocal().slice(-1)[0]")
+    ok('ending early still saves what was answered', 'Ended early' in pg.inner_text('#progress-result-sub') and rec['reason'] == 'stopped')
     ok('a skill with only one answer is never called secure',
-       all(i['status'] != 'secure' or i['total'] == 2 for i in pg.evaluate("progressHistoryLocal()")[-1]['items']))
+       all(i['status'] != 'secure' or i['total'] == 2 for i in rec['items']))
+    ok('the rest are not reached', rec['summary']['notreached'] >= 60, rec['summary'])
 
     print('\n== plot the point (found while building this) ==')
     # The coordinate plane keeps its answer in targetPoint; Submit read only
@@ -172,8 +209,9 @@ with sync_playwright() as p:
            x['err'] is None and (x['fb'].startswith('✓') if want else x['fb'].startswith('✗')), x)
 
     print('\n== a new student ==')
+    # The check now finds its own edge, so a student with no history can take it.
     pg.evaluate("skillTreeData.skills = {}; saveSkillTreeData(); goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
-    ok('is sent to the Belt Test first', 'Belt Test' in pg.inner_text('#progress-setup-plan') and pg.evaluate("document.getElementById('start-progress-btn').disabled"))
+    ok('can take it: the check finds where they are', not pg.evaluate("document.getElementById('start-progress-btn').disabled") and pg.evaluate("progressState.items.length") == 65)
 
     ok('no page errors', not errs, errs[:3])
     b.close()

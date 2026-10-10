@@ -51,13 +51,15 @@ function stubDb() {
 }
 
 const CHECK = {
-  at: '2026-10-05T09:59:00.000Z', complete: true, duration_seconds: 412,
+  at: '2026-10-05T09:59:00.000Z', complete: true, reason: 'edge', duration_seconds: 412,
   items: [
     { code: '7', title: 'Percent Change', section: 'core', kind: 'frontier', correct: 2, total: 2, status: 'secure', skills: ['Percent Change'] },
     { code: '22', title: 'Slope', section: 'core', kind: 'frontier', correct: 1, total: 2, status: 'shaky', skills: ['Slope'] },
-    { code: '81C', title: 'Rise, Run & Grade', section: 'C', kind: 'frontier', correct: 0, total: 2, status: 'notyet', skills: ['Rise, Run and Grade'] },
+    { code: '31', title: 'Exponential Growth & Decay', section: 'core', correct: 0, total: 2, status: 'notyet', skills: ['Exponential Growth and Decay'] },
+    { code: '33', title: 'Quadratic Relationships', section: 'core', correct: 0, total: 0, status: 'notseen', skills: ['Quadratic Equations'] },
+    { code: '51', title: 'Quadratic Solving', section: 'core', correct: 0, total: 0, status: 'notreached', skills: ['Quadratic Formula'] },
   ],
-  summary: { core_done: 15, core_total: 65, secure: 1, shaky: 1, notyet: 1 },
+  summary: { core_done: 15, core_total: 65, edge: { code: '31', title: 'Exponential Growth & Decay' }, secure: 1, shaky: 1, notyet: 1, notseen: 1, notreached: 1 },
 };
 
 (async () => {
@@ -76,9 +78,11 @@ const CHECK = {
     const row = db.rows[0];
     ok('saves one row', db.rows.length === 1);
     check('  as a progress check for the signed-in student', [row.mode, row.user_id, row.subject], ['progress_check', 'p-ivy', 'Math']);
-    check('  totals', [row.skills_practiced, row.total_correct, row.total_questions, row.duration_seconds], [3, 3, 6, 412]);
+    check('  totals', [row.skills_practiced, row.total_correct, row.total_questions, row.duration_seconds], [5, 3, 6, 412]);
     check('  one entry per item, each with a skill name for the activity views',
-      row.skill_details.filter(d => d.kind === 'item').map(d => d.skill), ['Percent Change', 'Slope', 'Rise, Run & Grade']);
+      row.skill_details.filter(d => d.kind === 'item').map(d => d.skill), ['Percent Change', 'Slope', 'Exponential Growth & Decay', 'Quadratic Relationships', 'Quadratic Solving']);
+    check('  "not seen" and "not reached" are kept as they are',
+      row.skill_details.filter(d => d.kind === 'item').map(d => d.status), ['secure', 'shaky', 'notyet', 'notseen', 'notreached']);
     ok('  and a summary entry with no skill, which those views skip',
       row.skill_details.some(d => d.kind === 'summary' && !d.skill && d.core_done === 15));
 
@@ -88,8 +92,9 @@ const CHECK = {
     ok('history is sent back', sent && sent.type === 'PROGRESS_HISTORY_FOR_DOJO');
     const back = sent.checks[0];
     check('  the check comes back as it was taken',
-      [back.at, back.complete, back.items.map(i => [i.code, i.status]), back.summary],
-      [CHECK.at, true, [['7', 'secure'], ['22', 'shaky'], ['81C', 'notyet']], { core_done: 15, core_total: 65, secure: 1, shaky: 1, notyet: 1 }]);
+      [back.at, back.complete, back.reason, back.items.map(i => [i.code, i.status]), back.summary],
+      [CHECK.at, true, 'edge', [['7', 'secure'], ['22', 'shaky'], ['31', 'notyet'], ['33', 'notseen'], ['51', 'notreached']],
+       { core_done: 15, core_total: 65, edge: { code: '31', title: 'Exponential Growth & Decay' }, secure: 1, shaky: 1, notyet: 1, notseen: 1, notreached: 1 }]);
     histories.push(sent.checks);
   }
 

@@ -9824,15 +9824,17 @@
                 // with mode 'progress_check'. skill_details: one entry per item
                 // checked (with `skill`, so the activity views list them) plus a
                 // summary entry with no `skill`, which those views skip.
-                const items = Array.isArray(check.items) ? check.items.slice(0, 40) : [];
+                const items = Array.isArray(check.items) ? check.items.slice(0, 70) : [];
                 const details = items.map(i => ({
                     kind: 'item', skill: String(i.title || '').slice(0, 120), code: String(i.code || '').slice(0, 8),
                     section: String(i.section || 'core').slice(0, 4), correct: i.correct | 0, total: i.total | 0,
-                    status: ['secure', 'shaky', 'notyet'].includes(i.status) ? i.status : 'notyet',
+                    status: ['secure', 'shaky', 'notyet', 'notseen', 'notreached'].includes(i.status) ? i.status : 'notyet',
                     skills: Array.isArray(i.skills) ? i.skills.slice(0, 4).map(x => String(x).slice(0, 80)) : []
                 }));
                 const sm = check.summary || {};
                 details.push({ kind: 'summary', at: String(check.at || ''), complete: !!check.complete,
+                    reason: ['complete', 'edge', 'stopped'].includes(check.reason) ? check.reason : null,
+                    edge: sm.edge && sm.edge.code ? { code: String(sm.edge.code).slice(0, 8), title: String(sm.edge.title || '').slice(0, 120) } : null,
                     core_done: sm.core_done | 0, core_total: sm.core_total | 0 });
                 const row = {
                     user_id: userId, subject: data.subject || 'Math', mode: 'progress_check',
@@ -9862,10 +9864,10 @@
                     const items = det.filter(d => d && d.kind === 'item').map(d => ({
                         code: d.code, title: d.skill, section: d.section, correct: d.correct, total: d.total, status: d.status, skills: d.skills || []
                     }));
-                    const counts = { secure: 0, shaky: 0, notyet: 0 };
+                    const counts = { secure: 0, shaky: 0, notyet: 0, notseen: 0, notreached: 0 };
                     items.forEach(i => { counts[i.status] = (counts[i.status] || 0) + 1; });
-                    return { at: sum.at || r.created_at, complete: !!sum.complete, items,
-                        summary: { core_done: sum.core_done || 0, core_total: sum.core_total || 65, ...counts } };
+                    return { at: sum.at || r.created_at, complete: !!sum.complete, reason: sum.reason || null, items,
+                        summary: { core_done: sum.core_done || 0, core_total: sum.core_total || 65, edge: sum.edge || null, ...counts } };
                 });
           target.postMessage({ type: 'PROGRESS_HISTORY_FOR_DOJO', owner: userId, checks }, '*');
         } catch (e) { console.warn('Progress history:', e); }
@@ -41689,32 +41691,35 @@ Students you had withdrawn stay withdrawn.`)) {
             const det = Array.isArray(r.skill_details) ? r.skill_details : [];
             const items = det.filter(d => d && d.kind === 'item');
             const sum = det.find(d => d && d.kind === 'summary') || {};
-            const c = { secure: 0, shaky: 0, notyet: 0 };
+            const c = { secure: 0, shaky: 0, notyet: 0, notseen: 0, notreached: 0 };
             items.forEach(i => { c[i.status] = (c[i.status] || 0) + 1; });
-            return { at: r.created_at, items, c, coreDone: sum.core_done, coreTotal: sum.core_total || 65, complete: sum.complete !== false };
+            return { at: r.created_at, items, c, total: items.length, edge: sum.edge || null, reason: sum.reason || null,
+                     coreDone: sum.core_done, coreTotal: sum.core_total || 65, complete: sum.complete !== false };
           });
           if (!checks.length) {
             el.innerHTML = '<h4 style="margin: 0 0 6px;">📈 Math Dojo Progress Checks</h4><div style="color: var(--muted); font-size: 13px;">No progress checks yet. The student starts one from the Math Dojo home screen.</div>';
             return;
           }
-          const rank = { notyet: 0, shaky: 1, secure: 2 };
+          const rank = { notseen: 0, notyet: 0, shaky: 1, secure: 2 };
           const rows = checks.map((ch, i) => {
             const prev = i > 0 ? new Map(checks[i - 1].items.map(x => [x.code, x.status])) : null;
             let up = 0, down = 0;
-            if (prev) ch.items.forEach(x => { if (prev.has(x.code)) { const d = rank[x.status] - rank[prev.get(x.code)]; if (d > 0) up++; else if (d < 0) down++; } });
-            const weak = ch.items.filter(x => x.status !== 'secure').map(x => `${x.code}. ${x.skill}`);
+            // Only items asked in both checks are compared; "not reached" is
+            // neither up nor down.
+            if (prev) ch.items.forEach(x => { const was = prev.get(x.code); if (was && x.status in rank && was in rank) { const d = rank[x.status] - rank[was]; if (d > 0) up++; else if (d < 0) down++; } });
+            const weak = ch.items.filter(x => x.status === 'shaky' || x.status === 'notyet').map(x => `${x.code}. ${x.skill}`);
             return `<tr style="border-top: 1px solid var(--border);">
                 <td style="padding: 6px 8px; white-space: nowrap;">${esc(new Date(ch.at).toLocaleDateString())}${ch.complete ? '' : ' <span style="color: var(--muted);">(ended early)</span>'}</td>
-                <td style="padding: 6px 8px;"><span style="color: #10b981;">${ch.c.secure} secure</span> · <span style="color: #d97706;">${ch.c.shaky} shaky</span> · <span style="color: #ef4444;">${ch.c.notyet} not yet</span></td>
-                <td style="padding: 6px 8px; white-space: nowrap;">${ch.coreDone != null ? esc(ch.coreDone) + '/' + esc(ch.coreTotal) : '?'}</td>
+                <td style="padding: 6px 8px;"><span style="color: #10b981;">${ch.c.secure}${ch.total ? '/' + ch.total : ''} secure</span> · <span style="color: #d97706;">${ch.c.shaky} shaky</span> · <span style="color: #ef4444;">${ch.c.notyet + ch.c.notseen} not yet</span>${ch.c.notreached ? ` · <span style="color: var(--muted);">${ch.c.notreached} not reached</span>` : ''}</td>
+                <td style="padding: 6px 8px;">${ch.edge ? esc(ch.edge.code + '. ' + ch.edge.title) : (ch.reason === 'complete' ? 'went through all' : '—')}</td>
                 <td style="padding: 6px 8px; white-space: nowrap;">${prev ? `${up ? '<span style="color:#10b981;">▲ ' + up + '</span> ' : ''}${down ? '<span style="color:#ef4444;">▼ ' + down + '</span>' : ''}${!up && !down ? '—' : ''}` : 'first'}</td>
                 <td style="padding: 6px 8px; font-size: 12px; color: var(--muted);">${weak.length ? esc(weak.slice(0, 6).join(', ')) + (weak.length > 6 ? ' …' : '') : 'all secure'}</td>
               </tr>`;
           }).reverse().join('');
           el.innerHTML = `<h4 style="margin: 0 0 6px;">📈 Math Dojo Progress Checks</h4>
-            <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">Two questions per graduation skill the student is working on, plus re-checks of finished ones. A check never changes a skill. ▲/▼: skills that moved up or slipped since the previous check.</div>
+            <div style="font-size: 12px; color: var(--muted); margin-bottom: 6px;">The 65 graduation core skills, easiest first, two questions each. The check stops at the student's edge (four skills in a row never seen or both wrong); later skills are "not reached", not wrong. A check never changes a skill. ▲/▼: skills that moved up or slipped since the previous check.</div>
             <div style="overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
-              <thead><tr><th style="padding: 6px 8px;">Date</th><th style="padding: 6px 8px;">Result</th><th style="padding: 6px 8px;">Core done</th><th style="padding: 6px 8px;">Change</th><th style="padding: 6px 8px;">To work on</th></tr></thead>
+              <thead><tr><th style="padding: 6px 8px;">Date</th><th style="padding: 6px 8px;">Result</th><th style="padding: 6px 8px;">Edge</th><th style="padding: 6px 8px;">Change</th><th style="padding: 6px 8px;">To work on</th></tr></thead>
               <tbody>${rows}</tbody></table></div>`;
         } catch (e) {
           console.warn('loadStudentProgressChecks:', e);
