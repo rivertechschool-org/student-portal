@@ -16,12 +16,15 @@ place, never duplicated). Afterwards run:
 
 How a skill is classed (derived, never typed by hand -- see compile-dojo-graph):
   core        listed under one of the 65 core items
+  readiness   listed under Stage 7 (items 66-73, College & Assessment
+              Readiness), or needed by one, and not core
   foundation  not listed, but a prerequisite (at any depth) of a core skill,
               or an unlisted elementary skill (Tier 4 and below)
   branch      listed only under branch items, and not needed by core
   enrichment  unlisted Tier 5-6: optional practice at core level
   beyond      unlisted Tier 7+: advanced electives
-The rule the compiler enforces: a core skill never needs a branch skill.
+The rules the compiler enforces: a core skill never needs a readiness or branch
+skill, and a readiness skill never needs a branch-only skill.
 """
 import json, os, re, sys
 
@@ -101,6 +104,19 @@ NEW = [
    'Solves separable differential equations, including exponential growth and decay, with initial conditions.'),
   ('Calculus Modeling', 9, 'Calculus', M, '12', ['Related Rates', 'Optimization', 'Fundamental Theorem of Calculus'],
    'Applies derivatives and integrals to scientific and technical situations: rates, accumulation, net change.'),
+
+  # ---- Stage 7: College & Assessment Readiness (items 66-73) ----
+  ('Quadratics by Square Roots', 7, 'Algebra 2', A, '10-11', ['Quadratic Equations', 'Square Roots'],
+   'Solves x^2 = k and (x - h)^2 = k by square roots, including two, one or no real solutions, and picks the best method for a quadratic.'),
+  ('Rational Expression Arithmetic', 7, 'Algebra 2', A, '10-11', ['Rational Expression Operations', 'Fraction Operations'],
+   'Multiplies, divides, adds and subtracts basic algebraic fractions and states the excluded values.'),
+  ('Extraneous Solutions', 7, 'Algebra 2', I, '10-11', ['Solving Rational Equations', 'Radical Equations'],
+   'Solves rational and radical equations, checks every candidate, and rejects values that zero a denominator or fail the original equation.'),
+  ('Nonlinear Function Analysis', 7, 'Algebra 2', I, '10-11',
+   ['Domain and Range', 'Quadratic Graphs and Vertices', 'Advanced Polynomials', 'Exponential Growth and Decay'],
+   'Finds domain, range, intercepts, maximum or minimum, increasing and decreasing intervals and end behaviour of quadratic, polynomial, exponential and absolute-value functions.'),
+  ('Nonlinear Modeling', 7, 'Algebra 2', M, '10-11', ['Modeling with Functions', 'Comparing Function Families'],
+   'Chooses between linear, quadratic and exponential models from data and situations, builds the model, and uses it to predict and judge fit.'),
 
   # ---- Business, Finance & Data ----
   ('Successive Percent Changes', 6, 'Financial Mathematics', A, '10-12', ['Percent Increase and Decrease'],
@@ -379,6 +395,26 @@ CORE = [
   ]),
 ]
 
+# Stage 7: after the universal 1-65 trunk, before specialization, for the
+# students who need it (college entry, placement and assessment readiness).
+READINESS = [
+  ('7', 'College & Assessment Readiness', [
+    ('66', 'Polynomial Operations', 'Add, subtract and multiply polynomials.', ['Polynomial Operations']),
+    ('67', 'Polynomial Factoring', 'Factor common quadratic and polynomial expressions.',
+     ['GCF Factoring', 'Factoring by Grouping', 'Difference of Squares']),
+    ('68', 'Advanced Quadratics', 'Solve and analyze quadratics using factoring, square roots and the quadratic formula.',
+     ['Quadratics by Square Roots', 'Quadratic Formula', 'Discriminant', 'Vertex Form and Quadratic Graphing']),
+    ('69', 'Rational Expressions', 'Simplify and manipulate basic algebraic fractions.',
+     ['Rational Expression Operations', 'Rational Expression Arithmetic']),
+    ('70', 'Rational & Radical Equations', 'Solve basic equations containing fractions or radicals and check extraneous answers.',
+     ['Solving Rational Equations', 'Radical Equations', 'Extraneous Solutions']),
+    ('71', 'Advanced Function Analysis', 'Analyze domain, range, intercepts, extrema and behavior of nonlinear functions.',
+     ['Nonlinear Function Analysis', 'Advanced Polynomials']),
+    ('72', 'Function Transformations', 'Understand how equation changes move, stretch and reflect graphs.', ['Function Transformations']),
+    ('73', 'Nonlinear Modeling', 'Select between linear, quadratic and exponential models for real situations.', ['Nonlinear Modeling']),
+  ]),
+]
+
 BRANCHES = [
   ('A', 'STEM / College Mathematics', 'STEM', '#4f8cff', [
     ('8A', 'Algebra II', [
@@ -609,6 +645,9 @@ plan = {
             'Core items are required for every student; a branch skill unlocks as soon as its prerequisites are mastered.',
     'core': {'title': 'Graduation Core', 'domains': [
         {'id': d, 'name': name, 'items': items(spec)} for d, name, spec in CORE]},
+    'readiness': {'title': 'College & Assessment Readiness', 'stage': 7,
+        'note': 'After the universal 1-65 trunk, before specialization, for students who need it.',
+        'domains': [{'id': d, 'name': name, 'items': items(spec)} for d, name, spec in READINESS]},
     'branches': [
         {'id': b, 'name': name, 'short': short, 'color': color, 'domains': [
             {'id': d, 'name': dname, 'items': items(spec)} for d, dname, spec in domains]}
@@ -617,6 +656,7 @@ plan = {
 n_core = sum(len(d['items']) for d in plan['core']['domains'])
 if n_core != 65:
     errors.append(f'core has {n_core} items, expected 65')
+n_ready = sum(len(d['items']) for d in plan['readiness']['domains'])
 
 if errors:
     print('\n'.join('ERROR ' + e for e in errors))
@@ -629,4 +669,4 @@ with open(PLAN, 'w', encoding='utf-8', newline='\n') as f:
     json.dump(plan, f, indent=2, ensure_ascii=False)
     f.write('\n')
 print(f'{len(cur["nodes"])} curriculum nodes ({len(NEW)} from the plan); '
-      f'{n_core} core items; ' + ', '.join(f'{b["short"]} {sum(len(d["items"]) for d in b["domains"])}' for b in plan['branches']))
+      f'{n_core} core items; {n_ready} readiness items; ' + ', '.join(f'{b["short"]} {sum(len(d["items"]) for d in b["domains"])}' for b in plan['branches']))

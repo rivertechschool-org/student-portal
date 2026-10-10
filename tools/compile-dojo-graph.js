@@ -58,14 +58,20 @@ for (const n of cur.nodes) {
 
 // ---- classes (tools/lib/math-plan.js, shared with compile-math-graph) ----
 const { classify } = require('./lib/math-plan');
-const { cls, planCodes, branchOf, coreClosure } = classify(cur.nodes, plan);
+const { cls, planCodes, branchOf, coreClosure, readyListed, readyClosure } = classify(cur.nodes, plan);
 const checkItem = (it, where) => {
   if (!it.skills.length) errors.push(`${where} item ${it.code} lists no skills`);
   for (const id of it.skills) if (!byId.has(id)) errors.push(`${where} item ${it.code}: unknown skill ${id}`);
 };
 for (const d of plan.core.domains) for (const it of d.items) checkItem(it, 'core');
+for (const d of (plan.readiness ? plan.readiness.domains : [])) for (const it of d.items) checkItem(it, 'readiness');
 for (const b of plan.branches) for (const d of b.domains) for (const it of d.items) checkItem(it, `branch ${b.id}`);
-for (const id of coreClosure) if (cls(id) === 'branch') errors.push(`core needs branch-only skill ${byId.get(id).title}`);
+for (const id of coreClosure) if (cls(id) === 'branch' || cls(id) === 'readiness') errors.push(`core needs ${cls(id)} skill ${byId.get(id).title}`);
+for (const id of readyClosure) if (cls(id) === 'branch') errors.push(`readiness needs branch-only skill ${byId.get(id).title}`);
+
+// Skills a readiness item needs that are not themselves listed under one:
+// pulled into readiness (a student must learn them first), so say which.
+const pulledIntoReadiness = [...readyClosure].filter(id => !readyListed.has(id)).map(id => byId.get(id).title);
 
 // Branch-listed skills that core needs anyway: legitimate (a branch can build
 // on core), but they will not look "set apart", so say which ones.
@@ -89,6 +95,8 @@ for (const n of cur.nodes) {
 const slimItem = it => ({ code: it.code, title: it.title, description: it.description, skills: it.skills });
 const slimPlan = {
   core: { title: plan.core.title, domains: plan.core.domains.map(d => ({ id: d.id, name: d.name, items: d.items.map(slimItem) })) },
+  readiness: plan.readiness ? { title: plan.readiness.title, stage: plan.readiness.stage, note: plan.readiness.note,
+    domains: plan.readiness.domains.map(d => ({ id: d.id, name: d.name, items: d.items.map(slimItem) })) } : null,
   branches: plan.branches.map(b => ({ id: b.id, name: b.name, short: b.short, color: b.color,
     domains: b.domains.map(d => ({ id: d.id, name: d.name, items: d.items.map(slimItem) })) })),
 };
@@ -125,6 +133,7 @@ const counts = {};
 for (const n of cur.nodes) counts[cls(n.id)] = (counts[cls(n.id)] || 0) + 1;
 console.log(`${cur.nodes.length} skills: ` + Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ') + `; ${edges.length} prerequisite edges`);
 if (shared.length) console.log(`branch items that core needs anyway (shown as core, still count for the branch): ${shared.join(', ')}`);
+if (pulledIntoReadiness.length) console.log(`needed by readiness items, so classed readiness: ${pulledIntoReadiness.join(', ')}`);
 if (CHECK) {
   if (html !== before) { console.log('math-dojo.html is out of date: run node tools/compile-dojo-graph.js'); process.exit(1); }
   console.log('math-dojo.html is up to date');
