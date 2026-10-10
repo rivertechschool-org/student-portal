@@ -73996,6 +73996,1126 @@ if ('speechSynthesis' in window) {
 
 <script>
 // ==== GRADUATION PLAN CONTENT: READINESS-ALGEBRA ====
+// Stage 7 "College & Assessment Readiness", plan items 68-70: Quadratics by
+// Square Roots (M-407), Rational Expression Arithmetic (M-408) and Extraneous
+// Solutions (M-409). Each is registered under its exact curriculum title at
+// its node's dojo_tier (7).
+//
+// Tier 7 students TYPE their answers, and three things about the grader shaped
+// how answers are written here:
+//   * Solution sets and excluded-value sets are written in roster notation,
+//     "{-3, 5}". answerIsTypeable accepts braces, AnswerInterpreter then grades
+//     them as plain text (an exact match only), and validate() widens that to
+//     any order, "x = a or x = b", "±2√3", "3 ± 2√5", "∅" / "no solution".
+//     AnswerInterpreter's own list readers are order-sensitive and do not read
+//     lists of fractions or of three numbers at all.
+//   * Rational-expression answers use a letter other than x. An answer with an
+//     x in it is graded by AnswerInterpreter.parseAlgebraic, whose loose
+//     fallback compares only the x-coefficient and one constant, so
+//     "(x + 3)/(x + 2)" was graded correct for "(x + 3)/(x - 2)". With another
+//     letter the answer is a fraction_expression (exact string match) and
+//     validate() accepts the equivalent forms by real polynomial algebra.
+//   * Negatives inside answers use ASCII "-", which is what students type.
+(function(){
+  const ri = (a,b) => Math.floor(Math.random()*(b-a+1))+a;
+  const sh = a => a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
+  const pick = a => a[ri(0,a.length-1)];
+  const g = (a,b) => { a=Math.abs(a); b=Math.abs(b); while(b){ [a,b]=[b,a%b]; } return a||1; };
+  // 4 distinct shuffled numeric options, or undefined (generateQuestion then
+  // tops the board up). `unit` is the tolerance a rounded answer is graded
+  // with: a distractor that close would be marked right when typed, so it is
+  // left out. Exact answers pass 0 - there "5" beside "6" is a fair choice.
+  const opt4 = (ans, cands, unit = 0) => {
+    const seen = new Set(), out = [];
+    const push = v => { const s = String(v), k = s.trim().toLowerCase();
+      if (!seen.has(k)) { seen.add(k); out.push(s); } };
+    push(ans);
+    for (const c of cands) {
+      if (c === null || c === undefined || !Number.isFinite(Number(c))) continue;
+      if (Math.abs(Number(c) - Number(ans)) <= unit + 1e-9) continue;
+      push(c); if (out.length >= 4) break;
+    }
+    return out.length === 4 ? sh(out) : undefined;
+  };
+  const frac = (n,d) => { const k = g(n,d); n/=k; d/=k; if(d<0){n=-n;d=-d;}
+    return d === 1 ? String(n) : n + "/" + d; };
+
+  function _addSkill(tier, name, primaryTitle, difficulty, lessonObj, genFn){
+    if(!TIERS[tier]) TIERS[tier]={name:"Tier "+tier, grades:"", domains:[]};
+    if(!TIERS[tier].domains.includes(name)) TIERS[tier].domains.push(name);
+    if(!lessons[tier]) lessons[tier]={}; lessons[tier][name]=(typeof lessonObj==='function'?lessonObj:function(){return lessonObj;});
+    if(!generators[tier]) generators[tier]={}; generators[tier][name]=genFn;
+    Q_MATRIX["T"+tier+"::"+name]={primary_skill:primaryTitle, secondary_skills:[], difficulty:difficulty, discrimination:1, confidence:"manual"};
+  }
+
+  // ---------------------------------------------------------------------
+  // Shared helpers for this block
+  // ---------------------------------------------------------------------
+  // One number formatter for answers AND distractors, so equal values are
+  // equal strings and opt4 drops the twin.
+  const fmt = x => { const v = parseFloat(Number(x).toFixed(4)); return String(Object.is(v, -0) ? 0 : v); };
+  const rnd = (x, d) => { const s = Number(x).toFixed(d); return /^-0(\.0+)?$/.test(s) ? s.slice(1) : s; };
+  const sgn = n => (n < 0 ? "− " + Math.abs(n) : "+ " + n);          // display only
+  const neg = s => String(s).replace(/^-/, "−");                       // display only
+  const nz = (lo, hi) => { let x = 0; while (x === 0) x = ri(lo, hi); return x; };
+  const distinct = (n, lo, hi) => { const out = [];
+    while (out.length < n) { const x = ri(lo, hi); if (x !== 0 && !out.includes(x)) out.push(x); } return out; };
+  // generateQuestion dereferences what a generator returns, so a draw that
+  // fails its own self-check (returns null) is simply redrawn.
+  const retrying = (label, fn) => function(){
+    for (let i = 0; i < 300; i++) { const q = fn(); if (q) return q; }
+    throw new Error(label + " generator could not build a checked question");
+  };
+
+  // Polynomials are coefficient arrays, lowest power first: [6, 5, 1] = v² + 5v + 6.
+  const P = {
+    trim(a){ const b = a.slice(); while (b.length > 1 && Math.abs(b[b.length - 1]) < 1e-9) b.pop(); return b; },
+    add(a, b){ const o = []; for (let k = 0; k < Math.max(a.length, b.length); k++) o.push((a[k] || 0) + (b[k] || 0)); return P.trim(o); },
+    scale(a, k){ return P.trim(a.map(c => c * k)); },
+    mul(a, b){ const o = new Array(a.length + b.length - 1).fill(0);
+      a.forEach((x, i) => b.forEach((y, j) => { o[i + j] += x * y; })); return P.trim(o); },
+    isZero(a){ return a.every(c => Math.abs(c) < 1e-9); },
+    deg(a){ const t = P.trim(a); return P.isZero(t) ? -1 : t.length - 1; },
+    at(a, t){ return a.reduce((s, c, k) => s + c * Math.pow(t, k), 0); },
+    // Quotient by (v − r) when r is a root (synthetic division).
+    divRoot(a, r){ const n = P.trim(a).length - 1, q = new Array(Math.max(n, 1)).fill(0); let carry = 0;
+      for (let k = n; k >= 1; k--) { carry = a[k] + carry * r; q[k - 1] = carry; } return P.trim(q); }
+  };
+  const nTerms = a => P.trim(a).filter(c => Math.abs(c) > 1e-9).length;
+  const lead = a => { const t = P.trim(a); return t[t.length - 1]; };
+  const maxCoef = a => Math.max(...a.map(Math.abs));
+  // k·v^j·(v + r1)(v + r2)…, multiplied out.
+  const fac = (k, j, rs) => { let p = [k]; for (let t = 0; t < j; t++) p = P.mul(p, [0, 1]);
+    for (const r of rs) p = P.mul(p, [r, 1]); return p; };
+  // Integer zeros, which is all this block ever builds (every factor is v + r).
+  const intRoots = p => { const out = []; if (P.deg(p) < 1) return out;
+    for (let r = -15; r <= 15; r++) if (Math.abs(P.at(p, r)) < 1e-9) out.push(r); return out; };
+  // Cancel every common binomial and power of v, then any common number.
+  function ratReduce(n, d) {
+    n = P.trim(n); d = P.trim(d);
+    for (let r = -15; r <= 15; r++)
+      while (P.deg(n) > 0 && P.deg(d) > 0 && Math.abs(P.at(n, r)) < 1e-9 && Math.abs(P.at(d, r)) < 1e-9) {
+        n = P.divRoot(n, r); d = P.divRoot(d, r);
+      }
+    let G = 0; for (const c of n.concat(d)) G = g(G, Math.round(c));
+    if (G > 1) { n = P.scale(n, 1 / G); d = P.scale(d, 1 / G); }
+    if (lead(d) < 0) { n = P.scale(n, -1); d = P.scale(d, -1); }
+    return [n, d];
+  }
+  // "3n² - n + 4" (answers, m = "-") or "3n² − n + 4" (display, m = "−").
+  const SUP = { 2: "²", 3: "³", 4: "⁴" };
+  function polyStr(a, v, m) {
+    const t = P.trim(a); let out = "";
+    for (let k = t.length - 1; k >= 0; k--) {
+      const c = Math.round(t[k] * 1e6) / 1e6; if (c === 0) continue;
+      const mag = Math.abs(c), body = k === 0 ? String(mag) : (mag === 1 ? "" : mag) + v + (k > 1 ? SUP[k] : "");
+      out += out === "" ? (c < 0 ? m : "") + body : (c < 0 ? ` ${m} ` : " + ") + body;
+    }
+    return out || "0";
+  }
+  // A reduced rational expression as an ANSWER: "(n + 3)/(n - 2)",
+  // "5/(n² + n)", "3n/(2n - 6)", "-(n + 3)/(n - 2)". The denominator is always
+  // bracketed unless it is a bare power of v under a bare number ("5/n").
+  function fracStr(N, D, v) {
+    let n = P.trim(N), d = P.trim(D), sign = "";
+    if (lead(d) < 0) { n = P.scale(n, -1); d = P.scale(d, -1); }
+    if (nTerms(n) > 1 && lead(n) < 0) { sign = "-"; n = P.scale(n, -1); }
+    const top = nTerms(n) > 1 ? `(${polyStr(n, v, "-")})` : polyStr(n, v, "-");
+    const bare = nTerms(d) === 1 && lead(d) === 1;   // "5/n"; "(n + 1)/n" is redrawn by typeableFrac
+    return sign + top + "/" + (bare ? polyStr(d, v, "-") : `(${polyStr(d, v, "-")})`);
+  }
+  // The shapes AnswerInterpreter.detectType files as fraction_expression (an
+  // exact string match). Any other shape is read as text and would fall back
+  // to multiple choice, so a draw landing outside them is redrawn.
+  const typeableFrac = s => /^\d+\s*\/\s*[a-z(]/.test(s) || /\/\s*\([^)]+\)\s*²?$/.test(s);
+  // Question display: real minus signs, brackets only where they are needed.
+  const dispTop = (p, v) => nTerms(p) > 1 ? `(${polyStr(p, v, "−")})` : polyStr(p, v, "−");
+  const dispBot = (p, v) => (P.deg(p) <= 0 || (nTerms(p) === 1 && lead(p) === 1)) ? polyStr(p, v, "−") : `(${polyStr(p, v, "−")})`;
+  const dispFrac = (n, d, v) => dispTop(n, v) + "/" + dispBot(d, v);
+
+  // ---- Reading what a student typed ----
+  // Arithmetic in at most one letter `v` (null: numbers only), read into a
+  // rational function {n, d} WITHOUT cancelling anything, so the degrees still
+  // show whether the work was simplified. Understands + − × · * / ^ ² ³,
+  // brackets, implicit multiplication (2n, n(n + 1), 3√5) and √ / sqrt.
+  // `sum` marks an addition involving a fraction with a variable denominator:
+  // "1/n + 2" has the right VALUE but is not one combined fraction.
+  function readExpr(text, v) {
+    const s = String(text).toLowerCase().replace(/[−–]/g, "-").replace(/[·×∙]/g, "*")
+      .replace(/²/g, "^2").replace(/³/g, "^3").replace(/sqrt/g, "√").replace(/\s+/g, "");
+    let i = 0, sum = false;
+    const R = (n, d = [1]) => ({ n, d });
+    const mulR = (a, b) => R(P.mul(a.n, b.n), P.mul(a.d, b.d));
+    function expr() {
+      let a = term(); if (!a) return null;
+      while (s[i] === "+" || s[i] === "-") {
+        const op = s[i++], b = term(); if (!b) return null;
+        if (P.deg(a.d) > 0 || P.deg(b.d) > 0) sum = true;
+        a = R(P.add(P.mul(a.n, b.d), P.scale(P.mul(b.n, a.d), op === "-" ? -1 : 1)), P.mul(a.d, b.d));
+      }
+      return a;
+    }
+    function term() {
+      let a = unary(); if (!a) return null;
+      for (;;) {
+        const c = s[i];
+        if (c === "*" || c === "/") {
+          i++; const b = unary(); if (!b) return null;
+          if (c === "/") { if (P.isZero(b.n)) return null; a = R(P.mul(a.n, b.d), P.mul(a.d, b.n)); }
+          else a = mulR(a, b);
+        } else if (c === "(" || c === "√" || (c && /[a-z]/.test(c))) {
+          const b = power(); if (!b) return null; a = mulR(a, b);
+        } else return a;
+      }
+    }
+    function unary() {
+      if (s[i] === "-") { i++; const a = unary(); return a && R(P.scale(a.n, -1), a.d); }
+      if (s[i] === "+") { i++; return unary(); }
+      return power();
+    }
+    function power() {
+      let a = atom(); if (!a) return null;
+      if (s[i] === "^") {
+        i++; if (!/\d/.test(s[i] || "")) return null;
+        const e = +s[i++]; let r = R([1]);
+        for (let k = 0; k < e; k++) r = mulR(r, a);
+        a = r;
+      }
+      return a;
+    }
+    function atom() {
+      const c = s[i];
+      if (c === "(") { i++; const a = expr(); if (!a || s[i] !== ")") return null; i++; return a; }
+      if (c === "√") {
+        i++; const a = atom(); if (!a || P.deg(a.n) > 0 || P.deg(a.d) > 0) return null;
+        const val = a.n[0] / a.d[0]; return val >= 0 ? R([Math.sqrt(val)]) : null;
+      }
+      const m = s.slice(i).match(/^(?:\d+\.?\d*|\.\d+)/);
+      if (m) { i += m[0].length; return R([parseFloat(m[0])]); }
+      if (v && c === v) { i++; return R([0, 1]); }
+      return null;
+    }
+    const r = expr();
+    if (!r || i !== s.length || P.isZero(r.d)) return null;
+    r.sum = sum; return r;
+  }
+  const readNum = text => { const r = readExpr(text, null);
+    return (r && P.deg(r.n) <= 0 && P.deg(r.d) === 0) ? r.n[0] / r.d[0] : NaN; };
+  // A typed set of numbers: "{-3, 5}", "x = -3 or x = 5", "5, -3", "±2√3",
+  // "3 ± 2√5", "n ≠ 2 and n ≠ -3", and the empty set as "{}", "∅", "none" or
+  // "no (real) solution(s)". Each element remembers whether it was written
+  // with a root, so an exact question can refuse a long decimal.
+  function readSet(text) {
+    let s = String(text).toLowerCase().replace(/[−–]/g, "-").trim().replace(/\.$/, "");
+    if (/^(?:∅|\{\s*\}|none|no(?:\s+real)?\s+solutions?|there\s+(?:is|are)\s+no(?:\s+real)?\s+solutions?)$/.test(s)) return [];
+    s = s.replace(/[{}\[\]]/g, "").replace(/\b[a-z]\s*(?:=|≠|!=)\s*/g, "");
+    const parts = s.split(/\s*(?:,|;|\bor\b|\band\b)\s*/).filter(p => p.trim() !== "");
+    if (!parts.length) return null;
+    const out = [];
+    for (const p of parts) {
+      const rad = /√|sqrt/.test(p), pm = p.split(/±|\+\/-|\+-/);
+      if (pm.length > 2) return null;
+      if (pm.length === 2) {
+        const h = pm[0].trim() === "" ? 0 : readNum(pm[0]), r = readNum(pm[1]);
+        if (!Number.isFinite(h) || !Number.isFinite(r)) return null;
+        out.push({ v: h - r, rad }, { v: h + r, rad });
+      } else {
+        const x = readNum(p); if (!Number.isFinite(x)) return null;
+        out.push({ v: x, rad });
+      }
+    }
+    return out;
+  }
+  // expected: [{v, irr}]. tol 0 = exact (an irrational value must be typed
+  // with a root); tol > 0 = one unit of the requested rounding, the same
+  // allowance the STEM block gives a rounded intermediate step.
+  const setValidate = (expected, tol) => typed => {
+    const got = readSet(typed);
+    if (!got || got.length !== expected.length) return false;
+    const a = got.slice().sort((p, q) => p.v - q.v), b = expected.slice().sort((p, q) => p.v - q.v);
+    return a.every((x, k) => Math.abs(x.v - b[k].v) <= tol + 1e-6 && (tol > 0 || !b[k].irr || x.rad));
+  };
+  // One typed number with optional "x =" and a unit word.
+  const nearValidate = (target, unit) => typed => {
+    const t = String(typed).toLowerCase().replace(/^[a-z]\s*=\s*/, "")
+      .replace(/\s*(?:ft|feet|foot|m|meters?|s|secs?|seconds?|units?)\.?$/, "");
+    const v = readNum(t);
+    return Number.isFinite(v) && Math.abs(v - target) <= unit + 1e-9;
+  };
+  // A rational-expression answer N/D (reduced) in the letter v. Accepted: the
+  // same function, written as ONE fraction, with nothing left to cancel - no
+  // more total degree than the reduced form and no common number factor.
+  const ratValidate = (N, D, v) => typed => {
+    const r = readExpr(typed, v);
+    if (!r || r.sum) return false;
+    if (!P.isZero(P.add(P.mul(r.n, D), P.scale(P.mul(N, r.d), -1)))) return false;
+    if (P.deg(r.n) + P.deg(r.d) > P.deg(N) + P.deg(D)) return false;
+    const all = r.n.concat(r.d);
+    if (all.every(c => Math.abs(c - Math.round(c)) < 1e-9)) {
+      let G = 0; for (const c of all) G = g(G, Math.round(c));
+      if (G > 1) return false;
+    }
+    return true;
+  };
+
+  // ---- Sets of numbers, written exactly ----
+  // √n as k√m with m square-free.
+  function simpRad(n) { let k = 1, m = n;
+    for (let f = 2; f * f <= m; f++) while (m % (f * f) === 0) { m /= f * f; k *= f; } return [k, m]; }
+  const radStr = (k, m) => m === 1 ? String(k) : (k === 1 ? "" : k) + "√" + m;
+  // Set elements are {v, s}: the value and how it is written. h ± k√m:
+  function pmEls(h, k, m) {
+    if (m === 1) return [{ v: h - k, s: String(h - k) }, { v: h + k, s: String(h + k) }];
+    const r = k * Math.sqrt(m), rs = radStr(k, m);
+    if (h === 0) return [{ v: -r, s: "-" + rs }, { v: r, s: rs }];
+    return [{ v: h - r, s: `${h} - ${rs}` }, { v: h + r, s: `${h} + ${rs}` }];
+  }
+  // ±√K exactly, or null when K is not a non-negative integer.
+  const numPm = (K, h = 0) => (Number.isInteger(K) && K >= 0) ? (K === 0 ? [{ v: h, s: String(h) }] : pmEls(h, ...simpRad(K))) : null;
+  const intEls = vals => vals.map(x => ({ v: x, s: String(x) }));
+  const sorted = els => els.slice().sort((p, q) => p.v - q.v);
+  // Roster notation. AnswerInterpreter grades a braced answer as text with
+  // the commas stripped, so {-1, 11} and {-11, 1} would read alike. Braces are
+  // therefore used only where every number is a single digit (no other set of
+  // single digits can collide; callers redraw anything wider) or is a radical
+  // like 3 - 2√5, whose √ and signs keep the digits apart.
+  const setStr = els => "{" + sorted(els).map(e => e.s).join(", ") + "}";
+  const smallInts = vals => vals.every(x => Number.isInteger(x) && Math.abs(x) < 10);
+  // A quadratic's SOLUTION set, written so AnswerInterpreter's own check is strict:
+  //   two numbers  → "x = -1 or x = 11" (read as values and sorted - safe even
+  //                  where the digits would collide as text);
+  //   one number   → "{4}" (always a single digit here), none → "{}";
+  //   radicals     → "{3 - 2√5, 3 + 2√5}". Never "x = … or x = …": that reader
+  //                  is unanchored and would see only the "5 or 3" in the middle.
+  // The answer's shape also picks the typed box's example text, and "x = 4"
+  // or "-4" would get one of their own - telling the student how many
+  // solutions there are, or their sign. Pairs and braces share "Your answer".
+  const solStr = els => {
+    if (!els.length || els.length === 1 || els.some(e => /√/.test(e.s))) return setStr(els);
+    return sorted(els).map(e => "x = " + e.s).join(" or ");
+  };
+  const expectOf = els => els.map(e => ({ v: e.v, irr: /√/.test(e.s) }));
+  // Four set options whose VALUES differ: two spellings of one set on the
+  // board would make a right answer look wrong.
+  function setOptions(ansEls, cands, show = solStr) {
+    const key = els => els.map(e => e.v).sort((a, b) => a - b).map(x => x.toFixed(6)).join("|");
+    const seen = new Set([key(ansEls)]), out = [show(ansEls)];
+    for (const c of cands) {
+      if (!c || c.some(e => !Number.isFinite(e.v))) continue;
+      const k = key(c); if (seen.has(k)) continue;
+      seen.add(k); out.push(show(c)); if (out.length === 4) break;
+    }
+    return out.length === 4 ? sh(out) : undefined;
+  }
+  // Four rational-expression options with different values, each reduced.
+  function ratOptions(ans, N, D, v, cands) {
+    const key = (n, d) => [0.37, 1.91, -2.63].map(t => (P.at(n, t) / P.at(d, t)).toFixed(6)).join("|");
+    const seen = new Set([key(N, D)]), out = [ans];
+    for (const c of cands) {
+      if (!c || !c[0] || !c[1] || P.isZero(c[0]) || P.isZero(c[1])) continue;
+      const [n, d] = ratReduce(c[0], c[1]);
+      if (P.deg(d) < 1) continue;            // no variable denominator: a giveaway shape
+      const k = key(n, d); if (seen.has(k) || /NaN|Infinity/.test(k)) continue;
+      seen.add(k); out.push(fracStr(n, d, v)); if (out.length === 4) break;
+    }
+    return out.length === 4 ? sh(out) : undefined;
+  }
+  // Replace one binomial factor (v − r) by (v + r): the sign slip made when
+  // factoring. null when there is no nonzero integer root to slip.
+  const signSlip = p => { const rs = intRoots(p).filter(r => r !== 0);
+    return rs.length ? P.mul(P.divRoot(p, rs[0]), [rs[0], 1]) : null; };
+
+  // ======================================================================
+  // M-407  Quadratics by Square Roots  (tier 7)
+  // ======================================================================
+  // Prerequisites: Quadratics (T5) and Square Roots (T3). Every solution
+  // offered is substituted back into the equation in code (quadOk).
+  const quadOk = (a, h, c, d, t) => Math.abs(a * (t - h) * (t - h) + c - d) < 1e-6;
+  const sqStr = h => h === 0 ? "x²" : `(x ${sgn(-h)})²`;
+  const coefStr = a => a === 1 ? "" : a === -1 ? "−" : neg(a);
+  // a(x − h)² + c, the left side of most equations in this skill.
+  const sideStr = (a, h, c) => coefStr(a) + sqStr(h) + (c ? " " + sgn(c) : "");
+  // The steps from a(x − h)² + c = d down to (x − h)² = K, as prose.
+  function isolateWork(a, h, c, d) {
+    const out = [];
+    if (c) out.push(`${c > 0 ? "Subtract" : "Add"} ${Math.abs(c)}: ${coefStr(a)}${sqStr(h)} = ${neg(d - c)}.`);
+    if (a !== 1) out.push(`Divide by ${neg(a)}: ${sqStr(h)} = ${neg((d - c) / a)}.`);
+    return out.length ? out.join(" ") : `${sqStr(h)} is already alone.`;
+  }
+
+  _addSkill(7, "Quadratics by Square Roots", "Quadratics by Square Roots", 3, {
+    goalProblem: "Solve 2(x − 3)² − 5 = 31.",
+    teachingSteps: [
+      { title: "A square root goes both ways", explanation: "You know √49 = 7. But the equation x² = 49 asks for <strong>every</strong> number whose square is 49, and (−7)² = 49 too. So x² = 49 has two solutions, written x = ±7.", visual: "x² = 49\nx = 7 or x = −7   (x = ±7)" },
+      { title: "Get the square alone first", explanation: "Undo everything around the square in reverse order — add or subtract the constant, then divide by the coefficient — and only then take the square root of both sides.", visual: "3x² + 4 = 52\n3x² = 48\nx² = 16\nx = ±4" },
+      { title: "Two, one or no real solutions", explanation: "Once the square is alone, look at the other side. <strong>Positive</strong>: two solutions. <strong>Zero</strong>: one solution, because only 0 squares to 0. <strong>Negative</strong>: no real solution, because no real number squared is negative.", visual: "x² = 9  →  x = ±3   (two)\nx² = 0  →  x = 0    (one)\nx² = −9 →  no real solution" },
+      { title: "Exact radicals or rounded decimals", explanation: "When the number is not a perfect square, leave the answer <strong>exact</strong> by simplifying the radical (pull out the largest perfect-square factor), or <strong>round</strong> if the question asks for a decimal.", visual: "x² = 48\nx = ±√48 = ±√(16 · 3) = ±4√3\nx ≈ ±6.93" },
+      { title: "Shifted squares: (x − h)² = k", explanation: "Treat the whole bracket as the thing being squared. Take ± square roots to get x − h = ±√k, then add h. The bracket's sign flips when you move h across: (x + 2)² means h = −2.", visual: "(x + 2)² = 25\nx + 2 = ±5\nx = −2 + 5 = 3  or  x = −2 − 5 = −7" },
+      { title: "Choosing a method", explanation: "<strong>Square roots</strong>: no x term, or the square is already in a bracket. <strong>Factoring</strong>: x² + bx + c with nice integer factors. <strong>Quadratic formula</strong>: anything else — it always works, it is just slower.", visual: "(x − 1)² = 7       →  square roots\nx² − 5x + 6 = 0    →  factoring: (x − 2)(x − 3)\n2x² + 3x − 4 = 0   →  quadratic formula" }
+    ],
+    finalAnswer: "x = 3 − 3√2 or x = 3 + 3√2",
+    answerExplanation: "Add 5: 2(x − 3)² = 36. Divide by 2: (x − 3)² = 18. Take ± square roots: x − 3 = ±√18 = ±3√2. Add 3: x = 3 ± 3√2, about −1.24 and 7.24.",
+    example: { problem: "Solve (x − 4)² − 7 = 13. Give exact answers and two-decimal approximations.", steps: [
+      { text: "Isolate the square: add 7", math: "(x − 4)² = 20" },
+      { text: "Take the square root of both sides, both signs", math: "x − 4 = ±√20" },
+      { text: "Simplify √20 = √(4 · 5)", math: "x − 4 = ±2√5" },
+      { text: "Add 4", math: "x = 4 − 2√5 or x = 4 + 2√5" },
+      { text: "Round if asked", math: "x ≈ −0.47 or x ≈ 8.47" }
+    ]},
+    keyPoints: [
+      "Isolate the square before taking any root",
+      "Take ± square roots — a positive number has two square roots",
+      "Positive → two solutions, zero → one, negative → no real solution",
+      "Leave answers exact (simplified radicals) unless asked to round",
+      "Use square roots when there is no x term or the square is already in brackets"
+    ],
+    mistakes: [
+      { wrong: "x² = 25, so x = 5", why: "(−5)² = 25 as well. The solutions are x = 5 and x = −5." },
+      { wrong: "x² + 9 = 25, so x + 3 = 5", why: "√(x² + 9) is not x + 3. Subtract 9 first: x² = 16, so x = ±4." },
+      { wrong: "(x + 2)² = 25, so x = 2 ± 5", why: "x + 2 = ±5 means x = −2 ± 5, which gives 3 and −7." },
+      { wrong: "x² = −16, so x = ±4", why: "4² and (−4)² are both +16. No real number squares to a negative, so there is no real solution." }
+    ],
+    guided: {
+      problem: "Solve 3(x + 1)² = 75.",
+      steps: [
+        { label: "Divide both sides by 3", value: "(x + 1)² = 25" },
+        { label: "Square root of both sides, both signs", value: "x + 1 = ±5" },
+        { label: "Subtract 1", value: "x = −1 ± 5" },
+        { label: "The two solutions", value: "?" }
+      ],
+      answer: "x = 4 or x = −6",
+      answerLabel: "Solutions",
+      interactiveSteps: [
+        { prompt: "Divide both sides of 3(x + 1)² = 75 by 3. What number does (x + 1)² equal?", hint: "75 divided by 3 is 25.", answer: "25", acceptableAnswers: ["25"], formatHint: "Enter a number" },
+        { prompt: "(x + 1)² = 25. What is the POSITIVE square root of 25?", hint: "5 times 5 is 25, and so is (−5) times (−5).", answer: "5", acceptableAnswers: ["5"], formatHint: "Enter a number" },
+        { prompt: "x + 1 = 5 gives one solution. What is it?", hint: "Subtract 1 from both sides.", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" },
+        { prompt: "x + 1 = −5 gives the other solution. What is it?", hint: "Subtract 1 from both sides: −5 − 1.", answer: "-6", acceptableAnswers: ["-6"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying("Quadratics by Square Roots", function(){
+    const mode = pick(["pure_int", "pure_radical", "shifted", "shifted_radical", "rounded", "count", "method", "applied"]);
+
+    if (mode === "pure_int" || mode === "pure_radical") {
+      // a·x² + c = d with x² = K, K a perfect square (pure_int) or K = k²·m.
+      let K, k, m;
+      if (mode === "pure_int") { k = ri(2, 15); m = 1; }      // x² = 1 leaves too few distinct mistakes
+      else { m = pick([2, 3, 5, 6, 7, 10, 11, 13]); k = pick([1, 1, 2, 3, 4, 5]); }
+      K = k * k * m;
+      const a = pick([1, 1, 1, 2, 3, 4, 5]);
+      let c = pick([0, 0, ri(-20, 20)]), d = a * K + c;
+      if (a === 1 && c === 0 && Math.random() < 0.4) { c = -K; d = 0; }      // "x² − 49 = 0"
+      const ans = pmEls(0, k, m);
+      if (!ans.every(e => quadOk(a, 0, c, d, e.v))) return null;
+      const root = radStr(k, m);
+      // Mistakes: only the positive root; halving instead of rooting
+      // (x² = 36 → 18); undoing c with the wrong sign; forgetting to divide by
+      // a; pulling k² out of the root without rooting it (2√3 written 4√3);
+      // swapping the coefficient and the radicand; not rooting at all.
+      const cands = [
+        [ans[1]],
+        [{ v: -K / 2, s: fmt(-K / 2) }, { v: K / 2, s: fmt(K / 2) }],
+        numPm((d + c) / a), numPm(d - c),
+        k > 1 && m > 1 ? pmEls(0, k * k, m) : null,
+        m > 1 && k > 1 && simpRad(k)[0] === 1 && k !== m ? pmEls(0, m, k) : null,
+        intEls([-K, K])
+      ];
+      return {
+        subType: mode,
+        question: `Solve for x: ${sideStr(a, 0, c)} = ${neg(d)}. Give every real solution${m > 1 ? " as exact values (use √)" : ""}.`,
+        answer: solStr(ans),
+        validate: setValidate(expectOf(ans), 0),
+        options: setOptions(ans, cands),
+        explanation: `${isolateWork(a, 0, c, d)} Take the square root of both sides and keep BOTH signs: x = ±√${K}` +
+          (m === 1 ? ` = ±${k}.` : k > 1 ? `. Simplify: ${K} = ${k * k} · ${m}, so √${K} = ${root} and x = ±${root}.` : ".") +
+          ` Check: (±${root})² = ${K}${a !== 1 ? `, ${a} · ${K} = ${a * K}` : ""}${c ? `, and ${a * K} ${sgn(c)} = ${neg(d)}` : ""} ✓. Solution set: {−${root}, ${root}}.`
+      };
+    }
+
+    if (mode === "shifted") {
+      // a(x − h)² + c = d with (x − h)² = r²; r = 0 is the one-solution case.
+      const h = nz(-9, 9), r = Math.random() < 0.18 ? 0 : ri(1, 10);
+      const a = pick([1, 1, 2, 3, -1, -2]), c = pick([0, ri(-15, 15)]), d = a * r * r + c;
+      const ans = r === 0 ? intEls([h]) : pmEls(h, r, 1);
+      if (!ans.every(e => quadOk(a, h, c, d, e.v))) return null;
+      // Mistakes: moving h across without flipping its sign; only the + root;
+      // not taking the root ((x − h)² = 16 → x − h = ±16); ignoring h. For the
+      // repeated root: thinking zero means no solution, or the wrong sign of h.
+      const cands = r === 0
+        ? [intEls([-h]), [], intEls([0]), pmEls(0, Math.abs(h), 1)]
+        : [pmEls(-h, r, 1), intEls([h + r]), r > 1 ? pmEls(h, r * r, 1) : null, pmEls(0, r, 1), intEls([-h + r])];
+      return {
+        subType: "shifted",
+        question: `Solve for x: ${sideStr(a, h, c)} = ${neg(d)}. Give every real solution.`,
+        answer: solStr(ans),
+        validate: setValidate(expectOf(ans), 0),
+        options: setOptions(ans, cands),
+        explanation: `${isolateWork(a, h, c, d)} ` + (r === 0
+          ? `Only 0 squares to 0, so x ${sgn(-h)} = 0 and x = ${neg(h)}: ONE solution (a repeated root). Check: ${coefStr(a)}(${neg(h)} ${sgn(-h)})²${c ? " " + sgn(c) : ""} = ${neg(d)} ✓.`
+          : `Take ± square roots: x ${sgn(-h)} = ±${r}. ${h > 0 ? "Add" : "Subtract"} ${Math.abs(h)}: x = ${neg(h)} ± ${r}, so x = ${neg(h - r)} or x = ${neg(h + r)}. Check: (${neg(h + r)} ${sgn(-h)})² = ${r * r} and (${neg(h - r)} ${sgn(-h)})² = ${r * r} ✓.`)
+      };
+    }
+
+    if (mode === "shifted_radical" || mode === "rounded") {
+      // a(x − h)² + c = d with (x − h)² = K = k²·m, m > 1: x = h ± k√m.
+      const h = nz(-8, 8), m = pick([2, 3, 5, 6, 7, 10, 11]), k = pick([1, 1, 1, 2, 3]), K = k * k * m;
+      const a = pick([1, 1, 2, 3]), c = pick([0, 0, ri(-12, 12)]), d = a * K + c;
+      const exact = pmEls(h, k, m);
+      if (!exact.every(e => quadOk(a, h, c, d, e.v))) return null;
+      // Mistakes: h moved without flipping its sign; only the + root; not
+      // rooting (x = h ± K); dropping h; k² pulled out unrooted.
+      const raw = [pmEls(-h, k, m), [exact[1]], pmEls(h, K, 1), pmEls(0, k, m), k > 1 ? pmEls(h, k * k, m) : null];
+      const work = `${isolateWork(a, h, c, d)} Take ± square roots: x ${sgn(-h)} = ±√${K}${k > 1 ? ` = ±${radStr(k, m)}` : ""}. ${h > 0 ? "Add" : "Subtract"} ${Math.abs(h)}: x = ${neg(h)} ± ${radStr(k, m)}.`;
+      if (mode === "shifted_radical") {
+        return {
+          subType: "shifted_radical",
+          question: `Solve for x: ${sideStr(a, h, c)} = ${neg(d)}. Give exact solutions (use √).`,
+          answer: solStr(exact),
+          validate: setValidate(expectOf(exact), 0),
+          options: setOptions(exact, raw),
+          explanation: `${work} Both are real because ${K} > 0. Solution set: ${setStr(exact).replace(/-/g, "−")}.`
+        };
+      }
+      const dp = pick([1, 2]), unit = Math.pow(10, -dp), word = dp === 1 ? "tenth" : "hundredth";
+      const toR = els => els && els.map(e => ({ v: +rnd(e.v, dp), s: rnd(e.v, dp) }));
+      const ans = toR(exact);
+      return {
+        subType: "rounded",
+        question: `Solve for x: ${sideStr(a, h, c)} = ${neg(d)}. Round each solution to the nearest ${word}.`,
+        answer: solStr(ans),
+        validate: setValidate(ans.map(e => ({ v: e.v, irr: false })), unit),
+        options: setOptions(ans, raw.map(toR)),
+        explanation: `${work} √${K} ≈ ${rnd(Math.sqrt(K), 4)}, so x ≈ ${neg(rnd(exact[0].v, dp))} or x ≈ ${neg(rnd(exact[1].v, dp))} (to the nearest ${word}).`
+      };
+    }
+
+    if (mode === "count") {
+      // Isolating the square decides it: positive → 2, zero → 1, negative → 0.
+      const kind = pick([0, 1, 2]), a = pick([1, 2, 3, -1, -2, -4]), h = ri(-6, 6), c = ri(-20, 20);
+      const K = kind === 2 ? ri(1, 30) : kind === 1 ? 0 : -ri(1, 30), d = a * K + c;
+      return {
+        subType: "count",
+        question: `How many real solutions does ${sideStr(a, h, c)} = ${neg(d)} have?`,
+        answer: String(kind),
+        options: ["0", "1", "2"],
+        explanation: `${isolateWork(a, h, c, d)} ` + (K > 0
+          ? `${K} is positive, and a positive number has two square roots (±√${K}), so there are 2 real solutions.`
+          : K === 0 ? `Only 0 squares to 0, so ${h === 0 ? "x = 0" : `x ${sgn(-h)} = 0`} — exactly 1 real solution.`
+          : `No real number squared is negative, so there are 0 real solutions.`)
+      };
+    }
+
+    if (mode === "method") {
+      const kind = pick(["roots", "factor", "formula"]);
+      let eq, why;
+      if (kind === "roots") {
+        if (Math.random() < 0.5) {
+          const h = nz(-7, 7), K = ri(2, 40);
+          eq = `${sqStr(h)} = ${K}`;
+          why = `The square is already in a bracket: take ± square roots straight away, x ${sgn(-h)} = ±√${K}.`;
+        } else {
+          const a = pick([2, 3, 4, 5]), c = nz(-20, 20), K = pick([2, 3, 5, 6, 7, 10]), d = a * K + c;
+          eq = `${a}x² ${sgn(c)} = ${neg(d)}`;
+          why = `There is no x term, so isolate x² (${a}x² = ${neg(d - c)}, x² = ${K}) and take ± square roots. ${K} is not a perfect square, so factoring over the integers would not work.`;
+        }
+      } else if (kind === "factor") {
+        const [r1, r2] = distinct(2, -9, 9);
+        if (r1 === -r2) return null;                 // no x term: square roots would do it
+        eq = `${polyStr([r1 * r2, -(r1 + r2), 1], "x", "−")} = 0`;
+        why = `It factors with integers: (x ${sgn(-r1)})(x ${sgn(-r2)}) = 0, so x = ${neg(r1)} or x = ${neg(r2)} at once. It has an x term, so plain square roots will not work.`;
+      } else {
+        const a = pick([2, 3, 5]), b = nz(-9, 9), c = nz(-9, 9), disc = b * b - 4 * a * c;
+        if (disc <= 0 || Number.isInteger(Math.sqrt(disc))) return null;
+        eq = `${polyStr([c, b, a], "x", "−")} = 0`;
+        why = `The discriminant ${b}² − 4(${a})(${c}) = ${disc} is not a perfect square, so it does not factor over the integers, and the x term rules out plain square roots. The quadratic formula gives x = (${neg(-b)} ± √${disc})/${2 * a}.`;
+      }
+      const answer = kind === "roots" ? "square roots" : kind === "factor" ? "factoring" : "the quadratic formula";
+      return {
+        subType: "method",
+        forceChoice: true,      // choosing among methods is a selection task by nature
+        question: `Which method is the most efficient way to solve ${eq}?`,
+        answer,
+        options: sh(["square roots", "factoring", "the quadratic formula", "completing the square"]),
+        explanation: `${why} (Completing the square always works too, but it is the long way round here.)`
+      };
+    }
+
+    // applied: a squared quantity solved backwards; the negative root is
+    // rejected because a length or a time cannot be negative.
+    const ctx = pick(["square", "circle", "fall"]);
+    if (ctx === "square") {
+      let A = ri(20, 400); if (Number.isInteger(Math.sqrt(A))) A++;
+      const s = Math.sqrt(A), ans = rnd(s, 1);
+      return {
+        subType: "applied",
+        question: `A square patio has an area of ${A} square feet. How long is each side, to the nearest tenth of a foot?`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        // Mistakes: area split four ways like a perimeter; halved; the root of half.
+        options: opt4(ans, [rnd(A / 4, 1), rnd(A / 2, 1), rnd(Math.sqrt(A / 2), 1), rnd(s + 1, 1)], 0.1),
+        explanation: `s² = ${A}, so s = ±√${A} ≈ ±${rnd(s, 3)}. A side length cannot be negative, so reject the negative root: s ≈ ${ans} ft.`
+      };
+    }
+    if (ctx === "circle") {
+      const A = ri(30, 500), r = Math.sqrt(A / Math.PI), ans = rnd(r, 1);
+      return {
+        subType: "applied",
+        question: `A circular garden has an area of ${A} square meters. What is its radius, to the nearest tenth of a meter? (A = πr²)`,
+        answer: ans,
+        validate: nearValidate(Number(ans), 0.1),
+        // Mistakes: forgetting the root (A/π); forgetting π (√A); using 2π.
+        options: opt4(ans, [rnd(A / Math.PI, 1), rnd(Math.sqrt(A), 1), rnd(A / (2 * Math.PI), 1), rnd(Math.sqrt(A / (2 * Math.PI)), 1)], 0.1),
+        explanation: `πr² = ${A}, so r² = ${A}/π ≈ ${rnd(A / Math.PI, 3)} and r = ±√(${A}/π) ≈ ±${rnd(r, 3)}. A radius cannot be negative: r ≈ ${ans} m.`
+      };
+    }
+    const D = ri(20, 400), t = Math.sqrt(D / 16), ans = rnd(t, 2);
+    return {
+      subType: "applied",
+      question: `An object dropped from rest falls d = 16t² feet in t seconds. How long does it take to fall ${D} feet, to the nearest hundredth of a second?`,
+      answer: ans,
+      validate: nearValidate(Number(ans), 0.01),
+      // Mistakes: forgetting the root (d/16); the root of d alone; dividing by 32.
+      options: opt4(ans, [rnd(D / 16, 2), rnd(Math.sqrt(D), 2), rnd(D / 32, 2), rnd(Math.sqrt(D / 8), 2)], 0.01),
+      explanation: `16t² = ${D}, so t² = ${D}/16 = ${fmt(D / 16)} and t = ±√${fmt(D / 16)} ≈ ±${rnd(t, 4)}. Time cannot be negative: t ≈ ${ans} s.`
+    };
+  }));
+
+  // ======================================================================
+  // M-408  Rational Expression Arithmetic  (tier 7)
+  // ======================================================================
+  // Prerequisites: Rational Expression Operations (T7: factor, cancel) and
+  // Fraction Operations (T2: common denominators). Every problem is built
+  // from known factors, so the reduced answer and the excluded values are
+  // exact; the answer is still produced by ratReduce, not by assumption.
+  const LETTERS = ["a", "b", "k", "m", "n", "p", "t", "w", "y", "z"];   // never x: see the header
+
+  // p·q or p÷q with factors shared across the pieces.
+  function productProblem(op) {
+    const [a, b, c, d] = distinct(4, -7, 7), k1 = pick([1, 1, 2, 3]), k2 = pick([1, 2, 3, 4, 6]);
+    let n1, d1, n2, d2;
+    if (Math.random() < 0.65) {
+      if (op === "×") { n1 = fac(1, 0, [a, b]); d1 = fac(k1, 0, [c]); n2 = fac(k2, 0, [c]); d2 = fac(1, 0, [a, d]); }
+      else { n1 = fac(1, 0, [a, b]); d1 = fac(1, 0, [c, d]); n2 = fac(k2, 0, [a]); d2 = fac(k1, 0, [c]); }
+    } else {
+      const p = pick([2, 3, 4, 6, 8, 9]), q = pick([2, 3, 4, 6, 10, 12]), A = Math.abs(a);
+      if (op === "×") { n1 = fac(p, 2, []); d1 = fac(1, 0, [A, -A]); n2 = fac(1, 0, [A]); d2 = fac(q, 1, []); }
+      else { n1 = fac(p, 1, []); d1 = fac(1, 0, [A, -A]); n2 = fac(q, 2, []); d2 = fac(1, 0, [A]); }
+    }
+    if (op === "×" && Math.random() < 0.5) [n1, d1, n2, d2] = [n2, d2, n1, d1];
+    const [N, D] = op === "×" ? ratReduce(P.mul(n1, n2), P.mul(d1, d2)) : ratReduce(P.mul(n1, d2), P.mul(d1, n2));
+    // Every value that zeroes a denominator of the ORIGINAL problem. Dividing
+    // also excludes the divisor's zeros: it becomes a denominator once flipped.
+    const ex = [...new Set(intRoots(d1).concat(intRoots(d2), op === "÷" ? intRoots(n2) : []))].sort((p, q) => p - q);
+    return { n1, d1, n2, d2, N, D, op, ex };
+  }
+  const showProduct = (pr, v) => `${dispFrac(pr.n1, pr.d1, v)} ${pr.op === "×" ? "·" : "÷"} ${dispFrac(pr.n2, pr.d2, v)}`;
+  const factored = (p, v) => {          // display a polynomial in factored form
+    let k = p.slice(), out = "";
+    const rs = intRoots(p);
+    for (const r of rs) {
+      let e = 0;
+      while (P.deg(k) > 0 && Math.abs(P.at(k, r)) < 1e-9) { k = P.divRoot(k, r); e++; }
+      out += (r === 0 ? v : `(${v} ${sgn(-r)})`) + (e > 1 ? SUP[e] : "");   // 12a², (n + 2)²
+    }
+    const rest = polyStr(k, v, "−");
+    return rest === "1" ? (out || "1") : rest === "-1" || rest === "−1" ? "−" + out : (nTerms(k) > 1 ? `(${rest})` : rest) + out;
+  };
+  // A factored denominator needs its own brackets unless it is one token or
+  // one bracket already: "/(n + 2)", "/3n" no - "/(3n)", "/((n + 2)(n − 1))".
+  const wrapF = f => /^\([^()]*\)$/.test(f) || /^[a-z]$/.test(f) || /^\d+$/.test(f) ? f : `(${f})`;
+  const facFrac = (n, d, v) => factored(n, v) + "/" + wrapF(factored(d, v));
+  const exText = (ex, v) => ex.length ? `${v} ≠ ${ex.map(neg).join(", ")}` : "nothing is excluded";
+  // Reasons a student's work is wrong, for error analysis. Each is false for
+  // every scenario except its own, and "nothing went wrong" is false for all.
+  const REASONS = {
+    terms: v => `${v} is a term being added, not a factor, so it cannot be cancelled`,
+    addDen: () => "They added the denominators instead of using a common denominator",
+    distribute: () => "They did not distribute the subtraction to every term of the second numerator",
+    flip: () => "They did not multiply by the reciprocal of the second fraction",
+    excluded: () => "A cancelled factor still makes the original denominator zero, so that value stays excluded",
+    none: () => "Nothing went wrong; the work is correct"
+  };
+
+  _addSkill(7, "Rational Expression Arithmetic", "Rational Expression Arithmetic", 3, {
+    goalProblem: "Simplify (x² − 4)/(3x) · 6x²/(x² + x − 6) and state the excluded values.",
+    teachingSteps: [
+      { title: "Factor everything first", explanation: "A rational expression is a fraction of polynomials. Before you multiply, divide, add or subtract, factor every numerator and denominator — common factors only show up once things are factored.", visual: "x² − 4 = (x − 2)(x + 2)\nx² + x − 6 = (x + 3)(x − 2)\n3x and 6x² share 3x" },
+      { title: "Cancel factors, never terms", explanation: "You may cancel a factor that multiplies the whole top and the whole bottom. A term that is being <strong>added</strong> cannot be cancelled: (x + 4)/(x + 6) does not simplify at all.", visual: "(x − 2)(x + 2)/(x − 2) = x + 2   ✓\n(x + 4)/(x + 6) → 4/6   ✗" },
+      { title: "Multiply across; divide by flipping", explanation: "To multiply, put all the factors over one bar and cancel. To divide, multiply by the <strong>reciprocal</strong> of the second fraction, then do the same.", visual: "a/b · c/d = ac/(bd)\na/b ÷ c/d = a/b · d/c" },
+      { title: "Add and subtract over a common denominator", explanation: "Just like 1/6 + 1/4: find the least common denominator from the factored denominators, rewrite each fraction over it, then combine the numerators. When subtracting, the minus applies to <strong>every</strong> term of the second numerator. Factor the result and cancel if you can.", visual: "3/x + 2/(x + 4)\n= 3(x + 4)/(x(x + 4)) + 2x/(x(x + 4))\n= (5x + 12)/(x(x + 4))" },
+      { title: "State the excluded values", explanation: "Exclude every value that makes <strong>any denominator of the original problem</strong> zero — including factors you cancelled, and for division, the zeros of the second fraction's numerator (it becomes a denominator when flipped).", visual: "(x² − 4)/(3x) · 6x²/((x + 3)(x − 2))\nexclude x = 0, x = −3, x = 2" }
+    ],
+    finalAnswer: "2x(x + 2)/(x + 3), with x ≠ 0, 2, −3",
+    answerExplanation: "Factor: (x − 2)(x + 2)/(3x) · 6x²/((x + 3)(x − 2)). Cancel (x − 2) and 3x: 2x(x + 2)/(x + 3). The original denominators 3x and (x + 3)(x − 2) are zero at x = 0, −3 and 2, so those stay excluded even though (x − 2) cancelled.",
+    example: { problem: "Simplify 5/(n + 2) − 3/(n − 1).", steps: [
+      { text: "The denominators share nothing, so the LCD is their product", math: "LCD = (n + 2)(n − 1)" },
+      { text: "Rewrite each fraction over the LCD", math: "5(n − 1)/((n + 2)(n − 1)) − 3(n + 2)/((n + 2)(n − 1))" },
+      { text: "Subtract the numerators — distribute the minus to both terms", math: "5n − 5 − 3n − 6 = 2n − 11" },
+      { text: "Nothing cancels, so this is simplest form", math: "<strong>(2n − 11)/((n + 2)(n − 1))</strong>, n ≠ −2, 1" }
+    ]},
+    keyPoints: [
+      "Factor every numerator and denominator first",
+      "Cancel common FACTORS only, never terms",
+      "Divide by multiplying by the reciprocal of the second fraction",
+      "Add or subtract over the LCD; a minus sign reaches every term of the second numerator",
+      "Excluded values come from the ORIGINAL denominators, including cancelled factors",
+      "The letter does not matter: n, a, t and x all work the same way"
+    ],
+    mistakes: [
+      { wrong: "3/(n + 1) + 2/(n + 4) = 5/(2n + 5)", why: "Denominators are never added. Use the LCD (n + 1)(n + 4): (3(n + 4) + 2(n + 1))/((n + 1)(n + 4)) = (5n + 14)/((n + 1)(n + 4))." },
+      { wrong: "(n + 6)/(n + 2) = 3 after cancelling the n's", why: "n is a term, not a factor. (n + 6)/(n + 2) is already in simplest form." },
+      { wrong: "(4n + 1)/(n − 3) − (n + 5)/(n − 3) = (3n + 6)/(n − 3)", why: "The minus reaches both terms: 4n + 1 − n − 5 = 3n − 4, so the answer is (3n − 4)/(n − 3)." },
+      { wrong: "(n² − 9)/(n − 3) = n + 3, so nothing is excluded", why: "n = 3 makes the original denominator zero. It stays excluded: n + 3 with n ≠ 3." }
+    ],
+    guided: {
+      problem: "Simplify 3/x + 2/(x + 4).",
+      steps: [
+        { label: "LCD", value: "x(x + 4)" },
+        { label: "Rewrite 3/x over the LCD", value: "3(x + 4)/(x(x + 4))" },
+        { label: "Rewrite 2/(x + 4) over the LCD", value: "2x/(x(x + 4))" },
+        { label: "Add the numerators", value: "3x + 12 + 2x = 5x + 12" },
+        { label: "Result", value: "?" }
+      ],
+      answer: "(5x + 12)/(x(x + 4)), x ≠ 0, −4",
+      answerLabel: "Simplified",
+      interactiveSteps: [
+        { prompt: "The LCD of x and x + 4 is x(x + 4). Rewrite 3/x by multiplying top and bottom by (x + 4). The new numerator is 3x + c. What is c?", hint: "3 times 4.", answer: "12", acceptableAnswers: ["12"], formatHint: "Enter a number" },
+        { prompt: "Rewrite 2/(x + 4) by multiplying top and bottom by x. The new numerator is kx. What is k?", hint: "2 times x is 2x.", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number" },
+        { prompt: "Add the numerators: (3x + 12) + 2x = mx + 12. What is m?", hint: "Combine the x terms: 3x + 2x.", answer: "5", acceptableAnswers: ["5"], formatHint: "Enter a number" },
+        { prompt: "The result is (5x + 12)/(x(x + 4)). It is undefined at x = 0 and at one other value. Which one?", hint: "Set x + 4 = 0.", answer: "-4", acceptableAnswers: ["-4"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying("Rational Expression Arithmetic", function(){
+    const mode = pick(["multiply", "divide", "add_same", "add_unlike", "subtract_unlike", "excluded", "error_analysis"]);
+    const v = pick(LETTERS);
+
+    if (mode === "multiply" || mode === "divide" || mode === "excluded") {
+      const op = mode === "multiply" ? "×" : mode === "divide" ? "÷" : pick(["×", "÷"]);
+      const pr = productProblem(op), { N, D } = pr;
+      if ([pr.n1, pr.d1, pr.n2, pr.d2].some(p => maxCoef(p) > 99)) return null;
+      const shown = showProduct(pr, v);
+      const work = `Factor: ${facFrac(pr.n1, pr.d1, v)} ${op === "×" ? "·" : "÷"} ${facFrac(pr.n2, pr.d2, v)}. ` +
+        (op === "÷" ? `Multiply by the reciprocal: ${facFrac(pr.n1, pr.d1, v)} · ${facFrac(pr.d2, pr.n2, v)}. ` : "") +
+        `Cancel the common factors: ${dispFrac(N, D, v)}.`;
+      if (mode === "excluded") {
+        if (!smallInts(pr.ex)) return null;      // braces are only safe for single digits (setStr)
+        const ans = intEls(pr.ex);
+        // Mistakes: reading the excluded values off the SIMPLIFIED answer
+        // (cancelled factors lost); sign flips; for division, forgetting the
+        // divisor's numerator; counting numerator zeros too.
+        const cands = [intEls(intRoots(D)), intEls(pr.ex.map(r => -r)),
+          intEls([...new Set(intRoots(pr.d1).concat(intRoots(pr.d2)))]),
+          intEls([...new Set(pr.ex.concat(intRoots(pr.n1)))]), intEls(intRoots(pr.d1)), intEls(intRoots(pr.d2))];
+        return {
+          subType: "excluded",
+          question: `Before simplifying, which values of ${v} must be excluded from ${shown}? Give them as a set.`,
+          answer: setStr(ans),
+          validate: setValidate(expectOf(ans), 0),
+          options: setOptions(ans, cands, setStr),
+          explanation: `A value is excluded when it makes any denominator of the original problem zero: ${factored(pr.d1, v)} and ${factored(pr.d2, v)}` +
+            (op === "÷" ? `, and also ${factored(pr.n2, v)}, because dividing flips it into a denominator` : "") +
+            `. So ${exText(pr.ex, v)} — even the values whose factors cancel when you simplify to ${dispFrac(N, D, v)}.`
+        };
+      }
+      const ans = fracStr(N, D, v);
+      if (P.deg(D) < 1 || !typeableFrac(ans)) return null;
+      // Mistakes: a sign slip in a factor (top or bottom); the reciprocal of
+      // the answer (flipping the wrong fraction); dividing without flipping, or
+      // flipping when multiplying; dropping the number factors.
+      const other = op === "÷" ? [P.mul(pr.n1, pr.n2), P.mul(pr.d1, pr.d2)] : [P.mul(pr.n1, pr.d2), P.mul(pr.d1, pr.n2)];
+      const cands = [[signSlip(N), D], [N, signSlip(D)], [D, N], other, [P.scale(N, 1 / lead(N)), P.scale(D, 1 / lead(D))]];
+      return {
+        subType: mode,
+        question: `${op === "×" ? "Multiply" : "Divide"} and simplify: ${shown}`,
+        answer: ans,
+        validate: ratValidate(N, D, v),
+        options: ratOptions(ans, N, D, v, cands),
+        explanation: `${work} Excluded: ${exText(pr.ex, v)}.`
+      };
+    }
+
+    if (mode === "add_same") {
+      // A/D ± B/D with the combined numerator chosen first, often a multiple
+      // of one factor of D so the sum simplifies.
+      const [p, q] = distinct(2, -8, 8), two = Math.random() < 0.7;
+      let op = pick(["+", "−"]);
+      const Dp = two ? fac(1, 0, [p, q]) : fac(1, 0, [p]);
+      let Nt;
+      if (two && Math.random() < 0.6) Nt = fac(nz(-4, 4), 0, [p]);
+      else { Nt = [ri(-9, 9), nz(-5, 5)]; if (intRoots(Nt).some(r => r === -p || r === -q)) return null; }
+      const A = [ri(-9, 9), ri(1, 6)];
+      let B = op === "+" ? P.add(Nt, P.scale(A, -1)) : P.add(A, P.scale(Nt, -1));
+      if (P.isZero(B) || maxCoef(B) > 20) return null;
+      // A single negative term reads "− 7w/…", never "+ −7w/…": flip the
+      // operation and the term together, which leaves the value unchanged.
+      if (nTerms(B) === 1 && lead(B) < 0) { op = op === "+" ? "−" : "+"; B = P.scale(B, -1); }
+      const [N, D] = ratReduce(Nt, Dp), ans = fracStr(N, D, v);
+      if (P.deg(D) < 1 || !typeableFrac(ans)) return null;
+      // Mistakes: the minus reaching only the first term of the second
+      // numerator; adding the denominators too (D + D); a sign slip in the
+      // remaining factor; keeping only the first numerator.
+      const noDist = op === "−" ? [P.add(A, [B[0] || 0, -(B[1] || 0)]), Dp] : [P.add(A, P.scale(B, -1)), Dp];
+      const cands = [noDist, [Nt, P.scale(Dp, 2)], [N, signSlip(D)], [A, Dp], [P.scale(N, -1), D]];
+      const ex = intRoots(Dp);
+      return {
+        subType: "add_same",
+        question: `Simplify: ${dispFrac(A, Dp, v)} ${op} ${dispFrac(B, Dp, v)}`,
+        answer: ans,
+        validate: ratValidate(N, D, v),
+        options: ratOptions(ans, N, D, v, cands),
+        explanation: `The denominators already match, so ${op === "+" ? "add" : "subtract"} the numerators` +
+          (op === "−" ? ` (the minus reaches EVERY term of ${dispTop(B, v)})` : "") + `: ${polyStr(Nt, v, "−")}. ` +
+          `Factor top and bottom: ${facFrac(Nt, Dp, v)}` +
+          (P.deg(D) < P.deg(Dp) ? `, and cancel the common factor: ${dispFrac(N, D, v)}.` : `. Nothing cancels, so ${dispFrac(N, D, v)}.`) +
+          ` Excluded: ${exText(ex, v)}.`
+      };
+    }
+
+    if (mode === "add_unlike" || mode === "subtract_unlike") {
+      const sign = mode === "add_unlike" ? 1 : -1, t = pick(["two", "mono", "v", "squares"]);
+      let a = nz(1, 9), b = nz(1, 9), d1, d2, LCD, m1, m2;
+      if (t === "two") { const [p, q] = distinct(2, -8, 8); d1 = fac(1, 0, [p]); d2 = fac(1, 0, [q]); LCD = fac(1, 0, [p, q]); m1 = d2; m2 = d1; }
+      else if (t === "mono") {
+        const k = pick([2, 3, 4, 6]), m = pick([2, 3, 4, 5, 6]), L = k * m / g(k, m);
+        if (g(a, k) > 1 || g(b, m) > 1) return null;      // give each fraction in lowest terms
+        d1 = fac(k, 1, []); d2 = fac(m, 2, []); LCD = fac(L, 2, []); m1 = fac(L / k, 1, []); m2 = [L / m];
+      } else if (t === "v") { const p = nz(-8, 8); d1 = [0, 1]; d2 = fac(1, 0, [p]); LCD = fac(1, 1, [p]); m1 = d2; m2 = d1; }
+      else {
+        // a/(v² − p²) ± b/(v + p): factor first. Half the time the numbers are
+        // chosen so the combined numerator shares (v + p) and the result cancels.
+        const p = nz(1, 7) * pick([1, -1]);
+        if (Math.random() < 0.5) a = 2 * sign * b * p;
+        d1 = fac(1, 0, [p, -p]); d2 = fac(1, 0, [p]); LCD = d1; m1 = [1]; m2 = fac(1, 0, [-p]);
+      }
+      if (Math.abs(a) > 40) return null;
+      const Nt = P.add(P.scale(m1, a), P.scale(m2, sign * b));
+      if (P.isZero(Nt)) return null;
+      const [N, D] = ratReduce(Nt, LCD), ans = fracStr(N, D, v);
+      if (P.deg(D) < 1 || !typeableFrac(ans)) return null;
+      const opS = sign > 0 ? "+" : "−";
+      // Mistakes: adding the denominators; combining the numerators without
+      // rewriting them over the LCD; scaling each numerator by its OWN
+      // denominator; the minus reaching only the first term; a sign slip.
+      const bm2 = P.scale(m2, b);
+      const noDist = sign < 0 && nTerms(bm2) > 1 ? [P.add(P.scale(m1, a), P.add(bm2, [0].concat(new Array(bm2.length - 2).fill(0), [-2 * lead(bm2)]))), LCD] : null;
+      const cands = [[[a + sign * b], P.add(d1, d2)], [[a + sign * b], LCD],
+        [P.add(P.scale(d1, a), P.scale(d2, sign * b)), LCD], noDist, [N, signSlip(D)], [P.scale(N, -1), D]];
+      const ex = intRoots(LCD);
+      return {
+        subType: mode,
+        question: `Simplify: ${a < 0 ? "−" : ""}${Math.abs(a)}/${dispBot(d1, v)} ${opS} ${b}/${dispBot(d2, v)}`,
+        answer: ans,
+        validate: ratValidate(N, D, v),
+        options: ratOptions(ans, N, D, v, cands),
+        explanation: `${t === "squares" ? `Factor first: ${polyStr(d1, v, "−")} = ${factored(d1, v)}. ` : ""}The LCD is ${factored(LCD, v)}. ` +
+          `Rewrite: ${neg(a)}/${dispBot(d1, v)} = ${t === "squares" ? `${neg(a)}/${wrapF(factored(LCD, v))}` : `${neg(a)}·${factored(m1, v)}/${wrapF(factored(LCD, v))}`} and ${b}/${dispBot(d2, v)} = ${b}·${factored(m2, v)}/${wrapF(factored(LCD, v))}. ` +
+          `${sign > 0 ? "Add" : "Subtract"} the numerators${sign < 0 ? " (the minus reaches every term)" : ""}: ${polyStr(Nt, v, "−")}. ` +
+          (P.deg(D) < P.deg(LCD) ? `It factors as ${factored(Nt, v)}, so cancel: ${dispFrac(N, D, v)}.` : `Nothing cancels: ${dispFrac(N, D, v)}.`) +
+          ` Excluded: ${exText(ex, v)}.`
+      };
+    }
+
+    // error_analysis: name the mistake in a piece of student work.
+    const kind = pick(["terms", "addDen", "distribute", "flip", "excluded"]);
+    let work;
+    if (kind === "terms") {
+      const [p, q] = distinct(2, 1, 9);
+      work = `simplifies (${v} + ${p})/(${v} + ${q}) by crossing out the ${v}'s and writes ${frac(p, q)}`;
+    } else if (kind === "addDen") {
+      const [p, q] = distinct(2, -8, 8), a = nz(1, 9), b = nz(1, 9);
+      work = `adds ${a}/(${v} ${sgn(p)}) + ${b}/(${v} ${sgn(q)}) and writes ${a + b}/(${polyStr([p + q, 2], v, "−")})`;
+    } else if (kind === "distribute") {
+      const p = nz(-8, 8), A = [ri(1, 9), ri(3, 7)], B = [ri(1, 9), ri(1, 2)];
+      work = `subtracts ${dispFrac(A, [p, 1], v)} − ${dispFrac(B, [p, 1], v)} and writes ${dispFrac([A[0] + B[0], A[1] - B[1]], [p, 1], v)}`;
+    } else if (kind === "flip") {
+      const a = ri(2, 9), b = ri(2, 9);
+      work = `divides ${a}/${v} ÷ ${b}/${v}² and writes ${a * b}/${v}³`;
+    } else {
+      const p = ri(2, 9);
+      work = `simplifies (${v}² − ${p * p})/(${v} − ${p}) to ${v} + ${p} and says no values are excluded`;
+    }
+    const answer = REASONS[kind](v);
+    const others = sh(Object.keys(REASONS).filter(k => k !== kind && k !== "none")).slice(0, 2).map(k => REASONS[k](v));
+    const fix = {
+      terms: `Only common FACTORS cancel. ${v} is added, not multiplied, so the expression is already in simplest form.`,
+      addDen: `Denominators are never added. Rewrite both fractions over the LCD (the product of the two denominators) and add only the numerators.`,
+      distribute: `Subtracting a numerator means subtracting EVERY term in it, so the constant term should have been subtracted too.`,
+      flip: `Dividing means multiplying by the reciprocal: flip the second fraction first, then multiply and cancel.`,
+      excluded: `The original denominator is zero at that value, so it stays excluded even though the factor cancelled.`
+    }[kind];
+    return {
+      subType: "error_analysis",
+      forceChoice: true,      // diagnosing an error is a selection task
+      question: `A student ${work}. What went wrong?`,
+      answer,
+      options: sh([answer, REASONS.none(v), ...others]),
+      explanation: fix
+    };
+  }));
+
+  // ======================================================================
+  // M-409  Extraneous Solutions  (tier 7)
+  // ======================================================================
+  // Prerequisites: Solving Rational Equations and Radical Equations (both
+  // T7). Each equation is built from its candidates, and every candidate is
+  // judged by substituting it into the ORIGINAL equation in code (ok), which
+  // is exactly the habit the skill exists to teach.
+  const fx = r => r === 0 ? "x" : `(x ${sgn(-r)})`;
+  const coefx = c => c === 1 ? "x" : c === -1 ? "−x" : neg(c) + "x";
+  const sgnK = k => (k < 0 ? "− " : "+ ") + (Math.abs(k) === 1 ? "" : Math.abs(k));   // "+ 2(x − 3)", "− (x + 2)"
+  const quadX = (B, C) => polyStr([C, B, 1], "x", "−");          // x² + Bx + C, display
+  const lin = (a, b) => (a === 1 ? "" : a === -1 ? "−" : a) + "x" + (b ? " " + sgn(b) : "");
+  // A rational value as a fraction for display (the checks are exact).
+  const fracDisp = x => { for (let d = 1; d <= 400; d++) if (Math.abs(x * d - Math.round(x * d)) < 1e-7) return neg(frac(Math.round(x * d), d)); return neg(fmt(x)); };
+
+  // A rational equation whose candidates are known. want: "one" (one
+  // candidate zeroes a denominator), "none" (the only candidate does), "two".
+  function ratEq(want) {
+    for (let tries = 0; tries < 80; tries++) {
+      const a = nz(-8, 8), t = want === "none" ? "R5" : want === "two" ? "R6" : pick(["R1", "R2", "R3"]);
+      const dx = `x ${sgn(-a)}`;
+      let E;
+      if (t === "R1") {
+        // x²/(x − a) = (px + q)/(x − a)  →  x² − px − q = (x − a)(x − s)
+        const s = ri(-9, 9); if (s === a) continue;
+        const p = a + s, q = -a * s, top = polyStr([q, p], "x", "−");
+        E = { eq: `x²/(${dx}) = ${nTerms([q, p]) > 1 ? `(${top})` : top}/(${dx})`,
+          lhs: x => x * x / (x - a), rhs: x => (p * x + q) / (x - a), dens: [{ name: dx, f: x => x - a }], cands: [a, s],
+          clear: `Multiply both sides by ${dx}: x² = ${top}, so ${quadX(-p, -q)} = 0, which factors as ${fx(a)}${fx(s)} = 0.` };
+      } else if (t === "R2") {
+        // x + m/(x − a) = (sx + w)/(x − a) with w = m − as
+        const s = ri(-9, 9), m = nz(-9, 9); if (s === a) continue;
+        const w = m - a * s, top = polyStr([w, s], "x", "−");
+        E = { eq: `x ${sgn(m)}/(${dx}) = ${nTerms([w, s]) > 1 ? `(${top})` : top}/(${dx})`,
+          lhs: x => x + m / (x - a), rhs: x => (s * x + w) / (x - a), dens: [{ name: dx, f: x => x - a }], cands: [a, s],
+          clear: `Multiply every term by ${dx}: x(${dx}) ${sgn(m)} = ${top}, so ${quadX(-(a + s), a * s)} = 0, which factors as ${fx(a)}${fx(s)} = 0.` };
+      } else if (t === "R3") {
+        // x/(x − a) + b/x = a²/(x² − ax)  →  (x − a)(x + a + b) = 0
+        const b = nz(-6, 6), s = -a - b; if (s === 0 || s === a) continue;
+        E = { eq: `x/(${dx}) ${sgn(b)}/x = ${a * a}/(${polyStr([0, -a, 1], "x", "−")})`,
+          lhs: x => x / (x - a) + b / x, rhs: x => a * a / (x * x - a * x),
+          dens: [{ name: dx, f: x => x - a }, { name: "x", f: x => x }], cands: [a, s],
+          clear: `Multiply every term by the LCD x(${dx}): x² ${sgnK(b)}(${dx}) = ${a * a}, so ${quadX(b, -(a * b + a * a))} = 0, which factors as ${fx(a)}${fx(s)} = 0.` };
+      } else if (t === "R5") {
+        // cx/(x − a) = ca/(x − a) + d  →  (c − d)x = (c − d)a  →  x = a only
+        const c = nz(-5, 5), d = nz(-5, 5); if (c === d) continue;
+        E = { eq: `${coefx(c)}/(${dx}) = ${neg(c * a)}/(${dx}) ${sgn(d)}`,
+          lhs: x => c * x / (x - a), rhs: x => c * a / (x - a) + d, dens: [{ name: dx, f: x => x - a }], cands: [a],
+          clear: `Multiply every term by ${dx}: ${coefx(c)} = ${neg(c * a)} ${sgnK(d)}(${dx}), so ${coefx(c - d)} = ${neg((c - d) * a)} and x = ${neg(a)}.` };
+      } else {
+        // x + q/x = p with nonzero roots s1, s2: both survive
+        const [s1, s2] = distinct(2, -9, 9), p = s1 + s2, q = s1 * s2;
+        E = { eq: `x ${sgn(q)}/x = ${neg(p)}`, lhs: x => x + q / x, rhs: () => p, dens: [{ name: "x", f: x => x }], cands: [s1, s2],
+          clear: `Multiply every term by x: x² ${sgn(q)} = ${p === 0 ? "0" : coefx(p)}, so ${quadX(-p, q)} = 0, which factors as ${fx(s1)}${fx(s2)} = 0.` };
+      }
+      E.kind = "rational";
+      E.ok = x => E.dens.every(dn => Math.abs(dn.f(x)) > 1e-9) && Math.abs(E.lhs(x) - E.rhs(x)) < 1e-9;
+      E.chk = x => {
+        const z = E.dens.find(dn => Math.abs(dn.f(x)) < 1e-9);
+        return z ? `x = ${neg(x)} makes ${z.name} = 0 ✗` : `x = ${neg(x)}: both sides equal ${fracDisp(E.lhs(x))} ✓`;
+      };
+      // Self-check: every candidate either solves the original equation or
+      // zeroes a denominator (so the explanation's reason is the true one).
+      if (!E.cands.every(x => E.ok(x) || E.dens.some(dn => Math.abs(dn.f(x)) < 1e-9))) continue;
+      const nValid = E.cands.filter(E.ok).length;
+      if (nValid !== { one: 1, none: 0, two: 2 }[want]) continue;
+      return E;
+    }
+    return null;
+  }
+  // √(ax + b) = x + c. Squaring gives x² + (2c − a)x + (c² − b) = 0, so the
+  // roots p, q fix a = p + q + 2c and b = c² − pq. A root survives exactly
+  // when x + c ≥ 0 (the square root's value).
+  function radEq(want) {
+    for (let tries = 0; tries < 120; tries++) {
+      const c = ri(-6, 4), p = ri(-6, 12), q = ri(-8, 12);
+      if (p === q) continue;
+      const a = p + q + 2 * c, b = c * c - p * q;
+      if (a < 1 || a > 12) continue;
+      const ok = x => { const L = Math.sqrt(a * x + b), R = x + c; return Number.isFinite(L) && Math.abs(L - R) < 1e-9; };
+      const nValid = [p, q].filter(ok).length;
+      if (nValid !== { one: 1, none: 0, two: 2 }[want]) continue;
+      const iso = c !== 0 && Math.random() < 0.4;       // shown with the root not yet alone
+      const rad = `√(${lin(a, b)})`;
+      return {
+        kind: "radical", cands: [p, q], ok,
+        eq: iso ? `${rad} ${sgn(-c)} = x` : `${rad} = ${lin(1, c)}`,
+        clear: `${iso ? `Isolate the root first: ${rad} = ${lin(1, c)}. ` : ""}Square both sides: ${lin(a, b)} = ${c === 0 ? "x²" : `(${lin(1, c)})²`}, so ${quadX(2 * c - a, c * c - b)} = 0, which factors as ${fx(p)}${fx(q)} = 0.`,
+        chk: x => `x = ${neg(x)}: √(${a * x + b}) = ${Math.sqrt(a * x + b)} and ${neg(x)} ${sgn(c)} = ${neg(x + c)} ${ok(x) ? "✓" : "✗"}`
+      };
+    }
+    return null;
+  }
+  const anyEq = want => (Math.random() < 0.5 ? ratEq(want) : radEq(want)) || ratEq(want);
+  const WHY = {
+    den: "It makes a denominator in the original equation zero, so the equation is undefined there",
+    neg: "The square root side is positive but the other side is negative, so the original equation is false",
+    positive: "Solutions to equations like this must be positive numbers",
+    cleared: "It does not satisfy the equation you get after clearing fractions or squaring",
+    under: "It makes the expression under the square root negative",
+    larger: "Only the larger candidate is ever kept"
+  };
+
+  _addSkill(7, "Extraneous Solutions", "Extraneous Solutions", 4, {
+    goalProblem: "Solve x²/(x − 4) = (x + 12)/(x − 4).",
+    teachingSteps: [
+      { title: "What an extraneous solution is", explanation: "Some solving steps can create answers that the ORIGINAL equation does not accept. Two steps do it: <strong>multiplying by an expression that can be zero</strong> (clearing fractions) and <strong>squaring both sides</strong>. A candidate that fails the original is called <strong>extraneous</strong> and is thrown away.", visual: "candidate → check in the ORIGINAL → keep ✓ or reject ✗" },
+      { title: "Rational equations: list the restrictions first", explanation: "Before solving, write down every value that makes a denominator zero. Those values can never be solutions, whatever the algebra later says.", visual: "x²/(x − 4) = (x + 12)/(x − 4)\nrestriction: x ≠ 4" },
+      { title: "Multiply EVERY term by the LCD", explanation: "Clearing the fractions turns the equation into a polynomial one you already know how to solve. Every term on both sides gets multiplied, including terms without a denominator.", visual: "× (x − 4):  x² = x + 12\nx² − x − 12 = 0\n(x − 4)(x + 3) = 0  →  x = 4 or x = −3" },
+      { title: "Reject values that zero a denominator", explanation: "Compare the candidates with the restrictions. x = 4 is on the list — it makes x − 4 = 0, so the original equation is undefined there.", visual: "x = 4:  x − 4 = 0   ✗ extraneous\nx = −3: 9/(−7) = 9/(−7)  ✓" },
+      { title: "Radical equations: isolate, square, then check", explanation: "Isolate the root and square both sides. A square root is <strong>never negative</strong>, but squaring forgets that — both 3 = 3 and 3 = −3 become 9 = 9. So substitute every candidate into the original and reject any that make the two sides different.", visual: "√(x + 6) = x  →  x + 6 = x²  →  x = 3 or x = −2\nx = 3:  √9 = 3 ✓\nx = −2: √4 = 2 but the right side is −2 ✗" },
+      { title: "Report what survives", explanation: "The solution set holds only the candidates that passed. It can have two, one or <strong>no</strong> solutions — if every candidate is rejected, the answer is the empty set { } (no solution).", visual: "{−3}     one survivor\n{ }      nothing survived" }
+    ],
+    finalAnswer: "x = −3",
+    answerExplanation: "Multiplying both sides by x − 4 gives x² = x + 12, so x² − x − 12 = (x − 4)(x + 3) = 0 and x = 4 or x = −3. But x = 4 makes the denominator x − 4 zero, so it is extraneous. Checking x = −3: both sides are 9/(−7). The only solution is x = −3.",
+    example: { problem: "Solve √(x + 6) = x.", steps: [
+      { text: "The root is already alone, so square both sides", math: "x + 6 = x²" },
+      { text: "Standard form and factor", math: "x² − x − 6 = 0  →  (x − 3)(x + 2) = 0" },
+      { text: "Candidates", math: "x = 3 or x = −2" },
+      { text: "Check each in the ORIGINAL", math: "√9 = 3 ✓;  √4 = 2 ≠ −2 ✗" },
+      { text: "Keep only the survivor", math: "<strong>{3}</strong>" }
+    ]},
+    keyPoints: [
+      "Clearing fractions and squaring can both create extraneous candidates",
+      "Write the denominator restrictions before solving a rational equation",
+      "Multiply every term by the LCD, not just the fractions",
+      "Check every candidate in the ORIGINAL equation, never the cleared or squared one",
+      "If nothing survives, there is no solution: the empty set { }"
+    ],
+    mistakes: [
+      { wrong: "Reporting both x = 4 and x = −3 for x²/(x − 4) = (x + 12)/(x − 4)", why: "x = 4 makes the denominator zero. It is extraneous; only x = −3 is a solution." },
+      { wrong: "Checking the candidates in x² = x + 12 instead of the original", why: "Both candidates satisfy the cleared equation — that is where they came from. Only the original shows that x = 4 fails." },
+      { wrong: "Multiplying only the fractions by the LCD in x + 6/(x − 2) = 5", why: "Every term must be multiplied: x(x − 2) + 6 = 5(x − 2). Missing one changes the equation." },
+      { wrong: "Rejecting x = −2 from √(2x + 8) = x + 4 because it is negative", why: "Check it: √4 = 2 and −2 + 4 = 2. It works. Negative candidates are fine; failing the original is what matters." }
+    ],
+    guided: {
+      problem: "Solve x + 6/(x − 2) = (4x − 2)/(x − 2).",
+      steps: [
+        { label: "Restriction", value: "x ≠ 2" },
+        { label: "Multiply every term by (x − 2)", value: "x² − 2x + 6 = 4x − 2" },
+        { label: "Standard form", value: "x² − 6x + 8 = 0" },
+        { label: "Candidates", value: "2 and 4" },
+        { label: "Reject x = 2 (zero denominator); the solution", value: "?" }
+      ],
+      answer: "4",
+      answerLabel: "x =",
+      interactiveSteps: [
+        { prompt: "Which value of x makes the denominator x − 2 equal to zero?", hint: "Solve x − 2 = 0.", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number" },
+        { prompt: "Multiply every term by (x − 2): x(x − 2) + 6 = 4x − 2. Moving everything to the left gives x² − 6x + c = 0. What is c?", hint: "6 − (−2) = 8.", answer: "8", acceptableAnswers: ["8"], formatHint: "Enter a number" },
+        { prompt: "x² − 6x + 8 = (x − 2)(x − 4), so one candidate is 2. What is the other?", hint: "Set x − 4 = 0.", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" },
+        { prompt: "Which candidate is extraneous?", hint: "It is the value you found in the first step.", answer: "2", acceptableAnswers: ["2"], formatHint: "Enter a number" },
+        { prompt: "Check x = 4: 4 + 6/2 = 7 and (16 − 2)/2 = 7. So what is the only solution?", hint: "The candidate that is not extraneous.", answer: "4", acceptableAnswers: ["4"], formatHint: "Enter a number" }
+      ]
+    }
+  }, retrying("Extraneous Solutions", function(){
+    const mode = pick(["rational_solve", "radical_solve", "which_extraneous", "count_valid", "valid_set", "why_rejected", "restrictions"]);
+
+    if (mode === "rational_solve" || mode === "radical_solve" || mode === "which_extraneous") {
+      const E = mode === "rational_solve" ? ratEq("one") : mode === "radical_solve" ? radEq("one") : anyEq("one");
+      if (!E) return null;
+      const good = E.cands.find(E.ok), bad = E.cands.find(x => !E.ok(x));
+      const [lo, hi] = E.cands.slice().sort((p, q) => p - q);
+      const work = `${E.clear} Check each candidate in the original: ${E.chk(lo)}; ${E.chk(hi)}.`;
+      // Answers are written "x = 7", never a bare "7" / "-7": the typed box's
+      // example text follows the answer's shape, and for a bare number it
+      // says "include the minus sign" exactly when the answer is negative -
+      // which, with two candidates of opposite sign, IS the answer.
+      const asX = opts => opts && opts.map(o => "x = " + o);
+      if (mode === "which_extraneous") {
+        return {
+          subType: "which_extraneous",
+          question: `Solving ${E.eq} ${E.kind === "radical" ? "by squaring both sides" : "by clearing the fractions"} gives the candidates x = ${neg(lo)} and x = ${neg(hi)}. One of them is extraneous. Which one?`,
+          answer: "x = " + fmt(bad),
+          validate: setValidate([{ v: bad, irr: false }], 0),
+          // The surviving candidate is THE distractor; the others are sign slips.
+          options: asX(opt4(fmt(bad), [fmt(good), fmt(-bad), fmt(-good), fmt(bad + good), fmt(bad - good)])),
+          explanation: `${work} So x = ${neg(bad)} is extraneous${E.kind === "radical" ? " — the root side is positive but the other side is negative" : " — the original equation is undefined there"}.`
+        };
+      }
+      return {
+        subType: mode,
+        question: `Solve for x: ${E.eq}`,
+        answer: "x = " + fmt(good),
+        validate: setValidate([{ v: good, irr: false }], 0),
+        // The extraneous root is the distractor that matters: it is what a
+        // student who skips the check reports. The rest are sign slips.
+        options: asX(opt4(fmt(good), [fmt(bad), fmt(-good), fmt(-bad), fmt(good + bad), fmt(2 * good)])),
+        explanation: `${work} So x = ${neg(bad)} is extraneous and the only solution is x = ${neg(good)}.`
+      };
+    }
+
+    if (mode === "count_valid" || mode === "valid_set") {
+      const want = pick(["one", "one", "two", "none"]), E = anyEq(want);
+      if (!E) return null;
+      const valid = E.cands.filter(E.ok), bad = E.cands.filter(x => !E.ok(x));
+      const work = `${E.clear} Check in the original: ${E.cands.slice().sort((p, q) => p - q).map(E.chk).join("; ")}.`;
+      const verdict = valid.length ? `${valid.length === 1 ? "Only" : "Both"} ${valid.map(x => "x = " + neg(x)).join(" and ")} survive${valid.length === 1 ? "s" : ""}.` : "Every candidate is rejected, so there is no solution.";
+      if (mode === "count_valid") {
+        return {
+          subType: "count_valid",
+          question: `How many valid solutions does ${E.eq} have?`,
+          answer: String(valid.length),
+          options: ["0", "1", "2"],
+          explanation: `${work} ${verdict}`
+        };
+      }
+      // Braces for every size of set, so the typed box shows the same example
+      // whatever the count - which is only safe for single digits (setStr).
+      if (!smallInts(E.cands.concat(E.cands.map(x => -x)))) return null;
+      const ans = intEls(valid);
+      // Mistakes: keeping every candidate; keeping the extraneous one instead;
+      // rejecting everything; a sign slip in the factors. A one-candidate
+      // equation has few of those, so x = 0 (treating the zero denominator
+      // itself as the answer) is the last resort.
+      const cands = [intEls(E.cands), intEls(bad), [], intEls(valid.map(x => -x)), intEls(E.cands.map(x => -x)), ...E.cands.map(x => intEls([x])), intEls([0])];
+      return {
+        subType: "valid_set",
+        question: `Solve ${E.eq}. Give the solution set, writing {} if there is no solution.`,
+        answer: setStr(ans),
+        validate: setValidate(expectOf(ans), 0),
+        options: setOptions(ans, cands, setStr),
+        explanation: `${work} ${verdict} Solution set: ${setStr(ans).replace(/-/g, "−")}.`
+      };
+    }
+
+    if (mode === "why_rejected") {
+      const E = anyEq("one");
+      if (!E) return null;
+      const bad = E.cands.find(x => !E.ok(x));
+      const answer = E.kind === "radical" ? WHY.neg : WHY.den;
+      // All false for this equation: a radical equation has no denominator; a
+      // rational one has no root; the rejected value DOES satisfy the cleared
+      // or squared equation; under the root sits (x + c)², never negative.
+      const pool = [WHY.positive, WHY.cleared, WHY.under, WHY.larger, E.kind === "radical" ? WHY.den : WHY.neg];
+      return {
+        subType: "why_rejected",
+        forceChoice: true,      // a reason is chosen, not computed
+        question: `When solving ${E.eq}, the candidate x = ${neg(bad)} is rejected. Why?`,
+        answer,
+        options: sh([answer, ...sh(pool).slice(0, 3)]),
+        explanation: `${E.clear} Then: ${E.chk(bad)}. ${E.kind === "radical" ? "A principal square root is never negative, so the two sides cannot be equal." : "Division by zero is undefined, so the original equation does not exist at that value."} It does satisfy the ${E.kind === "radical" ? "squared" : "cleared"} equation — that is exactly why it showed up.`
+      };
+    }
+
+    // restrictions: the values a rational equation rules out before any solving.
+    const E = ratEq(pick(["one", "one", "two", "none"]));
+    if (!E) return null;
+    const ex = [];
+    for (let r = -15; r <= 15; r++) if (E.dens.some(dn => Math.abs(dn.f(r)) < 1e-9)) ex.push(r);
+    if (!smallInts(ex)) return null;              // braces are only safe for single digits (setStr)
+    const ans = intEls(ex), valid = E.cands.filter(E.ok);
+    // Mistakes: sign flips (x − 3 read as x = −3); missing a denominator;
+    // listing the solutions instead; claiming nothing is excluded.
+    const cands = [intEls(ex.map(r => -r)), [], intEls(E.cands), intEls(valid), ...ex.map(r => intEls([r])), intEls(ex.concat(valid))];
+    return {
+      subType: "restrictions",
+      question: `Before solving ${E.eq}, which values can x NOT be? Give them as a set.`,
+      answer: setStr(ans),
+      validate: setValidate(expectOf(ans), 0),
+      options: setOptions(ans, cands, setStr),
+      explanation: `x cannot make any denominator zero: ${E.dens.map(dn => { const z = []; for (let r = -15; r <= 15; r++) if (Math.abs(dn.f(r)) < 1e-9) z.push(neg(r)); return `${dn.name} = 0 when x = ${z.join(" or ")}`; }).join("; ")}. So x ≠ ${ex.map(neg).join(", ")}. Any candidate on this list must be rejected later.`
+    };
+  }));
+})();
 // ==== END GRADUATION PLAN CONTENT: READINESS-ALGEBRA ====
 </script>
 
