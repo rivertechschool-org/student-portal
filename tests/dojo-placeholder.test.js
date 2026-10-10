@@ -52,7 +52,11 @@ ok('a formula in words asks for words', /in words/.test(ph('favorable / total'))
 
 console.log('\n== numbers still get number examples ==\n');
 ok('a fraction', ph('3/8') === 'e.g., 3/4', ph('3/8'));
-ok('a negative number', /minus/.test(ph('-5')), ph('-5'));
+// The hint never gives away the sign or the size of a whole number: "include
+// the minus sign" shown only for negative answers told the student which of
+// two opposite-sign candidates was right (2026-10-10).
+ok('a negative number gets the same hint as a positive one', ph('-5') === ph('5') && ph('-12') === ph('12'), ph('-5'));
+ok('  and a single digit is not flagged as one', ph('5') === ph('12'), ph('5'));
 ok('an angle', /°/.test(ph('30°')), ph('30°'));
 ok('a variable assignment', /x = -2/.test(ph('x = -2')), ph('x = -2'));
 ok('two solutions', /list both/.test(ph('x = 1/2, 3')), ph('x = 1/2, 3'));

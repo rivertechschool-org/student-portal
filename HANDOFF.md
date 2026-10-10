@@ -4648,3 +4648,18 @@ only reaches Stage 7 by getting through the core. Saved rows carry
 `check_kind` ('progress' | 'college_prep') on the summary entry - not `kind`,
 which is that entry's own tag (a duplicate key there briefly wiped the
 summary).
+
+### 2026-10-10: Stage 7 content and more answer-checker fixes
+
+All five Stage 7 skills are playable (READINESS-ALGEBRA, READINESS-FUNCTIONS).
+The answer checker now compares expressions in x **by value** at sample points
+(`algebraicSignature`), so `2(x-1)^2` matches `2x^2-4x+2` and
+`(x+3)/(x+2)` no longer passes for `(x+3)/(x-2)`; "or" lists and braced sets
+compare in any order with every value checked; a bare number is accepted for
+`x = c`; commas are dropped only as thousands separators; the typed-box hint no
+longer reveals a number's sign or that it is one digit.
+
+`node debug-tools/typed-wrong-answer-sweep.js` checks every typed question in
+the Dojo for wrong answers being accepted. 36 groups on the old checker; 13
+skills (18 question types) remain - integrals, some factored forms, two-value
+comma lists, literal equations in letters other than x, a few word answers.

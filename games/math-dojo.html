@@ -2092,8 +2092,17 @@ const AnswerInterpreter = {
         // The older pattern below only saw a constant that had a sign in front
         // of it or opened the string, so the 8 in "x=8" and the 50 in
         // "y=50+30x" were dropped: "x = 8" graded as correct for "x = 4".
+        // By value first, so a bracketed form meets its expanded twin.
+        const sig0 = this.algebraicSignature(s);
+        if (sig0) return { x2Coef: 0, xCoef: 0, constant: 0, lhs: sig0, normalized: sig0 };
         const strict = this.parseAlgebraicStrict(s);
         if (strict) return strict;
+        // An expression in x with fractions or brackets ("(x+3)/(x-2)",
+        // "2(x-1)^2"): the loose reading below kept only the x coefficient and
+        // one constant, so (x+3)/(x+2) passed for (x+3)/(x-2). Compared by
+        // value at several x instead, through lhs.
+        const sig = this.algebraicSignature(s);
+        if (sig) return { x2Coef: 0, xCoef: 0, constant: 0, lhs: sig, normalized: sig };
         // A list of solutions ("x=-6,x=2,x=4", "x=1;x=-1"): the loose reading
         // below added the terms up, so different lists could grade equal.
         // Compared as a set through lhs; the coefficients are left at zero.
@@ -2123,6 +2132,36 @@ const AnswerInterpreter = {
         }
 
         return { x2Coef, xCoef, constant, normalized: `${x2Coef}x²+${xCoef}x+${constant}` };
+    },
+
+    // Values of an expression in x at fixed sample points, as a string, so
+    // any two ways of writing the same expression ("2(x-1)^2", "2x^2-4x+2")
+    // compare equal and different ones never do. "y=" / "f(x)=" in front is
+    // kept as a label so y = ... never matches a bare expression. Equations
+    // like "x=8" or "2x+1=17" are left to parseAlgebraicStrict.
+    algebraicSignature(s) {
+        let label = '';
+        let body = s;
+        const m = body.match(/^([a-wyz]|[a-z]\(x\))=(.+)$/);
+        if (m) { label = m[1].replace(/\(x\)$/, '()'); body = m[2]; }
+        if (!/x/.test(body)) return null;
+        if (!/^[0-9x+\-*/^().\u00b2\u00b3]+$/.test(body)) return null;
+        let e = body.replace(/\u00b2/g, '^2').replace(/\u00b3/g, '^3');
+        // Implicit multiplication: 2x, 2(, )(, )x, x(, xx.
+        e = e.replace(/(\d|\))(?=[x(])/g, '$1*').replace(/x(?=[\d(x])/g, 'x*');
+        // A leading minus binds looser than ^: -(x-1)^2 is -((x-1)^2). The
+        // evaluator reads it as (-(x-1))^2, which made y = (x-1)^2 - 2 equal
+        // y = -(x-1)^2 - 2. Spelled as a multiplication by -1 instead (but not
+        // after ^, where x^-2 means a negative exponent).
+        e = e.replace(/(^|[(+\-*/])-(?=[x(\d])/g, '$1(0-1)*');
+        const xs = [-2.37, -1.13, 0.61, 1.79, 3.41];
+        const out = [];
+        for (const x of xs) {
+            const v = this.parseArithmetic(e.replace(/x/g, '(' + x + ')'));
+            if (v === null) return null;          // not something the evaluator can read
+            out.push(isFinite(v) ? Number(v.toPrecision(10)) : 'u');
+        }
+        return 'sig:' + label + ':' + out.join(',');
     },
 
     // Exact parse of a polynomial in x of degree <= 2, or an equation of them.
@@ -2441,7 +2480,10 @@ const AnswerInterpreter = {
             case 'equation': {
                 // "y = 30x + 50" and "y=50+30x" are the same line. Equations in
                 // x parse exactly; anything else stays text as before.
-                const eq = this.parseAlgebraicStrict(String(original).toLowerCase().replace(/\s/g, '').replace(/−/g, '-'));
+                const flat = String(original).toLowerCase().replace(/\s/g, '').replace(/−/g, '-');
+                const sigEq = this.algebraicSignature(flat);
+                if (sigEq) return { type: 'algebraic', x2Coef: 0, xCoef: 0, constant: 0, lhs: sigEq, normalized: sigEq, original };
+                const eq = this.parseAlgebraicStrict(flat);
                 if (eq) return { type: 'algebraic', ...eq, original };
                 break;
             }
@@ -2671,7 +2713,9 @@ const AnswerInterpreter = {
             }
         }
         // Default: normalized text
-        return { type: 'text', value: s.replace(/\s+/g, '').replace(/[.,!?]/g, ''), original: s };
+        // Punctuation is dropped, but not a comma or point between digits:
+        // stripping those made "{-11, 1}" equal "{-1, 11}" and "3.5" equal "35".
+        return { type: 'text', value: s.replace(/\s+/g, '').replace(/(?<!\d)[.,]|[.,](?!\d)/g, '').replace(/[!?]/g, ''), original: s };
     },
 
     // Greatest common divisor
@@ -2820,6 +2864,32 @@ const AnswerInterpreter = {
 
         if (this.isEquivalent(userNorm, expectedNorm, tolerance)) {
             return { correct: true, matchType: 'exact' };
+        }
+
+        // A set or "or" list matches in any order: "{-11, 1}", "x = 3 + 2√5 or
+        // x = 3 - 2√5". Only clear lists (braces, or/and, three or more
+        // items) - a bare "3, 4" is a point, where order matters.
+        const listOf = (v) => {
+            let t = String(v).trim().toLowerCase().replace(/\u2212/g, '-');
+            const braced = /^\{.*\}$/.test(t);
+            if (braced) t = t.slice(1, -1);
+            if (/^\(.*\)$/.test(t)) return null;
+            const worded = /\b(or|and)\b/.test(t);
+            const parts = t.split(/\s*(?:,|;|\bor\b|\band\b)\s*/).map(x => x.replace(/^[a-z]\s*=\s*/, '').replace(/\s+/g, '')).filter(Boolean);
+            if (parts.length < 2 || !(braced || worded || parts.length >= 3)) return null;
+            return parts.sort();
+        };
+        const uList = listOf(userInput), eList = listOf(expectedAnswer);
+        if (uList && eList && uList.length === eList.length && uList.every((x, i) => x === eList[i])) {
+            return { correct: true, matchType: 'equivalent' };
+        }
+
+        // "x = c" expected and the bare number c typed (or the reverse).
+        const solvedFor = n => n && n.type === 'algebraic' && n.lhs === '=0' && n.x2Coef === 0 && n.xCoef === 1 ? -n.constant : null;
+        const eSolved = solvedFor(expectedNorm), uSolved = solvedFor(userNorm);
+        if ((eSolved !== null && userNorm && userNorm.type === 'number' && Math.abs(userNorm.value - eSolved) < 1e-9) ||
+            (uSolved !== null && expectedNorm && expectedNorm.type === 'number' && Math.abs(expectedNorm.value - uSolved) < 1e-9)) {
+            return { correct: true, matchType: 'equivalent' };
         }
 
         if (acceptEquivalent) {
@@ -46827,9 +46897,11 @@ function getSmartPlaceholder(step) {
 
     // ---- Pure numbers ----
 
-    // Negative number
-    if (/^-\d+(\.\d+)?$/.test(answer)) {
-        return 'e.g., -5 (include the minus sign)';
+    // Negative number. The same hint as any whole number: "include the minus
+    // sign" shown only for negative answers told the student the sign, which
+    // on a question with candidates of both signs is the answer.
+    if (/^-\d+$/.test(answer)) {
+        return 'Enter a number';
     }
 
     // Decimal
@@ -46837,10 +46909,8 @@ function getSmartPlaceholder(step) {
         return 'e.g., 3.14 (a decimal)';
     }
 
-    // Single digit
-    if (/^[0-9]$/.test(answer)) {
-        return 'Enter a digit (0-9)';
-    }
+    // Single digit: no "Enter a digit (0-9)" - that tells the student the
+    // answer is under 10.
 
     // Plain integer
     if (/^-?\d+$/.test(answer)) {
