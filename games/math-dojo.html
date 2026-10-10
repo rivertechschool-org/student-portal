@@ -1638,7 +1638,11 @@ const AnswerInterpreter = {
         // becomes 55/16.
         const mixed = String(str).trim().match(/^(-?)(\d+)\s+(\d+)\s*\/\s*(\d+)$/);
         if (mixed && +mixed[4] !== 0) return (mixed[1] ? -1 : 1) * (+mixed[2] + (+mixed[3]) / (+mixed[4]));
-        let src = String(str).toLowerCase().replace(/[\s,$]/g, '');
+        // Drop a comma only as a thousands separator (1,234). Any other comma
+        // means this is a list or a point, not one number: "(0, 3)" used to
+        // become "(03)" and pass for an expected 3.
+        let src = String(str).toLowerCase().replace(/[\s$]/g, '').replace(/(\d),(?=\d{3}(?!\d))/g, '$1');
+        if (src.includes(',')) return null;
         src = src.replace(/[\u00d7\u00b7\u22c5]/g, '*').replace(/\u00f7/g, '/');
         src = src.replace(/sqrt/g, '\u221a');
         // A lone x between numbers means multiply. Only reached when a NUMBER is
@@ -1900,10 +1904,11 @@ const AnswerInterpreter = {
         const s = String(str).toLowerCase().trim();
         // Format: "5 or -5" or "x = 5 or x = -5"
         const cleaned = s.replace(/x\s*=\s*/g, '');
-        const match = cleaned.match(/(-?\d+\.?\d*)\s+or\s+(-?\d+\.?\d*)/i);
-        if (match) {
-            const vals = [parseFloat(match[1]), parseFloat(match[2])].sort((a, b) => a - b);
-            return vals;
+        // Every value, not the first two: "x = -5 or x = -4 or x = -1" used to
+        // be graded on -5 and -4 alone, so a wrong third value passed.
+        const parts = cleaned.split(/\s*(?:\bor\b|,|\band\b)\s*/).filter(Boolean);
+        if (parts.length >= 2 && parts.every(v => /^-?\d+\.?\d*$/.test(v))) {
+            return parts.map(parseFloat).sort((a, b) => a - b);
         }
         return null;
     },
@@ -2089,6 +2094,14 @@ const AnswerInterpreter = {
         // "y=50+30x" were dropped: "x = 8" graded as correct for "x = 4".
         const strict = this.parseAlgebraicStrict(s);
         if (strict) return strict;
+        // A list of solutions ("x=-6,x=2,x=4", "x=1;x=-1"): the loose reading
+        // below added the terms up, so different lists could grade equal.
+        // Compared as a set through lhs; the coefficients are left at zero.
+        const sols = s.split(/[,;]|or|and/).filter(Boolean);
+        if (sols.length >= 2 && sols.every(t => /^[a-z]=-?\d+(\.\d+)?$/.test(t))) {
+            const vals = sols.map(t => parseFloat(t.split('=')[1])).sort((a, b) => a - b);
+            return { x2Coef: 0, xCoef: 0, constant: 0, lhs: 'set:' + vals.join(','), normalized: 'set:' + vals.join(',') };
+        }
         // Simplified: extract coefficient of x terms
         const xTerms = s.match(/([+-]?\d*)x\^?(\d*)/g) || [];
         const constMatch = s.match(/([+-]\d+)(?![x\d])|^(\d+)(?![x])/);
@@ -2691,7 +2704,8 @@ const AnswerInterpreter = {
                     return normA.quotient === normB.quotient && normA.remainder === normB.remainder;
 
                 case 'absolute_value_solution':
-                    return normA.values[0] === normB.values[0] && normA.values[1] === normB.values[1];
+                    return normA.values.length === normB.values.length
+                        && normA.values.every((v, i) => Math.abs(v - normB.values[i]) < 1e-9);
 
                 case 'complex_number':
                     return Math.abs(normA.real - normB.real) < tolerance && Math.abs(normA.imaginary - normB.imaginary) < tolerance;
