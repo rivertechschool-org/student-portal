@@ -1,17 +1,15 @@
-// Math Dojo: does any typed question accept a WRONG answer?
+// Equation answers in the Math Dojo are compared by meaning.
 //
-// For every skill, generate questions; where the student types the answer,
-// check (1) the answer and every listed alternative is accepted, and (2) none
-// of the question's own wrong choices is accepted when typed. (2) is the hole
-// this exists for: the answer checker's loose readers have marked wrong typed
-// answers right - "x = 8" for "x = 4", "$678,976" for "$678,400",
-// "(x+3)/(x+2)" for "(x+3)/(x-2)". Found 36 such groups when written
-// (2026-10-10); 13 skills (18 question types) remained after that day's fixes (integrals, some factored
-// forms, two-value comma lists, literal equations in letters other than x,
-// a few word answers) - work for another day, listed by this tool. 16 after
-// equations were compared by meaning (same day).
+// Reported 2026-10-10: a question expecting "x = (2+m)/2" rejected
+// "(2+m)/2 = x" - the variable can be on either side. AnswerInterpreter's
+// equationsMatch now evaluates both sides at sample values of every variable:
+//   * expected solved for a letter: the student needs that letter alone on
+//     either side, and the other sides must agree ("2x = 24" is not "x = 12")
+//   * otherwise: (left - right) agrees up to sign (swap sides, move terms)
+// It runs before the looser readers, one of which accepted
+// "n = (t + y)/x" for "n = (t - y)/x".
 //
-// Usage: node debug-tools/typed-wrong-answer-sweep.js        (RUNS=200 default)
+// Run: node tests/equation-answers.test.js
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
@@ -54,7 +52,7 @@ const sandbox = {
 sandbox.window = sandbox; sandbox.self = sandbox; sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 
-const probe = '\n;globalThis.__dojo = { generators, generateQuestion, shouldTypeAnswer, typedAnswerIsCorrect };';
+const probe = '\n;globalThis.__dojo = { AnswerInterpreter };';
 const loadErrors = [];
 scripts.forEach((code, i) => {
   try { vm.runInContext(code + (i === scripts.length - 1 ? probe : ''), sandbox, { filename: `math-dojo#${i}` }); }
@@ -62,18 +60,34 @@ scripts.forEach((code, i) => {
 });
 if (!sandbox.__dojo) { try { vm.runInContext(probe, sandbox); } catch (e) { loadErrors.push('probe: ' + e.message); } }
 if (!sandbox.__dojo) { console.error('Could not load the Math Dojo script:\n  ' + loadErrors.join('\n  ')); process.exit(2); }
-const d = sandbox.__dojo; const issues = new Map(); let qs = 0, typed = 0;
-const note = (k, ex) => { if (!issues.has(k)) issues.set(k, { n: 0, ex }); issues.get(k).n++; };
-const N_RUNS = +(process.env.RUNS || 200);
-// Every skill in the Dojo, not just the plan: the answer checker changed for all of them.
-for (const t of Object.keys(d.generators)) for (const s of Object.keys(d.generators[t])) {
-  for (let i = 0; i < N_RUNS; i++) {
-    let q; try { q = d.generateQuestion(+t, s); } catch (e) { note(`THROWS T${t} ${s}`, e.message); break; }
-    if (!q) continue; qs++;
-    if (!d.shouldTypeAnswer(q, +t)) continue; typed++;
-    for (const a of [q.answer].concat(q.acceptableAnswers || [])) if (!d.typedAnswerIsCorrect(String(a), q)) note(`REJECTS OWN T${t} ${s} (${q.subType})`, `${a} | ${String(q.question).slice(0, 60)}`);
-    for (const o of (q.options || [])) if (String(o).trim().toLowerCase() !== String(q.answer).trim().toLowerCase() && d.typedAnswerIsCorrect(String(o), q)) note(`ACCEPTS WRONG T${t} ${s} (${q.subType})`, `${o} for ${q.answer}`);
-  }
-}
-console.log(`${qs} questions, ${typed} typed`); if (!issues.size) console.log('No findings.'); else for (const [k, v] of [...issues]) console.log(`  ${v.n}x ${k} :: ${v.ex}`);
-console.log(issues.size + ' finding groups');
+const AI = sandbox.__dojo.AnswerInterpreter;
+let pass = 0, fail = 0;
+const t = (label, user, expected, want) => {
+  const got = AI.checkAnswer(user, expected).correct;
+  if (got === want) { pass++; console.log(`pass  ${label}`); }
+  else { fail++; console.log(`  FAIL  ${label}: "${user}" vs "${expected}" gave ${got}`); }
+};
+console.log('\n== either side ==\n');
+t('the report: (2+m)/2 = x', '(2+m)/2 = x', 'x = (2+m)/2', true);
+t('literal equation swapped', '(y - b)/m = x', 'x = (y - b)/m', true);
+t('a line swapped', '-3x + 15 = y', 'y = -3x + 15', true);
+t('a formula swapped', 'a² + b² - 2ab·cos(C) = c²', 'c² = a² + b² - 2ab·cos(C)', true);
+t('vertex form swapped', '(x + 4)^2 + 2 = y', 'y = (x + 4)^2 + 2', true);
+t('a substitution swapped', 'x² + 1 = u', 'u = x² + 1', true);
+t('a solution swapped', '12 = x', 'x = 12', true);
+console.log('\n== same meaning, other spelling ==\n');
+t('terms reordered', 'x = (m+2)/2', 'x = (2+m)/2', true);
+t('^2 for ², no dot', 'c^2 = a^2 + b^2 - 2abcos(C)', 'c² = a² + b² - 2ab·cos(C)', true);
+t('expanded vertex form', 'y = x^2 + 8x + 18', 'y = (x + 4)^2 + 2', true);
+t('capital letter', 'X = 12', 'x = 12', true);
+console.log('\n== different answers stay wrong ==\n');
+t('sign inside', 'x = (2-m)/2', 'x = (2+m)/2', false);
+t('literal equation, wrong sign', 'n = (t + y)/x', 'n = (t - y)/x', false);
+t('formula, wrong sign', 'c² = a² + b² + 2ab·cos(C)', 'c² = a² + b² - 2ab·cos(C)', false);
+t('vertex form, wrong shift', 'y = (x - 4)^2 + 2', 'y = (x + 4)^2 + 2', false);
+t('reflection', 'y = (x - 1)^2 - 2', 'y = -(x - 1)^2 - 2', false);
+t('f(-x) is not -f(x)', 'y = -f(x)', 'y = f(-x)', false);
+t('unsolved is not solved', '2x = 24', 'x = 12', false);
+t('wrong solution', 'x = 13', 'x = 12', false);
+console.log(`\n${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

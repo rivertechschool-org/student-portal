@@ -2134,6 +2134,124 @@ const AnswerInterpreter = {
         return { x2Coef, xCoef, constant, normalized: `${x2Coef}x²+${xCoef}x+${constant}` };
     },
 
+    // ---- Equations, compared by meaning ----------------------------------
+    // "x = (2+m)/2" and "(2+m)/2 = x" are the same answer; so are
+    // "c² = a² + b² - 2ab·cos(C)" and "a² + b² - 2ab·cos(C) = c²". Each side is
+    // parsed (any letters, implicit multiplication, ^ ² ³, √, sin/cos/tan/
+    // sqrt/ln/log/abs, a leading minus looser than ^) and evaluated at sample
+    // values of every variable:
+    //   * expected solved for a variable (one side is just that letter): the
+    //     student must also have that letter alone, on either side, and the
+    //     other sides must agree - so "2x = 24" is NOT accepted for "x = 12"
+    //   * otherwise: (left - right) must agree up to sign, which allows
+    //     swapping sides and moving terms across, nothing else.
+    // Returns true / false, or null when either side cannot be read (the
+    // caller then falls back to the older readers).
+    parseExpr(src) {
+        const FUNCS = { sin: Math.sin, cos: Math.cos, tan: Math.tan, sqrt: Math.sqrt, ln: Math.log, log: Math.log10, abs: Math.abs };
+        const s = String(src).replace(/\s+/g, '').replace(/[\u2212\u2013]/g, '-').replace(/[\u00b7\u00d7\u22c5]/g, '*').replace(/\u00f7/g, '/');
+        if (!s || /[^0-9A-Za-z.+\-*/^()\u00b2\u00b3\u221a|]/.test(s)) return null;
+        const toks = [];
+        for (let i = 0; i < s.length;) {
+            const c = s[i];
+            if (/[0-9.]/.test(c)) { let j = i; while (j < s.length && /[0-9.]/.test(s[j])) j++; const v = s.slice(i, j); if (!/^\d*\.?\d+$|^\d+\.$/.test(v)) return null; toks.push({ t: 'n', v: parseFloat(v) }); i = j; continue; }
+            if (/[A-Za-z]/.test(c)) {
+                const f = Object.keys(FUNCS).find(k => s.startsWith(k + '(', i));
+                if (f) { toks.push({ t: 'f', v: f }); i += f.length; continue; }
+                // f(x), g(x), h(x): an unknown function, not f times x. Read
+                // as a product, y = -f(x) equalled y = f(-x). Not comparable
+                // by value, so the older readers decide.
+                if (/[fgh]/.test(c) && s[i + 1] === '(') return null;
+                toks.push({ t: 'v', v: c }); i++; continue;
+            }
+            toks.push({ t: c }); i++;
+        }
+        let k = 0;
+        const peek = () => toks[k], next = () => toks[k++];
+        const startsPrimary = tk => tk && (tk.t === 'n' || tk.t === 'v' || tk.t === 'f' || tk.t === '(' || tk.t === '\u221a');
+        function expr() { let a = term(); while (peek() && (peek().t === '+' || peek().t === '-')) { const op = next().t, b = term(); const A = a, B = b; a = op === '+' ? (e => A(e) + B(e)) : (e => A(e) - B(e)); } return a; }
+        function term() {
+            let a = unary();
+            for (;;) {
+                const tk = peek();
+                if (tk && (tk.t === '*' || tk.t === '/')) { next(); const b = unary(); const A = a, B = b; a = tk.t === '*' ? (e => A(e) * B(e)) : (e => A(e) / B(e)); }
+                else if (startsPrimary(tk)) { const b = unary(); const A = a, B = b; a = e => A(e) * B(e); }
+                else return a;
+            }
+        }
+        function unary() { const tk = peek(); if (tk && (tk.t === '-' || tk.t === '+')) { next(); const u = unary(); return tk.t === '-' ? (e => -u(e)) : u; } return power(); }
+        function power() { const b = postfix(); if (peek() && peek().t === '^') { next(); const x = unary(); return e => Math.pow(b(e), x(e)); } return b; }
+        function postfix() { let p = primary(); while (peek() && (peek().t === '\u00b2' || peek().t === '\u00b3')) { const n = next().t === '\u00b2' ? 2 : 3; const P = p; p = e => Math.pow(P(e), n); } return p; }
+        function primary() {
+            const tk = next();
+            if (!tk) throw 0;
+            if (tk.t === 'n') return () => tk.v;
+            if (tk.t === 'v') return e => e[tk.v];
+            if (tk.t === 'f') { if (!peek() || peek().t !== '(') throw 0; next(); const a = expr(); if (!peek() || next().t !== ')') throw 0; const fn = FUNCS[tk.v]; return e => fn(a(e)); }
+            if (tk.t === '(') { const a = expr(); if (!peek() || next().t !== ')') throw 0; return a; }
+            if (tk.t === '|') { const a = expr(); if (!peek() || next().t !== '|') throw 0; return e => Math.abs(a(e)); }
+            if (tk.t === '\u221a') { const a = postfix(); return e => Math.sqrt(a(e)); }
+            throw 0;
+        }
+        try {
+            const f = expr();
+            if (k !== toks.length) return null;
+            return { f, vars: new Set(toks.filter(t => t.t === 'v').map(t => t.v)) };
+        } catch (e) { return null; }
+    },
+
+    equationsMatch(userInput, expected) {
+        const split = v => {
+            const str = String(v).trim();
+            if ((str.match(/=/g) || []).length !== 1 || /[<>\u2264\u2265\u2260]|\b(or|and)\b|[,;]/.test(str)) return null;
+            const [l, r] = str.split('=');
+            const L = this.parseExpr(l), R = this.parseExpr(r);
+            if (!L || !R) return null;
+            const lone = side => { const t = side.replace(/\s+/g, ''); return /^[A-Za-z]$/.test(t) ? t : null; };
+            return { L, R, lv: lone(l), rv: lone(r), vars: new Set([...L.vars, ...R.vars]) };
+        };
+        let U = split(userInput), E = split(expected);
+        if (!U || !E) return null;
+        const same = (a, b) => a.size === b.size && [...a].every(x => b.has(x));
+        if (!same(U.vars, E.vars)) {
+            // "X = ..." for "x = ...": try again ignoring case.
+            const lc = v => String(v).toLowerCase();
+            const U2 = split(lc(userInput)), E2 = split(lc(expected));
+            if (!U2 || !E2 || !same(U2.vars, E2.vars)) return false;
+            U = U2; E = E2;
+        }
+        const vars = [...E.vars];
+        const SAMPLES = [0.37, 1.73, 2.61, 0.83, 3.29, 1.19, 2.07];
+        const env = i => Object.fromEntries(vars.map((v, j) => [v, SAMPLES[(i + j * 3) % SAMPLES.length] + j * 0.11]));
+        const close = (a, b) => Math.abs(a - b) <= 1e-7 * Math.max(1, Math.abs(a), Math.abs(b));
+        const eSolved = E.lv || E.rv;
+        if (eSolved) {
+            // Solved form: the same letter alone on one side of the student's.
+            const eOther = E.lv ? E.R : E.L;
+            const uOther = U.lv === eSolved ? U.R : U.rv === eSolved ? U.L : null;
+            if (!uOther) return false;
+            let used = 0;
+            for (let i = 0; i < 7; i++) {
+                const e = env(i), a = uOther.f(e), b = eOther.f(e);
+                if (!isFinite(a) || !isFinite(b)) continue;
+                used++;
+                if (!close(a, b)) return false;
+            }
+            return used >= 4;
+        }
+        // General: left - right equal up to sign.
+        let sign = 0, used = 0;
+        for (let i = 0; i < 7; i++) {
+            const e = env(i), du = U.L.f(e) - U.R.f(e), de = E.L.f(e) - E.R.f(e);
+            if (!isFinite(du) || !isFinite(de)) continue;
+            used++;
+            if (close(de, 0) && close(du, 0)) continue;
+            if (!sign) sign = close(du, de) ? 1 : close(du, -de) ? -1 : 0;
+            if (!sign || !close(du, sign * de)) return false;
+        }
+        return used >= 4 && sign !== 0;
+    },
+
     // Values of an expression in x at fixed sample points, as a string, so
     // any two ways of writing the same expression ("2(x-1)^2", "2x^2-4x+2")
     // compare equal and different ones never do. "y=" / "f(x)=" in front is
@@ -2858,6 +2976,12 @@ const AnswerInterpreter = {
             }
             return { correct: false, matchType: 'none' };
         }
+
+        // Two equations: decided by meaning (equationsMatch), before the
+        // looser readers below, one of which accepted n = (t + y)/x for
+        // n = (t - y)/x.
+        const eqMatch = this.equationsMatch(userInput, expectedAnswer);
+        if (eqMatch !== null) return { correct: eqMatch, matchType: eqMatch ? 'equivalent' : 'none' };
 
         const userNorm = this.normalize(userInput, type);
         const expectedNorm = this.normalize(expectedAnswer, type);
