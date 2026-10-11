@@ -4695,3 +4695,20 @@ Alongside it:
 Pinned by `tests/answer-checker-false-accepts.test.js` (45 cases). Deliberate:
 `5.70 × 10^7` is not accepted for `5.7 × 10^7` (it claims another significant
 figure).
+
+## Classes page no longer flashes the old layout on open (Mon Sep 28 2026)
+
+Luke saw the teacher's Classes page show the old card grid for a split second
+before the week appeared. Cause: the week needs `class_schedule` to lay itself
+out, that was only fetched when Classes was first opened, and while it was in
+flight `renderClassWeek()` deliberately drew the old grid as a stand-in.
+
+Two changes. The timetable is now fetched at sign-in (end of
+`loadTeacherData`, not awaited), so it is normally there before anyone clicks
+Classes. If it is not, a "Loading your week…" spinner holds the space instead
+of the old grid. Today mode gets the same guard, so it cannot briefly say "No
+Classes Today" while the timetable is still on its way.
+
+`debug-tools/classes-week-flash.mjs` drives the real page against a slow stub
+and watches every paint of the classes pane. Against the old page it fails 3 of
+8; re-run it after touching the Classes load path.
