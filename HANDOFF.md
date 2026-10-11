@@ -4765,3 +4765,18 @@ Late and left early count as present; absent and excused do not. Rows show
 `tests/rtc-apply-present.test.js` (17 assertions, 6 mutations, 5 caught; the
 sixth was equivalent code and was simplified away) and
 `debug-tools/rtc-award-journey.mjs` (the three cases, end to end in Chromium).
+
+### 2026-10-11: unmerged Claude branches swept
+
+Four branches that were finished but never merged are now on main: Riven
+"withdraw gold" (new-session-menh4m), Classes week without the flash
+(vibrant-euler-v8iv9e), Award RTC "Apply to Present" (zen-wozniak-9fx7nn) and
+Gold & Shop (portal-shop-gold-simplify-7di5k5). Their browser journeys
+(`classes-week-flash.mjs`, `rtc-award-journey.mjs`, `gold-journeys.mjs`) have
+not been run since the merge - worth one pass.
+
+**Held: `claude/teacher-suggestion-portal-c6rm1v`** (teacher suggestion box).
+It needs a backend table that was never written, and main has since gained
+the bug-report queue (form, admin list, notifications, status back to the
+reporter), which covers much of the same ground. Decide whether suggestions
+become a type in that queue before reviving it.
