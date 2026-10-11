@@ -64,6 +64,9 @@ function appAs(userType) {
     _bankInterestRate: 7,
     showNotification: (msg, kind) => calls.push(['notify', kind]),
     _updateRTCSummaryStats: () => {},
+    // The Gold card on top of the page (Gold & Shop); it paints into its own
+    // element after the shell, so it plays no part in what this test reads.
+    _renderQuickGold: () => {},
     auth: {
       supabase: {
         from: (t) => { calls.push(['from', t]); return { upsert: async () => ({ error: null }) }; },
