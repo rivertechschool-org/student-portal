@@ -86,6 +86,7 @@ for f in tests/*.test.js; do node "$f" || echo "FAILED $f"; done   # the suite
 node debug-tools/nlp-stress.js                                     # Riven, after any Riven change
 node debug-tools/attendance-matrix.js                              # 326 attendance phrasings
 node debug-tools/absence-command-matrix.js                         # 1,635 "mark/set X away <dates>" commands
+node debug-tools/late-early-commands.js                            # 428 "X is picked up at 1:45 thursday" / "arriving at 9:05"
 node debug-tools/name-resolution.js                                # 83 ways to name a student
 node debug-tools/word-vs-name.js                                   # 700: no ordinary word is a person
 node debug-tools/semantic-answer-sweep.js                          # Math Dojo: "9 = y", root lists, ± stay right

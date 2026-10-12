@@ -4799,3 +4799,27 @@ extension never moves it into another quarter's grade.
 The table and the server-side grade math are in the backend repo (two
 migrations, applied 2026-10-12). `debug-tools/student-version-journeys.mjs`
 walks it in Chromium (teacher, adjusted student, classmate, parent; 27 checks).
+
+### 2026-10-12: expected late arrivals and early pickups
+
+The office (or any staff member) can record that a student will arrive late
+or leave early on a date, with the time: **Attendance → ⏰ Late Arrivals &
+Early Pickups → + Add**, or tell Riven: "Alex is being picked up at 1:45
+Thursday", "Alex is arriving late at 9:05 today", "Alex won't be in until
+10:30 tomorrow". Riven shows which classes it touches before saving.
+
+It is a plan, never a mark. Each class register for that day flags the
+student, going by the bell schedule: "Expected to arrive late, about 9:05",
+"Expected to leave early, at 1:45", or "expected to miss this class" when
+the time is before or after the whole class. The daily register shows a line
+under the name too. A second time for the same day replaces the first.
+
+Riven checks this before its "picked up" command, so a planned pickup can no
+longer dismiss a child on the spot. `debug-tools/late-early-commands.js` (428
+phrasings, including the ones that must NOT become plans) and
+`debug-tools/late-early-journeys.mjs` (Chromium, 17 checks) cover it. The
+table is in the backend repo (applied 2026-10-12).
+
+Not done: parents cannot report a late arrival or early pickup themselves
+yet (they can report absences), and students/parents do not see these plans
+anywhere in the portal.

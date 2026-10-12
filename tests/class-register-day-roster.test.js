@@ -92,7 +92,7 @@ const SCHEDULE = [
 // Builds the one query stub showClassAttendance talks to. Each table answers
 // with what that table would hold; the shape is a thenable so `await` on the
 // chain works the way PostgREST's does.
-function supabaseStub({ students = STUDENTS, schedule = SCHEDULE, marks = [], meets = true }) {
+function supabaseStub({ students = STUDENTS, schedule = SCHEDULE, marks = [], meets = true, lateEarly = [] }) {
   const rowsFor = (table) => {
     if (table === 'class_schedule') return meets ? [{ class_id: 'c1', day_of_week: 1, period: 1 }] : [];
     if (table === 'class_enrollments') return students.map(s => ({ student_id: s.id }));
@@ -100,6 +100,7 @@ function supabaseStub({ students = STUDENTS, schedule = SCHEDULE, marks = [], me
     if (table === 'student_schedule') return schedule;
     if (table === 'class_attendance_sessions') return [];
     if (table === 'class_attendance') return marks;
+    if (table === 'planned_late_early') return lateEarly;
     return [];
   };
   return {
@@ -139,6 +140,12 @@ async function register(opts = {}) {
   };
   app._classAttendanceRowHtml = extract('_classAttendanceRowHtml');
   app.showClassAttendance = extract('showClassAttendance');
+  // Planned late arrivals / early pickups, against period 1 = 8:45-9:35.
+  for (const m of ['_lateEarlyEffect', '_lateEarlyChip', '_loadLateEarly', '_bellBlockFor',
+                   '_bellTime', '_bellSay', '_bellResolve']) app[m] = extract(m);
+  app.loadBellRows = async () => [{ block_key: 'p1', period: 1, day_of_week: null,
+    starts_at: '08:45:00', ends_at: '09:35:00', omitted: false, sort_order: 1 }];
+  app.loadBellDefaults = async () => ({});
 
   global.document = { getElementById: () => null };
   await app.showClassAttendance.call(app, 'c1', opts.date || MONDAY, null);
@@ -246,6 +253,30 @@ function lists(out) {
     const notes = (out.match(/class-attendance-notes/g) || []).length;
     check('  and a notes field', notes, 3);
     ok('an extra mark shows on its chip in the second list', /selected>⏰ Late/.test(out));
+  }
+
+  console.log('\n== expected late / leaving early ==\n');
+
+  {
+    // Mona is in on Mondays. Arriving 9:05 lands inside period 1.
+    const out = await register({ lateEarly: [{ student_id: 'mon', kind: 'late', at_time: '09:05:00', reason: 'dentist' }] });
+    ok('arriving inside the class is flagged', /Expected to arrive late, about 9:05 am/.test(out));
+    ok('  with the reason on hover', /title="Reason: dentist"/.test(out));
+  }
+
+  {
+    const out = await register({ lateEarly: [{ student_id: 'mon', kind: 'late', at_time: '10:00:00' }] });
+    ok('arriving after the class ends says they will miss it', /Not in until 10:00 am: expected to miss this class/.test(out));
+  }
+
+  {
+    const out = await register({ lateEarly: [{ student_id: 'mon', kind: 'early', at_time: '13:45:00' }] });
+    ok('a 1:45 pickup does not touch period 1', !/late-early-flag/.test(out));
+  }
+
+  {
+    const out = await register({ lateEarly: [{ student_id: 'mon', kind: 'early', at_time: '08:30:00' }] });
+    ok('leaving before the class starts says they will miss it', /Leaving at 8:30 am: expected to miss this class/.test(out));
   }
 
   {

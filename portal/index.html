@@ -34428,6 +34428,23 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>
             </div>
 
+            <!-- Late arrivals and early pickups the office already knows about.
+                 Never marked automatically: each class register the time falls
+                 in, or cuts off, flags the student for the teacher. -->
+            <div class="card" style="margin-bottom: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px;">
+                <h3 style="margin: 0;">⏰ Late Arrivals &amp; Early Pickups</h3>
+                <button class="btn btn-primary" onclick="app.showAddLateEarlyModal()">+ Add</button>
+              </div>
+              <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+                The register of each class the time falls in, or cuts off, flags the student for the teacher.
+                Riven takes them too: "Alex is being picked up at 1:45 Thursday".
+              </div>
+              <div id="late-early-body">
+                <div style="color: var(--muted); font-size: 13px; padding: 8px 0;">Loading…</div>
+              </div>
+            </div>
+
             <!-- Filters -->
             <div class="card" style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">🔍 Search Filters</h3>
@@ -34511,6 +34528,7 @@ Students you had withdrawn stay withdrawn.`)) {
         // are what the screen is measured by, the upcoming list is what it is
         // opened for.
         this.renderPlannedAbsencesPanel().catch(e => console.warn('planned absences:', e));
+        this.renderLateEarlyPanel().catch(e => console.warn('planned late/early:', e));
 
         // Load filter options
         await this.loadAttendanceFilters();
@@ -44467,6 +44485,120 @@ Students you had withdrawn stay withdrawn.`)) {
       }).join('');
     }
 
+    // ---- Late arrivals & early pickups panel (planned_late_early) -----------
+
+    async renderLateEarlyPanel() {
+      const body = document.getElementById('late-early-body');
+      if (!body) return;
+      const today = this._localDateStr(new Date());
+      let rows = [];
+      try {
+        const { data, error } = await this.auth.supabase.from('planned_late_early')
+          .select('id, student_id, date, kind, at_time, reason')
+          .gte('date', today).order('date').order('at_time');
+        if (error) throw error;
+        rows = data || [];
+      } catch (err) {
+        body.innerHTML = `<div style="color: var(--muted); font-size: 13px;">Couldn't load them: ${this.escapeHtml(err.message)}</div>`;
+        return;
+      }
+      if (!rows.length) {
+        body.innerHTML = `<div style="color: var(--muted); font-size: 13px; padding: 8px 0;">Nothing coming up. Add one when a family says they will be late or picking up early.</div>`;
+        return;
+      }
+      const ids = [...new Set(rows.map(r => r.student_id))];
+      const { data: people } = await this.auth.supabase
+        .from('user_profiles').select('id, first_name, last_name').in('id', ids);
+      const nameOf = {};
+      (people || []).forEach(p => { nameOf[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim(); });
+      const fmt = (d) => new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+      body.innerHTML = rows.map(r => `
+        <div style="display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap;">
+          <div style="flex: 1 1 200px; min-width: 0;">
+            <div style="font-weight: 600;">${this.escapeHtml(nameOf[r.student_id] || 'Unknown student')}${r.date === today ? ' <span style="font-size: 11px; font-weight: 600; color: #d97a3a;">today</span>' : ''}</div>
+            <div style="font-size: 12px; color: var(--muted); overflow-wrap: anywhere;">
+              ${r.kind === 'late' ? '⏰ Arrives' : '🚗 Leaves'} ${this.escapeHtml(this._bellSay(r.at_time))} · ${this.escapeHtml(fmt(r.date))}${r.reason ? ' · ' + this.escapeHtml(r.reason) : ''}
+            </div>
+          </div>
+          <button class="btn btn-secondary small" onclick="app.deleteLateEarly('${this.jsAttr(r.id)}')"
+            title="Remove this">Remove</button>
+        </div>`).join('');
+    }
+
+    async showAddLateEarlyModal() {
+      const { data: students } = await this.auth.supabase
+        .from('user_profiles')
+        .select('id, first_name, last_name, grade_level')
+        .eq('user_type', 'student')
+        .order('last_name');
+      const today = this._localDateStr(new Date());
+      const options = (students || []).map(st =>
+        `<option value="${this.jsAttr(st.id)}">${this.escapeHtml(`${st.last_name || ''}, ${st.first_name || ''}`.trim())}${st.grade_level ? ' (' + this.escapeHtml(String(st.grade_level)) + ')' : ''}</option>`
+      ).join('');
+      const field = 'width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);';
+      this.showModal('add-late-early', '⏰ Late arrival or early pickup', `
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Student</label>
+            <select id="le-student" style="${field}">
+              <option value="">-- Choose a student --</option>${options}
+            </select>
+          </div>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1 1 140px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">What</label>
+              <select id="le-kind" style="${field}">
+                <option value="early">Leaving early / picked up</option>
+                <option value="late">Arriving late</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 120px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Date</label>
+              <input type="date" id="le-date" value="${today}" style="${field}">
+            </div>
+            <div style="flex: 1 1 100px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Time</label>
+              <input type="time" id="le-time" style="${field}">
+            </div>
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Reason</label>
+            <input type="text" id="le-reason" placeholder="Dentist, sports, ..." maxlength="200" style="${field}">
+          </div>
+          <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 6px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('add-late-early')">Cancel</button>
+            <button class="btn btn-primary" onclick="app.saveLateEarly()">Save</button>
+          </div>
+        </div>
+      `, true);
+    }
+
+    async saveLateEarly() {
+      const studentId = document.getElementById('le-student')?.value;
+      const kind = document.getElementById('le-kind')?.value === 'late' ? 'late' : 'early';
+      const date = document.getElementById('le-date')?.value;
+      const time = document.getElementById('le-time')?.value;
+      const reason = document.getElementById('le-reason')?.value.trim() || null;
+      if (!studentId) { this.showNotification('Choose a student first', 'warning'); return; }
+      if (!date || !time) { this.showNotification('A date and a time are needed', 'warning'); return; }
+      if (date < this._localDateStr(new Date())) { this.showNotification('That date has passed', 'warning'); return; }
+      // Same day and kind again replaces the old time ("actually 2:15").
+      const { error } = await this.auth.supabase.from('planned_late_early')
+        .upsert({ student_id: studentId, date, kind, at_time: time, reason, created_by: this.userInfo.user.id },
+                { onConflict: 'student_id,date,kind' });
+      if (error) { this.showNotification('Could not save it: ' + error.message, 'error'); return; }
+      this.closeModal('add-late-early');
+      this.showNotification(kind === 'late' ? 'Late arrival saved' : 'Early pickup saved', 'success');
+      await this.renderLateEarlyPanel();
+    }
+
+    async deleteLateEarly(id) {
+      const { error } = await this.auth.supabase.from('planned_late_early').delete().eq('id', id);
+      if (error) { this.showNotification('Could not remove it: ' + error.message, 'error'); return; }
+      this.showNotification('Removed', 'success');
+      await this.renderLateEarlyPanel();
+    }
+
     async showAddPlannedAbsenceModal() {
       const { data: students } = await this.auth.supabase
         .from('user_profiles')
@@ -44634,6 +44766,8 @@ Students you had withdrawn stay withdrawn.`)) {
           .lte('start_date', today).gte('end_date', today);
         const plannedBy = {};
         (plannedRows || []).forEach(p => { plannedBy[p.student_id] = p.reason || ''; });
+        // Expected late arrivals / early pickups today, shown beside the name.
+        const lateEarlyBy = await this._loadLateEarly(null, today, { all: true });
 
         // Get existing attendance for this date
         const { data: attendanceData, error: attError } = await this.auth.supabase
@@ -44779,6 +44913,7 @@ Students you had withdrawn stay withdrawn.`)) {
                             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
                             <div style="font-size: 12px; color: var(--muted);">${student.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'}</div>
                             ${plannedBy[student.id] !== undefined ? `<div style="font-size: 11px; color: #d97a3a; margin-top: 2px;">\u{1F4C5} planned absence${plannedBy[student.id] ? ' \u00b7 ' + this.escapeHtml(plannedBy[student.id]) : ''}</div>` : ''}
+                            ${(lateEarlyBy[student.id] || []).map(p => `<div class="late-early-flag" style="font-size: 11px; color: #d97a3a; margin-top: 2px;">${p.kind === 'late' ? '\u23F0 expected in at' : '\u{1F697} leaving at'} ${this.escapeHtml(this._bellSay(p.at_time))}${p.reason ? ' \u00b7 ' + this.escapeHtml(p.reason) : ''}</div>`).join('')}
                           </td>
                           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
                           <td style="padding: 12px; text-align: center;">
@@ -45641,6 +45776,12 @@ Students you had withdrawn stay withdrawn.`)) {
         // means a different thing in period 1 than in period 6.
         this._classDailyPeriod = currentPeriod;
 
+        // Who is expected in late or out early on this date, and this
+        // period's bell times, so each row can say whether THIS class is the
+        // one they walk into late, or out of early, or miss.
+        const lateEarly = await this._loadLateEarly((students || []).map(x => x.id), today);
+        const periodBlock = Object.keys(lateEarly).length ? await this._bellBlockFor(today, currentPeriod) : null;
+
         // Get existing attendance session for this date and period
         let sessionQuery = this.auth.supabase
           .from('class_attendance_sessions')
@@ -45849,7 +45990,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <tbody>
                     ${expected.map(student => this._classAttendanceRowHtml(
                         student, attendanceMap[student.id] || {}, dailyByStudent[student.id],
-                        extraStatusOptions, null)).join('')}
+                        extraStatusOptions, null, this._lateEarlyChip(lateEarly[student.id], periodBlock))).join('')}
                   </tbody>
                 </table>
               </div>
@@ -45874,7 +46015,8 @@ Students you had withdrawn stay withdrawn.`)) {
                       <tbody>
                         ${alsoShown.map(student => this._classAttendanceRowHtml(
                             student, attendanceMap[student.id] || {}, dailyByStudent[student.id],
-                            extraStatusOptions, offTimetableReason(student))).join('')}
+                            extraStatusOptions, offTimetableReason(student),
+                            this._lateEarlyChip(lateEarly[student.id], periodBlock))).join('')}
                       </tbody>
                     </table>
                   </div>
@@ -45907,7 +46049,83 @@ Students you had withdrawn stay withdrawn.`)) {
     // One row of a class register. Extracted because the register now draws two
     // lists - who is in today, and the handful shown anyway - and two copies of
     // a block this size drift apart on the first change to either.
-    _classAttendanceRowHtml(student, att, day, extraStatusOptions, aside) {
+    // ---- Expected late / leaving early ---------------------------------------
+    //
+    // planned_late_early holds "Alex arrives at 9:05" / "Alex is picked up at
+    // 1:45" for a date. A plan is not a mark: the register only FLAGS it, in
+    // the class the time falls inside or cuts off, and the teacher marks what
+    // actually happens.
+
+    // How one plan meets one class block ({starts_at, ends_at}): 'during'
+    // (arrives or leaves while the class is on), 'misses' (arrives after it
+    // ends, or leaves before it starts), or null when it does not touch this
+    // class at all. Without bell times for the block: 'unknown' - still shown,
+    // because a teacher would rather know than not.
+    _lateEarlyEffect(plan, block) {
+      const at = this._bellTime(plan?.at_time);
+      if (!at) return null;
+      const start = this._bellTime(block?.starts_at), end = this._bellTime(block?.ends_at);
+      if (!start || !end) return 'unknown';
+      if (plan.kind === 'late') return at <= start ? null : (at < end ? 'during' : 'misses');
+      return at >= end ? null : (at > start ? 'during' : 'misses');
+    }
+
+    // The register's flag line(s) for one student's plans in one class, or ''.
+    _lateEarlyChip(plans, block) {
+      const out = [];
+      for (const plan of plans || []) {
+        const effect = this._lateEarlyEffect(plan, block);
+        if (!effect) continue;
+        const at = this._bellSay(plan.at_time);
+        const late = plan.kind === 'late';
+        const text = late
+          ? (effect === 'misses' ? `⏰ Not in until ${at}: expected to miss this class`
+            : effect === 'during' ? `⏰ Expected to arrive late, about ${at}`
+            : `⏰ Expected in late, about ${at}`)
+          : (effect === 'misses' ? `🚗 Leaving at ${at}: expected to miss this class`
+            : effect === 'during' ? `🚗 Expected to leave early, at ${at}`
+            : `🚗 Expected to leave at ${at}`);
+        const tip = plan.reason ? `Reason: ${plan.reason}` : (late ? 'Planned late arrival' : 'Planned early pickup');
+        out.push(`<div class="late-early-flag" title="${this.escapeHtml(tip)}" style="font-size: 11px; font-weight: 600; color: #d97a3a; margin-top: 2px;">${this.escapeHtml(text)}</div>`);
+      }
+      return out.join('');
+    }
+
+    // Plans for these students on one date: { studentId: [plan, ...] }.
+    // Never throws: a missing plan list must not stop a register being taken.
+    // { all: true } reads every student's for the date (the daily register).
+    async _loadLateEarly(studentIds, dateStr, { all = false } = {}) {
+      const by = {};
+      if ((!all && !studentIds?.length) || !dateStr) return by;
+      try {
+        let q = this.auth.supabase.from('planned_late_early')
+          .select('id, student_id, date, kind, at_time, reason')
+          .eq('date', dateStr);
+        if (!all) q = q.in('student_id', studentIds);
+        const { data, error } = await q;
+        if (error) throw error;
+        for (const p of data || []) (by[p.student_id] = by[p.student_id] || []).push(p);
+      } catch (e) {
+        console.warn('planned late/early unavailable:', e?.message || e);
+      }
+      return by;
+    }
+
+    // The bell block for a period on a date ({starts_at, ends_at}), or null:
+    // that weekday's override where there is one, else the default.
+    async _bellBlockFor(dateStr, period) {
+      if (period === null || period === undefined || !dateStr) return null;
+      try {
+        const rows = await this.loadBellRows();
+        const dow = new Date(dateStr + 'T12:00:00').getDay();
+        const found = (rows?.length ? this._bellResolve(rows, dow) : []).find(b => b.period === Number(period));
+        return found || (await this.loadBellDefaults())?.[period] || null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    _classAttendanceRowHtml(student, att, day, extraStatusOptions, aside, expectedFlag = '') {
       return `
         <tr data-student-id="${student.id}"
             data-search="${this.escapeHtml(`${student.first_name} ${student.last_name} ${student.grade_level || 'N/A'}`)}"
@@ -45916,6 +46134,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <div style="font-weight: 600;">${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</div>
             ${aside ? `<div style="font-size: 11px; color: var(--muted);">${this.escapeHtml(aside)}</div>` : ''}
             ${this.dailyStatusChip(day)}
+            ${expectedFlag || ''}
           </td>
           <td style="padding: 12px;">${student.grade_level || 'N/A'}</td>
           <td style="padding: 12px; text-align: center;">
@@ -54256,7 +54475,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-11·a';
+      const RIVEN_BUILD = '2026-10-12·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -58763,6 +58982,14 @@ Students you had withdrawn stay withdrawn.`)) {
       // today's register - because each pattern list knew only some of the
       // verbs. Decided here, before the bidding, so no list has to know them
       // all. debug-tools/absence-command-matrix.js is the grid.
+      // A planned late arrival or early pickup: a student, a coming-or-going
+      // verb and a clock time, not in the past. Ahead of PLAN_ABSENCE (whose
+      // words include "dentist" and "appointment") and of the bidding, where
+      // "picked up" would dismiss the child now and "late" would mark them.
+      if (!isQuestion && !blockSpeculativeWrite && this._rivenIsLateEarlyCommand(normalized, entities)) {
+        return { intent: 'PLAN_LATE_EARLY', confidence: 0.96 };
+      }
+
       if (!isQuestion && !blockSpeculativeWrite && this._rivenIsFutureAbsenceCommand(normalized, entities)) {
         return { intent: 'PLAN_ABSENCE', confidence: 0.95 };
       }
@@ -58789,7 +59016,7 @@ Students you had withdrawn stay withdrawn.`)) {
         // Small, but still a write: "should I mark everything read?" should be
         // answered, not obeyed.
         'MARK_READ',
-        'PLAN_ABSENCE',
+        'PLAN_ABSENCE', 'PLAN_LATE_EARLY',
         'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE',
         'ADD_SHOP_ITEM', 'EDIT_SHOP_ITEM', 'REMOVE_SHOP_ITEM',
         'ADD_PRIVILEGE', 'EDIT_PRIVILEGE', 'REMOVE_PRIVILEGE'];
@@ -61812,6 +62039,9 @@ Students you had withdrawn stay withdrawn.`)) {
           return await this.terminalEnrollmentCounts();
         case 'ENROLLMENT_TYPE':
           return await this.terminalEnrollmentType(entities);
+        case 'PLAN_LATE_EARLY':
+          await this.terminalPlanLateEarly(entities);
+          break;
         case 'PLAN_ABSENCE':
           await this.terminalPlanAbsence(entities);
           break;
@@ -61884,6 +62114,8 @@ Students you had withdrawn stay withdrawn.`)) {
     • "Mark [student] present in [class]" (or absent/late, "yesterday" works)<br>
     • "[student] is out monday to wednesday" — an absence you already know about;<br>
     &nbsp;&nbsp;&nbsp;the register fills it in on the day and leaves any mark already there alone<br>
+    • "[student] is being picked up at 1:45 thursday" / "[student] is arriving at 9:05 today" —<br>
+    &nbsp;&nbsp;&nbsp;a late arrival or early pickup; the register of each class it touches flags it<br>
     • "Who's out next week?" — the upcoming absence list<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
     • "Create a class called [name]"<br>
@@ -62931,6 +63163,7 @@ Students you had withdrawn stay withdrawn.`)) {
         ENROLLMENT_COUNTS: 'count how many students are full-time or homeschool',
         ENROLLMENT_TYPE: 'say whether a student is full-time or homeschool',
         PLAN_ABSENCE: 'note an upcoming absence',
+        PLAN_LATE_EARLY: 'note a late arrival or early pickup',
       };
       const what = ACTION[intent.blockedIntent] || 'make that change';
       const target = who ? ` for <b>${esc(who)}</b>` : '';
@@ -65843,6 +66076,202 @@ Students you had withdrawn stay withdrawn.`)) {
       const parts = spans.map(one);
       if (parts.length === 1) return parts[0];
       return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
+    }
+
+    // ---- Arriving late / leaving early, planned ------------------------------
+    //
+    // "alex is going to be picked up at 1:45 thursday", "alex is arriving late
+    // at 9:05 today". A student, a coming-or-going verb and a clock time, said
+    // about something still to happen, is a PLAN (planned_late_early), never
+    // a mark. Each class register the time falls inside or cuts off flags it
+    // for the teacher (_lateEarlyChip); nothing is marked until they mark it.
+    //
+    // Decided before the bidding (like PLAN_ABSENCE) because the same words
+    // belong to two write intents that act NOW: "picked up" is MARK_PICKED_UP,
+    // which dismisses the child on the spot, and "late" is MARK_ATTENDANCE.
+    // A planned pickup at 1:45 must not tick a child off as gone at 10am.
+
+    // A clock time in a sentence, as 'HH:MM' (24h), or null. A bare hour
+    // follows school hours: 7-11 are morning, 12 is noon, 1-6 afternoon -
+    // "picked up at 2" is not two in the morning.
+    _rivenClockTime(text) {
+      const t = String(text || '').toLowerCase();
+      const hm = (h, m, ap) => {
+        h = Number(h); m = Number(m || 0);
+        if (!(h >= 0 && h <= 23) || !(m >= 0 && m <= 59)) return null;
+        if (ap) {
+          const pm = ap[0] === 'p';
+          if (h > 12) return null;
+          if (pm && h < 12) h += 12;
+          if (!pm && h === 12) h = 0;
+        } else if (h >= 1 && h <= 6) {
+          h += 12;
+        }
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+      };
+      const AP = '(a\\.?m\\.?|p\\.?m\\.?)';
+      if (/\b(?:noon|midday)\b/.test(t)) return '12:00';
+      let m = t.match(/\b(half|quarter)\s+(past|after|to|til|till)\s+(\d{1,2})\b/);
+      if (m) {
+        let h = Number(m[3]), min = m[1] === 'half' ? 30 : 15;
+        if (/^t/.test(m[2])) { h = h === 1 ? 12 : h - 1; min = 60 - min; }
+        return hm(h, min, null);
+      }
+      m = t.match(new RegExp('\\b(\\d{1,2})[:.](\\d{2})\\s*' + AP + '?(?![\\d])'));
+      if (m) return hm(m[1], m[2], m[3]);
+      m = t.match(new RegExp('\\b(\\d{1,2})\\s*' + AP + '(?![a-z])'));
+      if (m) return hm(m[1], 0, m[2]);
+      m = t.match(/\b(?:at|by|around|about)\s+(\d{1,2})(?:\s*o'?clock)?\b(?!\s*(?:st|nd|rd|th|\/|-|days?|weeks?|points?|rtc|coins?|minutes?|mins?|hours?|%))/);
+      if (m) return hm(m[1], 0, null);
+      return null;
+    }
+
+    // { kind: 'late'|'early', time } when the sentence plans a late arrival or
+    // an early leave, else null. Past tense ("was picked up at 1:45", "arrived
+    // at 9:05") reports what happened - that is the register's, not a plan.
+    _rivenLateEarlyPlan(text) {
+      const t = ' ' + String(text || '').toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, ' ') + ' ';
+      const time = this._rivenClockTime(t);
+      if (!time) return null;
+      if (/\b(?:was|were|has been|have been|had been|got|already)\s+(?:picked|collected|signed|checked|dropped)\b/.test(t)) return null;
+      if (/\b(?:arrived|left|came in|got in|showed up|turned up|went home)\b/.test(t)) return null;
+      // "won't be in until 10:30" is a late arrival; any other negative
+      // ("won't be picked up at 1:45 after all") is a cancellation, not a plan.
+      const UNTIL = /\b(?:in|here|at school|arriv\w*|com\w* in|get(?:ting)? in)\s+(?:until|till|til)\b/;
+      if (UNTIL.test(t)) return { kind: 'late', time };
+      if (/\b(?:not|no longer|never|wont|cant|isnt|arent|dont|doesnt)\b|n't\b/.test(t)) return null;
+      const EARLY = /\b(?:picked up|pick(?:ing|s)? (?:\w+ )?up|pick-?up|collect(?:ed|ing)?|leav(?:e|es|ing)|going home|go home|goes home|heading (?:home|out)|sign(?:ed|ing|s)? (?:\w+ )?out|check(?:ed|ing|s)? (?:\w+ )?out|dismiss(?:ed|al)? early|early dismissal|out early|early pickup)\b/;
+      const LATE = /\b(?:arriv(?:e|es|ing|al)|coming in|come in|comes in|getting in|get in|gets in|in late|late (?:arrival|start)|(?:will|'ll|going to|gonna) be (?:in|late)|be in at|running late|drop(?:ped|ping|s)? (?:\w+ )?off|start(?:s|ing)? late)\b/;
+      const early = EARLY.test(t), late = LATE.test(t);
+      if (late && !early) return { kind: 'late', time };
+      if (early && !late) return { kind: 'early', time };
+      // Both kinds of word ("dropped off late, picked up at 2"): the one
+      // nearest the time is the one the time belongs to.
+      if (early && late) {
+        const at = t.search(/\d{1,2}[:.]\d{2}|\d\s*[ap]\.?m|noon|midday|half|quarter|\b(?:at|by|around|about)\s+\d/);
+        const dist = re => { let best = Infinity, m; const g = new RegExp(re.source, 'g');
+          while ((m = g.exec(t))) best = Math.min(best, Math.abs(m.index - at)); return best; };
+        return { kind: dist(LATE) < dist(EARLY) ? 'late' : 'early', time };
+      }
+      return null;
+    }
+
+    // The day a late/early plan is for: the date the sentence names, else
+    // today. A weekday that is today means today while the time is still
+    // ahead ("picked up at 1:45 thursday", said on Thursday morning); the
+    // confirmation shows the date either way.
+    _rivenLateEarlyDate(text, time) {
+      const t = String(text || '').toLowerCase();
+      const mk = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const todayIso = mk(new Date());
+      const named = (this._rivenMonthDayDates?.(t) || []);
+      if (named.length) return { iso: named[0], label: named[0] };
+      const m = t.match(/\b(today|tonight|this (?:morning|afternoon)|tomorrow|in \d{1,2} days?|(?:next |this |on )?(?:sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?|\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?|the \d{1,2}(?:st|nd|rd|th))\b/);
+      if (!m || /^(today|tonight|this (?:morning|afternoon))$/.test(m[1])) return { iso: todayIso, label: 'today' };
+      const wd = m[1].match(/^(?:this |on )?(sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat)(?:day)?$/);
+      if (wd) {
+        const stem = { sun: 0, mon: 1, tue: 2, tues: 2, wed: 3, wednes: 3, thu: 4, thur: 4, thurs: 4, fri: 5, sat: 6 }[wd[1]];
+        const now = new Date();
+        const nowHm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        if (stem === now.getDay() && time && time > nowHm) return { iso: todayIso, label: 'today' };
+      }
+      return this._rivenPhraseToDate(m[1].replace(/^on /, '')) || { iso: todayIso, label: 'today' };
+    }
+
+    // Routing: a student plus a planned late arrival / early leave.
+    _rivenIsLateEarlyCommand(normalized, entities) {
+      if (!entities || !entities.student || entities.student.ambiguous) return false;
+      const raw = entities._rawInput || entities.original || normalized;
+      const plan = this._rivenLateEarlyPlan(raw);
+      if (!plan) return false;
+      // "mark alex leaving early at 1:45" said about today is the register's
+      // mark, not a plan for later.
+      if (/^\s*(?:please\s+)?(?:mark|record|log|tick)\b/i.test(String(raw)) &&
+          this._rivenLateEarlyDate(raw, plan.time).label === 'today') return false;
+      return true;
+    }
+
+    // Which of a student's classes a plan touches on a date, for the
+    // confirmation: [{ name, period, effect }], in period order.
+    async _rivenLateEarlyClasses(studentId, dateIso, plan) {
+      try {
+        const sb = this.auth.supabase;
+        const { data: enr } = await sb.from('class_enrollments').select('class_id')
+          .eq('student_id', studentId).eq('status', 'active');
+        const classIds = (enr || []).map(e => e.class_id);
+        if (!classIds.length) return [];
+        const dow = new Date(dateIso + 'T12:00:00').getDay();
+        const { data: sched } = await sb.from('class_schedule').select('class_id, period')
+          .in('class_id', classIds).eq('day_of_week', dow);
+        const names = {};
+        (this._terminalAllClasses || []).forEach(c => { names[c.id] = c.name; });
+        const out = [];
+        for (const s of sched || []) {
+          const effect = this._lateEarlyEffect({ ...plan, at_time: plan.time }, await this._bellBlockFor(dateIso, s.period));
+          if (effect) out.push({ name: names[s.class_id] || 'a class', period: s.period, effect });
+        }
+        return out.sort((a, b) => a.period - b.period);
+      } catch (_) {
+        return [];
+      }
+    }
+
+    async terminalPlanLateEarly(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Who is coming in late or leaving early? Give me a name.'); return; }
+      const raw = entities._rawInput || entities.original || entities.normalized || '';
+      const plan = this._rivenLateEarlyPlan(raw);
+      const first = this.escapeHtml(student.first_name || student.full_name.split(' ')[0]);
+      if (!plan) {
+        this._showRivenMessage(
+          `What time? Try <em>"${first} is being picked up at 1:45 thursday"</em> or <em>"${first} is arriving at 9:05 today"</em>.`, true);
+        return;
+      }
+      const day = this._rivenLateEarlyDate(raw, plan.time);
+      const reason = (raw.match(/\b(?:for|because of|due to)\s+(?:an?\s+|the\s+|his\s+|her\s+|their\s+)?(.{2,60}?)\s*[.!?]*$/i)?.[1]
+        || raw.match(/\b(appointment|dentist|doctor|orthodontist|surgery|funeral|therapy|court|practice|game|tournament|lesson)\b/i)?.[0]
+        || null);
+      const late = plan.kind === 'late';
+      const at = this._bellSay(plan.time);
+      const dayLabel = day.label === 'today' ? 'today'
+        : new Date(day.iso + 'T12:00:00').toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+      const classes = await this._rivenLateEarlyClasses(student.id, day.iso, plan);
+      const during = classes.filter(c => c.effect === 'during').map(c => `${c.name} (P${c.period})`);
+      const misses = classes.filter(c => c.effect === 'misses').map(c => `${c.name} (P${c.period})`);
+      const touches = [
+        during.length ? `${late ? 'arrives during' : 'leaves during'} ${during.join(', ')}` : '',
+        misses.length ? `misses ${misses.join(', ')}` : '',
+      ].filter(Boolean).join('; ');
+
+      this._requestConfirmation(
+        `Note that <b>${this.escapeHtml(student.full_name)}</b> is expected to ` +
+        `<b>${late ? `arrive at ${at}` : `leave at ${at}`}</b> <b>${this.escapeHtml(dayLabel)}</b>` +
+        `${reason ? ` (${this.escapeHtml(reason)})` : ''}? ` +
+        (touches ? `Their teachers will see it on the register: ${this.escapeHtml(touches)}. `
+          : `None of their classes that day is affected, going by the bell schedule. `) +
+        `Nothing is marked: the teacher marks what happens.`,
+        async () => {
+          const sb = this.auth.supabase;
+          // A second plan for the same day and kind replaces the first
+          // ("actually 2:15"); remember it so undo puts it back.
+          const { data: before } = await sb.from('planned_late_early').select('*')
+            .eq('student_id', student.id).eq('date', day.iso).eq('kind', plan.kind).maybeSingle();
+          const { data, error } = await sb.from('planned_late_early')
+            .upsert({ student_id: student.id, date: day.iso, kind: plan.kind, at_time: plan.time,
+                      reason, created_by: this.userInfo.user.id }, { onConflict: 'student_id,date,kind' })
+            .select('id').single();
+          if (error) throw error;
+          this._pushUndo(`the ${late ? 'late arrival' : 'early pickup'} for ${student.full_name}`, async () => {
+            const { error: e } = before
+              ? await sb.from('planned_late_early').update({ at_time: before.at_time, reason: before.reason }).eq('id', before.id)
+              : await sb.from('planned_late_early').delete().eq('id', data.id);
+            if (e) throw e;
+          }, { kind: 'planned_late_early', ids: [data?.id] });
+          this._naturalSuccess([
+            `Noted: ${student.full_name} ${late ? 'arrives' : 'leaves'} at ${at} ${dayLabel}. ${touches ? 'The registers will flag it.' : ''}`.trim(),
+          ]);
+          this.renderLateEarlyPanel?.().catch(() => {});
+        });
     }
 
     async terminalPlanAbsence(entities) {
