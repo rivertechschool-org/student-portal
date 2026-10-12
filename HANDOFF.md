@@ -4780,3 +4780,22 @@ It needs a backend table that was never written, and main has since gained
 the bug-report queue (form, admin list, notifications, status back to the
 reporter), which covers much of the same ground. Decide whether suggestions
 become a type in that queue before reviving it.
+
+### 2026-10-12: one student's version of a class assignment
+
+A teacher can now change a class-wide assignment for one student, without
+making a separate single-student assignment. In **View Submissions** every
+student row has **✏️ Adjust**: their own instructions, due date and points
+possible. Anything left as the class has it stays linked to the class, so
+later edits to the assignment still reach that student; **Use the class
+version** removes the change.
+
+The student, their parents, the grading screens, the gradebook (a dashed cell,
+out of their own points), the home dashboard's missing and due-soon lists, and
+Riven all use the student's version, with an "Adjusted for …" tag. Which
+quarter the work counts toward still follows the class due date, so an
+extension never moves it into another quarter's grade.
+
+The table and the server-side grade math are in the backend repo (two
+migrations, applied 2026-10-12). `debug-tools/student-version-journeys.mjs`
+walks it in Chromium (teacher, adjusted student, classmate, parent; 27 checks).

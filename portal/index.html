@@ -2687,6 +2687,12 @@
                       .eq('student_id', studentId)
                       .in('assignment_id', assignmentIds));
 
+                  // Out of this student's own points where a version set them.
+                  const versions = await this.loadStudentVersions(assignmentIds, [studentId]);
+                  assignments.forEach((a, i) => {
+                    assignments[i] = this.withStudentVersion(a, this.studentVersionOf(versions, a.id, [studentId]));
+                  });
+
                   // Calculate average grade per class
                   const classGrades = {};
                   for (const classId of classIds) {
@@ -5177,12 +5183,16 @@
           const { data: subWithAssignment } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('assignment_submissions')
-              .select('points_earned, assignment_id, assignments!inner(max_points)')
+              .select('points_earned, assignment_id, student_id, assignments!inner(max_points)')
               .eq('id', assignmentSubmissionId)
               .single()
           );
 
-          const assignmentMaxPoints = subWithAssignment?.assignments?.max_points || maxScore || 100;
+          // The student's own version may set different points for them.
+          const mine = subWithAssignment ? await this.withVersionFor(
+            { id: subWithAssignment.assignment_id, max_points: subWithAssignment.assignments?.max_points },
+            [subWithAssignment.student_id]) : null;
+          const assignmentMaxPoints = mine?.max_points || maxScore || 100;
 
           // Only sync if no grade exists yet - gradebook can override afterward
           if (subWithAssignment?.points_earned !== null) {
@@ -8636,13 +8646,19 @@
         try {
           const classIds = child.classes?.map(c => c.id) || [];
           if (classIds.length > 0) {
-            const { data: assignments } = await this.supabaseQuery(() =>
+            const { data: classAssignments } = await this.supabaseQuery(() =>
               this.auth.supabase
                 .from('assignments')
                 .select('*, classes(name)')
                 .in('class_id', classIds)
                 .eq('is_published', true)
                 .order('due_date', { ascending: true }));
+            // This child's own versions: their due dates and points.
+            const childIds = [childId, child.auth_user_id];
+            const versions = await this.loadStudentVersions((classAssignments || []).map(a => a.id), childIds);
+            const assignments = (classAssignments || [])
+              .map(a => this.withStudentVersion(a, this.studentVersionOf(versions, a.id, childIds)))
+              .sort((a, b) => new Date(a.due_date || 0) - new Date(b.due_date || 0));
 
             // Get submissions for these assignments
             const assignmentIds = (assignments || []).map(a => a.id);
@@ -8683,7 +8699,7 @@
                 return `
                   <div class="list-item">
                     <div class="list-item-content">
-                      <div class="list-item-title">${a.title}</div>
+                      <div class="list-item-title">${a.title}${this.studentVersionBadge(a, child.first_name || 'them')}</div>
                       <div class="list-item-meta">${a.classes?.name || 'Unknown Class'} • Due: ${dueDate ? dueDate.toLocaleDateString() : 'No due date'}</div>
                     </div>
                     <span style="color: ${statusColor}; font-size: 12px;">${statusText}</span>
@@ -9155,7 +9171,12 @@
                 .lte('due_date', activeQuarter.end_date);
             }
 
-            const { data: assignments } = await this.supabaseQuery(() => assignmentsQuery);
+            const { data: classAssignments } = await this.supabaseQuery(() => assignmentsQuery);
+            // This child's own versions: their due dates and points.
+            const childIds = [child.id, child.auth_user_id];
+            const versions = await this.loadStudentVersions((classAssignments || []).map(a => a.id), childIds);
+            const assignments = (classAssignments || [])
+              .map(a => this.withStudentVersion(a, this.studentVersionOf(versions, a.id, childIds)));
 
             if (!assignments || assignments.length === 0) {
               gradesHTML += `
@@ -9212,7 +9233,7 @@
 
               return `
                 <tr>
-                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${a.title}</td>
+                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${a.title}${this.studentVersionBadge(a, child.first_name || 'them')}</td>
                   <td style="padding: 8px; border-bottom: 1px solid var(--border);">${dueDate ? dueDate.toLocaleDateString() : 'N/A'}</td>
                   <td style="padding: 8px; border-bottom: 1px solid var(--border); color: ${statusColor};">${status}</td>
                   <td style="padding: 8px; border-bottom: 1px solid var(--border);">${grade}${a.max_points ? ` / ${a.max_points}` : ''}</td>
@@ -20442,10 +20463,14 @@
             .limit(1)
             .maybeSingle());
 
+          // This student's own versions (points and due date) where changed.
+          const versions = await this.loadStudentVersions((submissions || []).map(s => s.assignments?.id), [studentId]);
+
           let gradesHtml = '';
           if (submissions && submissions.length > 0) {
             gradesHtml = submissions.map(sub => {
-              const assignment = sub.assignments;
+              const assignment = this.withStudentVersion(sub.assignments,
+                this.studentVersionOf(versions, sub.assignments?.id, [studentId]));
               const percentage = sub.points_earned !== null && assignment.max_points > 0
                 ? Math.round((sub.points_earned / assignment.max_points) * 100)
                 : null;
@@ -20453,7 +20478,7 @@
               return `
                 <div class="list-item">
                   <div class="list-item-content">
-                    <div class="list-item-title">${this.escapeHtml(assignment.title)}</div>
+                    <div class="list-item-title">${this.escapeHtml(assignment.title)}${this.studentVersionBadge(assignment, (studentName || '').split(' ')[0] || 'student')}</div>
                     <div class="list-item-meta">
                       ${this.escapeHtml(assignment.assignment_type || 'assignment')} • Due: ${new Date(assignment.due_date).toLocaleDateString()}
                     </div>
@@ -22299,6 +22324,9 @@ Students you had withdrawn stay withdrawn.`)) {
               if (assignment.assigned_to_all) return true;
               return assignedToStudentIds.has(assignment.id);
             });
+
+            // This student's own versions: their instructions, due date, points.
+            assignments = await this.withMyVersions(assignments);
           }
 
           // For students and parents, sort info assignments to the top
@@ -22567,20 +22595,25 @@ Students you had withdrawn stay withdrawn.`)) {
                   childSubmissions[sub.student_id][sub.assignment_id] = sub;
                 });
               }
+              // Each child's own version, where a teacher changed theirs.
+              const childVersions = await this.loadStudentVersions(assignmentIds,
+                enrolledChildren.flatMap(c => [c.id, c.auth_user_id]));
 
-              assignmentsHtml = assignments.map(assignment => {
-                const dueDate = new Date(assignment.due_date);
+              assignmentsHtml = assignments.map(classAssignment => {
+                const dueDate = new Date(classAssignment.due_date);
                 const now = new Date();
-                const dueDatePassed = dueDate < now;
 
                 // Build child status for this assignment
                 let anyChildMissing = false;
                 let childStatusHtml = enrolledChildren.map(child => {
+                  // This child's copy: their due date and points if the teacher changed them.
+                  const assignment = this.withStudentVersion(classAssignment,
+                    this.studentVersionOf(childVersions, classAssignment.id, [child.id, child.auth_user_id]));
                   const submission = childSubmissions[child.id]?.[assignment.id];
                   const isGraded = submission?.status === 'graded';
                   const isExcused = submission?.status === 'excused';
                   const isSubmitted = submission?.status === 'submitted';
-                  const isMissing = dueDatePassed && !submission;
+                  const isMissing = new Date(assignment.due_date) < now && !submission;
                   if (isMissing) anyChildMissing = true;
 
                   let statusText = 'Not Submitted';
@@ -22608,14 +22641,21 @@ Students you had withdrawn stay withdrawn.`)) {
                   const lateChip = (isGraded || isSubmitted) && this._submittedLate(submission, assignment)
                     ? ' ' + this._lateBadge() : '';
 
+                  const v = assignment.student_version;
                   return `
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border);">
-                      <span style="font-weight: 500;">${child.first_name}</span>
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); gap: 8px; flex-wrap: wrap;">
+                      <span style="font-weight: 500;">${child.first_name}${this.studentVersionBadge(assignment, child.first_name)}</span>
                       <span style="color: ${statusColor}; font-size: 13px;">${statusText}${lateChip}</span>
                     </div>
+                    ${v ? `<div style="font-size: 12px; color: var(--muted); padding: 4px 0 8px;">
+                      ${[v.due_date ? `Due ${new Date(v.due_date).toLocaleDateString()} at ${new Date(v.due_date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : '',
+                         v.points_possible != null ? `out of ${v.points_possible} points` : ''].filter(Boolean).join(', ')}
+                      <a href="#" onclick="app.viewAssignmentAsParent('${classAssignment.id}', '${child.id}'); return false;" style="color: var(--accent); margin-left: 6px;">See ${this.escapeHtml(child.first_name || 'their')}'s version</a>
+                    </div>` : ''}
                   `;
                 }).join('');
 
+                const assignment = classAssignment;
                 return `
                   <div class="card" style="margin: 10px 0;">
                     <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px;">
@@ -22706,7 +22746,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <div class="card" style="margin: 10px 0; border-left: 4px solid ${statusColor};">
                     <div style="display: flex; justify-content: space-between; align-items: start;">
                       <div style="flex: 1;">
-                        <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
+                        <h4 style="margin-bottom: 8px;">${assignment.title}${this.studentVersionBadge(assignment)}</h4>
                         <p style="color: var(--muted); font-size: 14px; margin: 8px 0;">
                           Due: ${dueDate.toLocaleDateString()} at ${dueDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                         </p>
@@ -24524,6 +24564,37 @@ Students you had withdrawn stay withdrawn.`)) {
       }
 
       // ==================== ASSIGNMENT CONTExT INFO ====================
+      // Work in a due-date window for the signed-in student, by THEIR due
+      // dates. classRows were fetched by the class due date; a version can move
+      // work out of the window (an extension) or into it (an earlier date). So
+      // fetch what moved in, lay the versions over every row, and re-filter.
+      // from is inclusive, to is exclusive; either may be null.
+      async _myWorkDueBetween(classRows, from, to, classIds, columns) {
+        let rows = classRows || [];
+        try {
+          let q = this.auth.supabase.from('assignment_student_versions')
+            .select('assignment_id').in('student_id', this.myStudentIds())
+            .not('due_date', 'is', null);
+          if (from) q = q.gte('due_date', from.toISOString());
+          if (to) q = q.lt('due_date', to.toISOString());
+          const { data: moved } = await q;
+          const have = new Set(rows.map(a => a.id));
+          const extra = [...new Set((moved || []).map(m => m.assignment_id))].filter(id => !have.has(id));
+          if (extra.length && classIds?.length) {
+            const { data: more } = await this.auth.supabase.from('assignments').select(columns)
+              .in('id', extra).in('class_id', classIds).eq('is_published', true);
+            rows = rows.concat(more || []);
+          }
+        } catch (e) {
+          console.warn('Moved due dates not loaded:', e?.message || e);
+        }
+        const mine = await this.withMyVersions(rows);
+        return mine.filter(a => {
+          const d = new Date(a.due_date);
+          return (!from || d >= from) && (!to || d < to);
+        });
+      }
+
       async loadMissingAssignments() {
         try {
           // Get assignments due before today that are not submitted
@@ -24557,13 +24628,17 @@ Students you had withdrawn stay withdrawn.`)) {
             query = query.gte('due_date', currentQuarter.start_date);
           }
 
-          const { data: assignments, error } = await this.supabaseQuery(() =>
+          const { data: classWindow, error } = await this.supabaseQuery(() =>
             query.order('due_date', { ascending: false }).limit(100), 30000);
       
           if (error) {
             console.error('Error loading missing assignments:', error);
             return [];
           }
+
+          // By this student's own due dates (an extension is not missing).
+          const assignments = await this._myWorkDueBetween(classWindow, null, today, classIds,
+            'id, title, description, due_date, class_id, assigned_to_all, category_id, created_at, graded_offline');
       
           if (!assignments || assignments.length === 0) return [];
       
@@ -24572,9 +24647,11 @@ Students you had withdrawn stay withdrawn.`)) {
             // Exclude offline-graded
             if (a.graded_offline) return false;
             
-            // If we have a current quarter, filter by date
+            // If we have a current quarter, filter by date. The quarter an
+            // assignment counts toward follows the CLASS due date, even when
+            // this student's version moved theirs.
             if (currentQuarter) {
-              const assignmentDate = new Date(a.due_date);
+              const assignmentDate = new Date(a.class_due_date || a.due_date);
               const quarterStart = new Date(currentQuarter.start_date);
               
               // Only include assignments due on or after the quarter start date
@@ -24733,7 +24810,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
                   <span style="font-size: 18px;">⚠️</span>
                   <div class="list-item-title" style="font-weight: 600;">
-                    ${assignment.title}
+                    ${assignment.title}${this.studentVersionBadge(assignment)}
                   </div>
                   <span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">MISSING</span>
                 </div>
@@ -24790,7 +24867,7 @@ Students you had withdrawn stay withdrawn.`)) {
           if (classIds.length === 0) return [];
           
           // Get assignments WITHOUT relationship join (extend timeout)
-          const { data: assignments, error } = await this.supabaseQuery(() => this.auth.supabase
+          const { data: classWindow, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('id, title, description, due_date, class_id, assigned_to_all, category_id, created_at, graded_offline')
             .in('class_id', classIds)
@@ -24804,6 +24881,11 @@ Students you had withdrawn stay withdrawn.`)) {
             console.error('Error loading upcoming assignments:', error);
             return [];
           }
+
+          // By this student's own due dates, soonest first.
+          const assignments = (await this._myWorkDueBetween(classWindow, today,
+            new Date(twoWeeksFromNow.getTime() + 1), classIds, 'id, title, description, due_date, class_id, assigned_to_all, category_id, created_at, graded_offline'))
+            .sort((a, b) => new Date(a.due_date) - new Date(b.due_date));
       
           if (!assignments || assignments.length === 0) return [];
       
@@ -25013,7 +25095,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 4px;">
                   <span style="font-size: 18px;">${urgencyIcon}</span>
                   <div class="list-item-title" style="font-weight: 600;">
-                    ${assignment.title}
+                    ${assignment.title}${this.studentVersionBadge(assignment)}
                   </div>
                   ${statusBadge}
                 </div>
@@ -25548,6 +25630,261 @@ Students you had withdrawn stay withdrawn.`)) {
       
       // ==================== SUBMISSIONS: VIEWING & FILTERING ====================
 
+      // ==================== A STUDENT'S OWN VERSION ====================
+      // A teacher can change one student's copy of a class-wide assignment -
+      // its instructions, due date or points - without making a separate
+      // single-student assignment. One optional row per (assignment, student)
+      // in assignment_student_versions; a blank field means "same as the
+      // class". Every view that shows or grades a student's copy lays their
+      // version over the class row with withStudentVersion, so the student,
+      // their parents, the grading screens and the grade all agree.
+
+      // Versions for these assignments: Map(assignmentId -> Map(studentId ->
+      // row)). studentIds narrows it to some students (a parent's children, or
+      // both ids of one student). Never throws: a failed read means "no
+      // versions" and everyone sees the class copy, which is what they saw
+      // before versions existed.
+      async loadStudentVersions(assignmentIds, studentIds = null) {
+        const out = new Map();
+        const ids = [...new Set((assignmentIds || []).filter(Boolean))];
+        const who = studentIds ? [...new Set(studentIds.filter(Boolean))] : null;
+        if (!ids.length || (who && !who.length)) return out;
+        try {
+          // Chunked so a quarter of assignments cannot overflow the URL.
+          for (let i = 0; i < ids.length; i += 150) {
+            let q = this.auth.supabase.from('assignment_student_versions').select('*')
+              .in('assignment_id', ids.slice(i, i + 150));
+            if (who) q = q.in('student_id', who);
+            const { data, error } = await q;
+            if (error) throw error;
+            (data || []).forEach(v => {
+              if (!out.has(v.assignment_id)) out.set(v.assignment_id, new Map());
+              out.get(v.assignment_id).set(v.student_id, v);
+            });
+          }
+        } catch (e) {
+          console.warn('Student versions not loaded:', e?.message || e);
+        }
+        return out;
+      }
+
+      // One student's version, looked up under every id they go by.
+      studentVersionOf(versions, assignmentId, studentIds) {
+        const m = versions?.get(assignmentId);
+        if (!m) return null;
+        for (const id of [].concat(studentIds)) if (id && m.has(id)) return m.get(id);
+        return null;
+      }
+
+      // The class row with the student's version laid over it, or the row
+      // itself when there is none. The class values stay reachable as
+      // class_due_date / class_max_points for "changed from" notes.
+      withStudentVersion(assignment, version) {
+        if (!assignment || !version) return assignment;
+        return {
+          ...assignment,
+          description: version.description ?? assignment.description,
+          due_date: version.due_date ?? assignment.due_date,
+          max_points: version.points_possible ?? assignment.max_points,
+          class_due_date: assignment.due_date,
+          class_max_points: assignment.max_points,
+          student_version: version,
+        };
+      }
+
+      // Both ids of the signed-in student (profile id and login id).
+      myStudentIds() {
+        return [...new Set([this.auth?.studentRecordId?.(), this.auth?.userProfile?.auth_user_id,
+          this.auth?.currentUser?.id].filter(Boolean))];
+      }
+
+      // Lay the signed-in student's versions over a list of class rows.
+      async withMyVersions(assignments) {
+        const list = assignments || [];
+        if (!list.length) return list;
+        const ids = this.myStudentIds();
+        const versions = await this.loadStudentVersions(list.map(a => a.id), ids);
+        return list.map(a => this.withStudentVersion(a, this.studentVersionOf(versions, a.id, ids)));
+      }
+
+      // Lay one student's version over one class row (grading screens, the
+      // parent's single-assignment view).
+      async withVersionFor(assignment, studentIds) {
+        if (!assignment?.id) return assignment;
+        const ids = [].concat(studentIds).filter(Boolean);
+        const versions = await this.loadStudentVersions([assignment.id], ids);
+        return this.withStudentVersion(assignment, this.studentVersionOf(versions, assignment.id, ids));
+      }
+
+      // Small tag saying this copy differs from the class's. `who` is "you"
+      // for the student and a first name for a parent or teacher.
+      studentVersionBadge(assignment, who = 'you') {
+        const v = assignment?.student_version;
+        if (!v) return '';
+        const bits = [];
+        if (v.due_date) bits.push('due date');
+        if (v.points_possible != null) bits.push('points');
+        if (v.description != null) bits.push('instructions');
+        const tip = `Changed for ${who}: ${bits.join(', ') || 'no changes'}`;
+        return `<span title="${this.escapeHtml(tip)}" style="background: var(--accent); color: #000; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; white-space: nowrap;">✏️ Adjusted for ${this.escapeHtml(who)}</span>`;
+      }
+
+      // datetime-local value for an ISO time, in the viewer's local time.
+      _localDateTimeValue(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+      }
+
+      // Teacher: open the editor for one student's version of an assignment.
+      // Every field starts at what the student currently has (their version,
+      // else the class's); anything left equal to the class is stored as
+      // "same as the class", so a later change to the class assignment still
+      // reaches them.
+      async editStudentVersion(assignmentId, studentId) {
+        try {
+          const sb = this.auth.supabase;
+          const [aRes, vRes, sRes] = await Promise.all([
+            this.supabaseQuery(() => sb.from('assignments')
+              .select('id, title, description, due_date, max_points').eq('id', assignmentId).single()),
+            this.supabaseQuery(() => sb.from('assignment_student_versions')
+              .select('*').eq('assignment_id', assignmentId).eq('student_id', studentId).maybeSingle()),
+            this.supabaseQuery(() => sb.from('user_profiles')
+              .select('first_name, last_name').eq('id', studentId).maybeSingle()),
+          ]);
+          if (aRes.error) throw aRes.error;
+          const a = aRes.data, v = vRes.data || null, s = sRes.data || {};
+          const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'this student';
+          this._studentVersionCtx = { assignment: a, version: v, studentId, name };
+
+          const content = `
+            <div>
+              <p style="color: var(--muted); margin-bottom: 15px;">
+                Change <strong>${this.escapeHtml(a.title || 'this assignment')}</strong> for
+                <strong>${this.escapeHtml(name)}</strong> only. The rest of the class keeps the class
+                version. Anything you leave as the class has it stays linked to the class, so later
+                edits to the assignment still reach ${this.escapeHtml(s.first_name || 'them')}.
+              </p>
+              <div class="form-group">
+                <label>Instructions for ${this.escapeHtml(s.first_name || 'this student')}</label>
+                <div id="student-version-editor"></div>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                <div class="form-group">
+                  <label for="student-version-due">Due date</label>
+                  <input type="datetime-local" id="student-version-due"
+                    value="${this._localDateTimeValue(v?.due_date || a.due_date)}">
+                  <small style="color: var(--muted); display: block; margin-top: 5px;">
+                    Class: ${a.due_date ? new Date(a.due_date).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'none'}
+                  </small>
+                </div>
+                <div class="form-group">
+                  <label for="student-version-points">Points possible</label>
+                  <input type="number" id="student-version-points" min="0" step="1"
+                    value="${v?.points_possible ?? a.max_points ?? 100}">
+                  <small style="color: var(--muted); display: block; margin-top: 5px;">Class: ${a.max_points ?? 100}</small>
+                </div>
+              </div>
+              <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
+                <button class="btn btn-secondary" onclick="app.closeModal('student-version'); app.viewSubmissions('${assignmentId}')">Cancel</button>
+                ${v ? `<button class="btn btn-secondary" onclick="app.saveStudentVersion(true)">↩️ Use the class version</button>` : ''}
+                <button class="btn btn-primary" onclick="app.saveStudentVersion(false)">💾 Save for ${this.escapeHtml(s.first_name || 'student')}</button>
+              </div>
+            </div>`;
+          this.closeModal('view-submissions');
+          this.showModal('student-version', `✏️ Adjust for ${this.escapeHtml(name)}`, content, true);
+
+          setTimeout(() => {
+            this.studentVersionEditor = new Quill('#student-version-editor', {
+              theme: 'snow',
+              placeholder: 'Instructions for this student...',
+              modules: { toolbar: [
+                [{ 'header': [1, 2, 3, false] }],
+                ['bold', 'italic', 'underline', 'strike'],
+                [{ 'list': 'ordered'}, { 'list': 'bullet' }],
+                ['link'], ['clean'] ] }
+            });
+            // Read the class text back through Quill first: Quill rewrites
+            // HTML as it loads it, so comparing against the raw column would
+            // call an untouched editor "changed".
+            this.studentVersionEditor.root.innerHTML = a.description || '';
+            this._studentVersionCtx.classHtml = this.studentVersionEditor.root.innerHTML;
+            if (v?.description != null) this.studentVersionEditor.root.innerHTML = v.description;
+          }, 100);
+        } catch (e) {
+          console.error('Error opening student version:', e);
+          this.showNotification('Could not open this student\'s version: ' + (e.message || e), 'error');
+        }
+      }
+
+      // Save (or, with useClass, remove) the open student version.
+      async saveStudentVersion(useClass) {
+        const ctx = this._studentVersionCtx;
+        if (!ctx) return;
+        const { assignment: a, studentId, name } = ctx;
+        const sb = this.auth.supabase;
+        try {
+          let row = null;
+          if (!useClass) {
+            const html = this.studentVersionEditor?.root.innerHTML ?? '';
+            const empty = !html || html === '<p><br></p>' || !html.trim();
+            const description = html === ctx.classHtml ? null : (empty ? '' : html);
+
+            const dueRaw = document.getElementById('student-version-due')?.value || '';
+            let due_date = null;
+            if (dueRaw) {
+              const d = new Date(dueRaw);
+              if (isNaN(d)) { this.showNotification('That due date is not a date', 'error'); return; }
+              // Same minute as the class due date counts as "same as the class".
+              const sameAsClass = a.due_date && Math.abs(d - new Date(a.due_date)) < 60000;
+              due_date = sameAsClass ? null : d.toISOString();
+            }
+
+            const ptsRaw = document.getElementById('student-version-points')?.value.trim() || '';
+            let points_possible = null;
+            if (ptsRaw !== '') {
+              const p = Number(ptsRaw);
+              if (!Number.isInteger(p) || p < 0) { this.showNotification('Points must be a whole number, 0 or more', 'error'); return; }
+              points_possible = p === Number(a.max_points ?? 100) ? null : p;
+            }
+            if (description !== null || due_date !== null || points_possible !== null) {
+              row = { assignment_id: a.id, student_id: studentId, description, due_date, points_possible };
+            }
+          }
+
+          if (row) {
+            const { error } = await sb.from('assignment_student_versions')
+              .upsert(row, { onConflict: 'assignment_id,student_id' });
+            if (error) throw error;
+            this.showNotification(`Saved ${name}'s version`, 'success');
+          } else {
+            // Nothing differs from the class: no row, so class edits flow through.
+            const { error } = await sb.from('assignment_student_versions')
+              .delete().eq('assignment_id', a.id).eq('student_id', studentId);
+            if (error) throw error;
+            this.showNotification(`${name} now has the class version`, 'success');
+          }
+
+          // The grade divides by the student's points, so recompute it now
+          // rather than leave a stale class grade until the next grading.
+          const { data: enr } = await sb.from('class_enrollments').select('id')
+            .eq('student_id', studentId).eq('status', 'active')
+            .in('class_id', [(await sb.from('assignments').select('class_id').eq('id', a.id).single()).data?.class_id].filter(Boolean));
+          for (const e of enr || []) {
+            try { await sb.rpc('update_enrollment_grades', { p_enrollment_id: e.id }); } catch (_) {}
+          }
+
+          this._studentVersionCtx = null;
+          this.closeModal('student-version');
+          this.viewSubmissions(a.id);
+        } catch (e) {
+          console.error('Error saving student version:', e);
+          this.showNotification('Could not save: ' + (e.message || e), 'error');
+        }
+      }
+
       async viewSubmissions(assignmentId) {
         this.showLoading('Loading submissions...');
         try {
@@ -25628,6 +25965,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
           const { data: students } = studentsResult;
           const { data: submissions } = submissionsResult;
+          // Students whose copy the teacher has changed (their own version).
+          const versions = await this.loadStudentVersions([assignmentId]);
       
           // Create a map of submissions by student ID
           const submissionMap = {};
@@ -25735,6 +26074,8 @@ Students you had withdrawn stay withdrawn.`)) {
                       // students); match under either so the teacher never sees a
                       // false "Not submitted" or grades a phantom row.
                       const submission = submissionMap[student.id] || submissionMap[student.auth_user_id];
+                      const mine = this.withStudentVersion(assignment, this.studentVersionOf(versions, assignmentId, [student.id, student.auth_user_id]));
+                      const v = mine?.student_version;
                       const hasSubmitted = !!submission;
                       const isGraded = submission?.status === 'graded';
                       const isExcused = submission?.status === 'excused';
@@ -25753,7 +26094,13 @@ Students you had withdrawn stay withdrawn.`)) {
                             <div class="list-item-title">
                               ${student.first_name} ${student.last_name}
                               ${student.grade_level ? `<span style="color: var(--muted); font-size: 12px; margin-left: 10px;">Grade ${student.grade_level}</span>` : ''}
+                              ${this.studentVersionBadge(mine, student.first_name || 'student')}
                             </div>
+                            ${v ? `<div class="list-item-meta" style="color: var(--accent);">
+                              ${[v.due_date ? `Due ${new Date(v.due_date).toLocaleDateString()} ${new Date(v.due_date).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` : '',
+                                 v.points_possible != null ? `Out of ${v.points_possible}` : '',
+                                 v.description != null ? 'Own instructions' : ''].filter(Boolean).join(' • ')}
+                            </div>` : ''}
                             <div class="list-item-meta">
                               ${student.email} •
                               ${isExcused ?
@@ -25763,12 +26110,15 @@ Students you had withdrawn stay withdrawn.`)) {
                                   (isOffline ? '<span style="color: var(--accent);">📋 Offline Assignment</span>' : '<span style="color: var(--danger);">Not submitted</span>')
                               }
                               ${isGraded && !isExcused ? 
-                                ` • <strong>Grade: ${submission.grade || 'N/A'}</strong> (${submission.points_earned || 0}/${assignment?.max_points || 100})` : 
+                                ` • <strong>Grade: ${submission.grade || 'N/A'}</strong> (${submission.points_earned || 0}/${mine?.max_points || 100})` : 
                                 ''
                               }
                             </div>
                           </div>
-                          <div style="display: flex; gap: 10px; align-items: center;">
+                          <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <button class="btn btn-secondary small" title="Change this assignment for this student only" onclick="app.editStudentVersion('${assignmentId}', '${student.id}')">
+                              ✏️ ${v ? 'Edit their version' : 'Adjust'}
+                            </button>
                             ${hasSubmitted ? `
                               <button class="btn btn-secondary small" onclick="app.viewStudentSubmission('${submission.id}', '${assignmentId}')">
                                 👁️ View
@@ -25836,11 +26186,13 @@ Students you had withdrawn stay withdrawn.`)) {
             .eq('id', submission.student_id)
             .single());
       
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          let { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('title, max_points')
             .eq('id', assignmentId)
             .single());
+          // This student's own version may change the points it is out of.
+          assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [submission.student_id]);
       
           const modalContent = `
             <div>
@@ -25903,13 +26255,15 @@ Students you had withdrawn stay withdrawn.`)) {
       async viewArchivedSubmission(assignmentId) {
         try {
           // Load assignment details
-          const { data: assignment, error: assignmentError } = await this.supabaseQuery(() => this.auth.supabase
+          const { data: classAssignment, error: assignmentError } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
             .single());
       
           if (assignmentError) throw assignmentError;
+          // As this student's own version, if the teacher changed theirs.
+          const [assignment] = await this.withMyVersions([classAssignment]);
       
           // Load student's submission
           const { data: submission } = await this.supabaseQuery(() => this.auth.supabase
@@ -26092,15 +26446,28 @@ Students you had withdrawn stay withdrawn.`)) {
       // ==================== SUBMISSIONS: STUDENT ACTIONS ====================
 
       // Parent read-only view of assignment details
-      async viewAssignmentAsParent(assignmentId) {
+      // childId shows that child's own version of the assignment. Without it,
+      // a parent with one child in the class sees that child's version; with
+      // several, the class version (each child's changes are listed on the
+      // assignments page, each with a link here).
+      async viewAssignmentAsParent(assignmentId, childId = null) {
         try {
-          const { data: assignment, error } = await this.supabaseQuery(() => this.auth.supabase
+          const { data: classAssignment, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
             .single());
 
           if (error) throw error;
+
+          let child = childId ? this.children?.find(c => c.id === childId) : null;
+          if (!child) {
+            const inClass = (this.children || []).filter(c => c.classes?.some(k => k.id === classAssignment.class_id));
+            if (inClass.length === 1) child = inClass[0];
+          }
+          const assignment = child
+            ? await this.withVersionFor(classAssignment, [child.id, child.auth_user_id])
+            : classAssignment;
 
           const dueDate = new Date(assignment.due_date);
           const classId = assignment.class_id;
@@ -26110,7 +26477,10 @@ Students you had withdrawn stay withdrawn.`)) {
 
           this.showModal('view-assignment-parent', '📋 Assignment Details', `
             <div>
-              <h3>${assignment.title}</h3>
+              <h3>${assignment.title}${child ? this.studentVersionBadge(assignment, child.first_name) : ''}</h3>
+              ${assignment.student_version ? `<p style="color: var(--muted); font-size: 13px;">
+                ${this.escapeHtml(child.first_name || 'Your child')}'s teacher changed this assignment for them. What follows is their version.
+              </p>` : ''}
 
               <div style="display: flex; gap: 20px; margin: 15px 0; flex-wrap: wrap;">
                 <div>
@@ -26175,16 +26545,18 @@ Students you had withdrawn stay withdrawn.`)) {
               .maybeSingle())
           ]);
 
-          const { data: assignment, error: assignmentError } = assignmentResult;
+          const { data: classAssignment, error: assignmentError } = assignmentResult;
           const { data: existingSubmission } = submissionResult;
 
           if (assignmentError) throw assignmentError;
+          // This student's own version: their instructions, due date, points.
+          const [assignment] = await this.withMyVersions([classAssignment]);
 
           // Check if this is an offline/in-person graded assignment
           if (assignment.graded_offline) {
             this.showModal('submit-assignment', '📋 View Assignment', `
               <div>
-                <h3>${assignment.title}</h3>
+                <h3>${assignment.title}${this.studentVersionBadge(assignment)}</h3>
 
                 ${assignment.grading_type === 'rubric' && assignment.rubric_id ? `
                   <div class="card" style="margin: 15px 0; background: rgba(106, 169, 255, 0.05);">
@@ -26235,7 +26607,7 @@ Students you had withdrawn stay withdrawn.`)) {
           if (isExcused) {
             modalContent = `
               <div>
-                <h3>${assignment.title}</h3>
+                <h3>${assignment.title}${this.studentVersionBadge(assignment)}</h3>
                 
                 <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
                   ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
@@ -26261,7 +26633,7 @@ Students you had withdrawn stay withdrawn.`)) {
           } else if (isGraded) {
             modalContent = `
               <div>
-                <h3>${assignment.title}</h3>
+                <h3>${assignment.title}${this.studentVersionBadge(assignment)}</h3>
                 
                 <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
                   ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
@@ -26330,7 +26702,7 @@ Students you had withdrawn stay withdrawn.`)) {
           } else if (isSubmitted) {
             modalContent = `
               <div>
-                <h3>${assignment.title}</h3>
+                <h3>${assignment.title}${this.studentVersionBadge(assignment)}</h3>
                 
                 <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
                   ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
@@ -26388,7 +26760,7 @@ Students you had withdrawn stay withdrawn.`)) {
       
             modalContent = `
               <div>
-                <h3>${assignment.title}</h3>
+                <h3>${assignment.title}${this.studentVersionBadge(assignment)}</h3>
                 
                 <div class="assignment-content" style="margin: 15px 0; padding: 20px; background: var(--card); border-radius: 8px; border: 1px solid var(--border); max-height: 400px; overflow-y: auto;">
                   ${assignment.description || '<p style="color: var(--muted);">No description provided</p>'}
@@ -26737,12 +27109,13 @@ Students you had withdrawn stay withdrawn.`)) {
             return;
           }
           
-          // Load assignment details
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          // Load assignment details, as this student's own version
+          const { data: classAssignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('id', assignmentId)
             .single());
+          const [assignment] = await this.withMyVersions([classAssignment]);
           
           const modalContent = `
             <div>
@@ -27024,7 +27397,8 @@ Students you had withdrawn stay withdrawn.`)) {
             .limit(1)
             .maybeSingle());
           
-          const assignment = submission.assignments;
+          // This student's own version may change the points it is out of.
+          const assignment = await this.withVersionFor(submission.assignments, [submission.student_id]);
           
           // Separately load rubric if assignment uses one
           let rubricInfo = null;
@@ -27191,11 +27565,13 @@ Students you had withdrawn stay withdrawn.`)) {
             .eq('id', studentId)
             .single());
 
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          let { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('title, max_points, grading_type, rubric_id, graded_offline')
             .eq('id', assignmentId)
             .single());
+          // This student's own version may change the points it is out of.
+          assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [studentId]);
 
           const isInClassAssignment = assignment.graded_offline;
 
@@ -27391,11 +27767,13 @@ Students you had withdrawn stay withdrawn.`)) {
       async submitGradeNonSubmitted(studentId, assignmentId, isRubricGrading = false) {
         try {
           // Get assignment info for notifications
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          let { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('title, max_points')
             .eq('id', assignmentId)
             .single());
+          // This student's own version may change the points it is out of.
+          assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [studentId]);
 
           const isExcused = document.getElementById('excuse-assignment')?.checked;
 
@@ -27486,11 +27864,13 @@ Students you had withdrawn stay withdrawn.`)) {
 
       async sendReminderToStudent(studentId, assignmentId) {
         try {
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          let { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('title, due_date')
             .eq('id', assignmentId)
             .single());
+          // Remind them of THEIR due date if the teacher moved it.
+          assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [studentId]);
       
           const { data: student } = await this.supabaseQuery(() => this.auth.supabase
             .from('user_profiles')
@@ -27718,7 +28098,7 @@ Students you had withdrawn stay withdrawn.`)) {
           }
 
           // Get assignment info to determine grading type (include title for notifications)
-          const { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          let { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('grading_type, max_points, title')
             .eq('id', assignmentId)
@@ -27730,6 +28110,8 @@ Students you had withdrawn stay withdrawn.`)) {
             .select('student_id')
             .eq('id', submissionId)
             .single());
+          // This student's own version may change the points it is out of.
+          assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [submission?.student_id]);
       
           let gradeData;
       
@@ -30350,14 +30732,17 @@ Students you had withdrawn stay withdrawn.`)) {
 
           const displayTeacherNotes = snapNotes ?? updatedEnrollment?.teacher_notes;
 
-          // Load assignments and submissions for detail view
-          const { data: assignments } = await this.supabaseQuery(() => this.auth.supabase
+          // Load assignments and submissions for detail view. The quarter
+          // follows the class due date; the points and due date shown are this
+          // student's own where the teacher changed them.
+          const { data: classAssignments } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .select('*')
             .eq('class_id', classId)
             .gte('due_date', currentQuarter.start_date)
             .lte('due_date', currentQuarter.end_date)
             .order('due_date', { ascending: false }));
+          const assignments = await this.withMyVersions(classAssignments || []);
 
           let assignmentsHtml = '';
           // How many pieces this quarter's grade rests on. Zero means there is
@@ -30390,7 +30775,7 @@ Students you had withdrawn stay withdrawn.`)) {
               return `
                 <div class="list-item">
                   <div class="list-item-content">
-                    <div class="list-item-title">${assignment.title}</div>
+                    <div class="list-item-title">${assignment.title}${this.studentVersionBadge(assignment)}</div>
                     <div class="list-item-meta">
                       Due: ${new Date(assignment.due_date).toLocaleDateString()}
                       ${isExcused ? ' • <span style="color: var(--warning);">Excused from this assignment</span>' : ''}
@@ -30437,13 +30822,15 @@ Students you had withdrawn stay withdrawn.`)) {
           const categoryGrades = [];
           if (categories && categories.length > 0) {
             // Batch load ALL assignments for all categories at once
-            const { data: allCategoryAssignments } = await this.supabaseQuery(() => this.auth.supabase
+            const { data: classCategoryAssignments } = await this.supabaseQuery(() => this.auth.supabase
               .from('assignments')
               .select('id, title, max_points, category_id')
               .eq('class_id', classId)
               .eq('is_published', true)
               .gte('due_date', currentQuarter.start_date)
               .lte('due_date', currentQuarter.end_date));
+            // Out of this student's own points, as the server grade is.
+            const allCategoryAssignments = await this.withMyVersions(classCategoryAssignments || []);
 
             if (allCategoryAssignments && allCategoryAssignments.length > 0) {
               // Batch load ALL submissions for these assignments at once
@@ -31571,11 +31958,12 @@ Students you had withdrawn stay withdrawn.`)) {
             }
           }
 
-          // Filter to assignments that are either assigned to all OR specifically assigned to this student
-          const filteredAssignments = assignments.filter(assignment => {
+          // Filter to assignments that are either assigned to all OR specifically
+          // assigned to this student, then lay this student's own versions over them.
+          const filteredAssignments = await this.withMyVersions(assignments.filter(assignment => {
             if (assignment.assigned_to_all) return true;
             return assignedToStudentIds.has(assignment.id);
-          });
+          }));
 
           // Load submissions
           const assignmentIds = filteredAssignments.map(a => a.id);
@@ -56336,7 +56724,13 @@ Students you had withdrawn stay withdrawn.`)) {
         ? new Set((picked || []).map(r => r.student_id).filter(id => roster.has(id)))
         : roster;
 
-      const due = a.due_date ? new Date(a.due_date) : null;
+      // A student's own version may move their due date.
+      const host = this;
+      const versions = await host.loadStudentVersions([a.id]);
+      const dueFor = id => {
+        const d = host.studentVersionOf(versions, a.id, [id])?.due_date || a.due_date;
+        return d ? new Date(d) : null;
+      };
       const latest = {};
       (subs || []).forEach(sub => {
         // Newest attempt per student. A resubmit rewrites submitted_at on the
@@ -56364,7 +56758,11 @@ Students you had withdrawn stay withdrawn.`)) {
           off_roster: assignedTo.has(id) ? undefined : true,
           status: sub ? (sub.status || 'submitted') : 'missing'
         };
+        const v = host.studentVersionOf(versions, a.id, [id]);
+        if (v) row.own_version = { due_date: v.due_date || undefined, points_possible: v.points_possible ?? undefined,
+                                   own_instructions: v.description != null || undefined };
         if (!sub) return row;
+        const due = dueFor(id);
         row.submitted_at = sub.submitted_at || null;
         row.late = (due && sub.submitted_at) ? new Date(sub.submitted_at) > due : null;
         if (row.late) row.days_late = Math.max(1, Math.ceil((new Date(sub.submitted_at) - due) / 86400000));
@@ -56393,8 +56791,8 @@ Students you had withdrawn stay withdrawn.`)) {
         submitted: handed.length,
         missing: rows.filter(r => r.status === 'missing').length,
         late: handed.filter(r => r.late === true).length,
-        note: due
-          ? 'late is derived: submitted_at falls after due_date. A due date with no time means the end of that day.'
+        note: a.due_date
+          ? "late is derived: submitted_at falls after due_date (each student's own due date where own_version moved it). A due date with no time means the end of that day."
           : 'This assignment has no due date, so late is null on every submission.',
         submissions: rows
       };
@@ -66428,11 +66826,14 @@ Students you had withdrawn stay withdrawn.`)) {
         return;
       }
 
+      // Out of this student's own points if the teacher changed their version.
+      const ownMax = (await this.withVersionFor({ id: a.id, max_points: a.max_points }, [student.id]))?.max_points ?? a.max_points;
+
       const raw = entities.original || entities._rawInput || '';
       const esc = (t) => this.escapeHtml(String(t));
 
       // "18 out of 20", "18/20", or a bare score against the assignment's max.
-      let earned = null, outOf = a.max_points ?? null;
+      let earned = null, outOf = ownMax ?? null;
       const m = raw.match(/\b(\d{1,4}(?:\.\d+)?)\s*(?:\/|out of)\s*(\d{1,4})\b/i);
       if (m) { earned = parseFloat(m[1]); outOf = parseInt(m[2], 10); }
       else {
@@ -66454,9 +66855,9 @@ Students you had withdrawn stay withdrawn.`)) {
       }
       // The assignment's own maximum is the record; a sentence saying otherwise
       // is a typo often enough that it is worth stopping on.
-      if (a.max_points != null && outOf !== a.max_points) {
+      if (ownMax != null && outOf !== ownMax) {
         this.terminalPrintError(
-          `${a.title} is out of ${a.max_points}, not ${outOf}. Say it out of ${a.max_points}, ` +
+          `${a.title} is out of ${ownMax}, not ${outOf}. Say it out of ${ownMax}, ` +
           `or change the assignment first.`);
         return;
       }
@@ -70331,7 +70732,12 @@ Students you had withdrawn stay withdrawn.`)) {
             .in('class_id', classIds).eq('is_published', true)
             .order('due_date', { ascending: true }).limit(120);
           // graded_offline work is collected on paper — never "missing" here.
-          const assignments = (aData || []).filter(a => !a.graded_offline && a.due_date);
+          // Due dates are this student's own where their version moved them.
+          const host = this;
+          const versions = await host.loadStudentVersions((aData || []).map(a => a.id), [student.id]);
+          const assignments = (aData || [])
+            .map(a => host.withStudentVersion(a, host.studentVersionOf(versions, a.id, [student.id])))
+            .filter(a => !a.graded_offline && a.due_date);
           if (assignments.length) {
             const { data: sData } = await sb.from('assignment_submissions')
               .select('assignment_id, status')
@@ -71357,10 +71763,18 @@ Students you had withdrawn stay withdrawn.`)) {
       const enrByClass = {};
       enrollments.forEach(e => { (enrByClass[e.class_id] = enrByClass[e.class_id] || new Set()).add(e.student_id); });
       const missingByStudent = {};
+      // A student whose own version moved the due date past today is not
+      // missing it yet.
+      const host = this;
+      const versions = await host.loadStudentVersions(assignments.map(a => a.id));
+      const extended = (a, sid) => {
+        const d = host.studentVersionOf(versions, a.id, [sid])?.due_date;
+        return !!d && String(d).slice(0, 10) >= today;
+      };
       assignments.filter(a => a.assigned_to_all !== false).forEach(a => {
         const submitted = new Set((subsByAssign[a.id] || []).map(s => s.student_id));
         (enrByClass[a.class_id] || new Set()).forEach(sid => {
-          if (!submitted.has(sid)) {
+          if (!submitted.has(sid) && !extended(a, sid)) {
             (missingByStudent[sid] = missingByStudent[sid] || []).push(a);
           }
         });
@@ -76821,6 +77235,10 @@ OK to discard and continue, Cancel to go back and save.`)) {
             this.submissions[`${sub.student_id}-${sub.assignment_id}`] = sub;
           });
 
+          // Students whose copy of an assignment was changed for them: their
+          // cell is out of their own points.
+          this.versions = await window.app.loadStudentVersions(assignmentIds);
+
           // Calculate academic grades for each student
           await PortalUI.mapLimit(this.enrollments, 8, async (enrollment) => {
             try {
@@ -76954,6 +77372,9 @@ OK to discard and continue, Cancel to go back and save.`)) {
             const pointsEarned = submission?.points_earned;
             const isGraded = pointsEarned != null;
             const isExcused = submission?.status === 'excused';
+            // This student's own version, if the teacher changed theirs.
+            const version = window.app.studentVersionOf(this.versions, assignment.id, [enrollment.student_id]);
+            const cellMax = version?.points_possible ?? assignment.max_points;
 
             // Determine highlight class
             let highlightStyle = '';
@@ -76980,15 +77401,16 @@ OK to discard and continue, Cancel to go back and save.`)) {
                        class="gradebook-input"
                        data-student-id="${enrollment.student_id}"
                        data-assignment-id="${assignment.id}"
-                       data-max-points="${assignment.max_points}"
+                       data-max-points="${cellMax}"
                        value="${isGraded ? pointsEarned : ''}"
                        placeholder="—"
                        min="0"
-                       max="${assignment.max_points}"
+                       max="${cellMax}"
+                       ${version ? `title="Adjusted for this student${version.points_possible != null ? ': out of ' + version.points_possible : ''}"` : ''}
                        step="0.5"
                        onchange="gradebook.handleCellEdit('${enrollment.student_id}', '${assignment.id}', this.value, this)"
                        onkeydown="gradebook.handleCellKeydown(event, this)"
-                       style="width: 50px; padding: 4px; text-align: center; border: 1px solid var(--border-color); border-radius: 4px; background: var(--bg); color: var(--text-color); font-size: 13px;">
+                       style="width: 50px; padding: 4px; text-align: center; border: 1px ${version ? 'dashed var(--accent)' : 'solid var(--border-color)'}; border-radius: 4px; background: var(--bg); color: var(--text-color); font-size: 13px;">
               `;
             }
 

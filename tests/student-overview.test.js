@@ -76,7 +76,10 @@ const METHODS = [
   'loadStudentOverview', '_dueText', '_nextItemView', 'doNextItem', '_attendanceSummary',
   'renderStudentNextCard', 'renderChildOverviewSection', 'handlePortalDeepLink',
   '_homeHeadingFor', 'loadStudentGPADisplay', 'loadStudentStrikesDisplay',
-  'sendNewAssignmentNotifications', '_progressStudentId'
+  'sendNewAssignmentNotifications', '_progressStudentId',
+  // A student's own version of an assignment, laid over the class row.
+  'studentVersionBadge', 'loadStudentVersions', 'studentVersionOf', 'withStudentVersion',
+  'myStudentIds', 'withMyVersions'
 ];
 
 // A fresh app per test, with recorders for everything that leaves the page.

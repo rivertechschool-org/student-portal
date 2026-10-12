@@ -39,8 +39,8 @@ const check = (label, actual, expected) => {
 };
 const ok = (label, cond) => check(label, !!cond, true);
 
-function extract(name) {
-  const re = new RegExp('\\n    (?:async\\s+)?' + name + '\\s*\\(', 'g');
+function extract(name, indent = 4) {
+  const re = new RegExp('\\n' + ' '.repeat(indent) + '(?:async\\s+)?' + name + '\\s*\\(', 'g');
   const m = re.exec(html);
   if (!m) throw new Error('method not found: ' + name);
   let i = m.index + m[0].length - 1, pd = 0;
@@ -81,7 +81,7 @@ const BANDS = [
 ];
 
 function makeApp({ role = 'teacher', assignments = [ASSIGNMENT], submissions = [], bands = BANDS,
-                   defaultRubric = [{ id: 'rdef' }], classes = [MINE, THEIRS] } = {}) {
+                   defaultRubric = [{ id: 'rdef' }], classes = [MINE, THEIRS], versions = [] } = {}) {
   const app = {
     said: [],
     errors: [],
@@ -118,7 +118,8 @@ function makeApp({ role = 'teacher', assignments = [ASSIGNMENT], submissions = [
               let data = table === 'assignments' ? assignments
                 : table === 'assignment_submissions' ? submissions
                 : table === 'rubric_criteria' ? bands
-                : table === 'rubrics' ? defaultRubric : [];
+                : table === 'rubrics' ? defaultRubric
+                : table === 'assignment_student_versions' ? versions : [];
               if (q._in) data = data.filter(r => q._in.vals.includes(r[q._in.col]));
               if (q._eq && table !== 'rubric_criteria' && table !== 'rubrics') {
                 data = data.filter(r => Object.entries(q._eq).every(([k, v]) => r[k] === v));
@@ -136,6 +137,11 @@ function makeApp({ role = 'teacher', assignments = [ASSIGNMENT], submissions = [
   app._rivenFindAssignment = extract('_rivenFindAssignment');
   app._rivenAssignmentError = extract('_rivenAssignmentError');
   app._rivenLetterForScore = extract('_rivenLetterForScore');
+  // A student's own version of the assignment. App methods sit two spaces
+  // deeper than Riven's.
+  for (const m of ['withVersionFor', 'loadStudentVersions', 'studentVersionOf', 'withStudentVersion']) {
+    app[m] = extract(m, 6);
+  }
   const fn = extract('terminalGradeSubmission');
   app.terminalGradeSubmission = async function (...a) {
     const r = await fn.apply(app, a);
@@ -211,6 +217,19 @@ const SUB = (over = {}) => ({ id: 's1', assignment_id: 'a1', student_id: 'noah',
     const app = makeApp({ submissions: [SUB()] });
     await app.terminalGradeSubmission.call(app, said('noah got 30 out of 20 on chapter 4'));
     check('a score above the maximum is refused', app.updates, []);
+  }
+
+  {
+    // Noah's own version of chapter 4 is out of 25: that is his total, and
+    // the class's 20 is the one refused.
+    const versions = [{ assignment_id: 'a1', student_id: 'noah', points_possible: 25 }];
+    const app = makeApp({ submissions: [SUB()], versions });
+    await app.terminalGradeSubmission.call(app, said('noah got 18 out of 25 on chapter 4'));
+    ok('the total of his own version is accepted', app.updates.length === 1 && app.updates[0].patch.points_earned === 18);
+    const app2 = makeApp({ submissions: [SUB()], versions });
+    await app2.terminalGradeSubmission.call(app2, said('noah got 18 out of 20 on chapter 4'));
+    check('the class total is refused for him', app2.updates, []);
+    ok('  saying what his version is out of', /out of 25, not 20/.test(app2.errors[0]));
   }
 
   {
