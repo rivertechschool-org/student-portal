@@ -8605,6 +8605,9 @@
               <button class="btn btn-primary" onclick="app.showParentAbsenceModal()">
                 📅 Report an Absence
               </button>
+              <button class="btn btn-primary" onclick="app.showParentLateEarlyModal()">
+                ⏰ Late Arrival / Early Pickup
+              </button>
               <button class="btn btn-secondary" onclick="app.showSection('profile')">
                 ⚙️ Account Settings
               </button>
@@ -44329,6 +44332,9 @@ Students you had withdrawn stay withdrawn.`)) {
           <div style="font-size: 13px; color: var(--muted);">
             Let the school know your child will be away. Staff are told straight away, and the
             register is filled in on the day.
+            Only arriving late or leaving early?
+            <a href="#" onclick="app.closeModal('parent-absence'); app.showParentLateEarlyModal(); return false;"
+               style="color: var(--accent);">Tell us that instead</a>.
           </div>
           ${existing}
           <div>
@@ -44396,6 +44402,136 @@ Students you had withdrawn stay withdrawn.`)) {
         `Thank you \u2014 ${res.student || 'your child'} is down as away ${res.span || ''}.` +
         (res.notified ? ` ${res.notified} staff member${res.notified === 1 ? '' : 's'} told.` : ''),
         'success');
+    }
+
+    // ---- A parent reporting a late arrival or early pickup -----------------
+    //
+    // Same shape as the absence report above: rt_submit_late_early checks the
+    // parent-child link, records the plan, and tells the admins and the
+    // teachers of that day's classes. The register of each class the time
+    // touches flags the child (_lateEarlyChip); nothing is marked for them.
+    async showParentLateEarlyModal() {
+      const kids = this.children || [];
+      if (!kids.length) {
+        this.showNotification('No children are linked to your account yet.', 'info');
+        return;
+      }
+      const today = this._localDateStr(new Date());
+      const field = 'width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);';
+      const options = kids.map(k =>
+        `<option value="${this.jsAttr(k.id)}">${this.escapeHtml(`${k.first_name || ''} ${k.last_name || ''}`.trim())}</option>`
+      ).join('');
+      const existing = await this._parentLateEarlyListHtml();
+
+      this.showModal('parent-late-early', '⏰ Late arrival or early pickup', `
+        <div style="display: flex; flex-direction: column; gap: 14px;">
+          <div style="font-size: 13px; color: var(--muted);">
+            Let the school know your child will arrive late or be picked up early. Their teachers
+            are told straight away, and the class register shows it on the day.
+          </div>
+          <div id="ple-existing">${existing}</div>
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Child</label>
+            <select id="ple-student" style="${field}">${options}</select>
+          </div>
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 1 1 160px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">What</label>
+              <select id="ple-kind" style="${field}">
+                <option value="early">Picking up early</option>
+                <option value="late">Arriving late</option>
+              </select>
+            </div>
+            <div style="flex: 1 1 130px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Day</label>
+              <input type="date" id="ple-date" value="${today}" min="${today}" style="${field}">
+            </div>
+            <div style="flex: 1 1 110px;">
+              <label style="display: block; margin-bottom: 5px; font-weight: 600;">Time</label>
+              <input type="time" id="ple-time" min="06:00" max="18:00" style="${field}">
+            </div>
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 5px; font-weight: 600;">Reason <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <input type="text" id="ple-reason" placeholder="Dentist, appointment, sports\u2026" maxlength="200" style="${field}">
+          </div>
+          <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('parent-late-early')">Cancel</button>
+            <button class="btn btn-primary" id="ple-send" onclick="app.submitParentLateEarly()">Tell the school</button>
+          </div>
+        </div>
+      `);
+    }
+
+    // What is already down for this family's children, today onward. The
+    // office's entries show too, so a family does not report the same pickup
+    // twice; only the ones the parent entered can be withdrawn by them.
+    async _parentLateEarlyListHtml() {
+      try {
+        const today = this._localDateStr(new Date());
+        const kids = this.children || [];
+        const nameOf = {};
+        kids.forEach(k => { nameOf[k.id] = `${k.first_name || ''}`.trim() || 'Your child'; });
+        const { data, error } = await this.auth.supabase.from('planned_late_early')
+          .select('id, student_id, date, kind, at_time, reason, source, created_by')
+          .gte('date', today).order('date').order('at_time');
+        if (error) throw error;
+        const rows = data || [];
+        if (!rows.length) return '';
+        const mine = new Set([this.auth?.currentUser?.id, this.auth?.userProfile?.id,
+          this.auth?.userProfile?.auth_user_id, this.userInfo?.user?.id].filter(Boolean));
+        const fmt = d => d === today ? 'today'
+          : new Date(d + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+        return `
+          <div style="border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;">
+            <div style="font-weight: 600; font-size: 13px; margin-bottom: 6px;">Already reported</div>
+            ${rows.map(r => `
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); padding: 3px 0;">
+                <span>${this.escapeHtml(nameOf[r.student_id] || 'Your child')} \u00b7 ${r.kind === 'late' ? 'arrives' : 'picked up'} ${this.escapeHtml(this._bellSay(r.at_time))} ${this.escapeHtml(fmt(r.date))}${r.reason ? ' \u00b7 ' + this.escapeHtml(r.reason) : ''}${r.source === 'staff' ? ' \u00b7 entered by the school' : ''}</span>
+                ${r.source === 'parent' && mine.has(r.created_by)
+                  ? `<button class="btn btn-secondary small" onclick="app.withdrawParentLateEarly('${this.jsAttr(r.id)}')">Withdraw</button>` : ''}
+              </div>`).join('')}
+          </div>`;
+      } catch (_) {
+        return '';   // the form still works without the list
+      }
+    }
+
+    async submitParentLateEarly() {
+      const studentId = document.getElementById('ple-student')?.value;
+      const kind = document.getElementById('ple-kind')?.value === 'late' ? 'late' : 'early';
+      const date = document.getElementById('ple-date')?.value;
+      const time = document.getElementById('ple-time')?.value;
+      const reason = document.getElementById('ple-reason')?.value.trim() || null;
+      if (!studentId || !date || !time) { this.showNotification('A child, a day and a time are needed', 'warning'); return; }
+      if (date < this._localDateStr(new Date())) { this.showNotification('That day has passed', 'warning'); return; }
+
+      // A double tap on a slow connection would notify every teacher twice.
+      const btn = document.getElementById('ple-send');
+      if (btn) { if (btn.disabled) return; btn.disabled = true; btn.textContent = 'Sending\u2026'; }
+
+      const { data, error } = await this.auth.supabase.rpc('rt_submit_late_early', {
+        p_student_id: studentId, p_date: date, p_kind: kind, p_time: time, p_reason: reason
+      });
+      if (error) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Tell the school'; }
+        this.showNotification('Could not send it: ' + error.message, 'error');
+        return;
+      }
+      const res = typeof data === 'string' ? JSON.parse(data) : (data || {});
+      this.closeModal('parent-late-early');
+      this.showNotification(
+        `Thank you \u2014 ${res.student || 'your child'} ${kind === 'late' ? 'arrives' : 'is picked up'} at ${res.when || time}.` +
+        (res.notified ? ` ${res.notified} staff member${res.notified === 1 ? '' : 's'} told.` : ''),
+        'success');
+    }
+
+    async withdrawParentLateEarly(id) {
+      const { error } = await this.auth.supabase.from('planned_late_early').delete().eq('id', id);
+      if (error) { this.showNotification('Could not withdraw it: ' + error.message, 'error'); return; }
+      this.showNotification('Withdrawn', 'success');
+      const box = document.getElementById('ple-existing');
+      if (box) box.innerHTML = await this._parentLateEarlyListHtml();
     }
 
     // ==================== PLANNED ABSENCES ====================
@@ -44494,7 +44630,7 @@ Students you had withdrawn stay withdrawn.`)) {
       let rows = [];
       try {
         const { data, error } = await this.auth.supabase.from('planned_late_early')
-          .select('id, student_id, date, kind, at_time, reason')
+          .select('id, student_id, date, kind, at_time, reason, source')
           .gte('date', today).order('date').order('at_time');
         if (error) throw error;
         rows = data || [];
@@ -44517,7 +44653,7 @@ Students you had withdrawn stay withdrawn.`)) {
           <div style="flex: 1 1 200px; min-width: 0;">
             <div style="font-weight: 600;">${this.escapeHtml(nameOf[r.student_id] || 'Unknown student')}${r.date === today ? ' <span style="font-size: 11px; font-weight: 600; color: #d97a3a;">today</span>' : ''}</div>
             <div style="font-size: 12px; color: var(--muted); overflow-wrap: anywhere;">
-              ${r.kind === 'late' ? '⏰ Arrives' : '🚗 Leaves'} ${this.escapeHtml(this._bellSay(r.at_time))} · ${this.escapeHtml(fmt(r.date))}${r.reason ? ' · ' + this.escapeHtml(r.reason) : ''}
+              ${r.kind === 'late' ? '⏰ Arrives' : '🚗 Leaves'} ${this.escapeHtml(this._bellSay(r.at_time))} · ${this.escapeHtml(fmt(r.date))}${r.reason ? ' · ' + this.escapeHtml(r.reason) : ''}${r.source === 'parent' ? ' · <span style="color: #2f6b6d; font-weight: 600;">reported by a parent</span>' : ''}
             </div>
           </div>
           <button class="btn btn-secondary small" onclick="app.deleteLateEarly('${this.jsAttr(r.id)}')"
@@ -44583,9 +44719,11 @@ Students you had withdrawn stay withdrawn.`)) {
       if (!date || !time) { this.showNotification('A date and a time are needed', 'warning'); return; }
       if (date < this._localDateStr(new Date())) { this.showNotification('That date has passed', 'warning'); return; }
       // Same day and kind again replaces the old time ("actually 2:15").
-      const { error } = await this.auth.supabase.from('planned_late_early')
-        .upsert({ student_id: studentId, date, kind, at_time: time, reason, created_by: this.userInfo.user.id },
-                { onConflict: 'student_id,date,kind' });
+      // Through the function a parent uses, so its checks (school hours, not
+      // in the past) apply to whoever is typing.
+      const { error } = await this.auth.supabase.rpc('rt_submit_late_early', {
+        p_student_id: studentId, p_date: date, p_kind: kind, p_time: time, p_reason: reason
+      });
       if (error) { this.showNotification('Could not save it: ' + error.message, 'error'); return; }
       this.closeModal('add-late-early');
       this.showNotification(kind === 'late' ? 'Late arrival saved' : 'Early pickup saved', 'success');

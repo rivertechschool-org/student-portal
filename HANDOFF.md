@@ -4823,3 +4823,19 @@ table is in the backend repo (applied 2026-10-12).
 Not done: parents cannot report a late arrival or early pickup themselves
 yet (they can report absences), and students/parents do not see these plans
 anywhere in the portal.
+
+### 2026-10-12: parents report late arrivals and early pickups
+
+Parents have a **⏰ Late Arrival / Early Pickup** button beside "Report an
+Absence" (and a link to it from the absence form). They pick the child,
+late or early, the day and the time, and an optional reason. It goes
+through the same backend function the staff form now uses: it checks the
+parent is linked to the child, keeps the time inside the school day and the
+date not in the past, and when a parent sends it, tells the admins and the
+teachers of that child's classes on that weekday (Notifications).
+
+The form lists what is already down for their children, including the
+school's own entries, and lets a parent withdraw only the ones they entered.
+The office panel marks parent entries "reported by a parent". Riven's staff
+command is unchanged. `debug-tools/late-early-journeys.mjs` now walks the
+parent side too (24 checks).

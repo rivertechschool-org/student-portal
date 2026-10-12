@@ -185,8 +185,9 @@ console.log('\n== a parent reports their own child ==\n');
 // are addressed to staff, and letting a parent write rows into other people's
 // inboxes is a spam primitive however polite the screen is. The database checks
 // the parent-child link and does both halves.
+// The late-arrival / early-pickup form follows it, then the staff section.
 const parent = html.slice(html.indexOf('    async showParentAbsenceModal() {'),
-                          html.indexOf('    // ==================== PLANNED ABSENCES ===================='));
+                          html.indexOf('    // ---- A parent reporting a late arrival or early pickup'));
 ok('the parent flow was located', parent.length > 1500);
 check('it never inserts into the table directly',
   /from\('planned_absences'\)\s*\.?\s*\n?\s*\.insert/.test(parent), false);

@@ -96,7 +96,9 @@ async function boot(page) {
           const i = list.findIndex(x => x.student_id === row.student_id && x.date === row.date && x.kind === row.kind);
           let saved;
           if (i >= 0) { list[i] = { ...list[i], ...row }; saved = list[i]; }
-          else { saved = { id: 'le' + (++n), ...row }; list.push(saved); }
+          // Column defaults as the schema declares them (source defaults to
+          // 'staff'), or the stub is stricter than Postgres.
+          else { saved = { id: 'le' + (++n), source: 'staff', ...row }; list.push(saved); }
           const res = { data: { id: saved.id }, error: null };
           const p = Promise.resolve(res);
           return { select: () => ({ single: () => p }), then: (a, b) => p.then(a, b) };
@@ -122,7 +124,21 @@ async function boot(page) {
       return api;
     };
     const app = window.app;
-    app.auth.supabase = { from: build, rpc: () => Promise.resolve({ data: [], error: null }) };
+    // rt_submit_late_early as the database runs it: record (replacing the same
+    // day and kind), mark who it came from, report how many staff were told.
+    const rpc = (name, args) => {
+      if (name !== 'rt_submit_late_early') return Promise.resolve({ data: [], error: null });
+      window.__writes.push({ op: 'rpc', name, args: copy(args) });
+      const me = app.userInfo.profile;
+      const source = me.user_type === 'parent' ? 'parent' : 'staff';
+      const list = (T.planned_late_early = T.planned_late_early || []);
+      const i = list.findIndex(x => x.student_id === args.p_student_id && x.date === args.p_date && x.kind === args.p_kind);
+      const row = { student_id: args.p_student_id, date: args.p_date, kind: args.p_kind, at_time: args.p_time,
+                    reason: args.p_reason, source, created_by: app.userInfo.user.id };
+      if (i >= 0) list[i] = { ...list[i], ...row }; else list.push({ id: 'le' + (++n), ...row });
+      return Promise.resolve({ data: { student: 'Ivy Marsh', when: args.p_time, notified: source === 'parent' ? 3 : 0 }, error: null });
+    };
+    app.auth.supabase = { from: build, rpc };
     app.supabaseQuery = (fn) => Promise.resolve(fn());
     app.userInfo = { user: { id: 'u-office' }, profile: { id: 'p-office', user_type: 'admin', first_name: 'Ola' } };
     app.auth.userProfile = app.userInfo.profile;
@@ -210,6 +226,50 @@ const firstId = await page.evaluate(() => window.__T.planned_late_early[0].id);
 await page.evaluate((id) => { window.__writes = []; return app.deleteLateEarly(id); }, firstId);
 writes = await page.evaluate(() => window.__writes);
 ok('Remove deletes that plan', writes.some(w => w.op === 'delete' && w.where.id === firstId));
+
+console.log('\nA parent reports an early pickup');
+await page.evaluate(() => {
+  window.__writes = [];
+  app.userInfo = { user: { id: 'u-pat' }, profile: { id: 'p-pat', user_type: 'parent', first_name: 'Pat' } };
+  app.auth.userProfile = app.userInfo.profile; app.auth.currentUser = { id: 'u-pat' };
+  app.children = [{ id: 'p-ivy', first_name: 'Ivy', last_name: 'Marsh' }];
+  document.querySelectorAll('[id^="modal-"]').forEach(m => m.remove());
+});
+await page.evaluate(() => app.showParentLateEarlyModal());
+await page.waitForSelector('#ple-time');
+txt = await modalText(page);
+ok('the form lists what the school already has', /Already reported/.test(txt) && /entered by the school/.test(txt));
+ok('  with no Withdraw on the school\'s entries', !/Withdraw/.test(txt));
+await page.selectOption('#ple-kind', 'early');
+await page.fill('#ple-date', DATE);
+await page.fill('#ple-time', '13:30');
+await page.fill('#ple-reason', 'orthodontist');
+await page.click('#ple-send');
+await page.waitForTimeout(250);
+writes = await page.evaluate(() => window.__writes);
+const sent = writes.find(w => w.op === 'rpc');
+check('it goes through rt_submit_late_early', sent && [sent.args.p_student_id, sent.args.p_kind, sent.args.p_time, sent.args.p_date, sent.args.p_reason],
+  ['p-ivy', 'early', '13:30', DATE, 'orthodontist']);
+const notice = await page.evaluate(() => [...document.querySelectorAll('.notification, [class*="notification"]')].map(n => n.textContent).join(' '));
+ok('the parent is told staff were notified', /3 staff members told/.test(notice));
+await page.evaluate(() => app.showParentLateEarlyModal());
+await page.waitForSelector('#ple-existing');
+txt = await modalText(page);
+ok('their own entry can be withdrawn', /picked up 1:30 pm/.test(txt) && /Withdraw/.test(txt));
+const ownId = await page.evaluate(() => window.__T.planned_late_early.find(p => p.source === 'parent').id);
+await page.evaluate((id) => { window.__writes = []; return app.withdrawParentLateEarly(id); }, ownId);
+writes = await page.evaluate(() => window.__writes);
+ok('withdrawing deletes it', writes.some(w => w.op === 'delete' && w.where.id === ownId));
+
+console.log('\nThe office sees who reported it');
+await page.evaluate(() => app.submitParentLateEarly && null);
+await page.evaluate(({ date }) => {
+  window.__T.planned_late_early.push({ id: 'le-par', student_id: 'p-ivy', date, kind: 'early', at_time: '13:30:00', source: 'parent', created_by: 'u-pat' });
+  app.userInfo = { user: { id: 'u-office' }, profile: { id: 'p-office', user_type: 'admin', first_name: 'Ola' } };
+}, { date: DATE });
+await page.evaluate(() => app.renderLateEarlyPanel());
+txt = await page.evaluate(() => document.getElementById('late-early-body').textContent);
+ok('the panel says "reported by a parent"', /reported by a parent/.test(txt));
 
 check('no page errors', pageErrors, []);
 await browser.close();
