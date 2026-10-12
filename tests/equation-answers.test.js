@@ -89,5 +89,40 @@ t('reflection', 'y = (x - 1)^2 - 2', 'y = -(x - 1)^2 - 2', false);
 t('f(-x) is not -f(x)', 'y = -f(x)', 'y = f(-x)', false);
 t('unsolved is not solved', '2x = 24', 'x = 12', false);
 t('wrong solution', 'x = 13', 'x = 12', false);
+
+// Reported 2026-10-12: "y = 9" written "9 = y" was marked wrong, worst on
+// quadratics where the answer is a list of roots. Every item of a list is
+// oriented on its own, "±" is expanded, and a set of roots matches in any
+// spelling and order. debug-tools/semantic-answer-sweep.js does the same
+// rewrites over every generated question.
+console.log('\n== flipped, item by item ==\n');
+t('restated number, flipped', '9 = y', '9', true);
+t('negative restatement, flipped', '-9 = y', '-9', true);
+t('both roots flipped', '5 = x or 3 = x', 'x = 5, 3', true);
+t('both roots flipped, comma', '5 = x, 3 = x', 'x = 5, 3', true);
+t('function on the right', 'f(x) + 2 = y', 'y = f(x) + 2', true);
+t('shift inside f', 'f(x + 2) = y', 'y = f(x + 2)', true);
+t('subscripted letter', '2A/(b_1 + b_2) = h', 'h = 2A/(b_1 + b_2)', true);
+t('no lone letter either side', '7eˣ dx = dy/y', 'dy/y = 7eˣ dx', true);
+console.log('\n== a set of roots, any spelling ==\n');
+t('other order', 'x = 3 or x = 5', 'x = 5, 3', true);
+t('"and"', 'x = 5 and x = 3', 'x = 5, 3', true);
+t('one x for both', 'x = 3, 5', 'x = 5, 3', true);
+t('set braces', '{3, 5}', 'x = 5, 3', true);
+t('bare values', '3, 5', 'x = 5, 3', true);
+t('fractions', '1 = x or 4/3 = x', 'x = 4/3, 1', true);
+t('± for a pair', 'x = ±2', 'x = 2 or x = -2', true);
+t('± flipped', '±2 = x', 'x = 2 or x = -2', true);
+t('+/- typed', 'x = +/-2', 'x = 2 or x = -2', true);
+t('a ± b', 'x = 3 ± 2', 'x = 5, 1', true);
+t('letter added to an "or" answer', 'x = 8, x = -8', '8 or -8', true);
+console.log('\n== wrong roots stay wrong ==\n');
+t('one root of two', 'x = 5', 'x = 5, 3', false);
+t('one root of two, flipped', '5 = x', 'x = 5, 3', false);
+t('a root sign-flipped', 'x = 5 or x = -3', 'x = 5, 3', false);
+t('an extra root', 'x = 5, 3, 1', 'x = 5, 3', false);
+t('± where the roots are not ±', 'x = ±3', 'x = 5, 3', false);
+t('roots for the wrong letter', 'y = 5, 3', 'x = 5, 3', false);
+t('flipped but wrong', '10 = y', 'y = 9', false);
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

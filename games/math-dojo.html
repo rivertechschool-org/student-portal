@@ -2889,7 +2889,7 @@ const AnswerInterpreter = {
                 // "34.9°" as 34, equal to an expected "34°".
                 // One angle only: "30°, 150°" is a list, and reading just its
                 // first angle let "30°" pass for both.
-                if (/,|and|or/.test(s)) break;
+                if (/,|\band\b|\bor\b/.test(s)) break;
                 const angleMatch = s.match(/(-?\d+(?:\.\d+)?)\s*°?/);
                 // The words around the number count too: "rotation 90°
                 // counterclockwise" is not "rotation 90° clockwise".
@@ -3051,6 +3051,99 @@ const AnswerInterpreter = {
         return false;
     },
 
+    // Split an answer into its top-level items - at commas, semicolons, "or"
+    // and "and" outside brackets - keeping the separators so it can be put
+    // back together. "P(1) = 0.5, P(2) = 0.3" is two items, "(3, 4)" is one.
+    splitItems(str) {
+        const out = [];
+        let depth = 0, cur = '';
+        const s = String(str);
+        for (let i = 0; i < s.length; i++) {
+            const c = s[i];
+            if ('([{⟨'.includes(c)) depth++;
+            else if (')]}⟩'.includes(c)) depth = Math.max(0, depth - 1);
+            if (depth === 0) {
+                const sep = s.slice(i).match(/^(\s*[,;]\s*|\s+(?:or|and)\s+)/i);
+                if (sep) { out.push(cur, sep[0]); cur = ''; i += sep[0].length - 1; continue; }
+            }
+            cur += c;
+        }
+        out.push(cur);
+        return out;
+    },
+
+    // One way of writing each equation, so meaning is compared, not layout:
+    //   sides     "9 = y" -> "y = 9", "f(x) + 2 = y" -> "y = f(x) + 2" - the
+    //             letter (or f(x), P(1), yₙ₊₁) alone goes on the left. Item
+    //             by item: "5 = x or 3 = x" -> "x = 5 or x = 3".
+    //   ±         "x = ±2" -> "x = 2 or x = -2", "x = 3 ± √2" -> both roots,
+    //             "±6/5" -> "6/5 or -6/5".
+    // Both are exact rewrites of the same statement, so they cannot make a
+    // wrong answer right. Returns the input unchanged when there is nothing to do.
+    canonicalEquations(str) {
+        const s = String(str).replace(/\+\/-|\+-(?=\s*[\d√(a-z])/gi, '±');
+        const lone = t => /^[A-Za-z](?:_?[A-Za-z0-9]|[₀-ₜₐ-ₜ])*(?:\([^()]*\))?['′]?$/.test(t.replace(/\s+/g, ''));
+        const parts = this.splitItems(s);
+        let changed = s !== String(str);
+        const out = parts.map((item, idx) => {
+            if (idx % 2 === 1) return item;                       // a separator
+            const eqs = (item.match(/=/g) || []).length;
+            if (/[<>≤≥≠]|==/.test(item) || eqs > 1) return item;
+            let lhs = null, rhs = item;
+            if (eqs === 1) {
+                [lhs, rhs] = item.split('=').map(t => t.trim());
+                // A bare letter beats f(x + 2) for the left: "f(x + 2) = y" -> "y = f(x + 2)".
+                const bare = t => /^[A-Za-z]$/.test(t.replace(/\s+/g, ''));
+                if ((!lone(lhs) && lone(rhs)) || (bare(rhs) && !bare(lhs))) { [lhs, rhs] = [rhs, lhs]; changed = true; }
+            }
+            const pm = rhs.match(/^(.*?)\s*±\s*(.+)$/);
+            if (!pm || /±/.test(pm[2])) return lhs === null ? item : `${lhs} = ${rhs}`;
+            changed = true;
+            const a = pm[1].trim(), b = pm[2].trim();
+            const plus = a ? `${a} + ${b}` : b, minus = a ? `${a} - ${b}` : `-${b}`;
+            return lhs === null ? `${plus} or ${minus}` : `${lhs} = ${plus} or ${lhs} = ${minus}`;
+        }).join('');
+        return changed ? out : String(str);
+    },
+
+    // A set of solutions, whatever the spelling: "x = 5, 3", "x = 3 or x = 5",
+    // "{3, 5}", "3, 5". Only when the EXPECTED answer is plainly a solution
+    // set - a letter set equal to two or more values, or values joined by
+    // "or" ("7 or -7") - so "3, 4" stays a point or an order everywhere else. Same values, any order, same count:
+    // one root of two, or an extra one, is still wrong.
+    solutionSetsMatch(userInput, expectedAnswer) {
+        const read = (v, needVar) => {
+            let t = String(v).trim().replace(/−/g, '-');
+            if (/^\{.*\}$/.test(t)) t = t.slice(1, -1);
+            if (/^\(.*\)$/.test(t)) return null;
+            const items = this.splitItems(t).filter((_, i) => i % 2 === 0).map(x => x.trim()).filter(Boolean);
+            let letter = null; const vals = [];
+            for (const it of items) {
+                const m = it.match(/^([A-Za-z])\s*=\s*([^=]+)$/);
+                if (m) { if (letter && letter.toLowerCase() !== m[1].toLowerCase()) return null; letter = m[1]; vals.push(m[2].trim()); }
+                else if (/=|[A-Za-z]{2,}/.test(it)) return null;
+                else vals.push(it);
+            }
+            if (vals.length < 2 || (needVar && !letter && !/\bor\b/i.test(t))) return null;
+            return { letter, vals };
+        };
+        const E = read(expectedAnswer, true);
+        if (!E) return null;
+        const U = read(userInput, false);
+        if (!U) return null;
+        // Solved for the wrong letter: say so, so the caller can stop there -
+        // the looser set reader below ignores the letter.
+        if (U.letter && E.letter && U.letter.toLowerCase() !== E.letter.toLowerCase()) return 'other-letter';
+        if (U.vals.length !== E.vals.length) return false;
+        const left = [...E.vals];
+        for (const u of U.vals) {
+            const j = left.findIndex(e => this.checkAnswer(u, e).correct);
+            if (j < 0) return false;
+            left.splice(j, 1);
+        }
+        return true;
+    },
+
     // ========== MAIN ENTRY POINT ==========
     checkAnswer(userInput, expectedAnswer, options = {}) {
         const { type = null, tolerance = 0.0001, acceptEquivalent = true } = options;
@@ -3061,6 +3154,34 @@ const AnswerInterpreter = {
                 if (result.correct) return result;
             }
             return { correct: false, matchType: 'none' };
+        }
+
+        // Equations written another way round ("9 = y", "5 = x or 3 = x",
+        // "x = ±2") are compared in one orientation first; if that does not
+        // settle it, the original text still gets every reader below.
+        if (!options._canonical && userInput != null && expectedAnswer != null) {
+            const cu = this.canonicalEquations(userInput), ce = this.canonicalEquations(expectedAnswer);
+            if (cu !== String(userInput) || ce !== String(expectedAnswer)) {
+                const r = this.checkAnswer(cu, ce, { ...options, _canonical: true });
+                if (r.correct) return r;
+            }
+            // Every equation's sides swapped, item by item - "7eˣ dx = dy/y" for
+            // "dy/y = 7eˣ dx", and both Cauchy-Riemann equations at once -
+            // where neither side is a lone letter to orient by.
+            const sq = t => String(t).replace(/\s+/g, '').toLowerCase();
+            if (!/[<>≤≥≠]/.test(String(userInput))) {
+                const swapped = this.splitItems(userInput).map((it, i) => {
+                    if (i % 2 === 1) return it;
+                    const sides = it.split('=');
+                    return sides.length === 2 ? sides[1] + '=' + sides[0] : it;
+                }).join('');
+                if (/=/.test(swapped) && sq(swapped) === sq(expectedAnswer)) {
+                    return { correct: true, matchType: 'equivalent' };
+                }
+            }
+            const sets = this.solutionSetsMatch(cu, ce);
+            if (sets === true) return { correct: true, matchType: 'equivalent' };
+            if (sets === 'other-letter') return { correct: false, matchType: 'none' };
         }
 
         // Two equations: decided by meaning (equationsMatch), before the

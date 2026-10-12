@@ -88,6 +88,7 @@ node debug-tools/attendance-matrix.js                              # 326 attenda
 node debug-tools/absence-command-matrix.js                         # 1,635 "mark/set X away <dates>" commands
 node debug-tools/name-resolution.js                                # 83 ways to name a student
 node debug-tools/word-vs-name.js                                   # 700: no ordinary word is a person
+node debug-tools/semantic-answer-sweep.js                          # Math Dojo: "9 = y", root lists, ± stay right
 ```
 
 `attendance-matrix.js` is the grid, not a sample: every way of asking who is or was
