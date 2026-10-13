@@ -40187,7 +40187,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
       _drillOutcomeLabel(outcome, running) {
         if (running) return 'Running';
-        return outcome === 'test' ? 'Drill' : outcome === 'complete' ? 'Real emergency' : 'Not recorded';
+        // The same word as the button that recorded it ("It was a test").
+        return outcome === 'test' ? 'Test' : outcome === 'complete' ? 'Real emergency' : 'Not recorded';
       }
 
       async showDrillLog() {
@@ -40211,9 +40212,9 @@ Students you had withdrawn stay withdrawn.`)) {
           <div>
             <div style="display:flex; gap:18px; flex-wrap:wrap; margin-bottom:12px; font-size:13px; color:var(--muted);">
               <span><strong style="color:var(--text); font-size:18px;">${list.length}</strong> recorded</span>
-              <span><strong style="color:var(--text); font-size:18px;">${drills}</strong> drills</span>
+              <span><strong style="color:var(--text); font-size:18px;">${drills}</strong> test${drills === 1 ? '' : 's'}</span>
               <span><strong style="color:var(--text); font-size:18px;">${real}</strong> real</span>
-              ${avg != null ? `<span><strong style="color:var(--text); font-size:18px;">${esc(this._drillDur(avg))}</strong> average time to account for everyone (drills)</span>` : ''}
+              ${avg != null ? `<span><strong style="color:var(--text); font-size:18px;">${esc(this._drillDur(avg))}</strong> average time to account for everyone (tests)</span>` : ''}
             </div>
             <div style="display:flex; flex-direction:column; gap:8px; max-height:60vh; overflow-y:auto;">
               ${list.length ? list.map(r => this._drillLogCardHtml(r)).join('')
@@ -40221,6 +40222,7 @@ Students you had withdrawn stay withdrawn.`)) {
             </div>
             <div style="display:flex; gap:10px; margin-top:16px; justify-content:flex-end; flex-wrap:wrap;">
               ${list.length ? `<button class="btn btn-secondary" onclick="app.downloadDrillLogCsv()">⬇ Download CSV</button>` : ''}
+              ${this._drillDeletableTests().length ? `<button class="btn btn-danger" onclick="app.deleteDrillTests()">\u{1F5D1} Delete all ${this._drillDeletableTests().length} test${this._drillDeletableTests().length === 1 ? '' : 's'}</button>` : ''}
               <button class="btn btn-primary" onclick="app.closeModal('drill-log')">Close</button>
             </div>
           </div>`, true);
@@ -40268,10 +40270,40 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>` : ''}
             ${flags.length ? `<div style="font-size:12px; margin-top:6px; display:flex; gap:12px; flex-wrap:wrap;">${flags.join('')}</div>` : ''}
             ${r.note ? `<div style="font-size:12px; margin-top:6px; padding:6px 8px; border-left:3px solid var(--border);">${esc(r.note)}</div>` : ''}
-            <div style="margin-top:8px;">
+            <div style="font-size:12px; margin-top:6px; font-weight:600; color:${running ? 'var(--danger, #e74c3c)' : real ? 'var(--danger, #e74c3c)' : 'var(--muted)'};">
+              ${running ? 'Still running.'
+                : real ? 'Recorded as a real emergency.'
+                : r.outcome === 'test' ? 'Recorded as a test \u2014 turned off with \u201cIt was a test\u201d.'
+                : 'Ended before tests and real emergencies were recorded.'}
+            </div>
+            <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
               <button class="btn btn-secondary small" onclick="app.showDrillDetail('${this.jsAttr(r.id)}')">Roll call &amp; notes</button>
+              ${!running && r.outcome === 'test'
+                ? `<button class="btn btn-danger small" onclick="app.deleteDrillTests('${this.jsAttr(r.id)}')">\u{1F5D1} Delete test</button>` : ''}
             </div>
           </div>`;
+      }
+
+      // Tests can be removed from the log; real emergencies and one still
+      // running cannot (rt_drill_delete_tests refuses those too).
+      _drillDeletableTests() {
+        return (this._drillLog || []).filter(r => r.outcome === 'test' && r.ended_at);
+      }
+
+      // One test by id, or every test when no id is given.
+      async deleteDrillTests(id) {
+        const ids = id ? [id] : this._drillDeletableTests().map(r => r.id);
+        if (!ids.length) return;
+        const what = id ? 'this test' : `all ${ids.length} test${ids.length === 1 ? '' : 's'}`;
+        if (!confirm(`Delete ${what} from the emergency log? Its roll call goes too. Real emergencies are never deleted.`)) return;
+        try {
+          const r = await this._pickupRpc('rt_drill_delete_tests', { p_ids: ids });
+          if (!r || r.success === false) throw new Error((r && r.error) || 'refused');
+          this.showNotification(`Deleted ${r.deleted} test${r.deleted === 1 ? '' : 's'}`, 'success');
+          await this.showDrillLog();
+        } catch (e) {
+          this.showNotification('Could not delete: ' + e.message, 'error');
+        }
       }
 
       // One event in full: every tick in order, with the time since it
@@ -40374,7 +40406,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
       downloadDrillLogCsv() {
         const iso = (t) => t ? new Date(t).toLocaleString() : '';
-        const rows = [['Date', 'Kind', 'Drill or real', 'Started', 'Ended', 'Duration', 'Time to account for everyone',
+        const rows = [['Date', 'Kind', 'Test or real', 'Started', 'Ended', 'Duration', 'Time to account for everyone',
                        'Expected', 'Safe', 'Off-site', 'Unaccounted at end', 'No register, unresolved',
                        'Staff ticking', 'Started by', 'Ended by', 'Notes']];
         (this._drillLog || []).forEach(r => rows.push([

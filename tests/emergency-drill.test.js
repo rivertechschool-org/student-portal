@@ -638,8 +638,8 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
   const logApp = (rpc, role = 'admin') => {
     const app = makeApp({ role, rpc });
     for (const m of ['showDrillLog', 'showDrillDetail', 'saveDrillNote', 'downloadDrillLogCsv',
-                     'downloadDrillDetailCsv']) app[m] = extract(m);
-    for (const m of ['_drillLogCardHtml', '_drillDur', '_drillOutcomeLabel', '_drillCsv']) {
+                     'downloadDrillDetailCsv', 'deleteDrillTests']) app[m] = extract(m);
+    for (const m of ['_drillLogCardHtml', '_drillDur', '_drillOutcomeLabel', '_drillCsv', '_drillDeletableTests']) {
       app[m] = extract(m, { sync: true });
     }
     app.downloads = [];
@@ -692,7 +692,9 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     await app.showDrillLog.call(app);
     const body = app.modals[app.modals.length - 1].body;
     ok('the log lists every event', /Fire/.test(body) && /Lockdown/.test(body));
-    ok('  says which were drills and which were real', /DRILL/.test(body) && /REAL EMERGENCY/.test(body));
+    // The same word as the button that recorded it: "It was a test".
+    ok('  says which were tests and which were real', /TEST/.test(body) && /REAL EMERGENCY/.test(body));
+    ok('  in words on each, too', /Recorded as a test/.test(body) && /Recorded as a real emergency/.test(body));
     ok('  with how long they ran', /4:10 long/.test(body) && /30:00 long/.test(body));
     ok('  the time to account for everyone', /Everyone accounted for in 3:05/.test(body));
     ok('  and flags one that ended with children missing', /Ended with 6 unaccounted for/.test(body)
@@ -706,8 +708,32 @@ const seen = (app) => `${app.body || ''} ${app.list.innerHTML || ''}`;
     await app.showDrillLog.call(app);
     await app.downloadDrillLogCsv.call(app);
     const csv = app.downloads[0].csv;
-    ok('the log downloads as CSV', /^"Date","Kind","Drill or real"/.test(csv) && /"Real emergency"/.test(csv));
+    ok('the log downloads as CSV', /^"Date","Kind","Test or real"/.test(csv) && /"Real emergency"/.test(csv));
     ok('  and a note cannot run as a spreadsheet formula', /"'=HYPERLINK\(""x""\)"/.test(csv));
+  }
+
+  console.log('\n== tests can be deleted, real emergencies cannot ==\n');
+  {
+    const RUNNING = { id: 'e3', kind: 'fire', outcome: null, started_at: '2026-10-13T17:00:00Z', ended_at: null, duration_s: 60 };
+    const app = logApp(async (fn) => fn === 'rt_drill_delete_tests' ? { success: true, deleted: 1 } : [...LOG, RUNNING]);
+    await app.showDrillLog.call(app);
+    const body = app.modals[app.modals.length - 1].body;
+    check('only the ended test has a delete button', (body.match(/Delete test<\/button>/g) || []).length, 1);
+    ok('  and it is the test', /deleteDrillTests\('e2'\)/.test(body));
+    ok('the real emergency has none', !/deleteDrillTests\('e1'\)/.test(body));
+    ok('nor the one still running', !/deleteDrillTests\('e3'\)/.test(body));
+    ok('"delete all tests" counts only the tests', /Delete all 1 test</.test(body));
+
+    global.confirm = () => false;
+    await app.deleteDrillTests.call(app, 'e2');
+    check('nothing is deleted without confirming', app.calls.filter(c => c.fn === 'rt_drill_delete_tests').length, 0);
+
+    global.confirm = () => true;
+    await app.deleteDrillTests.call(app);
+    const del = app.calls.filter(c => c.fn === 'rt_drill_delete_tests');
+    check('delete all sends only the ended tests', del[0] && del[0].args, { p_ids: ['e2'] });
+    ok('  and says how many went', app.notices.some(n => /Deleted 1 test/.test(n)));
+    delete global.confirm;
   }
 
   {
