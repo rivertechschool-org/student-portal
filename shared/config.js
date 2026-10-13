@@ -51,6 +51,10 @@ class PortalAuth {
                 }
             });
 
+            // In the background: a wrong device clock breaks sign-in in a way
+            // that looks like anything else. See checkDeviceClock.
+            this.checkDeviceClock();
+
             // Check current session
             await this.checkCurrentSession();
 
@@ -69,6 +73,68 @@ class PortalAuth {
         }
 
         return this;
+    }
+
+    // ---- Is this device's clock right? ----
+    // A sign-in token lasts an hour, and the browser decides when to renew it
+    // by its OWN clock. A clock an hour or more ahead - often a wrong time
+    // zone with the time set by hand, so it still LOOKS right - renews every
+    // few seconds, the renewals cancel each other, and the profile fails to
+    // load. Compare with the web server's Date header (same origin, so the
+    // header is readable) and say so plainly when it is off.
+    async checkDeviceClock() {
+        if (this._clockCheck) return this._clockCheck;
+        this._clockCheck = (async () => {
+            try {
+                const t0 = Date.now();
+                const res = await fetch(window.location.origin + '/?clock=' + t0, { method: 'HEAD', cache: 'no-store' });
+                const t1 = Date.now();
+                const server = Date.parse(res.headers.get('date') || '');
+                if (!Number.isFinite(server)) return null;
+                // The header is whole seconds, stamped somewhere in the round trip.
+                const skew = Math.round(((t0 + t1) / 2 - server) / 1000);
+                this.clockSkewSeconds = skew;
+                if (Math.abs(skew) > PortalAuth.CLOCK_TOLERANCE_S) {
+                    console.warn(`⏰ Device clock is off by ${skew}s`);
+                    this._showClockWarning(skew);
+                }
+                return skew;
+            } catch (e) {
+                return null;   // offline, or no Date header: say nothing
+            }
+        })();
+        return this._clockCheck;
+    }
+
+    static describeSkew(skew) {
+        const m = Math.round(Math.abs(skew) / 60), h = Math.floor(m / 60), mm = m % 60;
+        const span = h ? `${h} hour${h === 1 ? '' : 's'}${mm ? ` ${mm} minute${mm === 1 ? '' : 's'}` : ''}`
+                       : `${m} minute${m === 1 ? '' : 's'}`;
+        return `${span} ${skew > 0 ? 'ahead' : 'behind'}`;
+    }
+
+    _showClockWarning(skew) {
+        // Once per page, and not again inside a game frame the portal hosts.
+        try { if (window.top !== window) return; } catch (e) { return; }
+        if (document.getElementById('rt-clock-warning')) return;
+        const show = () => {
+            const bar = document.createElement('div');
+            bar.id = 'rt-clock-warning';
+            bar.setAttribute('role', 'alert');
+            bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:100000;background:#b42318;color:#fff;' +
+                'padding:10px 44px 10px 16px;font:14px/1.4 system-ui,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.4);';
+            bar.innerHTML = `<strong>⏰ This computer's clock is ${PortalAuth.describeSkew(skew)}.</strong> ` +
+                (Math.abs(skew) >= 50 * 60 ? 'Signing in will keep failing until it is fixed. '
+                                           : 'That can make signing in fail. ') +
+                'On Windows: Settings → Time &amp; language → ' +
+                'Date &amp; time → turn on <em>Set time automatically</em> and <em>Set time zone automatically</em>, ' +
+                'then <em>Sync now</em>. Then close the browser and open it again.' +
+                '<button type="button" aria-label="Dismiss" style="position:absolute;top:6px;right:8px;background:none;' +
+                'border:0;color:#fff;font-size:20px;cursor:pointer;">×</button>';
+            bar.querySelector('button').onclick = () => bar.remove();
+            document.body.appendChild(bar);
+        };
+        if (document.body) show(); else document.addEventListener('DOMContentLoaded', show);
     }
 
     _setupAuthListener() {
@@ -1491,6 +1557,11 @@ body.has-bg-image .alert {
 }
 
 // Initialize shared portal system
+// More than this off and the clock is wrong, not just drifting. Sign-in
+// itself only breaks near an hour ahead, but anything past five minutes is
+// worth fixing before it gets there.
+PortalAuth.CLOCK_TOLERANCE_S = 300;
+
 window.portalAuth = new PortalAuth();
 
 // ---- A portal link that has to survive a sign-in ---------------------------
