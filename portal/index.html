@@ -34746,8 +34746,19 @@ Students you had withdrawn stay withdrawn.`)) {
           // Store for export
           this.currentAttendanceData = { records, studentMap, type };
 
+          // One student picked: every absence in the range, whatever the
+          // status and type filters say, each one excusable. Filled in after
+          // the table so neither waits on the other.
+          const absencesSlot = studentId !== 'all'
+            ? '<div id="attendance-student-absences" style="margin-bottom: 20px;">' + PortalUI.spinner('Loading absences...') + '</div>'
+            : '';
+          if (studentId !== 'all') {
+            this._studentAbsencesArgs = { studentId, startDate, endDate };
+            setTimeout(() => this.renderStudentAbsences().catch(e => console.warn('student absences:', e)), 0);
+          }
+
           if (records.length === 0) {
-            resultsDiv.innerHTML = '<p style="color: var(--muted); text-align: center; padding: 40px;">No attendance records found for selected filters</p>';
+            resultsDiv.innerHTML = absencesSlot + '<p style="color: var(--muted); text-align: center; padding: 40px;">No attendance records found for selected filters</p>';
             return;
           }
 
@@ -34764,7 +34775,7 @@ Students you had withdrawn stay withdrawn.`)) {
           };
 
           // Build statistics HTML
-          let html = `
+          let html = absencesSlot + `
             <!-- Overall Statistics -->
             <div style="margin-bottom: 20px;">
               <h3 style="margin-bottom: 15px;">📊 Attendance Statistics</h3>
@@ -34927,6 +34938,141 @@ Students you had withdrawn stay withdrawn.`)) {
           console.error('Error searching attendance:', error);
           resultsDiv.innerHTML = `<p style="color: var(--danger); text-align: center; padding: 40px;">Error: ${error.message}</p>`;
         }
+      }
+
+      // ---- one student's absences, excusable -------------------------------
+      //
+      // Excused lives on the DAY (daily_attendance.excused / excuse_note);
+      // class_attendance has no such column. So the list is by day: each day
+      // the student was absent, late or left early, with the classes they
+      // were marked absent from that day. A day with class absences but no
+      // daily record cannot be excused here, and says so.
+      async _loadStudentAbsences(studentId, startDate, endDate) {
+        const sb = this.auth.supabase;
+        const [daily, cls] = await Promise.all([
+          sb.from('daily_attendance')
+            .select('id, date, status, excused, excuse_note')
+            .eq('student_id', studentId).gte('date', startDate).lte('date', endDate)
+            .neq('status', 'present').order('date', { ascending: false }),
+          sb.from('class_attendance')
+            .select('date, class_id, period, status')
+            .eq('student_id', studentId).gte('date', startDate).lte('date', endDate)
+            .eq('status', 'absent'),
+        ]);
+        if (daily.error) throw daily.error;
+        if (cls.error) throw cls.error;
+
+        const classIds = [...new Set((cls.data || []).map(r => r.class_id).filter(Boolean))];
+        const names = {};
+        if (classIds.length) {
+          const { data } = await sb.from('classes').select('id, name').in('id', classIds);
+          (data || []).forEach(c => { names[c.id] = c.name; });
+        }
+        return this._groupStudentAbsences(daily.data || [], cls.data || [], names);
+      }
+
+      // Days, newest first: { date, day (daily row or null), classes: [names] }.
+      _groupStudentAbsences(dailyRows, classRows, classNames) {
+        const byDate = {};
+        dailyRows.forEach(d => { byDate[d.date] = { date: d.date, day: d, classes: [] }; });
+        classRows.forEach(c => {
+          const e = byDate[c.date] || (byDate[c.date] = { date: c.date, day: null, classes: [] });
+          const n = classNames[c.class_id] || 'a class';
+          if (!e.classes.includes(n)) e.classes.push(n);
+        });
+        return Object.values(byDate).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+      }
+
+      _studentAbsencesHtml(days, studentName) {
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const label = { absent: '❌ Absent', late: '⏰ Late', left_early: '🚪 Left early', late_left_early: '⚠️ Late & left early' };
+        const excusable = days.filter(d => d.day);
+        const unexcused = excusable.filter(d => !d.day.excused);
+        const fullDays = excusable.filter(d => d.day.status === 'absent');
+        return `
+          <div class="card" style="margin: 0; border-left: 4px solid var(--danger);">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px;">
+              <h3 style="margin: 0;">🗓️ ${esc(studentName)}: all absences</h3>
+              ${unexcused.length > 1 ? `<button class="btn btn-secondary small" onclick="app.excuseAllStudentAbsences()">Excuse all ${unexcused.length}</button>` : ''}
+            </div>
+            <div style="font-size: 12px; color: var(--muted); margin-bottom: 10px;">
+              Every day in the date range they were not marked present, whatever the filters below say.
+              ${days.length ? `${fullDays.length} full day${fullDays.length === 1 ? '' : 's'} absent · ${excusable.length - unexcused.length} of ${excusable.length} excused.` : ''}
+            </div>
+            ${days.length ? `
+              <!-- One block per day rather than a table: the excuse controls
+                   wrap under the day on a phone instead of off its edge. -->
+              <div style="max-height: 50vh; overflow-y: auto; font-size: 13px;">
+                ${days.map(d => `
+                  <div style="border-top: 1px solid var(--border); padding: 8px 0;">
+                    <div style="display: flex; gap: 4px 14px; flex-wrap: wrap; align-items: baseline;">
+                      <strong style="min-width: 120px;">${esc(new Date(d.date + 'T12:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))}</strong>
+                      <span>${d.day ? esc(label[d.day.status] || d.day.status) : '<span style="color: var(--muted);">Present for the day</span>'}</span>
+                      ${d.classes.length ? `<span style="color: var(--muted);">Missed: ${esc(d.classes.join(', '))}</span>` : ''}
+                    </div>
+                    <div style="margin-top: 6px;">
+                      ${d.day ? `
+                        <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                          ${d.day.excused ? '<span style="color: var(--accent-2); font-weight: 600;">✓ Excused</span>' : '<span style="color: var(--danger);">Not excused</span>'}
+                          <input type="text" id="abs-note-${esc(d.day.id)}" value="${esc(d.day.excuse_note || '')}" placeholder="Reason (optional)" maxlength="200"
+                                 style="flex: 1 1 160px; min-width: 0; padding: 4px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); font-size: 12px;">
+                          ${d.day.excused
+                            ? `<button class="btn btn-secondary small" onclick="app.setAbsenceExcused('${this.jsAttr(d.day.id)}', true)">Save reason</button>
+                               <button class="btn btn-secondary small" onclick="app.setAbsenceExcused('${this.jsAttr(d.day.id)}', false)">Unexcuse</button>`
+                            : `<button class="btn btn-primary small" onclick="app.setAbsenceExcused('${this.jsAttr(d.day.id)}', true)">Excuse</button>`}
+                        </div>`
+                      : '<span style="color: var(--muted); font-size: 12px;">Missed a class only. Excusing is by day, and there is no day absence to excuse.</span>'}
+                    </div>
+                  </div>`).join('')}
+              </div>`
+            : '<p style="color: var(--muted); margin: 0;">No absences in this date range.</p>'}
+          </div>`;
+      }
+
+      async renderStudentAbsences() {
+        const slot = document.getElementById('attendance-student-absences');
+        const a = this._studentAbsencesArgs;
+        if (!slot || !a) return;
+        try {
+          const days = await this._loadStudentAbsences(a.studentId, a.startDate, a.endDate);
+          this._studentAbsenceDays = days;
+          const opt = document.getElementById('attendance-student')?.selectedOptions?.[0];
+          const name = (opt?.textContent || 'Student').replace(/\s*\(Grade[^)]*\)\s*$/, '');
+          slot.innerHTML = this._studentAbsencesHtml(days, name);
+        } catch (e) {
+          slot.innerHTML = `<p style="color: var(--danger);">Could not load absences: ${this.escapeHtml(e.message)}</p>`;
+        }
+      }
+
+      async setAbsenceExcused(dailyId, excused) {
+        const note = (document.getElementById('abs-note-' + dailyId)?.value || '').trim();
+        const patch = excused ? { excused: true, excuse_note: note || null } : { excused: false };
+        const { error } = await this.auth.supabase.from('daily_attendance').update(patch).eq('id', dailyId);
+        if (error) { this.showNotification('Could not save: ' + error.message, 'error'); return; }
+        this.showNotification(excused ? 'Excused' : 'No longer excused', 'success');
+        await this._afterAbsenceExcuseChange();
+      }
+
+      async excuseAllStudentAbsences() {
+        const ids = (this._studentAbsenceDays || []).filter(d => d.day && !d.day.excused).map(d => d.day.id);
+        if (!ids.length) return;
+        if (!confirm(`Excuse all ${ids.length} unexcused day${ids.length === 1 ? '' : 's'}? Reasons typed in each row are kept.`)) return;
+        let failed = 0;
+        for (const id of ids) {
+          const note = (document.getElementById('abs-note-' + id)?.value || '').trim();
+          const { error } = await this.auth.supabase.from('daily_attendance')
+            .update({ excused: true, excuse_note: note || null }).eq('id', id);
+          if (error) failed++;
+        }
+        this.showNotification(failed ? `Excused ${ids.length - failed}; ${failed} could not be saved` : `Excused ${ids.length}`, failed ? 'warning' : 'success');
+        await this._afterAbsenceExcuseChange();
+      }
+
+      // The daily table below shows Excused too; redraw everything so the two
+      // never disagree.
+      async _afterAbsenceExcuseChange() {
+        if (this.currentAttendanceData?.type === 'daily') await this.searchAttendance();
+        else await this.renderStudentAbsences();
       }
 
       exportAttendanceReport() {
