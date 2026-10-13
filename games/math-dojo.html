@@ -46615,10 +46615,20 @@ function generateInteractiveSteps(guided, lesson) {
     guided.steps.forEach((step, i) => {
         const isLast = i === guided.steps.length - 1;
         if (isLast) {
-            // Last step is always user input for final answer
+            // Last step is always user input for the FINAL answer - so it is
+            // never prompted with the last step's own label. That label often
+            // names a middle step ("Root of 16", "4 × 2") while the answer is
+            // the whole problem's (4√3, x^8), so a student who did exactly
+            // what the prompt asked was marked wrong. The label becomes the
+            // next move in "So far" instead.
+            const work = guided.steps.slice(0, i).map(s => `${s.label}: ${s.value}`);
+            if (!guided.answerLabel) {
+                work.push(step.value && step.value !== '?' ? `${step.label}: ${step.value}` : `next: ${step.label}`);
+            }
             steps.push({
-                prompt: guided.answerLabel || step.label,
+                prompt: guided.answerLabel || `Final answer: ${guided.problem}`,
                 hint: `Look at the previous steps to find the answer`,
+                showWork: work,
                 answer: guided.answer,
                 // A lesson can list other forms of the same answer, e.g. -9 for (0, -9).
                 acceptableAnswers: [guided.answer, ...(guided.acceptableAnswers || [])],
@@ -46654,12 +46664,19 @@ function generateInteractiveSteps(guided, lesson) {
     return steps;
 }
 
-// Extract a numeric or simple answer from a step value
+// The answer a middle step can be checked against, or null when the step
+// should just be shown as worked. Only a plain number is asked: the value
+// itself ("−16", "8/6") or what follows its last "=" ("10 − 6 = 4").
+// This used to grab the first digits anywhere in the text, so "−16" was
+// checked as 16, "x²(5x + 2) + 3(5x + 2)" as 5 and "(x + 4)(x − 2) = 0" as 0.
 function extractAnswer(value) {
     if (!value || value === '?') return null;
-    // Try to extract the last number or simple expression
-    const match = value.match(/=\s*([^=]+)$/) || value.match(/(\d+(?:\.\d+)?(?:\/\d+)?)/);
-    return match ? match[1].trim() : value.trim();
+    const v = String(value).trim();
+    const eq = v.lastIndexOf('=');
+    const cand = (eq >= 0 ? v.slice(eq + 1) : v).trim().replace(/−/g, '-');
+    // "(x + 4)(x − 2) = 0" is an equation, not a sum that comes to 0.
+    if (eq >= 0 && /[a-z]/i.test(v.slice(v.lastIndexOf('=', eq - 1) + 1, eq))) return null;
+    return /^-?\d+(\.\d+)?(\/\d+)?\s*(°|%)?$/.test(cand) ? cand : null;
 }
 
 // Build mistake map from lesson mistakes
@@ -49564,10 +49581,12 @@ if ('speechSynthesis' in window) {
     guided: {
       problem: "Simplify (x^4)^2",
       steps: [
-        { label: "Power of a power", value: "multiply exponents" },
-        { label: "4 × 2", value: "?" }
+        { label: "Power of a power", value: "multiply the exponents" },
+        { label: "4 × 2", value: "4 × 2 = 8" },
+        { label: "Write x with that exponent", value: "?" }
       ],
-      answer: "x^8"
+      answer: "x^8",
+      answerLabel: "(x^4)^2 ="
     }
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
@@ -49919,10 +49938,12 @@ if ('speechSynthesis' in window) {
     guided: {
       problem: "Simplify √48",
       steps: [
-        { label: "Largest perfect-square factor", value: "16 · 3" },
-        { label: "Root of 16", value: "?" }
+        { label: "Largest perfect-square factor", value: "√48 = √(16 · 3)" },
+        { label: "Root of 16", value: "√16 = 4" },
+        { label: "Keep √3 beside it", value: "?" }
       ],
-      answer: "4√3"
+      answer: "4√3",
+      answerLabel: "√48 ="
     }
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
@@ -50452,8 +50473,9 @@ if ('speechSynthesis' in window) {
     ],
     guided: { problem: "Find the mode of 4, 7, 4, 2, 9, 4.", steps: [
       { label: "Which value appears most often?", value: "count each value" },
-      { label: "4 appears how many times?", value: "3 times" }
-    ], answer: "4" }
+      { label: "How many times does 4 appear?", value: "3" },
+      { label: "No other value appears that often", value: "?" }
+    ], answer: "4", answerLabel: "mode =" }
   }, function(){
     const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a; const sh=a=>a.map(x=>[Math.random(),x]).sort((p,q)=>p[0]-q[0]).map(p=>p[1]);
     const uniq4=(correct,cands)=>{const o=[String(correct)];const add=x=>{x=String(x);if(o.length<4&&!o.includes(x))o.push(x);};cands.forEach(add);let k=1;while(o.length<4){const b=String(correct);if(b.indexOf('/')>=0)add('1/'+(k+40));else if(/^-?\d+°$/.test(b))add((parseInt(b,10)+k+13)+'°');else if(b.charAt(0)==='(')add('('+(k+100)+', '+(k+101)+')');else if(/^-?\d+$/.test(b))add((parseInt(b,10)+k+13));else add(b+' #'+k);k++;if(k>300)break;}return sh(o);};
