@@ -82,6 +82,9 @@ function makeApp(over = {}) {
   app.pickupSearch = lift('pickupSearch');
   app.showPickupAway = lift('showPickupAway');
   app._renderPickupResults = lift('_renderPickupResults');
+  app._pickupNotesHtml = lift('_pickupNotesHtml');
+  app._pickupHasExceptionToday = lift('_pickupHasExceptionToday');
+  app._pickupClock = lift('_pickupClock');
   return app;
 }
 

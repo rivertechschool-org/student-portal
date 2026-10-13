@@ -53,7 +53,9 @@ function extract(name) {
   }
   const sig = html.slice(m.index + 1, closeParen).trim();
   const args = sig.slice(sig.indexOf('(') + 1, sig.lastIndexOf(')'));
-  const Ctor = Object.getPrototypeOf(async function () {}).constructor;
+  // Sync methods stay sync: a helper whose return value is spliced into a
+  // template would otherwise render as "[object Promise]".
+  const Ctor = /^async\b/.test(sig) ? Object.getPrototypeOf(async function () {}).constructor : Function;
   return new Ctor(args, html.slice(start + 1, i - 1));
 }
 
@@ -95,6 +97,10 @@ function makeApp({ rpcFails = false } = {}) {
   app._renderPickupToday = extract('_renderPickupToday');
   app._pickupUndoMessage = extract('_pickupUndoMessage');
   app._refreshPickupHereList = extract('_refreshPickupHereList');
+  app._pickupNotesHtml = extract('_pickupNotesHtml');
+  app._pickupHasExceptionToday = extract('_pickupHasExceptionToday');
+  app._pickupClock = extract('_pickupClock');
+  app._formatDateOnly = (d) => String(d);
   app.filterPickupHere = extract('filterPickupHere');
   app.loadPickupHereToday = extract('loadPickupHereToday');
   app.setPickedUp = extract('setPickedUp');

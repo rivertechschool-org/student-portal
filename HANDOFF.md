@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-13 — Jordan's Claude
+**Pickup notes and parent early pickups show on both Pickup tabs.** Asked for by Jordan.
+**Here today** now shows each child's pickup notes and gives every row the ＋/📝 note button.
+A parent's early-pickup report ("collecting at 1:45, his uncle is coming") now appears under
+the child on both tabs, with its time, its reason and who entered it. Before this it only
+flagged the register. A child with a dated note or an early pickup today gets the orange
+edge. Standing notes don't, because they are the usual arrangement. Both tabs draw these with
+one helper, `_pickupNotesHtml`. The parent's reason is shown as it is, not copied into a
+pickup note, so it disappears after the day the same way it does on the register.
+Tests: `tests/pickup-notes-everywhere.test.js`.
+**Needs:** nothing. The backend migration
+`…_pickup_shows_notes_and_parent_early_pickups_everywhere.sql` is already applied.
+
 ## 2026-10-08 — Luke's Claude
 **Sub cover, built to Jordan's answers of 2026-10-07.** A class's teacher (or an admin)
 presses **🙋 Sub Days** on the class, flags the days they will be away (only days the class

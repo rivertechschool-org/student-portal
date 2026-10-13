@@ -40733,7 +40733,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
                 const renderMember = (m) => {
                 const notes = m.notes || [];
-                const dated = notes.some(n => !n.standing);
+                const dated = this._pickupHasExceptionToday(m);
                 return `
                 <div style="border:1px solid ${dated ? 'var(--warning, #e67e22)' : 'var(--border)'}; border-width:${dated ? '2px' : '1px'}; border-radius:8px; overflow:hidden; ${m.dismissed ? 'opacity:0.65;' : ''}">
                   <div style="display:flex; align-items:center;">
@@ -40758,13 +40758,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     </button>
                   </div>
 
-                  ${notes.map(n => `
-                    <div style="padding:9px 12px; background:${n.standing ? 'rgba(106,169,255,0.10)' : 'rgba(230,126,34,0.14)'}; border-top:1px solid ${n.standing ? 'rgba(106,169,255,0.3)' : 'rgba(230,126,34,0.35)'}; font-size:14px; line-height:1.4;">
-                      <strong style="color:${n.standing ? 'var(--accent)' : 'var(--warning, #e67e22)'};">
-                        ${n.standing ? 'Usually' : (n.today_only ? 'Today' : 'Until ' + this._formatDateOnly(n.ends_on))}:
-                      </strong>
-                      ${this.escapeHtml(n.note)}
-                    </div>`).join('')}
+                  ${this._pickupNotesHtml(m)}
 
                   ${/* Who may collect. Collapsed, because it is reference read
                         on an unfamiliar face, not an exception to act on - and
@@ -40830,6 +40824,42 @@ Students you had withdrawn stay withdrawn.`)) {
       _localDateStr(d) {
         const x = d instanceof Date ? d : new Date(d);
         return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+      }
+
+      // A child's pickup notes in force today, plus any early pickup reported
+      // for today, as the strips under their name. Shared by the Dismissal card
+      // and the Here-today list so the person at the door reads the same thing
+      // whichever tab they are on. A parent's early-pickup reason ("his uncle
+      // is collecting") lives in planned_late_early, not pickup_notes, which is
+      // why it is drawn here separately rather than copied into a note.
+      _pickupNotesHtml(m) {
+        const strip = (standing, label, text) => `
+          <div style="padding:9px 12px; background:${standing ? 'rgba(106,169,255,0.10)' : 'rgba(230,126,34,0.14)'}; border-top:1px solid ${standing ? 'rgba(106,169,255,0.3)' : 'rgba(230,126,34,0.35)'}; font-size:14px; line-height:1.4;">
+            <strong style="color:${standing ? 'var(--accent)' : 'var(--warning, #e67e22)'};">${label}:</strong>
+            ${text}
+          </div>`;
+        const notes = (m.notes || []).map(n => strip(n.standing,
+          n.standing ? 'Usually' : (n.today_only ? 'Today' : 'Until ' + this._formatDateOnly(n.ends_on)),
+          this.escapeHtml(n.note)));
+        const early = (m.early_pickups || []).map(e => strip(false,
+          `Early pickup ${this.escapeHtml(this._pickupClock(e.at_time))}`,
+          (e.reason ? this.escapeHtml(e.reason) : '<span style="color:var(--muted);">no reason given</span>')
+            + `<span style="color:var(--muted); font-size:12px;"> · ${e.source === 'parent' ? 'from parent' : 'from staff'}</span>`));
+        return notes.concat(early).join('');
+      }
+
+      // Anything out of the ordinary today: a dated note or an early pickup.
+      // Standing notes are the usual arrangement, so they do not count.
+      _pickupHasExceptionToday(m) {
+        return (m.notes || []).some(n => !n.standing) || (m.early_pickups || []).length > 0;
+      }
+
+      // "13:45" -> "1:45 pm". The RPC sends school-local wall-clock time, so
+      // this is string work, not a Date: a Date would re-zone it.
+      _pickupClock(hhmm) {
+        const [h, mi] = String(hhmm || '').split(':').map(Number);
+        if (!Number.isFinite(h) || !Number.isFinite(mi)) return String(hhmm || '');
+        return `${((h + 11) % 12) + 1}:${String(mi).padStart(2, '0')} ${h < 12 ? 'am' : 'pm'}`;
       }
 
       async showPickupNoteModal(studentId, studentName) {
@@ -41003,12 +41033,21 @@ Students you had withdrawn stay withdrawn.`)) {
           this._pickupNoteList = await this._pickupRpc('rt_student_pickup_notes',
             { p_student_id: this._pickupNoteStudent.id }) || [];
           this._refreshPickupNoteModal();
-          // The board carries the notes, so re-run the search behind the modal.
-          await this.pickupSearch();
+          // The board carries the notes, so refresh whichever tab is behind the modal.
+          await this._refreshPickupAfterNote();
         } catch (e) {
           console.error('savePickupNote failed:', e);
           this.showNotification(e.message, 'error');
         }
+      }
+
+      // The note modal opens from either tab. pickupSearch() reads the
+      // Dismissal tab's search box, and with that box absent it clears the
+      // saved search, so on Here today it would wipe the other tab's results
+      // and leave this one stale.
+      async _refreshPickupAfterNote() {
+        if (document.getElementById('pickup-here')) await this.loadPickupHereToday();
+        else await this.pickupSearch();
       }
 
       async deletePickupNote(noteId) {
@@ -41023,7 +41062,7 @@ Students you had withdrawn stay withdrawn.`)) {
           this._pickupNoteList = await this._pickupRpc('rt_student_pickup_notes',
             { p_student_id: this._pickupNoteStudent.id }) || [];
           this._refreshPickupNoteModal();
-          await this.pickupSearch();
+          await this._refreshPickupAfterNote();
           this.showNotification('Note removed', 'success');
         } catch (e) {
           console.error('deletePickupNote failed:', e);
@@ -41105,8 +41144,15 @@ Students you had withdrawn stay withdrawn.`)) {
         const esc = (v) => this.escapeHtml(String(v ?? ''));
         const time = (t) => { try { return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch (_) { return ''; } };
 
-        const row = (r) => `
-          <div style="display:flex; align-items:center; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; ${r.dismissed ? 'opacity:0.6;' : ''}">
+        // Notes and early pickups sit under the row, as on the Dismissal card,
+        // and a child with something different today gets the same orange
+        // edge - this list is where many staff work from at the door.
+        const row = (r) => {
+          const odd = this._pickupHasExceptionToday(r);
+          const name = `${r.first_name || ''} ${r.last_name || ''}`.trim();
+          return `
+          <div style="border:${odd ? '2px solid var(--warning, #e67e22)' : '1px solid var(--border)'}; border-radius:8px; overflow:hidden; ${r.dismissed ? 'opacity:0.6;' : ''}">
+          <div style="display:flex; align-items:center; gap:10px; padding:10px 12px;">
             <div style="flex:1; min-width:0;">
               <div style="font-weight:600;">
                 ${esc(r.first_name)} ${esc(r.last_name)}
@@ -41117,10 +41163,19 @@ Students you had withdrawn stay withdrawn.`)) {
                 ${r.grade_level ? `Grade ${esc(r.grade_level)}` : ''}${r.dismissed && r.picked_up_at ? ` \u00b7 picked up ${esc(time(r.picked_up_at))}` : ''}
               </div>
             </div>
+            <button class="btn btn-secondary small"
+                    title="Pickup note for ${this.jsAttr(name)}"
+                    onclick="app.showPickupNoteModal('${this.jsAttr(r.student_id)}', '${this.jsAttr(name)}')"
+                    style="padding:4px 9px; font-size:13px;">
+              ${(r.notes || []).length ? '📝' : '＋'}
+            </button>
             ${r.dismissed
               ? `<button class="btn btn-secondary small" onclick="app.setPickedUp('${this.jsAttr(r.student_id)}', false)">Undo</button>`
               : `<button class="btn btn-primary small" onclick="app.setPickedUp('${this.jsAttr(r.student_id)}', true)">Picked up</button>`}
+          </div>
+          ${this._pickupNotesHtml(r)}
           </div>`;
+        };
 
         const countEl = document.getElementById('pickup-here-count');
         if (countEl) {
