@@ -219,6 +219,26 @@ ctx.renderPracticePhase({});
 ctx.selectPracticeOption(0);
 check('correct click advances streak', ctx.state.practiceCorrect === 1, `got ${ctx.state.practiceCorrect}`);
 
+console.log('\n--- 7. spamming the right answer counts once ---');
+// The options stay up for 1.2s after a correct pick; every extra click used
+// to count again, so one question could be clicked to 5 in a row.
+for (let i = 0; i < 6; i++) ctx.selectPracticeOption(0);
+check('six more clicks on the same question add nothing', ctx.state.practiceCorrect === 1, `got ${ctx.state.practiceCorrect}`);
+ctx.selectPracticeOption(1);
+check('nor does a wrong click after it reset the streak', ctx.state.practiceCorrect === 1, `got ${ctx.state.practiceCorrect}`);
+ctx.renderPracticePhase({});
+ctx.selectPracticeOption(0);
+check('the next question counts again', ctx.state.practiceCorrect === 2, `got ${ctx.state.practiceCorrect}`);
+
+console.log('\n--- 8. typed: a second Check on the same question counts once ---');
+reset(5);
+NEXT = { question: 'Solve: 4x + 8 = 36', answer: '7', type: 'procedural', options: ['7', '8', '6', '9'] };
+ctx.renderPracticePhase({});
+ctx.document.getElementById('practice-typed-input').value = '7';
+ctx.submitPracticeTypedAnswer();
+ctx.submitPracticeTypedAnswer();
+check('streak is 1, not 2', ctx.state.practiceCorrect === 1, `got ${ctx.state.practiceCorrect}`);
+
 console.log(`\n=== ${pass} passed, ${fails.length} failed ===`);
 if (fails.length) { fails.forEach(f => console.log('  - ' + f)); process.exit(1); }
 process.exit(0);
