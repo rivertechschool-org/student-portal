@@ -1214,20 +1214,11 @@
                     if (error) throw error;
                     newAssignments.push(data);
 
-                    // Notify portal to create assignment entry for grade integration
-                    if (isEmbedded && test) {
-                        window.parent.postMessage({
-                            type: 'TEST_ASSIGNMENT_CREATED',
-                            payload: {
-                                testId: testId,
-                                testTitle: test.title,
-                                classId: classId,
-                                dueDate: dueDate,
-                                maxPoints: maxPoints,
-                                testAssignmentId: data.id
-                            }
-                        }, PARENT_ORIGIN);
-                    }
+                    // The class's gradebook entry, which grading fills in.
+                    // This used to be a message asking the portal to make it,
+                    // so a test assigned from this page opened on its own got
+                    // none, and its grades had nowhere to go.
+                    if (test) await ensureGradebookAssignment(data, test);
                 }
 
                 // Update due date for existing assignments that remain
@@ -1239,6 +1230,14 @@
                         .from('test_assignments')
                         .update({ due_date: dueDate })
                         .eq('id', assignment.id);
+                    // An older assignment that never got its gradebook entry
+                    // gets one now; one that has it follows the new due date.
+                    if (test) await ensureGradebookAssignment({ ...assignment, due_date: dueDate }, test);
+                    if (assignment.linked_assignment_id && dueDate) {
+                        await supabaseClient.from('assignments')
+                            .update({ due_date: dueDate })
+                            .eq('id', assignment.linked_assignment_id);
+                    }
                 }
 
                 return newAssignments;
@@ -1246,6 +1245,73 @@
                 console.error('Error saving assignments:', error);
                 throw error;
             }
+        }
+
+        // The class assignment a test's grades land in, made if it is missing.
+        // Teacher side only: a student cannot create assignments, so a test
+        // assigned before this existed gets its entry when it is next assigned
+        // or graded. Returns the assignment id, or null.
+        async function ensureGradebookAssignment(testAssignment, test) {
+            if (!testAssignment?.id) return null;
+            if (testAssignment.linked_assignment_id) return testAssignment.linked_assignment_id;
+            const { data: row } = await supabaseClient
+                .from('test_assignments')
+                .select('id, class_id, student_id, due_date, linked_assignment_id')
+                .eq('id', testAssignment.id)
+                .maybeSingle();
+            if (!row) return null;
+            if (row.linked_assignment_id) return row.linked_assignment_id;
+            if (!row.class_id) return null;
+
+            const { data: created, error } = await supabaseClient
+                .from('assignments')
+                .insert({
+                    class_id: row.class_id,
+                    title: `[Test] ${test?.title || 'Test'}`,
+                    description: 'Testing Center exam - grades synced automatically',
+                    due_date: row.due_date || testAssignment.due_date || null,
+                    max_points: testTotalPoints(test) || 100,
+                    is_published: true,
+                    assignment_type: 'test',
+                    graded_offline: true,
+                    assigned_to_all: !row.student_id
+                })
+                .select('id')
+                .single();
+            if (error || !created) {
+                console.error('Could not create the gradebook assignment for this test:', error);
+                return null;
+            }
+            if (row.student_id) {
+                await supabaseClient.from('assignment_students')
+                    .insert({ assignment_id: created.id, student_id: row.student_id });
+            }
+            await supabaseClient.from('test_assignments')
+                .update({ linked_assignment_id: created.id })
+                .eq('id', row.id);
+            return created.id;
+        }
+
+        // Every question's points added up: what the test is out of.
+        function testTotalPoints(test) {
+            return (test?.questions || []).reduce((sum, q) => sum + (q.maxPoints || 1), 0);
+        }
+
+        // What the test is worth in the gradebook for this student: the class
+        // assignment's points, unless the teacher gave this student their own
+        // version of the assignment with different points.
+        async function gradebookPointsFor(assignmentId, studentId, fallback) {
+            let points = null;
+            const { data: a } = await supabaseClient
+                .from('assignments').select('max_points').eq('id', assignmentId).maybeSingle();
+            if (a?.max_points) points = a.max_points;
+            if (studentId) {
+                const { data: v } = await supabaseClient
+                    .from('assignment_student_versions').select('points_possible')
+                    .eq('assignment_id', assignmentId).eq('student_id', studentId).maybeSingle();
+                if (v?.points_possible) points = v.points_possible;
+            }
+            return points || fallback || 100;
         }
 
         async function saveSubmissionToDatabase(testId, answers, autoScore, status) {
@@ -1347,13 +1413,7 @@
 
                     // If auto-graded (all MC), sync the grade directly
                     if (status === 'graded') {
-                        const { data: assignmentData } = await supabaseClient
-                            .from('assignments')
-                            .select('max_points')
-                            .eq('id', linkedAssignmentId)
-                            .single();
-
-                        const assignmentMaxPoints = assignmentData?.max_points || maxScore;
+                        const assignmentMaxPoints = await gradebookPointsFor(linkedAssignmentId, currentUser.id, maxScore);
                         const actualPoints = Math.round((autoScore / 100) * assignmentMaxPoints);
                         const letterGrade = autoScore >= 97 ? 'A+' : autoScore >= 93 ? 'A' : autoScore >= 90 ? 'A-' :
                             autoScore >= 87 ? 'B+' : autoScore >= 83 ? 'B' : autoScore >= 80 ? 'B-' :
@@ -1402,8 +1462,11 @@
             }
         }
 
+        // Returns { synced, reason }: whether the grade reached the class
+        // gradebook, so the teacher is told when it did not.
         async function saveGradesToDatabase(submissionId, questionGrades, finalScore) {
-            if (!supabaseClient || !authReady) return;
+            if (!supabaseClient || !authReady) return null;
+            let gradebook = null;
 
             try {
                 // Update question grades
@@ -1472,6 +1535,13 @@
                         if (tas && tas.length > 0) linkedAssignmentId = tas[0].linked_assignment_id;
                     }
 
+                    // Assigned before the gradebook entry was made here: make
+                    // it now, so this grade has somewhere to go.
+                    if (!linkedAssignmentId && testSubData?.test_assignment_id) {
+                        const test = testsDatabase.find(t => t.id === testSubData.test_id);
+                        linkedAssignmentId = await ensureGradebookAssignment({ id: testSubData.test_assignment_id }, test);
+                    }
+
                     if (linkedAssignmentId && testSubData?.student_id) {
                         // Create assignment_submission if missing
                         const { data: newSub } = await supabaseClient
@@ -1500,21 +1570,14 @@
                     // Look up assignment max_points for correct conversion
                     const { data: asSub } = await supabaseClient
                         .from('assignment_submissions')
-                        .select('assignment_id')
+                        .select('assignment_id, student_id')
                         .eq('id', linkedSubId)
                         .single();
 
                     let assignmentMaxPoints = submission?.max_possible_score || 100;
 
                     if (asSub?.assignment_id) {
-                        const { data: assignmentData } = await supabaseClient
-                            .from('assignments')
-                            .select('max_points')
-                            .eq('id', asSub.assignment_id)
-                            .single();
-                        if (assignmentData?.max_points) {
-                            assignmentMaxPoints = assignmentData.max_points;
-                        }
+                        assignmentMaxPoints = await gradebookPointsFor(asSub.assignment_id, asSub.student_id, assignmentMaxPoints);
                     }
 
                     const actualPoints = Math.round((finalScore / 100) * assignmentMaxPoints);
@@ -1523,7 +1586,7 @@
                         finalScore >= 77 ? 'C+' : finalScore >= 73 ? 'C' : finalScore >= 70 ? 'C-' :
                         finalScore >= 67 ? 'D+' : finalScore >= 63 ? 'D' : finalScore >= 60 ? 'D-' : 'F';
 
-                    await supabaseClient
+                    const { error: syncError } = await supabaseClient
                         .from('assignment_submissions')
                         .update({
                             status: 'graded',
@@ -1532,8 +1595,11 @@
                             graded_at: new Date().toISOString()
                         })
                         .eq('id', linkedSubId);
+                    gradebook = syncError ? { synced: false, reason: syncError.message } : { synced: true };
 
                     console.log('Grade synced to assignment_submissions:', { linkedSubId, actualPoints, letterGrade });
+                } else {
+                    gradebook = { synced: false, reason: 'this test has no class assignment to put it in' };
                 }
 
                 // Also notify portal via postMessage (for real-time UI update when embedded)
@@ -1548,6 +1614,7 @@
                         }
                     }, PARENT_ORIGIN);
                 }
+                return gradebook;
             } catch (error) {
                 console.error('Error saving grades:', error);
                 throw error;
@@ -2202,9 +2269,10 @@
             let totalWriteIn = 0, writeInScore = 0;
             const questionGrades = {};
 
-            // Count question types
-            const mcCount = test.questions.filter(q => q.type === 'multiple-choice').length;
-            const writeInCount = test.questions.filter(q => q.type === 'write-in').length;
+            // What the multiple choice is worth in points
+            const mcPoints = test.questions
+                .filter(q => q.type === 'multiple-choice')
+                .reduce((sum, q) => sum + (q.maxPoints || 1), 0);
 
             // Collect write-in scores from the grading form
             test.questions.forEach(q => {
@@ -2213,7 +2281,11 @@
                     totalWriteIn += maxPoints;
                     const scoreInput = document.getElementById(`grade-${q.id}`);
                     const feedbackInput = document.getElementById(`feedback-${q.id}`);
-                    const score = parseInt(scoreInput?.value) || 0;
+                    // Half points are allowed; nothing above the question's
+                    // points or below zero, so one typo cannot push a test
+                    // past 100%.
+                    const typed = parseFloat(scoreInput?.value);
+                    const score = Number.isFinite(typed) ? Math.min(Math.max(typed, 0), maxPoints) : 0;
                     writeInScore += score;
 
                     const gradeData = {
@@ -2229,24 +2301,29 @@
 
             // Use the stored auto_score for MC (calculated correctly at submission time)
             // Don't recalculate - the question IDs/answers may have changed
-            const mcWeight = submission.autoScore || 0;
-            const writeInWeight = totalWriteIn > 0 ? (writeInScore / totalWriteIn) * 100 : 0;
-            const total = mcCount + writeInCount;
+            const mcEarned = ((submission.autoScore || 0) / 100) * mcPoints;
 
-            // Weighted average: MC questions weighted by count, write-in weighted by count
-            const finalScore = Math.round((mcWeight * mcCount + writeInWeight * writeInCount) / total);
+            // Points earned over points possible, every question counted by
+            // the points the teacher gave it. This used to average the two
+            // halves by how MANY questions each had, so a 10-point essay
+            // counted the same as a 1-point multiple-choice question.
+            const totalPoints = mcPoints + totalWriteIn;
+            const finalScore = totalPoints > 0 ? Math.round(((mcEarned + writeInScore) / totalPoints) * 100) : 0;
             submission.finalScore = finalScore;
             submission.status = 'graded';
 
             try {
                 // Save to database if authenticated
+                let gradebook = null;
                 if (authReady && supabaseClient && submission.id) {
-                    await saveGradesToDatabase(submission.id, questionGrades, finalScore);
+                    gradebook = await saveGradesToDatabase(submission.id, questionGrades, finalScore);
                 }
 
                 closeModal('gradeModal');
                 renderTests();
-                showToast('Grades saved successfully!');
+                showToast(gradebook && !gradebook.synced
+                    ? `Grades saved here, but not in the class gradebook: ${gradebook.reason}`
+                    : 'Grades saved successfully!');
 
                 // Reopen submissions modal with updated data
                 if (currentViewTestId) {
@@ -2894,16 +2971,20 @@
                 && (Date.now() - testStartedAt) > testClockLimitMs);
             stopTestClock();
 
-            let correct = 0, mcTotal = 0;
+            // By the points the teacher gave each question, not by counting
+            // questions: a 5-point question right and a 1-point one wrong is
+            // 83%, not 50%. correct/mcTotal stay counts for the results screen.
+            let correct = 0, mcTotal = 0, mcPoints = 0, mcEarned = 0;
 
             test.questions.forEach(q => {
                 if (q.type === 'multiple-choice') {
                     mcTotal++;
-                    if (studentAnswers[q.id] === q.correctAnswer) correct++;
+                    mcPoints += q.maxPoints || 1;
+                    if (studentAnswers[q.id] === q.correctAnswer) { correct++; mcEarned += q.maxPoints || 1; }
                 }
             });
 
-            const autoScore = mcTotal > 0 ? Math.round((correct / mcTotal) * 100) : 0;
+            const autoScore = mcPoints > 0 ? Math.round((mcEarned / mcPoints) * 100) : 0;
             const hasWriteIn = test.questions.some(q => q.type === 'write-in');
             const status = hasWriteIn ? 'pending_review' : 'graded';
 

@@ -4839,3 +4839,31 @@ school's own entries, and lets a parent withdraw only the ones they entered.
 The office panel marks parent entries "reported by a parent". Riven's staff
 command is unchanged. `debug-tools/late-early-journeys.mjs` now walks the
 parent side too (24 checks).
+
+### 2026-10-12: Testing Center grades count question points and always reach the class
+
+A teacher re-sent the February report (points defaulting to 10, 9/10 showing
+as 900%, three students stuck on "pending"). Those three were fixed in
+February (`bd6ba4a`, `fd6dbc5`) and still hold. What was still wrong:
+
+- **Question points were ignored in the score.** Multiple choice was scored
+  by counting questions, and the final score averaged multiple choice and
+  written answers by how many questions each had, so a 10-point essay
+  weighed the same as a 1-point question. Both are now points earned over
+  points possible. Submissions already handed in keep their stored
+  multiple-choice percentage.
+- **A typed score could exceed the question.** It is now held between 0 and
+  the question's points, and half points are kept.
+- **The class assignment was made only when the Testing Center sat inside
+  the portal** (a message asked the portal to make it). Opened on its own, a
+  test got no gradebook entry and grades had nowhere to go. The Testing
+  Center now makes and links it itself, at assigning and, for older tests,
+  at grading. The portal's handler skips a test that is already linked.
+- **A student's own version of the assignment** now sets the points the test
+  converts to.
+- If a grade does not reach the gradebook, the teacher's toast says so.
+
+In the class, a test's assignment now says it fills in from the Testing
+Center, rather than showing as an "Offline Assignment".
+`tests/testing-center-grades.test.js` (22 checks) runs the real functions
+against an in-memory database.
