@@ -7,7 +7,7 @@
  *
  *   game -> host                                    host -> game
  *   VOCAB_LOAD        {reqId}                       VOCAB_STATE   {reqId, ok, state}
- *   VOCAB_RECORD      {reqId, results:[{word,grade,right}]}
+ *   VOCAB_RECORD      {reqId, batchId, results:[{word,grade,right,self?}]}
  *   VOCAB_PLACEMENT   {reqId, grade, detail}
  *   VOCAB_SET_LEVEL   {reqId, grade, level}
  *   VOCAB_PASS_LEVEL  {reqId, grade, level, score, nextGrade, nextLevel}
@@ -18,7 +18,9 @@
  */
 (function () {
   const RPC = {
-    VOCAB_RECORD:     (d) => ['rt_vocab_record', { p_results: Array.isArray(d.results) ? d.results.slice(0, 200) : [] }],
+    // batchId: the same batch re-sent after a slow reply is recorded once.
+    VOCAB_RECORD:     (d) => ['rt_vocab_record', Object.assign({ p_results: Array.isArray(d.results) ? d.results.slice(0, 200) : [] },
+                                                    d.batchId ? { p_batch_id: String(d.batchId).slice(0, 80) } : {})],
     VOCAB_PLACEMENT:  (d) => ['rt_vocab_set_placement', { p_grade: String(d.grade), p_detail: d.detail || {} }],
     VOCAB_SET_LEVEL:  (d) => ['rt_vocab_set_level', { p_grade: String(d.grade), p_level: Number(d.level) }],
     VOCAB_PASS_LEVEL: (d) => ['rt_vocab_pass_level', {

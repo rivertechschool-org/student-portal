@@ -35,6 +35,69 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-13 — Jordan's Claude (English Lyceum audit)
+**A full audit of English Lyceum and Word Lab: content, teaching text, engine and word
+bank, all fixed.**
+
+**Lyceum content:**
+- Vocabulary items whose "wrong" options were also right (distractors borrowed from related
+  words).
+- Cloze sentences that several words fit.
+- Wrong keys: "taller than me", "The team are", the guide-words example.
+- "i before e" taught as absolute; deductive/inductive and validity defined wrongly.
+- Grade-2 context clues using words like *placate*.
+- About 30 smaller fixes.
+
+**Lyceum lessons:**
+- The "common mistakes" written for every lesson are now shown (⚠️ Watch out for).
+- "The answer is X" no longer appears twice.
+- Lessons now cover what their practice asks (situational irony, assonance, fallacies,
+  imperative "!").
+
+**Lyceum engine:**
+- A session's thin evidence (under 3 answers) or an inference no longer demotes a stored
+  skill.
+- "Never seen this" in placement only marks untested skills.
+- Placement rank is worked out from the skills tested (it used to put nearly everyone at
+  stage 1).
+- Spelling credits Spelling, not Phonics.
+- Progress carries across sessions in one visit.
+- Mastery needs 5 answers.
+- No repeated questions in a session.
+- End keeps the credit already earned and scores Recall.
+- Recall, when the host never answers (the portal), says it works from the Games page
+  instead of spinning.
+- Typed answers no longer accept "not glad" or a list of guesses.
+
+**Word Lab:**
+- Quitting an Evaluation no longer passes it.
+- Double-taps no longer answer two questions.
+- Unsent answers survive a closed tab, and a re-sent batch is ignored (backend).
+- No synonym or related word is offered as a "wrong" option.
+- "Use it right" draws its wrong sentences from another part of speech, with a/an fixed.
+- A blank shows "a(n)".
+- Misspellings are never real words or accepted variants. `data/vocab/real-words.json` is
+  made by `add-ipa.js`.
+- Typing a real anagram or sound-alike gets one more try.
+- "🔇 Can't hear it" button.
+- K–1 Evaluations use choices only.
+- Placement asks 8 questions a grade.
+- Short last levels are merged into the level before.
+- A miss is due again in 10 minutes, and self-rated flashcards stop at box 2 (backend).
+
+**Word bank:** about 480 entries corrected across K–12: wrong definitions and examples,
+near-twin definitions made distinguishable, and wrong-sense IPA removed. Removed IPA is
+listed in `data/vocab/ipa-skip.json` so `add-ipa.js` leaves those words alone.
+
+**Not done:**
+- **Recall in the portal:** porting Recall's save handlers into the portal (it shows a
+  message there instead).
+- **Run-on questions:** each run-on item needs its own wrong fixes; today they are other
+  items' sentences.
+- **Text Features:** still at stage 5, though it's grade-3 content.
+
+**Needs:** nothing; the backend migrations are applied.
+
 ## 2026-10-13 — Jordan's Claude (Word Lab)
 **English Lyceum → 📖 Word Lab: the adaptive vocabulary system.** Built to Caitlin's design,
 with Jordan's choices: inside Lyceum, word bank written by us, no microphone, and sentence

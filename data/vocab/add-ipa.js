@@ -65,15 +65,33 @@ for (const line of fs.readFileSync(dictPath, 'utf8').split('\n')) {
   dict.set(m[1].toLowerCase(), m[3].trim().split(/\s+/));
 }
 
-let added = 0, missing = 0;
+// Words the dictionary gets wrong for the sense we teach: see ipa-skip.json.
+const SKIP = new Set(JSON.parse(fs.readFileSync(path.join(__dirname, 'ipa-skip.json'), 'utf8')).words.map((w) => w.toLowerCase()));
+let added = 0, missing = 0, skipped = 0;
 for (const f of fs.readdirSync(__dirname).filter((n) => /^grade-[0-9K]+\.json$/.test(n))) {
   const file = path.join(__dirname, f);
   const data = JSON.parse(fs.readFileSync(file, 'utf8'));
   for (const e of data.words) {
     const ph = dict.get(String(e.w).toLowerCase());
-    if (ph) { e.ipa = toIpa(ph); added++; }
+    if (SKIP.has(String(e.w).toLowerCase())) { delete e.ipa; skipped++; }
+    else if (ph) { e.ipa = toIpa(ph); added++; }
     else { delete e.ipa; missing++; }
   }
   fs.writeFileSync(file, JSON.stringify(data, null, 1) + '\n');
 }
-console.log(`ipa added to ${added} words; ${missing} not in the dictionary (they keep their respelling)`);
+console.log(`ipa added to ${added} words; ${skipped} on the skip list; ${missing} not in the dictionary (they keep their respelling)`);
+
+// real-words.json: every word the bank uses anywhere (headwords, synonyms,
+// definitions, examples). Word Lab uses it so a "misspelling" it makes up is
+// never a real word (desert -> dessert), and so typing a real anagram or a
+// sound-alike ("silent" for listen, "sea" for see) gets "try again" rather
+// than a mark against the student.
+const real = new Set();
+for (const f of fs.readdirSync(__dirname).filter((n) => /^grade-[0-9K]+\.json$/.test(n))) {
+  for (const e of JSON.parse(fs.readFileSync(path.join(__dirname, f), 'utf8')).words) {
+    [e.w, ...(e.syn || []), e.def, e.ex].join(' ').toLowerCase().split(/[^a-z'-]+/)
+      .map((t) => t.replace(/^['-]+|['-]+$/g, '')).filter((t) => t.length >= 2).forEach((t) => real.add(t));
+  }
+}
+fs.writeFileSync(path.join(__dirname, 'real-words.json'), JSON.stringify([...real].sort()) + '\n');
+console.log(`real-words.json: ${real.size} words`);

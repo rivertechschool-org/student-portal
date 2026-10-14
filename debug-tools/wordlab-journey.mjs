@@ -79,7 +79,7 @@ async function playSession(rightFor) {
     if (!state) break;
     kinds.push(await answer(rightFor(state)));
     await g.evaluate(() => { const Q = WordLab._q(); if (Q && !Q.over && Q.answered) WordLab.next(); });
-    await wait(30);
+    await wait(380);   // past the double-tap lock
   }
   await wait(300);
   return kinds;
@@ -141,10 +141,28 @@ let missed = 0;
 await playSession(() => (missed++ < 2 ? false : true));
 await g.evaluate(() => WordLab.home());
 await wait(400);
-const stats = await g.textContent('#wl-stats');
-ok('missed words are due for review straight away', /[1-9]\d*\s*due for review/.test(stats));
+d = await db();
+const missedWords = Object.values(d.words).filter(w => w.wrong > 0);
+ok('missed words come back in 10 minutes (not straight away)', missedWords.length >= 1
+   && missedWords.every(w => w.box === 1 && w.due > Date.now() && w.due <= Date.now() + 11 * 60000));
 
 console.log('\n== evaluation ==\n');
+await g.evaluate(() => WordLab.startEvaluation());
+await wait(400);
+await answer(true);
+await g.evaluate(() => WordLab.endSession());
+await wait(300);
+ok('quitting an Evaluation after one right answer passes nothing', !(await rpc()).some(c => c.fn === 'rt_vocab_pass_level'));
+
+await g.evaluate(() => WordLab.startAssessment());
+await g.selectOption('#wl-my-grade', '4');
+await g.evaluate(() => WordLab._beginAssessment());
+await wait(500);
+const tap = await g.evaluate(() => { const before = WordLab._q().i; WordLab.choose(0); WordLab.choose(0); return [before, WordLab._q().i, WordLab._q().results.length]; });
+check('a double-tap answers one question, not two', tap, [0, 1, 1]);
+await g.evaluate(() => WordLab.endSession());
+await wait(200);
+
 await g.evaluate(() => WordLab.startEvaluation());
 await wait(300);
 await playSession(() => false);
@@ -167,6 +185,7 @@ for (let i = 0; i < 20; i++) {
   if (!more) break;
   await g.evaluate(() => WordLab._flip());
   await g.evaluate(() => WordLab._flash(true));
+  await wait(380);
 }
 await g.evaluate(() => WordLab.home());
 await wait(400);

@@ -5,7 +5,7 @@ The words behind English Lyceum's **Word Lab**: one file per grade, `grade-K.jso
 
 Every definition, example sentence and respelling here was written for RiverTech. None of
 it is copied from a dictionary. Pronunciations in IPA (`ipa`) are derived from the CMU
-Pronouncing Dictionary (BSD licence, see `LICENSE-cmudict.txt`) by `add-ipa.js`.
+Pronouncing Dictionary (BSD licence, see `LICENSE-cmudict.txt`) by `add-ipa.js`, except the words in `ipa-skip.json` (the dictionary has the wrong pronunciation for the sense taught).
 
 ## Shape
 
