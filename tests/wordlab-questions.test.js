@@ -130,6 +130,10 @@ const W = ctx.WordLab._internals;
     check(`grade ${g}: every level but the last has twelve words`,
       Array.from({ length: lvls - 1 }, (_, i) => W.levelWords(g, i + 1).length).every(n => n === W.LEVEL_SIZE));
     check(`grade ${g}: the last level has at least 7 words`, W.levelWords(g, lvls).length >= 7, String(W.levelWords(g, lvls).length));
+    // levelCount decides when passing a level moves the student up a grade; it
+    // used to be length / 12 rounded up, one more than the levels that exist.
+    check(`grade ${g}: levelCount is the number of levels that have words`, W.levelCount(g), lvls);
+    check(`grade ${g}: at least 500 words`, bank.length >= 500, String(bank.length));
   }
 
   // The schedule mirror: same rule as rt_vocab_record.

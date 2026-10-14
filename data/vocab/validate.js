@@ -14,7 +14,7 @@ const path = require('path');
 const DIR = __dirname;
 const GRADES = ['K', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'];
 const POS = new Set(['noun', 'verb', 'adjective', 'adverb', 'pronoun', 'preposition', 'conjunction', 'interjection', 'determiner']);
-const MIN_WORDS = 200;
+const MIN_WORDS = 500;
 
 const only = process.argv[2];
 const grades = only ? [only] : GRADES;

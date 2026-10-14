@@ -32,7 +32,7 @@
   const PASS_PCT = 80;
   const DAY = 86400000;
   const BOX_DAYS = [0, 1, 3, 7, 14, 30];
-  const BANK_VERSION = '3';
+  const BANK_VERSION = '4';
 
   const gradeLabel = (g) => (g === 'K' ? 'Kindergarten' : `Grade ${g}`);
   const gradeShort = (g) => (g === 'K' ? 'K' : `Gr ${g}`);
@@ -51,9 +51,10 @@
     const r = await fetch(`../data/vocab/grade-${g}.json?v=${BANK_VERSION}`);
     if (!r.ok) throw new Error(`Could not load ${gradeLabel(g)} words`);
     const j = await r.json();
-    // A short remainder joins the level before it: a 1-word last level made a
-    // 1-question Evaluation.
-    const nLv = Math.max(1, Math.round((j.words || []).length / LEVEL_SIZE));
+    // A short remainder (under 7 words) joins the level before it: a 1-word
+    // last level made a 1-question Evaluation.
+    const n = (j.words || []).length, rem = n % LEVEL_SIZE;
+    const nLv = Math.max(1, rem && rem < 7 ? Math.floor(n / LEVEL_SIZE) : Math.ceil(n / LEVEL_SIZE));
     BANK[g] = (j.words || []).map((w, i) => Object.assign({}, w, {
       grade: g, idx: i, level: Math.min(Math.floor(i / LEVEL_SIZE) + 1, nLv), k: key(w.w),
     }));
@@ -71,7 +72,9 @@
     return REAL;
   }
   const isReal = (w) => !!REAL && REAL.has(String(w).toLowerCase());
-  const levelCount = (g) => Math.ceil((BANK[g] || []).length / LEVEL_SIZE);
+  // The levels loadGrade made - not length / 12, which counted a merged
+  // remainder as a level of its own (an empty last level).
+  const levelCount = (g) => (BANK[g] || []).reduce((m, e) => Math.max(m, e.level), 0);
   const levelWords = (g, n) => (BANK[g] || []).filter(e => e.level === n);
   function findWord(k, g) {
     if (g && BANK[g]) { const e = BANK[g].find(x => x.k === k); if (e) return e; }
@@ -1175,6 +1178,6 @@
     choose, submitTyped, enterTyped, dontKnow, cantHear, next, endSession, matchTap,
     // for tests
     _q: () => Q,
-    _internals: { makeQuestion, misspellings, misuse, blankOut, applyResult, S, BANK, loadGrade, levelWords, kindFor, wordRx, GRADES, LEVEL_SIZE, related, scrambleOf, loadReal, altSpelling },
+    _internals: { makeQuestion, misspellings, misuse, blankOut, applyResult, S, BANK, loadGrade, levelWords, levelCount, kindFor, wordRx, GRADES, LEVEL_SIZE, related, scrambleOf, loadReal, altSpelling },
   };
 })();

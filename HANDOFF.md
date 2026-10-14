@@ -35,6 +35,34 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-14 — Jordan's Claude (Word Lab: 500+ words a grade)
+**The Word Lab bank doubled: 6,730 words, 513–522 a grade (was ~250).**
+
+- **New words:** each grade was written to fit that grade and checked against every other
+  grade (a word lives in one grade only, the lowest). New words are interleaved by
+  difficulty, so the 12-word levels changed. A student's per-word progress is kept, but their
+  current level now holds different words. Word Lab only shipped on 10-13, so this was the
+  cheap moment to do it.
+- **Re-check of the old entries:** wrong synonyms, mixed-sense definitions and examples using
+  the wrong sense were fixed in every grade. The details are in the commit, not here.
+- **`near`:** several hundred more close-synonym pairs, so they're never set against each other.
+- **IPA:** nine more words go on `ipa-skip.json` because the dictionary stresses the wrong
+  syllable (cyclone, effusive…).
+- **Bug fixed:** `levelCount` was length/12 rounded up, one more than the levels that exist, so
+  passing the last real level sent a student to an empty level instead of the next grade. It
+  now counts the levels that have words. A remainder under 7 joins the level before.
+- **Checks:** `validate.js` now requires 500 a grade. `tests/wordlab-questions.test.js` checks
+  levelCount and the 500 minimum (364,976 checks, all passing). `BANK_VERSION` is 4.
+
+**For someone to decide:**
+- **"evolution"** is a grade-8 entry, defined neutrally ("the slow change in living things over
+  many generations"). Keep it, or swap it?
+- **Grade fit:** a few existing words were flagged as sitting a grade or two off: telephone
+  (4), tone and crust (7), herbivore (6), docile and calamity (11). Narrow science words
+  were also flagged: allele and meiosis (8), mitosis (9).
+- **"deprecate"** (grade 11) is taught as "play down your own abilities". That sense is real, but
+  the main sense is "disapprove of".
+
 ## 2026-10-13 — Jordan's Claude (Lyceum audit: last gaps closed)
 **The "Not done" items in the audit entry below are now done.**
 
@@ -127,7 +155,7 @@ practice by picking the right sentence.
 - **🏅 Evaluation:** the level test; 80% moves the student up a level.
 
 **How it's built:**
-- **Word bank:** `data/vocab/grade-K..12.json`, 3,305 words, about 250 a grade, in levels of
+- **Word bank:** `data/vocab/grade-K..12.json`, 6,730 words, over 500 a grade, in levels of
   12 ordered easiest first. Every definition and example is original. IPA comes from the CMU
   dictionary (BSD; licence beside the files). `node data/vocab/validate.js` checks the
   rules. `add-ipa.js` regenerates IPA.
