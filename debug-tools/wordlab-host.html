@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Word Lab test host</title>
+<style>body { margin: 0; background: #fff; } iframe { width: 100%; height: 100vh; border: 0; }</style>
+</head>
+<body>
+<!--
+  Test host for debug-tools/wordlab-journey.mjs. It stands in for index.html /
+  portal/index.html: it loads the REAL shared/vocab-bridge.js and gives it a
+  stub database, so a journey exercises game -> postMessage -> bridge -> RPC.
+  The stub keeps a per-word Leitner box with the same rule as rt_vocab_record.
+  Nothing here signs in or talks to a real database.
+-->
+<script>
+  window.__rpc = [];
+  const DAY = 86400000, DAYS = [0, 1, 3, 7, 14, 30];
+  const db = { profile: null, words: {} };
+  window.__db = db;
+  window.portalAuth = {
+    supabase: {
+      rpc(fn, args) {
+        window.__rpc.push({ fn, args: JSON.parse(JSON.stringify(args || {})) });
+        const now = Date.now();
+        if (fn === 'rt_vocab_state') {
+          return Promise.resolve({ data: { profile: db.profile, now: new Date(now).toISOString(),
+            words: Object.entries(db.words).map(([word, w]) => ({ word, grade: w.grade, box: w.box, due_at: new Date(w.due).toISOString(),
+              seen: w.seen, right: w.right, wrong: w.wrong, mastered: w.box >= 4 })) }, error: null });
+        }
+        if (fn === 'rt_vocab_record') {
+          for (const r of args.p_results) {
+            const w = db.words[r.word] || { grade: r.grade, box: 0, due: now, seen: 0, right: 0, wrong: 0 };
+            if (r.right) { if (w.box === 0 || w.due <= now) { w.box = Math.min(w.box + 1, 5); w.due = now + DAYS[w.box] * DAY; } w.right++; }
+            else { w.box = 1; w.due = now; w.wrong++; }
+            w.seen++; db.words[r.word] = w;
+          }
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        if (fn === 'rt_vocab_set_placement') {
+          db.profile = Object.assign({}, db.profile, { placement_grade: args.p_grade, current_grade: args.p_grade, current_level: 1, placement_detail: args.p_detail });
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        if (fn === 'rt_vocab_set_level') {
+          db.profile = Object.assign({ levels_passed: [] }, db.profile, { current_grade: args.p_grade, current_level: args.p_level });
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        if (fn === 'rt_vocab_pass_level') {
+          db.profile = Object.assign({ levels_passed: [] }, db.profile);
+          db.profile.levels_passed = db.profile.levels_passed.concat([{ grade: args.p_grade, level: args.p_level, score: args.p_score }]);
+          db.profile.current_grade = args.p_next_grade; db.profile.current_level = args.p_next_level;
+          return Promise.resolve({ data: { success: true }, error: null });
+        }
+        return Promise.resolve({ data: null, error: { message: 'unknown rpc ' + fn } });
+      },
+    },
+  };
+  window.addEventListener('message', (event) => {
+    if (event.origin !== window.location.origin) return;
+    window.VocabBridge && window.VocabBridge.handle(event);
+  });
+</script>
+<script src="../shared/vocab-bridge.js"></script>
+<iframe id="game" src="../games/english-lyceum.html?userId=journey-student"></iframe>
+</body>
+</html>

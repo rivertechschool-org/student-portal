@@ -35,6 +35,45 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-13 — Jordan's Claude (Word Lab)
+**English Lyceum → 📖 Word Lab: the adaptive vocabulary system.** Built to Caitlin's design,
+with Jordan's choices: inside Lyceum, word bank written by us, no microphone, and sentence
+practice by picking the right sentence.
+
+**The four modes:**
+- **📝 Assessment:** placement by grade.
+- **📖 Learning:** the level's words.
+- **🎯 Practice:** mixed games, review of due words, flashcards, spelling, meanings and
+  listening, with an explanation after every answer.
+- **🏅 Evaluation:** the level test; 80% moves the student up a level.
+
+**How it's built:**
+- **Word bank:** `data/vocab/grade-K..12.json`, 3,305 words, about 250 a grade, in levels of
+  12 ordered easiest first. Every definition and example is original. IPA comes from the CMU
+  dictionary (BSD; licence beside the files). `node data/vocab/validate.js` checks the
+  rules. `add-ipa.js` regenerates IPA.
+- **Code:** `games/lyceum-wordlab.js`. Hosts answer its messages through
+  `shared/vocab-bridge.js`, loaded by `index.html` and `portal/index.html`.
+- **Read-aloud:** the browser's own voice; nothing leaves the device.
+- **Per-word memory:** kept in the backend (migration `…_word_lab_vocabulary_progress.sql`,
+  already applied). Each word has a box; a right answer moves it up only when it's due
+  (1, 3, 7, 14, 30 days). Mastered = box 4.
+- **Teachers:** a new **📖 Word Lab** tab in Class Progress.
+- **Homework:** Word Lab sessions count towards an English Lyceum game assignment.
+- **Skill progress left alone:** Word Lab deliberately does not write `skill_progress`
+  (Lyceum's handler would overwrite a mastered Vocabulary state).
+
+**Tests:**
+- `tests/wordlab-questions.test.js` runs the real question builders over every word.
+- `tests/class-vocab.test.js` covers the teacher tab.
+- `debug-tools/wordlab-journey.mjs` (with `debug-tools/wordlab-host.html`) walks the whole
+  thing through the real bridge.
+
+**Not done:** speaking practice (it needs on-device speech recognition), and free-written
+sentences.
+**Needs:** nothing. Caitlin may want to review words and their order; edit the JSON and
+re-run the validator.
+
 ## 2026-10-13 — Jordan's Claude (later)
 **No D+ or D-.** Jordan: the school doesn't use them. Every percent→letter scale now gives a
 plain **D for 60–69%**: `calculateLetterGrade` and its copies in the portal, the main site, the

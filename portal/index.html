@@ -19,6 +19,7 @@
   <script src="../shared/config.js?v=21"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
+  <script src="../shared/vocab-bridge.js?v=1"></script>
 
   <!-- ADD QUILL.JS -->
   <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
@@ -3389,6 +3390,9 @@
           // Pages). Reject cross-origin frames before touching any DB handler.
           if (event.origin !== window.location.origin) return;
           if (!event.data || typeof event.data.type !== 'string') return;
+          // English Lyceum's Word Lab, launched as homework from here:
+          // answered by shared/vocab-bridge.js, the same as on the student site.
+          if (window.VocabBridge && window.VocabBridge.handle(event)) return;
           // Handle messages from Math Dojo and Skill Tree
           switch (event.data.type) {
             case 'DOGO_SKILL_PROGRESS':
@@ -30742,6 +30746,63 @@ Students you had withdrawn stay withdrawn.`)) {
             this.loadClassHomeworkResults(this._cp.classId, 'cp-homework');
           }
         }
+        if (this._cp.tab === 'vocab' && !this._cp.loading) this.loadClassVocab(this._cp.classId);
+      }
+
+      // The Word Lab tab: each student's vocabulary level and memory, from
+      // rt_class_vocab. Cached per class for the life of the modal.
+      async loadClassVocab(classId) {
+        const el = () => document.getElementById('cp-vocab');
+        try {
+          if (!this._cp.vocab || this._cp.vocabFor !== classId) {
+            this._cp.vocab = await this._pickupRpc('rt_class_vocab', { p_class_id: classId }) || [];
+            this._cp.vocabFor = classId;
+          }
+          if (el()) el().innerHTML = this._classVocabHtml(this._cp.vocab, new Date());
+        } catch (e) {
+          console.error('rt_class_vocab failed:', e);
+          if (el()) el().innerHTML = `<div class="cp-empty" style="color: var(--danger);">Word Lab could not be loaded: ${this.escapeHtml(e.message || String(e))}</div>`;
+        }
+      }
+
+      _classVocabHtml(rows, now = new Date()) {
+        const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+        const list = Array.isArray(rows) ? rows : [];
+        if (!list.length) return `<div class="cp-empty">No students are enrolled in this class.</div>`;
+        const started = list.filter(r => r.current_grade || r.words_met);
+        const grade = (g) => g == null ? '' : (g === 'K' ? 'K' : `Gr ${g}`);
+        const ago = (t) => {
+          if (!t) return '—';
+          const d = Math.floor((now - new Date(t)) / 86400000);
+          return d <= 0 ? 'today' : d === 1 ? 'yesterday' : `${d} days ago`;
+        };
+        const body = list.map(r => {
+          const name = `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Student';
+          if (!r.current_grade && !r.words_met) {
+            return `<tr><td>${esc(name)}</td><td colspan="5" style="color: var(--muted);">Not started Word Lab</td></tr>`;
+          }
+          const trouble = Array.isArray(r.trouble) ? r.trouble : [];
+          return `<tr>
+            <td>${esc(name)}</td>
+            <td>${r.current_grade ? `${esc(grade(r.current_grade))} · L${esc(r.current_level || 1)}` : '—'}${r.placement_grade ? `<div style="font-size: 11px; color: var(--muted);">placed ${esc(grade(r.placement_grade))}</div>` : ''}</td>
+            <td><b>${Number(r.mastered) || 0}</b> / ${Number(r.words_met) || 0}<div style="font-size: 11px; color: var(--muted);">${Number(r.levels_passed) || 0} level${Number(r.levels_passed) === 1 ? '' : 's'} passed</div></td>
+            <td>${Number(r.due) ? `<span style="color: var(--warning, #e67e22); font-weight: 600;">${Number(r.due)}</span>` : '0'}</td>
+            <td>${esc(ago(r.last_practised))}</td>
+            <td style="font-size: 12px;">${trouble.length ? trouble.map(esc).join(', ') : '<span style="color: var(--muted);">—</span>'}</td>
+          </tr>`;
+        }).join('');
+        return `
+          <div style="font-size: 12px; color: var(--muted); margin: 6px 0 10px;">
+            ${started.length} of ${list.length} student${list.length === 1 ? '' : 's'} using Word Lab (English Lyceum → 📖 Word Lab).
+            <b>Mastered</b> means right on four spaced reviews, the last a week or more after the one before.
+            <b>Due</b> is words the schedule says to review now. <b>Words to work on</b> are missed more often than got right.
+          </div>
+          <div style="overflow-x: auto;">
+            <table class="cp-table" style="width: 100%; border-collapse: collapse; font-size: 13px;">
+              <thead><tr style="text-align: left;"><th>Student</th><th>Level</th><th>Mastered / met</th><th>Due</th><th>Last practised</th><th>Words to work on</th></tr></thead>
+              <tbody>${body}</tbody>
+            </table>
+          </div>`;
       }
 
       setClassProgressSubject(value) {
@@ -30793,7 +30854,9 @@ Students you had withdrawn stay withdrawn.`)) {
         }).join('');
 
         // Short labels: all three have to fit across a phone.
-        const TABS = [['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments']];
+        // Word Lab is English Lyceum's vocabulary system: per-word memory,
+        // not per-skill, so it has its own tab rather than columns here.
+        const TABS = [['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments'], ['vocab', '📖 Word Lab']];
         const tabs = TABS.map(([key, label]) =>
           `<button class="cp-tab${cp.tab === key ? ' on' : ''}" onclick="app.setClassProgressTab('${key}')">${label}</button>`).join('');
 
@@ -30804,6 +30867,8 @@ Students you had withdrawn stay withdrawn.`)) {
           main = `<div class="cp-empty" style="color: var(--danger);">Progress could not be loaded: ${esc(cp.error)}</div>`;
         } else if (cp.tab === 'homework') {
           main = `<div id="cp-homework"><div class="cp-empty">Loading assignment results…</div></div>`;
+        } else if (cp.tab === 'vocab') {
+          main = `<div id="cp-vocab"><div class="cp-empty">Loading Word Lab…</div></div>`;
         } else if (!students.length) {
           main = `<div class="cp-empty">No students are enrolled in this class.</div>`;
         } else {
@@ -30821,7 +30886,7 @@ Students you had withdrawn stay withdrawn.`)) {
             </label>
           </div>
           <div class="cp-tabs">${tabs}</div>
-          ${cp.tab === 'homework' ? '' : `<div class="cp-chips">${chips}</div>`}
+          ${cp.tab === 'homework' || cp.tab === 'vocab' ? '' : `<div class="cp-chips">${chips}</div>`}
           ${main}
           <details class="cp-defs">
             <summary>What these words mean</summary>
