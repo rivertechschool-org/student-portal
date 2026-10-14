@@ -46,6 +46,15 @@ and the letter→percentage tables still read them.
 (`rt_score_test_submission`), not in the student's browser. The database also fills in the
 class gradebook. Details are in the backend repo's migrations from today.
 **Needs:** nothing. All of it is applied.
+**Testing Center, student side (later still):**
+- A student's tests now load through `rt_my_assigned_tests`, and their questions arrive
+  without the correct answers.
+- The score comes back from the database when they submit. The results screen gets the
+  correct answers at that point, or through `rt_test_answer_key` when they reopen View
+  Results.
+- One attempt per test, unless a test allows retakes. Submit can't send twice.
+- Journey: `debug-tools/testing-center-student-journey.mjs` (14 checks).
+- Teachers' screens are unchanged.
 
 ## 2026-10-13 — Jordan's Claude
 **Grading: the letter follows the points, and rubrics with categories.** Asked for by
