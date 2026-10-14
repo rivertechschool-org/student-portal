@@ -532,6 +532,23 @@
           transition: border-color .15s;
         }
         .calendar-nav button:hover { border-color: var(--accent); }
+        .calendar-nav button.active { border-color: var(--accent); color: var(--accent); }
+
+        /* List view: the whole school year, searchable */
+        .calendar-list-tools {
+          display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px;
+        }
+        .calendar-list-tools input[type="search"] {
+          flex: 1 1 220px; min-width: 0; padding: 6px 10px; border-radius: 6px;
+          border: 1px solid var(--border); background: var(--nav-bg); color: var(--text); font-size: 13px;
+        }
+        .calendar-list-tools label { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+        .calendar-list-month {
+          margin: 14px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase;
+        }
+        .calendar-list-row { cursor: pointer; flex-wrap: wrap; }
+        .calendar-list-row:hover { background: var(--nav-bg); }
+        .calendar-list-date { min-width: 130px; font-variant-numeric: tabular-nums; color: var(--text); font-size: 13px; }
 
         .calendar-filters {
           display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;
@@ -3773,6 +3790,12 @@
                 this.calendarEvents = [];
                 this.calendarFilters = { assignments: true, tests: true, classes: true, quarters: true, school_events: true, attendance: true, bookings: true };
                 this.schoolDaysLeft = null;
+                // The list view: every event in the school year on one screen,
+                // searchable. Loaded the first time someone opens it, not before.
+                this.calendarView = 'month';
+                this.calendarList = null;
+                this.calendarListQuery = '';
+                this.calendarListUpcoming = true;
                 // The countdown spans the whole year, so it loads once here rather
                 // than with every month the calendar navigates to. That is why the
                 // first draw does not go through refreshCalendar() like the others:
@@ -3793,6 +3816,20 @@
             }
 
             async loadCalendarEvents(year, month) {
+                const monthStart = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+                const lastDay = new Date(year, month + 1, 0).getDate();
+                const monthEnd = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+                const r = await this.fetchCalendarRange(monthStart, monthEnd);
+                this.noSchoolDates = r.noSchoolDates;
+                this.calendarEvents = r.events;
+                this.calendarClassIds = r.classIds;
+            }
+
+            // Everything the calendar shows between two YYYY-MM-DD dates,
+            // inclusive. The month grid asks for one month; the list view asks
+            // for the whole school year. Returned rather than stored, so the
+            // list can load without overwriting the month the grid is holding.
+            async fetchCalendarRange(monthStart, monthEnd) {
                 const sb = this.auth.supabase;
                 const userInfo = this.auth.getUserInfo();
                 const userType = userInfo.profile?.user_type;
@@ -3803,11 +3840,8 @@
                 // to user_profiles.id. See PortalAuth.studentRecordId().
                 const studentRecordId = this.auth.studentRecordId();
 
-                const monthStart = `${year}-${String(month + 1).padStart(2, '0')}-01`;
-                const lastDay = new Date(year, month + 1, 0).getDate();
-                const monthEnd = `${year}-${String(month + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
-
                 let classIds = [];
+                let noSchoolDates = new Set();
                 const events = [];
 
                 try {
@@ -3963,26 +3997,23 @@
                         .select('id, title, description, event_type, start_date, end_date, created_by')
                         .or(`and(start_date.gte.${monthStart},start_date.lte.${monthEnd}),and(end_date.gte.${monthStart},end_date.lte.${monthEnd}),and(start_date.lte.${monthStart},end_date.gte.${monthEnd})`);
 
-                    const noSchoolDates = new Set();
                     (schoolEvents || []).forEach(ev => {
                         const start = new Date(ev.start_date + 'T00:00:00');
                         const end = ev.end_date ? new Date(ev.end_date + 'T00:00:00') : start;
                         for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
                             const dayStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-                            events.push({ type: 'school_event', date: dayStr, title: ev.title, eventType: ev.event_type, description: ev.description, id: ev.id });
+                            events.push({ type: 'school_event', date: dayStr, title: ev.title, eventType: ev.event_type, description: ev.description, id: ev.id, startDate: ev.start_date, endDate: ev.end_date });
                             if (ev.event_type === 'holiday' || ev.event_type === 'closure') {
                                 noSchoolDates.add(dayStr);
                             }
                         }
                     });
-                    this.noSchoolDates = noSchoolDates;
 
                 } catch (err) {
                     console.error('Error loading calendar events:', err);
                 }
 
-                this.calendarEvents = events;
-                this.calendarClassIds = classIds;
+                return { events, classIds, noSchoolDates };
             }
 
             getEventColor(type) {
@@ -4031,7 +4062,11 @@
                     filterTypes.push({ key: 'bookings', label: 'Bookings', color: '#22d3ee' });
                 }
 
-                const filtersHTML = filterTypes.map(f => {
+                const listView = this.calendarView === 'list';
+                // Class meetings and attendance are left out of the list (see
+                // loadCalendarList), so their pills would do nothing there.
+                const shownFilters = listView ? filterTypes.filter(f => f.key !== 'classes' && f.key !== 'attendance') : filterTypes;
+                const filtersHTML = shownFilters.map(f => {
                     const active = this.calendarFilters[f.key];
                     return `<button class="calendar-filter-btn ${active ? 'active' : ''}"
                         style="${active ? `background:${f.color};` : ''}"
@@ -4089,17 +4124,29 @@
                     ${manageEventsLink}
                     <div class="calendar-container card" style="margin-top: 20px;">
                         <div class="calendar-header">
-                            <h3>${monthNames[month]} ${year}</h3>
+                            <h3>${listView ? 'All Events' : `${monthNames[month]} ${year}`}</h3>
                             <div class="calendar-nav">
+                                <button class="${listView ? '' : 'active'}" onclick="portal.setCalendarView('month')">Month</button>
+                                <button class="${listView ? 'active' : ''}" onclick="portal.setCalendarView('list')">List</button>
+                                ${listView ? '' : `
                                 <button onclick="portal.navigateCalendar(-1)">&larr;</button>
                                 <button onclick="portal.navigateCalendarToday()">Today</button>
-                                <button onclick="portal.navigateCalendar(1)">&rarr;</button>
+                                <button onclick="portal.navigateCalendar(1)">&rarr;</button>`}
                             </div>
                         </div>
                         <div class="calendar-filters">${filtersHTML}</div>
-                        <div class="calendar-grid">${cellsHTML}</div>
+                        ${listView ? `
+                        <div class="calendar-list-tools">
+                            <input type="search" id="calendar-list-search" placeholder="Search events (e.g. physics, field trip)"
+                                value="${this.escapeHtml(this.calendarListQuery || '')}" oninput="portal.setCalendarListQuery(this.value)">
+                            <label><input type="checkbox" ${this.calendarListUpcoming ? 'checked' : ''} onchange="portal.setCalendarListUpcoming(this.checked)"> Upcoming only</label>
+                            <span id="calendar-list-count" style="color:var(--muted);font-size:12px;"></span>
+                            <button class="calendar-filter-btn" id="calendar-list-copy" onclick="portal.copyCalendarList()">Copy list</button>
+                        </div>
+                        <div id="calendar-list-body"></div>` : `<div class="calendar-grid">${cellsHTML}</div>`}
                     </div>
                 `;
+                if (listView) this.renderCalendarListBody();
             }
 
             // ── Days of school left ───────────────────────────────────
@@ -4276,9 +4323,166 @@
             // kept seeing the first one's classes and due dates until they
             // reloaded the page. One door now, so the next reason cannot forget.
             refreshCalendar() {
-                return this.loadCalendarEvents(this.calendarYear, this.calendarMonth).then(() => {
+                // A parent switching child while the list is open needs the list
+                // reloaded too, so it rides the same door rather than a fifth one.
+                const list = this.calendarView === 'list' ? this.loadCalendarList() : null;
+                return Promise.all([this.loadCalendarEvents(this.calendarYear, this.calendarMonth), list]).then(() => {
                     this.renderCalendar(this.calendarYear, this.calendarMonth);
                 });
+            }
+
+            // ── Calendar list view ────────────────────────────────────
+            //
+            // The grid answers "what is on this day"; the list answers "when are
+            // all the X" (every Physics Lab, every field trip day), which the
+            // grid can only answer one month and one click at a time.
+            //
+            // The span is the school year the countdown already worked out from
+            // the quarters table. If that is unknown, Aug 1 to Jul 31 around
+            // today stands in, so the list still has something to show.
+            calendarListSpan() {
+                const s = this.schoolDaysLeft;
+                if (s && s.firstDay && s.lastDay) return { start: s.firstDay, end: s.lastDay };
+                const now = new Date();
+                const y = now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+                return { start: `${y}-08-01`, end: `${y + 1}-07-31` };
+            }
+
+            async loadCalendarList() {
+                const span = this.calendarListSpan();
+                const r = await this.fetchCalendarRange(span.start, span.end);
+                // Class meetings repeat every week and attendance is a record of
+                // meetings, so in a year-long list they would bury everything
+                // else. The grid still shows both.
+                const items = [];
+                const seenEvent = new Set();
+                r.events.forEach(ev => {
+                    if (ev.recurring || ev.type === 'attendance') return;
+                    if (ev.type === 'school_event') {
+                        // A multi-day break comes back as one row per day; the list
+                        // shows it once, as a span.
+                        if (seenEvent.has(ev.id)) return;
+                        seenEvent.add(ev.id);
+                        items.push({ ...ev, date: ev.startDate || ev.date });
+                        return;
+                    }
+                    items.push(ev);
+                });
+                items.sort((a, b) => String(a.date).localeCompare(String(b.date)) ||
+                    String(a.title || '').localeCompare(String(b.title || '')));
+                this.calendarList = items;
+            }
+
+            setCalendarView(view) {
+                if (this.calendarView === view) return;
+                this.calendarView = view;
+                this.refreshCalendar();
+            }
+
+            // The rows the list shows right now: type pills, the search box and
+            // the upcoming toggle, all applied to what loadCalendarList holds.
+            filteredCalendarList() {
+                const q = (this.calendarListQuery || '').trim().toLowerCase();
+                const today = this.localTodayStr();
+                return (this.calendarList || []).filter(ev => {
+                    if (!this.calendarFilters[this.getFilterKey(ev.type)]) return false;
+                    const last = String(ev.endDate || ev.date || '').slice(0, 10);
+                    if (this.calendarListUpcoming && last < today) return false;
+                    if (!q) return true;
+                    return [ev.title, ev.description, ev.className, ev.room, ev.eventType]
+                        .some(f => f && String(f).toLowerCase().includes(q));
+                });
+            }
+
+            calendarListDateLabel(ev) {
+                const fmt = (str) => {
+                    const d = new Date(str + 'T12:00:00');
+                    return isNaN(d) ? str : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+                };
+                const start = String(ev.date || '').slice(0, 10);
+                const end = ev.endDate && ev.endDate !== start ? ev.endDate : null;
+                return end ? `${fmt(start)} to ${fmt(end)}` : fmt(start);
+            }
+
+            renderCalendarListBody() {
+                const body = document.getElementById('calendar-list-body');
+                if (!body) return;
+                const count = document.getElementById('calendar-list-count');
+                if (!this.calendarList) {
+                    body.innerHTML = '<p style="color:var(--muted);padding:12px 0;">Loading…</p>';
+                    return;
+                }
+                const rows = this.filteredCalendarList();
+                if (count) count.textContent = `${rows.length} event${rows.length === 1 ? '' : 's'}`;
+                if (rows.length === 0) {
+                    body.innerHTML = '<p style="color:var(--muted);padding:12px 0;">Nothing matches.</p>';
+                    return;
+                }
+                const esc = (v) => this.escapeHtml(String(v ?? ''));
+                const typeLabels = { assignment: 'Assignment', test: 'Test', quarter: 'Quarter', school_event: 'School event', booking: 'Booking' };
+                let lastMonth = '';
+                let html = '';
+                rows.forEach(ev => {
+                    const day = String(ev.date).slice(0, 10);
+                    const d = new Date(day + 'T12:00:00');
+                    const month = isNaN(d) ? '' : d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                    if (month !== lastMonth) {
+                        if (lastMonth) html += '</ul>';
+                        html += `<div class="calendar-list-month">${esc(month)}</div><ul class="day-events-list">`;
+                        lastMonth = month;
+                    }
+                    const extra = [ev.className, ev.room, ev.description].filter(Boolean).map(esc).join(' · ');
+                    const kind = ev.eventType && ev.eventType !== 'event' ? ev.eventType : (typeLabels[ev.type] || '');
+                    html += `<li class="calendar-list-row" onclick="portal.jumpToCalendarDate('${esc(day)}')" title="Show this day on the calendar">
+                        <span class="day-event-dot" style="background:${this.getEventColor(ev.type)}"></span>
+                        <span class="calendar-list-date">${esc(this.calendarListDateLabel(ev))}</span>
+                        <span style="flex:1;min-width:0;overflow-wrap:anywhere;">${esc(ev.title)}${extra ? `<span style="color:var(--muted);font-size:12px;"> - ${extra}</span>` : ''}</span>
+                        <span style="color:var(--muted);font-size:11px;white-space:nowrap;">${esc(kind)}</span>
+                    </li>`;
+                });
+                body.innerHTML = html + '</ul>';
+            }
+
+            // Typing re-filters the rows only. Redrawing the whole calendar
+            // would rebuild the search box and drop the cursor after one letter.
+            setCalendarListQuery(value) {
+                this.calendarListQuery = value;
+                this.renderCalendarListBody();
+            }
+
+            setCalendarListUpcoming(on) {
+                this.calendarListUpcoming = !!on;
+                this.renderCalendarListBody();
+            }
+
+            // From a row in the list to that day on the grid, with its detail open.
+            jumpToCalendarDate(dateStr) {
+                const [y, m] = String(dateStr).split('-').map(Number);
+                if (!y || !m) return;
+                this.calendarYear = y;
+                this.calendarMonth = m - 1;
+                this.calendarView = 'month';
+                this.refreshCalendar().then(() => this.showDayDetail(dateStr));
+            }
+
+            // One line per event, ready to paste into an email or a message.
+            async copyCalendarList() {
+                const lines = this.filteredCalendarList().map(ev => {
+                    const extra = [ev.className, ev.room, ev.description].filter(Boolean).join(' · ');
+                    return `${this.calendarListDateLabel(ev)} - ${ev.title}${extra ? ` (${extra})` : ''}`;
+                });
+                const text = lines.join('\n');
+                const btn = document.getElementById('calendar-list-copy');
+                try {
+                    await navigator.clipboard.writeText(text);
+                    if (btn) btn.textContent = `Copied ${lines.length}`;
+                } catch (e) {
+                    // No clipboard permission: put the text where it can be
+                    // selected by hand instead.
+                    this.showModal('calendar-list-copy', 'Copy these lines',
+                        `<textarea readonly style="width:100%;min-height:240px;font-family:inherit;" onfocus="this.select()">${this.escapeHtml(text)}</textarea>`);
+                }
+                if (btn) setTimeout(() => { btn.textContent = 'Copy list'; }, 2000);
             }
 
             navigateCalendar(dir) {
