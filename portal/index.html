@@ -9411,8 +9411,9 @@
             // Get notes for this child filtered by the specific class
             const { data: notes, error } = await this.supabaseQuery(() =>
               this.auth.supabase
-                .from('student_notes')
-                .select('*')
+                .from('notes')
+                .select('*, teacher_id:author_id, modified_by:updated_by, modified_at:updated_at')
+                .eq('visibility', 'family')
                 .eq('student_id', child.id)
                 .eq('class_id', classId)
                 .order('created_at', { ascending: false }));
@@ -10273,8 +10274,9 @@
             }));
           })(),
           (async () => {
-            let q = sb.from('student_notes')
-              .select('sentiment, category, custom_category, note, teacher_id, created_at, classes(name)')
+            let q = sb.from('notes')
+              .select('sentiment, category, custom_category, note, teacher_id:author_id, created_at, classes(name)')
+              .in('visibility', ['staff', 'family'])
               .eq('student_id', studentId)
               .order('created_at', { ascending: false })
               .limit(limit);
@@ -20752,20 +20754,10 @@
         }
 
         try {
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes')
-            .insert({
-              class_id: classId,
-              student_id: studentId,
-              teacher_id: this.userInfo.user.id,
-              sentiment: sentiment,
-              category: category,
-              custom_category: category === 'custom' ? customCategory : null,
-              value: sentiment === 'neutral' ? null : value,
-              note: noteContent
-            }));
-
-          if (error) throw error;
+          await this._insertNote({
+            studentId, classId, category, customCategory, sentiment,
+            visibility: 'family', value: sentiment === 'neutral' ? null : value, note: noteContent
+          });
 
           this.showNotification('Note saved successfully', 'success');
           this.closeModal('add-note');
@@ -20801,8 +20793,9 @@
           // Get all notes for these students across ALL classes (paginated —
           // a full roster's note history can exceed the 1000-row cap)
           const notes = await this.fetchAllRows((from, to) => this.auth.supabase
-            .from('student_notes')
-            .select('*')
+            .from('notes')
+            .select('*, teacher_id:author_id, modified_by:updated_by, modified_at:updated_at')
+            .in('visibility', ['staff', 'family'])
             .in('student_id', studentIds)
             .order('created_at', { ascending: false })
             .range(from, to));
@@ -20905,8 +20898,10 @@
 
           // Load existing private notes
           const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_private_notes')
+            .from('notes')
             .select('*')
+            .eq('visibility', 'private')
+            .eq('author_id', this.userInfo.profile.id)
             .eq('class_id', classId)
             .eq('student_id', studentId)
             .order('created_at', { ascending: false }));
@@ -20989,16 +20984,7 @@
         }
 
         try {
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_private_notes')
-            .insert({
-              class_id: classId,
-              student_id: studentId,
-              teacher_id: this.userInfo.user.id,
-              note: noteText
-            }));
-
-          if (error) throw error;
+          await this._insertNote({ studentId, classId, visibility: 'private', note: noteText });
 
           this.showNotification('Note added', 'success');
 
@@ -21016,7 +21002,7 @@
         try {
           // Load the note
           const { data: note, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_private_notes')
+            .from('notes')
             .select('*')
             .eq('id', noteId)
             .single());
@@ -21055,10 +21041,11 @@
 
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_private_notes')
+            .from('notes')
             .update({
               note: noteText,
-              updated_at: new Date().toISOString()
+              updated_at: new Date().toISOString(),
+              updated_by: this.userInfo.profile.id
             })
             .eq('id', noteId));
 
@@ -21083,7 +21070,7 @@
 
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_private_notes')
+            .from('notes')
             .delete()
             .eq('id', noteId));
 
@@ -21398,9 +21385,13 @@
 
           // Load existing class notes
           const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_class_notes')
+            .from('notes')
             .select('*')
+            .eq('visibility', 'private')
+            .eq('author_id', this.userInfo.profile.id)
             .eq('class_id', classId)
+            .is('student_id', null)
+            .is('about_teacher_id', null)
             .order('note_date', { ascending: false }));
 
           if (error) throw error;
@@ -21499,16 +21490,7 @@
         }
 
         try {
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_class_notes')
-            .insert({
-              class_id: classId,
-              teacher_id: this.userInfo.user.id,
-              note: noteText,
-              note_date: noteDate || this._localDateStr(new Date())
-            }));
-
-          if (error) throw error;
+          await this._insertNote({ classId, visibility: 'private', note: noteText, noteDate: noteDate || this._localDateStr(new Date()) });
 
           this.showNotification('Note added', 'success');
 
@@ -21526,7 +21508,7 @@
         try {
           // Load the note
           const { data: note, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_class_notes')
+            .from('notes')
             .select('*')
             .eq('id', noteId)
             .single());
@@ -21572,11 +21554,12 @@
 
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_class_notes')
+            .from('notes')
             .update({
               note: noteText,
               note_date: noteDate,
-              updated_at: new Date().toISOString()
+              updated_at: new Date().toISOString(),
+              updated_by: this.userInfo.profile.id
             })
             .eq('id', noteId));
 
@@ -21601,7 +21584,7 @@
 
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('teacher_class_notes')
+            .from('notes')
             .delete()
             .eq('id', noteId));
 
@@ -30737,7 +30720,8 @@ Students you had withdrawn stay withdrawn.`)) {
           className: cls?.name || prev?.className || '',
           subject: opts.subject !== undefined ? opts.subject : (prev ? prev.subject : null),
           filter: prev?.filter || 'all',
-          tab: opts.tab || prev?.tab || 'overview',
+          // 'students' was its own tab until 2026-10-14; it is the Overview now.
+          tab: ((t) => t === 'students' ? 'overview' : t)(opts.tab || prev?.tab || 'overview'),
           sortKey: prev?.sortKey || 'name',
           sortDir: prev?.sortDir || 1,
           data: null, homework: prev?.homework || null, loading: true, error: null,
@@ -30775,7 +30759,8 @@ Students you had withdrawn stay withdrawn.`)) {
           }
         }
         if (this._cp.tab === 'vocab' && !this._cp.loading) this.loadClassVocab(this._cp.classId);
-        if (this._cp.tab === 'overview' && !this._cp.loading) this.loadClassOverview(this._cp.classId);
+        // Once loaded, a chip or a sort redraws from what is held; nothing refetches.
+        if (this._cp.tab === 'overview' && !this._cp.loading && !this._cp.overviewReady) this.loadClassOverview(this._cp.classId);
       }
 
       // ---- Overview tab ----------------------------------------------------
@@ -30815,11 +30800,11 @@ Students you had withdrawn stay withdrawn.`)) {
           const curricula = await this._loadCurricula(subjects);
           if (this._cp !== cp || cp.tab !== 'overview') return;
           cp.levels = this._classLevels(cp.overviewData, curricula);
-          if (el()) el().innerHTML = this._classOverviewHtml(cp.overviewData,
-            planR.status === 'fulfilled' ? planR.value : null,
-            vocabR.status === 'fulfilled' ? (vocabR.value || []) : null,
-            extrasR.status === 'fulfilled' ? extrasR.value : null,
-            cp.levels);
+          cp.plan = planR.status === 'fulfilled' ? planR.value : null;
+          cp.overviewVocab = vocabR.status === 'fulfilled' ? (vocabR.value || []) : null;
+          cp.overviewExtras = extrasR.status === 'fulfilled' ? extrasR.value : null;
+          cp.overviewReady = true;
+          if (el()) el().innerHTML = this._classOverviewFromState(cp, new Date());
         } catch (e) {
           console.error('Class overview failed:', e);
           if (el()) el().innerHTML = `<div class="cp-empty" style="color: var(--danger);">The overview could not be loaded: ${this.escapeHtml(e?.message || String(e))}</div>`;
@@ -30854,94 +30839,40 @@ Students you had withdrawn stay withdrawn.`)) {
 
       // ---- Grade, attendance and notes for the Overview ---------------------
       //
-      // Read-only. The grade is the one on record for the current quarter
-      // (quarter_grade_snapshots, what Grade Management shows and the teacher
-      // overrides); this screen never calculates or writes one, so a student
-      // whose quarter grade has not been worked out yet shows a dash rather
-      // than a number that disagrees with the gradebook. Attendance is this
-      // class's own marks since the quarter began. Notes are the ones written
-      // about the student in this class, from every notes table this
-      // teacher can read.
-      _currentQuarter(quarters, todayStr) {
-        const qs = (quarters || []).filter(q => q && q.start_date && !q.is_archived);
-        return qs.find(q => q.is_current)
-          || qs.find(q => q.start_date <= todayStr && (!q.end_date || q.end_date >= todayStr))
-          || qs.filter(q => q.start_date <= todayStr).sort((a, b) => b.start_date.localeCompare(a.start_date))[0]
-          || null;
-      }
-
+      // One call, rt_class_overview, read-only. For the class's current
+      // quarter it returns each student's grade worked out exactly as Grade
+      // Management works it out (the teacher's overrides kept) but without
+      // saving it, this class's attendance marks since the quarter began, and
+      // the notes about the student in this class that this teacher may read.
+      // Working these out on the server means the Overview, the gradebook and
+      // the Student Hub cannot disagree about what a number means.
       async _loadClassOverviewExtras(classId) {
-        const sb = this.auth.supabase;
-        const q = async (build) => { const { data, error } = await this.supabaseQuery(build); if (error) throw error; return data || []; };
-        const settle = (p) => p.then(v => v, e => { console.error('Overview extra failed:', e); return null; });
-        const todayStr = this.localTodayStr ? this.localTodayStr() : new Date().toISOString().slice(0, 10);
-
-        const [enrollments, quarters] = await Promise.all([
-          q(() => sb.from('class_enrollments').select('id, student_id').eq('class_id', classId).eq('status', 'active')),
-          settle(q(() => sb.from('quarters').select('id, name, start_date, end_date, is_current, is_archived'))),
-        ]);
-        const studentIds = enrollments.map(e => e.student_id);
-        const quarter = this._currentQuarter(quarters, todayStr);
-        // Without a quarter, the last 30 days stands in for attendance.
-        const since = quarter?.start_date || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-        if (!studentIds.length) return { quarter, grades: new Map(), attendance: new Map(), notes: new Map(), since };
-
-        const [snaps, att, sNotes, uNotes, pNotes] = await Promise.all([
-          quarter ? settle(q(() => sb.from('quarter_grade_snapshots')
-            .select('enrollment_id, academic_grade, participation_grade, class_grade, class_grade_override')
-            .eq('quarter_id', quarter.id).in('enrollment_id', enrollments.map(e => e.id)))) : Promise.resolve(null),
-          settle(this.fetchAllRows((from, to) => sb.from('class_attendance')
-            .select('student_id, status, date').eq('class_id', classId).in('student_id', studentIds)
-            .gte('date', since).lte('date', todayStr).order('date', { ascending: true }).range(from, to))),
-          settle(q(() => sb.from('student_notes').select('student_id, sentiment, category, custom_category, note, created_at')
-            .eq('class_id', classId).in('student_id', studentIds))),
-          settle(q(() => sb.from('notes').select('student_id, sentiment, category, custom_category, note, note_date, created_at')
-            .eq('class_id', classId).in('student_id', studentIds))),
-          settle(q(() => sb.from('teacher_private_notes').select('student_id, note, created_at')
-            .eq('class_id', classId).in('student_id', studentIds))),
-        ]);
-
-        const studentOf = new Map(enrollments.map(e => [e.id, e.student_id]));
-        const grades = snaps == null ? null : new Map();
-        (snaps || []).forEach(s => { const sid = studentOf.get(s.enrollment_id); if (sid) grades.set(sid, s); });
-
-        const attendance = att == null ? null : this._summariseClassAttendance(att);
-
-        const allNotes = [sNotes, uNotes, pNotes];
-        const notes = allNotes.every(n => n == null) ? null : this._summariseStudentNotes(
-          [].concat(...allNotes.map((rows, i) => (rows || []).map(r => ({ ...r, private: i === 2 })))));
-        return { quarter, grades, attendance, notes, since };
+        const data = await this._pickupRpc('rt_class_overview', { p_class_id: classId });
+        return this._overviewExtrasFromRpc(data);
       }
 
-      // One row per mark -> per student: marks, absences, lates, left early.
-      _summariseClassAttendance(rows) {
-        const out = new Map();
-        (rows || []).forEach(r => {
-          const a = out.get(r.student_id) || { marks: 0, absent: 0, late: 0, leftEarly: 0, lastAbsent: null };
-          a.marks++;
-          if (r.status === 'absent') { a.absent++; if (!a.lastAbsent || r.date > a.lastAbsent) a.lastAbsent = r.date; }
-          if (r.status === 'late' || r.status === 'late_left_early') a.late++;
-          if (r.status === 'left_early' || r.status === 'late_left_early') a.leftEarly++;
-          out.set(r.student_id, a);
+      // The RPC's JSON -> the Maps the Overview renders from.
+      _overviewExtrasFromRpc(data) {
+        const grades = new Map(), attendance = new Map(), notes = new Map();
+        (data?.students || []).forEach(s => {
+          if (s.grade) grades.set(s.id, s.grade);
+          const a = s.attendance;
+          if (a && Number(a.marks) > 0) {
+            const marks = Number(a.marks), absent = Number(a.absent) || 0;
+            attendance.set(s.id, {
+              marks, absent, late: Number(a.late) || 0, leftEarly: Number(a.left_early) || 0,
+              lastAbsent: a.last_absent || null, rate: Math.round((marks - absent) / marks * 100),
+            });
+          }
+          const n = s.notes;
+          if (n && Number(n.count) > 0) {
+            notes.set(s.id, {
+              count: Number(n.count), positive: Number(n.positive) || 0, negative: Number(n.negative) || 0,
+              latest: n.latest ? { when: n.latest.date || '', text: n.latest.text || '', private: !!n.latest.private, category: n.latest.category || '' } : null,
+            });
+          }
         });
-        out.forEach(a => { a.rate = a.marks ? Math.round((a.marks - a.absent) / a.marks * 100) : null; });
-        return out;
-      }
-
-      // Notes from the three tables -> per student: how many, how many good
-      // and how many concerns, and the newest one to show on hover.
-      _summariseStudentNotes(rows) {
-        const out = new Map();
-        (rows || []).forEach(r => {
-          const n = out.get(r.student_id) || { count: 0, positive: 0, negative: 0, latest: null };
-          n.count++;
-          if (r.sentiment === 'positive') n.positive++;
-          if (r.sentiment === 'negative') n.negative++;
-          const when = r.note_date || r.created_at || '';
-          if (!n.latest || when > (n.latest.when || '')) n.latest = { when, text: r.note || '', private: !!r.private, category: r.custom_category || r.category || '' };
-          out.set(r.student_id, n);
-        });
-        return out;
+        return { quarter: data?.quarter || null, since: data?.since || null, grades, attendance, notes };
       }
 
       // ---- Grade level: ahead / on par / behind --------------------------
@@ -31178,10 +31109,40 @@ Students you had withdrawn stay withdrawn.`)) {
         });
       }
 
-      _classOverviewHtml(data, planIdx, vocab, extras = null, levels = null) {
+      // The Overview from what showClassProgress holds: the chip picks who is
+      // shown (the same students the chip counts), the headers pick the order.
+      _classOverviewFromState(cp, now = new Date()) {
+        const view = { sortKey: cp.sortKey, sortDir: cp.sortDir, now, filter: cp.filter };
+        if (cp.filter && cp.filter !== 'all') {
+          view.only = new Set(this._progressFilterStudents(cp.data?.students || [], cp.filter, now).map(s => s.id));
+          view.emptyText = this._classProgressEmptyText(cp.filter, this._progressSubjectLabel(cp.subject));
+        }
+        return this._classOverviewHtml(cp.overviewData, cp.plan, cp.overviewVocab, cp.overviewExtras, cp.levels, view);
+      }
+
+      // Column order for the Overview. Anything unmeasured sorts last whichever
+      // way the column runs; ties fall back to the name.
+      _overviewSortValue(key, s, ctx) {
+        switch (key) {
+          case 'grade':      { const v = Number(ctx.extras?.grades?.get(s.id)?.class_grade); return v > 0 ? v : null; }
+          case 'attendance': return ctx.extras?.attendance?.get(s.id)?.rate ?? null;
+          case 'notes':      return ctx.extras?.notes?.get(s.id)?.count ?? 0;
+          case 'level':      { const m = ctx.levels?.get(s.id); if (!m || !m.size) return null; return [...m.values()].filter(r => r.status === 'behind').length; }
+          case 'core':       return ctx.cores.get(s.id)?.done ?? null;
+          case 'lastActive': { const t = s.last_active ? new Date(s.last_active).getTime() : NaN; return isNaN(t) ? null : t; }
+          case 'accuracy':   return this._progressAccuracy(s);
+          case 'overdue':    return Number(s.homework_overdue) || 0;
+          default:           return null;
+        }
+      }
+
+      _classOverviewHtml(data, planIdx, vocab, extras = null, levels = null, view = {}) {
         const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
-        const students = this._progressSortStudents(Array.isArray(data?.students) ? data.students : [], 'name', 1);
-        if (!students.length) return `<div class="cp-empty">No students are enrolled in this class.</div>`;
+        const now = view.now || new Date();
+        const everyone = this._progressSortStudents(Array.isArray(data?.students) ? data.students : [], 'name', 1);
+        if (!everyone.length) return `<div class="cp-empty">No students are enrolled in this class.</div>`;
+        let students = view.only ? everyone.filter(s => view.only.has(s.id)) : everyone;
+        if (!students.length) return `<div class="cp-empty">${esc(view.emptyText || 'No students to show.')}</div>`;
         const skills = Array.isArray(data?.skills) ? data.skills : [];
         const subjects = this._overviewSubjects(skills);
 
@@ -31206,6 +31167,22 @@ Students you had withdrawn stay withdrawn.`)) {
         const fmtDate = (d) => { const x = new Date(String(d).slice(0, 10) + 'T12:00:00'); return isNaN(x) ? '' : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
 
         const cores = new Map(students.map(s => [s.id, this._gradCoreForStudent(rowsOf.get(s.id), planIdx)]));
+        const sortKey = view.sortKey && view.sortKey !== 'name' ? view.sortKey : null;
+        if (sortKey) {
+          const dir = view.sortDir || -1, ctx = { extras, levels, cores };
+          students = students.slice().sort((a, b) => {
+            const va = this._overviewSortValue(sortKey, a, ctx), vb = this._overviewSortValue(sortKey, b, ctx);
+            if (va === null && vb !== null) return 1;
+            if (vb === null && va !== null) return -1;
+            if (va !== vb && va !== null) return (va < vb ? -1 : 1) * dir;
+            return 0;   // already in name order
+          });
+        } else if (view.sortDir === -1) {
+          students = students.slice().reverse();
+        }
+        const arrow = (key) => (view.sortKey || 'name') === key ? ((view.sortDir || 1) === 1 ? ' ▲' : ' ▼') : '';
+        const th = (key, label, title = '', cls = '') =>
+          `<th${cls ? ` class="${cls}"` : ''}${title ? ` title="${esc(title)}"` : ''}><button class="cp-sort" onclick="app.sortClassProgress('${key}')">${label}${arrow(key)}</button></th>`;
         const label = this._gridRowLabels(students);
         const quarterName = extras?.quarter?.name || 'this quarter';
 
@@ -31275,8 +31252,16 @@ Students you had withdrawn stay withdrawn.`)) {
           const vocabCell = vocab == null ? '<td class="cp-sub">—</td>'
             : (!v || (!v.current_grade && !v.words_met)) ? '<td class="cp-sub">not started</td>'
             : `<td>${esc(grade(v.current_grade))} · L${esc(v.current_level || 1)}<div class="cp-sub" style="margin:0;">${Number(v.mastered) || 0} words</div></td>`;
+          // This week, from the Students tab this replaced.
+          const inactive = this._progressInactive(s, now);
+          const acc = this._progressAccuracy(s);
+          const weekTip = `${Number(s.sessions_7d) || 0} sessions · ${Number(s.questions_7d) || 0} questions · ${Number(s.minutes_7d) || 0} minutes in the last 7 days`;
+          const overdue = Number(s.homework_overdue) || 0;
           return `<tr onclick="app.openStudentHubSkills('${this.jsAttr(s.id)}', '')">
             <th class="cp-name" scope="row"><button class="cp-link" onclick="event.stopPropagation(); app.openStudentHubSkills('${this.jsAttr(s.id)}', '')" title="${esc(`${s.first_name || ''} ${s.last_name || ''}`.trim())}">${esc(label.get(s.id))}</button>${s.grade_level ? `<span class="cp-sub">Gr ${esc(s.grade_level)}</span>` : ''}</th>
+            <td class="${inactive ? 'cp-warn' : ''}" title="The latest practice we have a record of">${esc(this._progressRelTime(s.last_active, now))}</td>
+            <td title="${esc(weekTip)}">${acc === null ? '<span class="cp-sub">—</span>' : `${acc}%<div class="cp-sub" style="margin:0;">${Number(s.questions_7d) || 0} q</div>`}</td>
+            <td class="${overdue ? 'cp-bad' : ''}" title="Assignments past due and not completed or excused">${overdue}</td>
             ${gradeCell(s)}${attendanceCell(s)}${notesCell(s)}${levelCell(s)}${coreCell}${subjCells}${vocabCell}
           </tr>`;
         }).join('');
@@ -31297,28 +31282,36 @@ Students you had withdrawn stay withdrawn.`)) {
         const rates = extras?.attendance ? students.map(s => extras.attendance.get(s.id)?.rate).filter(v => v != null) : [];
         const attAvg = rates.length ? `${Math.round(avg(rates))}%` : '—';
         const behindAny = levels ? students.filter(s => [...(levels.get(s.id)?.values() || [])].some(r => r.status === 'behind')).length : 0;
+        const accs = students.map(s => this._progressAccuracy(s)).filter(v => v !== null);
+        const accAvg = accs.length ? `${Math.round(avg(accs))}%` : '—';
+        const overdueTotal = students.reduce((n, s) => n + (Number(s.homework_overdue) || 0), 0);
 
         return `
           <div class="cp-note" style="margin: 0 0 8px;">
-            <b>Grade</b> is the ${esc(quarterName)} grade on record. <b>Attendance</b> is this class's marks this quarter. <b>Level</b> counts subjects
+            <b>Last active</b> and <b>This week</b> are practice in the last 7 days (orange: none).
+            <b>Grade</b> is the ${esc(quarterName)} grade, worked out the way Grade Management does. <b>Attendance</b> is this class's marks this quarter. <b>Level</b> counts subjects
             <span class="cp-lv-behind">▼ behind</span>, <span class="cp-lv-on">● on par</span> and <span class="cp-lv-ahead">▲ ahead</span> of the student's grade; tap it for what they should have by now.
             <b>Grad core</b> is the 65 required math items. Each subject shows <b>skills mastered</b>, <span class="cp-ov-w" style="margin:0;">+ in progress</span>, <span class="cp-ov-stuck" style="margin:0;">!</span> stuck, and its level badge.
           </div>
           <div class="cp-scroll cp-grid-scroll">
             <table class="cp-table cp-overview">
               <thead><tr>
-                <th class="cp-name">Student</th>
-                <th title="${esc(quarterName)} class grade on record">Grade</th>
-                <th title="This class's attendance marks this quarter">Attendance</th>
-                <th title="Notes written about the student in this class">Notes</th>
-                <th title="Subjects behind / on par / ahead of the student's grade level">📏 Level</th>
-                <th title="Graduation core: required math items complete">🎓 Grad core</th>
+                ${th('name', 'Student', '', 'cp-name')}
+                ${th('lastActive', 'Last active', 'The latest practice we have a record of')}
+                ${th('accuracy', 'This week', 'Accuracy over the last 7 days')}
+                ${th('overdue', 'Overdue', 'Assignments past due and not completed or excused')}
+                ${th('grade', 'Grade', `${quarterName} class grade, worked out as Grade Management does`)}
+                ${th('attendance', 'Attendance', "This class's attendance marks this quarter")}
+                ${th('notes', 'Notes', 'Notes written about the student in this class')}
+                ${th('level', '📏 Level', "Subjects behind / on par / ahead of the student's grade level")}
+                ${th('core', '🎓 Grad core', 'Graduation core: required math items complete')}
                 ${subjects.map(sub => `<th>${esc(this._progressSubjectLabel(sub))}</th>`).join('')}
                 <th title="English Lyceum's Word Lab vocabulary level">📖 Word Lab</th>
               </tr></thead>
               <tbody>${body}</tbody>
               <tfoot><tr class="cp-ov-avg">
                 <th class="cp-name">Class average</th>
+                <td></td><td>${accAvg}</td><td>${overdueTotal ? `<span class="cp-bad">${overdueTotal}</span>` : '0'}</td>
                 <td>${gradeAvg}</td><td>${attAvg}</td><td></td>
                 <td>${levels ? `${behindAny ? `<span class="cp-lv-behind">▼ ${behindAny}</span> behind somewhere` : 'nobody behind'}` : '—'}</td>
                 <td>${coreAvg}</td>${subjAvg}<td class="cp-sub">${vocabStarted}</td>
@@ -31439,12 +31432,12 @@ Students you had withdrawn stay withdrawn.`)) {
           return `<button class="cp-chip${on ? ' on' : ''}" aria-pressed="${on}" onclick="app.setClassProgressFilter('${key}')">${label} <span class="cp-chip-n">${n}</span></button>`;
         }).join('');
 
-        // Short labels: all three have to fit across a phone.
-        // Word Lab is English Lyceum's vocabulary system: per-word memory,
-        // not per-skill, so it has its own tab rather than columns here.
-        // Overview is every subject side by side, plus the graduation core and
-        // Word Lab, one row per student: the at-a-glance view.
-        const TABS = [['overview', '🧭 Overview'], ['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments'], ['vocab', '📖 Word Lab']];
+        // Short labels: they have to fit across a phone.
+        // Overview is one row per student with everything on it - this week's
+        // activity, grade, attendance, notes, grade level, every subject - and
+        // replaced the separate Students tab. Word Lab is per-word memory, not
+        // per-skill, so its detail keeps its own tab.
+        const TABS = [['overview', '🧭 Overview'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments'], ['vocab', '📖 Word Lab']];
         const tabs = TABS.map(([key, label]) =>
           `<button class="cp-tab${cp.tab === key ? ' on' : ''}" onclick="app.setClassProgressTab('${key}')">${label}</button>`).join('');
 
@@ -31458,14 +31451,12 @@ Students you had withdrawn stay withdrawn.`)) {
         } else if (cp.tab === 'vocab') {
           main = `<div id="cp-vocab"><div class="cp-empty">Loading Word Lab…</div></div>`;
         } else if (cp.tab === 'overview') {
-          main = `<div id="cp-overview"><div class="cp-empty">Loading overview…</div></div>`;
+          main = `<div id="cp-overview">${cp.overviewReady ? this._classOverviewFromState(cp, now) : '<div class="cp-empty">Loading overview…</div>'}</div>`;
         } else if (!students.length) {
           main = `<div class="cp-empty">No students are enrolled in this class.</div>`;
         } else {
           const shown = this._progressSortStudents(this._progressFilterStudents(students, cp.filter, now), cp.sortKey, cp.sortDir);
-          main = cp.tab === 'skills'
-            ? this._classProgressGridHtml(cp, shown, now)
-            : this._classProgressStudentsHtml(cp, shown, now);
+          main = this._classProgressGridHtml(cp, shown, now);
         }
 
         return `
@@ -31476,7 +31467,7 @@ Students you had withdrawn stay withdrawn.`)) {
             </label>
           </div>
           <div class="cp-tabs">${tabs}</div>
-          ${cp.tab === 'homework' || cp.tab === 'vocab' || cp.tab === 'overview' ? '' : `<div class="cp-chips">${chips}</div>`}
+          ${cp.tab === 'homework' || cp.tab === 'vocab' ? '' : `<div class="cp-chips">${chips}</div>`}
           ${main}
           <details class="cp-defs">
             <summary>What these words mean</summary>
@@ -31501,53 +31492,6 @@ Students you had withdrawn stay withdrawn.`)) {
           fading: `No mastered skills are fading${where}.`,
           overdue: 'Nobody has overdue work.',
         })[filter] || 'No students to show.';
-      }
-
-      _classProgressStudentsHtml(cp, shown, now = new Date()) {
-        const esc = (s) => this.escapeHtml(s);
-        if (!shown.length) return `<div class="cp-empty">${esc(this._classProgressEmptyText(cp.filter, this._progressSubjectLabel(cp.subject)))}</div>`;
-        const arrow = (key) => cp.sortKey === key ? (cp.sortDir === 1 ? ' ▲' : ' ▼') : '';
-        const th = (key, label, title = '') =>
-          `<th${key === 'name' ? ' class="cp-name"' : ''}><button class="cp-sort" onclick="app.sortClassProgress('${key}')"${title ? ` title="${esc(title)}"` : ''}>${label}${arrow(key)}</button></th>`;
-        const subjArg = this.jsAttr(cp.subject || '');
-        const rows = shown.map(s => {
-          const acc = this._progressAccuracy(s);
-          const inactive = this._progressInactive(s, now);
-          const stuck = Number(s.stuck) || 0, overdue = Number(s.homework_overdue) || 0, fading = Number(s.fading) || 0;
-          return `
-            <tr onclick="app.openStudentHubSkills('${this.jsAttr(s.id)}', '${subjArg}')">
-              <td class="cp-name"><button class="cp-link" onclick="event.stopPropagation(); app.openStudentHubSkills('${this.jsAttr(s.id)}', '${subjArg}')">${esc(s.first_name)} ${esc(s.last_name)}</button>${s.grade_level ? `<span class="cp-sub">Gr ${esc(s.grade_level)}</span>` : ''}</td>
-              <td class="${inactive ? 'cp-warn' : ''}">${esc(this._progressRelTime(s.last_active, now))}</td>
-              <td>${Number(s.sessions_7d) || 0}</td>
-              <td>${Number(s.questions_7d) || 0}</td>
-              <td>${acc === null ? '<span class="cp-sub">—</span>' : acc + '%'}</td>
-              <td>${Number(s.minutes_7d) || 0}</td>
-              <td>${Number(s.mastered) || 0}${fading ? ` <span class="cp-sub" title="Mastered but not practised for 30 days">${fading} fading</span>` : ''}</td>
-              <td class="${stuck ? 'cp-warn' : ''}">${stuck}</td>
-              <td class="${overdue ? 'cp-bad' : ''}">${overdue}</td>
-            </tr>`;
-        }).join('');
-        return `
-          <div class="cp-scroll">
-            <table class="cp-table">
-              <thead>
-                <tr class="cp-group"><th></th><th></th><th colspan="4">This week (last 7 days)</th><th colspan="3"></th></tr>
-                <tr>
-                  ${th('name', 'Student')}
-                  ${th('lastActive', 'Last active', 'The latest practice we have a record of')}
-                  ${th('sessions', 'Sessions')}
-                  ${th('questions', 'Questions')}
-                  ${th('accuracy', 'Accuracy')}
-                  ${th('minutes', 'Minutes')}
-                  ${th('mastered', 'Mastered')}
-                  ${th('stuck', 'Stuck', 'Not mastered, practised 4+ times, still under 60')}
-                  ${th('overdue', 'Overdue', 'Assignments past due and not completed or excused')}
-                </tr>
-              </thead>
-              <tbody>${rows}</tbody>
-            </table>
-          </div>
-          <div class="cp-note">Tap a student to open their Student Hub on Skill Trees${cp.subject ? ` for ${esc(this._progressSubjectLabel(cp.subject))}` : ''}.</div>`;
       }
 
       // Short row labels for the grid: "Mara O." - unless two students would
@@ -43468,7 +43412,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         try {
           const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes').select('*').eq('student_id', studentId)
+            .from('notes').select('*, teacher_id:author_id, modified_by:updated_by, modified_at:updated_at').in('visibility', ['staff', 'family']).eq('student_id', studentId)
             .order('created_at', { ascending: false }));
 
           if (error) throw error;
@@ -44264,8 +44208,9 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           // Fetch all notes for this student across all classes
           const { data: notes, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes')
-            .select('*')
+            .from('notes')
+            .select('*, teacher_id:author_id, modified_by:updated_by, modified_at:updated_at')
+            .in('visibility', ['staff', 'family'])
             .eq('student_id', studentId)
             .order('created_at', { ascending: false }));
 
@@ -44470,20 +44415,10 @@ Students you had withdrawn stay withdrawn.`)) {
         if (sentiment === 'negative' && value !== null && value > 0) { this.showNotification('Value must be negative for negative sentiment', 'error'); return; }
 
         try {
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes')
-            .insert({
-              class_id: classId,
-              student_id: studentId,
-              teacher_id: this.userInfo.user.id,
-              sentiment: sentiment,
-              category: category,
-              custom_category: category === 'custom' ? customCategory : null,
-              value: sentiment === 'neutral' ? null : value,
-              note: noteContent
-            }));
-
-          if (error) throw error;
+          await this._insertNote({
+            studentId, classId, category, customCategory, sentiment,
+            visibility: 'family', value: sentiment === 'neutral' ? null : value, note: noteContent
+          });
 
           this.showNotification('Note added successfully', 'success');
           await this.viewStudentNotes(studentId, studentName);
@@ -44500,8 +44435,9 @@ Students you had withdrawn stay withdrawn.`)) {
 
         try {
           let query = this.auth.supabase
-            .from('student_notes')
-            .select('*')
+            .from('notes')
+            .select('*, teacher_id:author_id, modified_by:updated_by, modified_at:updated_at')
+            .in('visibility', ['staff', 'family'])
             .eq('student_id', studentId)
             .order('created_at', { ascending: false });
 
@@ -44533,8 +44469,8 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           // Fetch the note
           const { data: note, error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes')
-            .select('*')
+            .from('notes')
+            .select('*, teacher_id:author_id, modified_by:updated_by, modified_at:updated_at')
             .eq('id', noteId)
             .single());
 
@@ -44621,15 +44557,15 @@ Students you had withdrawn stay withdrawn.`)) {
 
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes')
+            .from('notes')
             .update({
               sentiment,
               category,
               custom_category: customCategory,
               value,
               note: noteText,
-              modified_at: new Date().toISOString(),
-              modified_by: this.userInfo.user.id
+              updated_at: new Date().toISOString(),
+              updated_by: this.userInfo.profile.id
             })
             .eq('id', noteId));
 
@@ -44651,7 +44587,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         try {
           const { error } = await this.supabaseQuery(() => this.auth.supabase
-            .from('student_notes')
+            .from('notes')
             .delete()
             .eq('id', noteId));
 
@@ -54406,18 +54342,16 @@ Students you had withdrawn stay withdrawn.`)) {
 
     // ==================== UNIFIED NOTES SYSTEM ====================
     // One filterable feed over the new `notes` table (per-student, per-class,
-    // per-teacher targets) plus the three legacy tables (student_notes,
-    // teacher_private_notes, teacher_class_notes). New notes are written to
+    // per-teacher targets). The three older tables (student_notes,
+    // teacher_private_notes, teacher_class_notes) were copied in on
+    // 2026-10-14 and are closed to the portal; everything reads and writes
     // `notes`. Riven reads/writes through the same _fetchAllNotes/_insertNote
     // helpers so the tab and the assistant always agree.
 
+    // Every note is in `notes` since the 2026-10-14 merge; the old tables
+    // keep their rows but the portal can no longer read or write them.
     _noteSourceTable(source) {
-      return {
-        unified: 'notes',
-        student: 'student_notes',
-        'private-student': 'teacher_private_notes',
-        class: 'teacher_class_notes'
-      }[source];
+      return 'notes';
     }
 
     async _loadNotesPeople() {
@@ -54451,10 +54385,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const results = { rows: [], warnings: [] };
 
       const sources = [
-        ['unified', 'notes'],
-        ['student', 'student_notes'],
-        ['private-student', 'teacher_private_notes'],
-        ['class', 'teacher_class_notes']
+        ['unified', 'notes']
       ];
       // Paginate each source (years of notes can exceed the 1000-row cap).
       // Keep per-source error tolerance: a missing legacy/unified table must
@@ -54494,7 +54425,8 @@ Students you had withdrawn stay withdrawn.`)) {
             category: r.category || 'general',
             custom_category: r.custom_category || null,
             sentiment: r.sentiment || 'neutral',
-            visibility: source === 'unified' ? r.visibility : (source === 'student' ? 'staff' : 'private'),
+            visibility: r.visibility || 'staff',
+            value: r.value ?? null,
             note: r.note || '',
             note_date: noteDate,
             created_at: r.created_at,
@@ -54507,7 +54439,7 @@ Students you had withdrawn stay withdrawn.`)) {
       return results;
     }
 
-    async _insertNote({ studentId = null, classId = null, aboutTeacherId = null, category = 'general', customCategory = null, sentiment = 'neutral', visibility = 'staff', note, noteDate = null }) {
+    async _insertNote({ studentId = null, classId = null, aboutTeacherId = null, category = 'general', customCategory = null, sentiment = 'neutral', visibility = 'staff', value = null, note, noteDate = null }) {
       // Single write path for the Notes tab AND Riven.
       if (!note || !note.trim()) throw new Error('Note text is required');
       if (!studentId && !classId && !aboutTeacherId) throw new Error('A note needs at least one target (student, class, or teacher)');
@@ -54523,6 +54455,7 @@ Students you had withdrawn stay withdrawn.`)) {
         note: note.trim()
       };
       if (noteDate) payload.note_date = noteDate;
+      if (value != null) payload.value = value;
       const { data, error } = await this.auth.supabase.from('notes').insert(payload).select().single();
       if (error) throw error;
       return data;
@@ -54533,9 +54466,8 @@ Students you had withdrawn stay withdrawn.`)) {
       const isAdmin = this.userInfo.profile.user_type === 'admin';
       if (n.author_id === me) return true;
       if (!isAdmin) return false;
-      // Admins can manage staff-visible notes (unified + legacy student_notes);
-      // legacy private tables are creator-only at the RLS level.
-      return (n.source === 'unified' && n.visibility === 'staff') || n.source === 'student';
+      // Admins can manage notes other staff can see; private ones are the author's.
+      return n.visibility === 'staff' || n.visibility === 'family';
     }
 
     // target/embedded let Notes render inside the My Students tab strip as well
@@ -54616,6 +54548,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <select id="notes-filter-visibility" style="width: 100%;" onchange="app.applyNotesFilters()">
                 <option value="">Any</option>
                 <option value="staff">Staff-visible</option>
+                <option value="family">Staff + family</option>
                 <option value="private">My private</option>
               </select>
             </div>
@@ -54792,8 +54725,8 @@ Students you had withdrawn stay withdrawn.`)) {
       const cat = n.category === 'custom' && n.custom_category ? n.custom_category : n.category;
       const visBadge = n.visibility === 'private'
         ? '<span style="font-size: 0.75em; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted);">🔒 private</span>'
-        : '<span style="font-size: 0.75em; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted);">staff</span>';
-      const legacyBadge = n.source !== 'unified' ? '<span style="font-size: 0.75em; color: var(--muted);">(legacy)</span>' : '';
+        : `<span style="font-size: 0.75em; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--muted);">${n.visibility === 'family' ? 'staff + family' : 'staff'}</span>`;
+      const legacyBadge = '';
       const actions = this._noteCanEdit(n)
         ? `<div style="display: flex; gap: 6px;">
              <button class="btn btn-secondary" style="padding: 2px 10px; font-size: 0.8em;" onclick="app.editUnifiedNote('${n.source}', '${n.id}')">Edit</button>
@@ -54887,6 +54820,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Visibility</label>
               <select id="composer-visibility" style="width: 100%;">
                 <option value="staff">Staff-visible</option>
+                <option value="family">Staff + family</option>
                 <option value="private">Private (only me)</option>
               </select>
             </div>
@@ -55016,6 +54950,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <label style="display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px;">Visibility</label>
               <select id="edit-note-visibility" style="width: 100%;">
                 <option value="staff" ${n.visibility === 'staff' ? 'selected' : ''}>Staff-visible</option>
+                <option value="family" ${n.visibility === 'family' ? 'selected' : ''}>Staff + family</option>
                 <option value="private" ${n.visibility === 'private' ? 'selected' : ''}>Private (only me)</option>
               </select>
             </div>` : ''}

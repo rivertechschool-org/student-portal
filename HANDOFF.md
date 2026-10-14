@@ -35,6 +35,21 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-14 — Jordan's Claude (Overview from the server; one notes table) — BRANCH, NOT LIVE
+**On branch `class-overview-and-one-notes-table` in both repos. Merge only after the backend
+branch's two migrations are applied**: this portal needs them, and the live portal breaks
+on notes if it ships first.
+- Class Progress's Overview now gets grade, attendance and notes from one server call. The
+  grade is worked out live, the way Grade Management does it, so it can no longer be missing
+  or stale.
+- The Students tab is folded into the Overview: Last active, This week, Overdue, the filter
+  chips and column sorting all moved there. Class Progress has four tabs now.
+- Every notes screen (class notes, private notes, the roster add-note, the admin and Student
+  Hub notes, the parent view, the Notes tab) reads and writes the one `notes` table. Notes
+  parents could see before are still visible to them ("Staff + family" in the Notes tab).
+**Needs:** someone with Supabase access applies the backend branch's two migrations in
+filename order, then merges both branches and pushes the portal's main.
+
 ## 2026-10-14 — Jordan's Claude (Class Progress: Overview tab)
 **Class Progress opens on a new Overview tab**, Jordan's request: every student in one row
 with every subject side by side. English Lyceum is always a column, the graduation core

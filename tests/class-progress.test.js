@@ -63,11 +63,11 @@ const METHODS = [
   'escapeHtml', 'jsAttr', '_progressSubjectLabel', '_progressRelTime', '_progressAccuracy',
   '_progressInactive', '_progressFilterStudents', '_progressSortStudents', '_skillSourceLabel',
   '_skillStateLabel', '_skillCellStyle', '_skillHistoryLine', '_termMasterySummary',
-  '_classProgressHtml', '_classProgressEmptyText', '_classProgressStudentsHtml', '_gridRowLabels',
+  '_classProgressHtml', '_classProgressEmptyText', '_gridRowLabels',
   '_classProgressGridHtml', '_fmtMmSs', '_homeworkGoalText', '_progressDate', '_classHomeworkHtml',
   '_hubSkillSubjectOptions', '_hubSkillsHtml', '_dojoFamilyLabel', '_weeklyActivityRows', '_weeklyActivityHtml',
   '_buildMathPlanIndex', '_gradCoreForStudent', '_overviewSubjects', '_classOverviewHtml',
-  'calculateLetterGrade', '_currentQuarter', '_summariseClassAttendance', '_summariseStudentNotes',
+  'calculateLetterGrade', '_overviewExtrasFromRpc', '_classOverviewFromState', '_overviewSortValue',
   '_gradeBandEnd', '_studentGradeNumber', '_buildCurriculumIndex', '_gradeLevelFor', '_classLevels',
   '_levelGradeName', '_levelBadge',
 ];
@@ -124,30 +124,47 @@ check('accuracy rounds', app._progressAccuracy(STUDENTS[1]), 45);
 // ---- the screen -----------------------------------------------------------
 console.log('\n== the progress screen ==\n');
 const CP = (over = {}) => Object.assign({ classId: 'c1', className: 'Invented Number Sense', subject: 'Math',
-  filter: 'all', tab: 'students', sortKey: 'name', sortDir: 1, loading: false, error: null,
+  filter: 'all', tab: 'skills', sortKey: 'name', sortDir: 1, loading: false, error: null,
   data: { subjects: [{ subject: 'Math', students: 5 }, { subject: 'Creative', students: 1 }], students: STUDENTS, skills: [] } }, over);
 const page = (cp) => app._classProgressHtml(cp, NOW);
 
 let out = page(CP());
-check('one row per student', (out.match(/<tr onclick=/g) || []).length, 5);
 ok('chips carry their counts (Stuck 1)', out.includes(`setClassProgressFilter('stuck')">Stuck <span class="cp-chip-n">1</span>`));
 ok('the picker labels Creative as Art (Art Studio)', out.includes('>Art (Art Studio) (1)</option>'));
-ok('a student row opens the hub on the chosen subject', out.includes("app.openStudentHubSkills('s2', 'Math')"));
 ok('the definitions are on screen', out.includes('practised 4 or more times, and still under 60'));
+ok('there is no Students tab any more', !out.includes("setClassProgressTab('students')") && out.includes("setClassProgressTab('overview')"));
+ok('the Overview waits for its data, then draws from what is held',
+  page(CP({ tab: 'overview' })).includes('Loading overview') &&
+  page(CP({ tab: 'overview', overviewReady: true, overviewData: { students: STUDENTS, skills: [] } })).includes('cp-overview'));
 check('loading says so', page(CP({ loading: true })).includes('Loading progress'), true);
 ok('an error is shown, escaped', page(CP({ error: '<b>denied</b>' })).includes('&lt;b&gt;denied&lt;/b&gt;'));
 ok('no students: says the class is empty', page(CP({ data: { subjects: [], students: [], skills: [] } }))
   .includes('No students are enrolled in this class.'));
+const OV = (over = {}) => CP(Object.assign({ tab: 'overview', overviewReady: true,
+  overviewData: { students: (over.data || {}).students || STUDENTS, skills: [] } }, over));
 ok('Stuck with nobody stuck says good news, for the subject',
-  page(CP({ filter: 'stuck', data: { subjects: [], students: [STUDENTS[0]], skills: [] } })).includes('Nobody is stuck in Math.'));
+  page(OV({ filter: 'stuck', data: { subjects: [], students: [STUDENTS[0]], skills: [] } })).includes('Nobody is stuck in Math.'));
 ok('Not active with everyone active says so',
-  page(CP({ filter: 'inactive', data: { subjects: [], students: [STUDENTS[0]], skills: [] } })).includes('Everyone has practised in the last 7 days.'));
+  page(OV({ filter: 'inactive', data: { subjects: [], students: [STUDENTS[0]], skills: [] } })).includes('Everyone has practised in the last 7 days.'));
+{
+  const ov = page(OV());
+  check('Overview: one row per student', (ov.match(/<tr onclick=/g) || []).length, 5);
+  ok('  carries this week: last active, accuracy, overdue', ov.includes('>Last active') && ov.includes('>This week') && ov.includes('>Overdue'));
+  ok('  a student who never practised is flagged not active', ov.includes('cp-warn" title="The latest practice we have a record of">never'));
+  const stuckOnly = page(OV({ filter: 'stuck' }));
+  check('  the Stuck chip filters the Overview to the stuck student', (stuckOnly.match(/<tr onclick=/g) || []).length, 1);
+  const byLast = app._classOverviewFromState(OV({ sortKey: 'lastActive', sortDir: -1 }), NOW);
+  const order = [...byLast.matchAll(/openStudentHubSkills\('(s\d)'/g)].map(m => m[1]).filter((v, i, a) => a.indexOf(v) === i);
+  check('  sorting by last active puts the most recent first, never-practised last', order[0], 's1');
+  ok('  every column header sorts', ['lastActive', 'accuracy', 'overdue', 'grade', 'attendance', 'notes', 'level', 'core']
+    .every(k => byLast.includes(`sortClassProgress('${k}')`)));
+}
 ok('the skills grid with no skills says no practice is recorded - not "nobody"',
   page(CP({ tab: 'skills' })).includes('No practice recorded for Math yet.'));
 ok('  and for all subjects says it without a subject',
   page(CP({ tab: 'skills', subject: null })).includes('No practice recorded yet.'));
 ok('the chips are hidden on the assignments tab', !page(CP({ tab: 'homework' })).includes('cp-chip'));
-ok('a name with markup is escaped', page(CP({ data: { subjects: [], skills: [], students: [S('x', '<img src=x>', 'Q')] } }))
+ok('a name with markup is escaped', page(OV({ data: { subjects: [], skills: [], students: [S('x', '<img src=x>', 'Q')] } }))
   .includes('&lt;img src=x&gt;'));
 
 // ---- the grid -------------------------------------------------------------
@@ -306,24 +323,18 @@ console.log('\n== overview ==\n');
     app._classOverviewHtml(data, null, vocab).includes('could not be loaded'));
   ok('no students says so', app._classOverviewHtml({ students: [], skills: [] }, idx, []).includes('No students are enrolled'));
 
-  // ---- grade, attendance, notes ----
-  check('current quarter: the flagged one wins',
-    app._currentQuarter([{ id: 'q1', start_date: '2026-09-01', end_date: '2026-10-30' }, { id: 'q2', start_date: '2026-11-02', is_current: true }], '2026-10-14').id, 'q2');
-  check('  else the one today falls in',
-    app._currentQuarter([{ id: 'q1', start_date: '2026-09-01', end_date: '2026-10-30' }, { id: 'q2', start_date: '2026-11-02', end_date: '2027-01-22' }], '2026-10-14').id, 'q1');
-  check('  archived quarters never count',
-    app._currentQuarter([{ id: 'q1', start_date: '2026-09-01', end_date: '2026-10-30', is_archived: true }], '2026-10-14'), null);
-  const att = app._summariseClassAttendance([
-    { student_id: 's1', status: 'present', date: '2026-10-01' }, { student_id: 's1', status: 'absent', date: '2026-10-02' },
-    { student_id: 's1', status: 'late_left_early', date: '2026-10-03' }, { student_id: 's1', status: 'present', date: '2026-10-04' },
-  ]).get('s1');
-  check('attendance: late-and-left counts as both, and as present', [att.marks, att.absent, att.late, att.leftEarly, att.rate, att.lastAbsent], [4, 1, 1, 1, 75, '2026-10-02']);
-  const notes = app._summariseStudentNotes([
-    { student_id: 's1', sentiment: 'positive', note: 'Helped a classmate', created_at: '2026-10-01T10:00:00Z' },
-    { student_id: 's1', sentiment: 'negative', note: 'Phone in class', note_date: '2026-10-09', created_at: '2026-10-09T10:00:00Z' },
-    { student_id: 's1', note: 'Check in with family', created_at: '2026-10-05T10:00:00Z', private: true },
-  ]).get('s1');
-  check('notes: counted, sorted by sentiment, newest shown', [notes.count, notes.positive, notes.negative, notes.latest.text], [3, 1, 1, 'Phone in class']);
+  // ---- grade, attendance, notes (rt_class_overview) ----
+  const ex = app._overviewExtrasFromRpc({ quarter: { name: 'Quarter 1' }, since: '2026-09-01', students: [
+    { id: 's1', grade: { class_grade: 88.5, academic_grade: 90, participation_grade: 85, override: false },
+      attendance: { marks: 4, absent: 1, late: 1, left_early: 1, last_absent: '2026-10-02' },
+      notes: { count: 3, positive: 1, negative: 1, latest: { date: '2026-10-09', text: 'Phone in class', private: false, category: 'behavior' } } },
+    { id: 's2', grade: null, attendance: { marks: 0, absent: 0, late: 0, left_early: 0, last_absent: null }, notes: { count: 0, positive: 0, negative: 0, latest: null } },
+  ] });
+  const a1 = ex.attendance.get('s1');
+  check('attendance: rate from marks and absences', [a1.marks, a1.absent, a1.late, a1.leftEarly, a1.rate, a1.lastAbsent], [4, 1, 1, 1, 75, '2026-10-02']);
+  check('notes: counts and the latest', [ex.notes.get('s1').count, ex.notes.get('s1').latest.text], [3, 'Phone in class']);
+  ok('a student with no marks and no notes has neither', !ex.attendance.has('s2') && !ex.notes.has('s2') && !ex.grades.has('s2'));
+  check('the quarter comes through', ex.quarter.name, 'Quarter 1');
 
   // ---- grade level ----
   check('band ends', ['K', '3-5', '9-College', 'College', '8', 'K-2', '?'].map(b => app._gradeBandEnd(b)), [0, 5, 13, 13, 8, 2, null]);
