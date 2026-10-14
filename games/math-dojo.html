@@ -18927,10 +18927,10 @@ const lessons = {
                               explanation: "Minute hand positions:<br>• :00 → 12<br>• :05 → 1<br>• :10 → 2<br>• :15 → 3<br>• :20 → 4<br>• :25 → 5<br>• :30 → 6<br>• :35 → 7<br>• :40 → 8<br>• :45 → 9<br>• :50 → 10<br>• :55 → 11<br><br>Formula: <strong>position = minutes ÷ 5</strong>.",
                               visual: { type: 'clock', mode: 'display', data: { hour: 12, minute: 30 } } },
                             { title: `Set the clock to ${targetHour}:${targetMin.toString().padStart(2, '0')}`,
-                              explanation: `For the goal time ${targetHour}:${targetMin.toString().padStart(2, '0')}:<br><br>• Hour hand → point at <strong>${targetHour}</strong>.<br>• Minute hand → point at <strong>${targetMin === 0 ? 12 : targetMin / 5}</strong> (since ${targetMin} ÷ 5 = ${targetMin === 0 ? 0 : targetMin / 5}${targetMin === 0 ? ', which is the 12 position' : ''}).<br><br>Drag the hands on the clock above to match. Click closer to the center to grab the hour hand; closer to the edge to grab the minute hand.`,
+                              explanation: `For the goal time ${targetHour}:${targetMin.toString().padStart(2, '0')}:<br><br>• Hour hand → point at <strong>${targetHour}</strong>.<br>• Minute hand → point at <strong>${targetMin === 0 ? 12 : targetMin / 5}</strong> (since ${targetMin} ÷ 5 = ${targetMin === 0 ? 0 : targetMin / 5}${targetMin === 0 ? ', which is the 12 position' : ''}).<br><br>Drag the hands on the clock above to match. Press on the hand you want to move and drag it around the face.`,
                               visual: { type: 'clock', mode: 'display', data: { hour: targetHour, minute: targetMin } } },
                             { title: "How dragging works",
-                              explanation: "When practicing or interacting with a draggable clock:<br><br>• <strong>Tap/click near the center</strong> → grabs the hour hand.<br>• <strong>Tap/click near the edge</strong> → grabs the minute hand.<br>• Drag the hand around the face. The clock snaps to the nearest position so you always land on an exact time.<br><br>The display at the bottom shows the current time you've set.",
+                              explanation: "When practicing or interacting with a draggable clock:<br><br>• <strong>Press on a hand</strong> to grab it: the short amber hand is the hour, the long blue hand is the minutes.<br>• If the hands are on top of each other, press near the center for the hour hand or near the edge for the minute hand.<br>• Drag the hand around the face. The minute hand snaps to every 5 minutes, so you always land on an exact time.<br><br>The display at the bottom shows the current time you've set.",
                               visual: "Center = hour hand grab | Edge = minute hand grab" }
                         ],
                         finalAnswer: `${targetHour}:${targetMin.toString().padStart(2, '0')}`,
@@ -18943,7 +18943,7 @@ const lessons = {
                         keyPoints: [
                             "Set hour hand to the target hour (1-12)",
                             "Set minute hand to (target minutes ÷ 5) on the clock face",
-                            "Drag near the center for the hour hand, near the edge for the minute hand"
+                            "Press on a hand and drag it: short hand = hour, long hand = minutes"
                         ],
                         mistakes: [
                             { wrong: "Putting the minute hand on the actual minutes (e.g., minute hand at 15 for :15)", why: "Clock face only has 1-12. For :15 minutes, point at the 3 (since 15 ÷ 5 = 3)." },
@@ -43463,39 +43463,25 @@ function renderNumberLine(container, data, mode) {
             setVisualAnswer(val);
         };
 
-        // Mouse events
-        marker.addEventListener('mousedown', (e) => {
+        // One pointer handler for mouse, pen and touch, on the whole line area.
+        // Only the 20px dot used to be grabbable and the 4px track only took
+        // clicks, so a press that missed the dot did nothing until release,
+        // and a touch drag that started off the dot never moved it. Now a
+        // press anywhere on the line puts the marker there and drags it, and
+        // pointer capture keeps the drag going if the finger slides off.
+        wrapper.style.cursor = 'pointer';
+        wrapper.addEventListener('pointerdown', (e) => {
             e.preventDefault();
             marker.classList.add('dragging');
-            const onMove = (e) => updateMarker(e.clientX);
-            const onUp = () => {
-                marker.classList.remove('dragging');
-                document.removeEventListener('mousemove', onMove);
-                document.removeEventListener('mouseup', onUp);
-            };
-            document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', onUp);
-        });
-
-        // Touch events
-        marker.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            marker.classList.add('dragging');
-        });
-        wrapper.addEventListener('touchmove', (e) => {
-            if (marker.classList.contains('dragging')) {
-                updateMarker(e.touches[0].clientX);
-            }
-        });
-        wrapper.addEventListener('touchend', () => {
-            marker.classList.remove('dragging');
-        });
-
-        // Click on track
-        track.addEventListener('click', (e) => {
-            if (e.target === marker) return;
+            wrapper.setPointerCapture(e.pointerId);
             updateMarker(e.clientX);
         });
+        wrapper.addEventListener('pointermove', (e) => {
+            if (marker.classList.contains('dragging')) updateMarker(e.clientX);
+        });
+        const release = () => marker.classList.remove('dragging');
+        wrapper.addEventListener('pointerup', release);
+        wrapper.addEventListener('pointercancel', release);
 
         track.appendChild(marker);
         setVisualAnswer(startVal);
@@ -44365,63 +44351,67 @@ function renderClockFace(container, data, mode) {
         wrapper.appendChild(display);
     }
 
-    // Interactive mode
+    // Interactive mode. Dragging used to be jumpy for four reasons, each
+    // handled below: the pointer was measured from the canvas's outer corner
+    // (its 3px border and any CSS scaling skewed every angle); leaving the
+    // canvas mid-drag dropped the hand; the hand was chosen by distance from
+    // the centre only, so grabbing the minute hand near the middle took the
+    // hour hand; and the hour snapped to a whole hour while it is drawn
+    // between hours, so it leapt away from the finger.
     if (mode === 'interactive') {
-        const updateTime = (clientX, clientY) => {
+        canvas.style.touchAction = 'none';   // the page must not scroll under a drag
+        canvas.style.cursor = 'grab';
+
+        // Pointer position in canvas units (0..160) relative to the centre,
+        // as an angle clockwise from 12 in [0, 2π) and a distance.
+        const pointerAt = (e) => {
             const rect = canvas.getBoundingClientRect();
-            const x = clientX - rect.left - 80;
-            const y = clientY - rect.top - 80;
-            let angle = Math.atan2(y, x) + Math.PI/2;
+            const scale = canvas.width / (canvas.clientWidth || rect.width);
+            const x = (e.clientX - (rect.left + rect.width / 2)) * scale;
+            const y = (e.clientY - (rect.top + rect.height / 2)) * scale;
+            let angle = Math.atan2(y, x) + Math.PI / 2;
             if (angle < 0) angle += 2 * Math.PI;
+            return { angle, dist: Math.hypot(x, y) };
+        };
+        const handAngle = (hand) => hand === 'minute'
+            ? (currentMinute / 60) * 2 * Math.PI
+            : ((currentHour % 12) / 12 + currentMinute / 720) * 2 * Math.PI;
+        const angleGap = (a, b) => { const d = Math.abs(a - b) % (2 * Math.PI); return Math.min(d, 2 * Math.PI - d); };
 
+        const updateTime = (e) => {
+            const { angle } = pointerAt(e);
             if (draggingHand === 'minute') {
-                currentMinute = Math.round((angle / (2 * Math.PI)) * 60) % 60;
+                // Snap to the five-minute marks: every clock question here is
+                // set to :00, :15, :30 or :45, and the lesson promises exact times.
+                currentMinute = (Math.round((angle / (2 * Math.PI)) * 12) % 12) * 5;
             } else if (draggingHand === 'hour') {
-                currentHour = Math.round((angle / (2 * Math.PI)) * 12) || 12;
+                // The hour hand is drawn minutes/60 of an hour past the hour,
+                // so take that off before rounding or it jumps ahead of the finger.
+                const h = Math.round((angle / (2 * Math.PI)) * 12 - currentMinute / 60);
+                currentHour = ((h % 12) + 12) % 12 || 12;
             }
-
             drawClock();
             display.textContent = `${currentHour}:${currentMinute.toString().padStart(2, '0')}`;
             setVisualAnswer({ hour: currentHour, minute: currentMinute });
         };
 
-        canvas.addEventListener('mousedown', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left - 80;
-            const y = e.clientY - rect.top - 80;
-            const dist = Math.sqrt(x*x + y*y);
-
-            if (dist < 45) draggingHand = 'hour';
-            else draggingHand = 'minute';
-
-            updateTime(e.clientX, e.clientY);
+        canvas.addEventListener('pointerdown', (e) => {
+            const { angle, dist } = pointerAt(e);
+            const toHour = angleGap(angle, handAngle('hour'));
+            const toMinute = angleGap(angle, handAngle('minute'));
+            // The hand nearest the pointer's direction. When both are about as
+            // close (hands overlapping), the short hand wins near the centre.
+            if (Math.abs(toHour - toMinute) < 0.35) draggingHand = dist < 45 ? 'hour' : 'minute';
+            else draggingHand = toHour < toMinute ? 'hour' : 'minute';
+            canvas.setPointerCapture(e.pointerId);   // keep the hand if the pointer leaves the face
+            canvas.style.cursor = 'grabbing';
+            e.preventDefault();
+            updateTime(e);
         });
-
-        canvas.addEventListener('mousemove', (e) => {
-            if (draggingHand) updateTime(e.clientX, e.clientY);
-        });
-
-        canvas.addEventListener('mouseup', () => { draggingHand = null; });
-        canvas.addEventListener('mouseleave', () => { draggingHand = null; });
-
-        // Touch events
-        canvas.addEventListener('touchstart', (e) => {
-            const rect = canvas.getBoundingClientRect();
-            const x = e.touches[0].clientX - rect.left - 80;
-            const y = e.touches[0].clientY - rect.top - 80;
-            const dist = Math.sqrt(x*x + y*y);
-            draggingHand = dist < 45 ? 'hour' : 'minute';
-            updateTime(e.touches[0].clientX, e.touches[0].clientY);
-        });
-
-        canvas.addEventListener('touchmove', (e) => {
-            if (draggingHand) {
-                e.preventDefault();
-                updateTime(e.touches[0].clientX, e.touches[0].clientY);
-            }
-        });
-
-        canvas.addEventListener('touchend', () => { draggingHand = null; });
+        canvas.addEventListener('pointermove', (e) => { if (draggingHand) updateTime(e); });
+        const release = () => { draggingHand = null; canvas.style.cursor = 'grab'; };
+        canvas.addEventListener('pointerup', release);
+        canvas.addEventListener('pointercancel', release);
 
         setVisualAnswer({ hour: currentHour, minute: currentMinute });
     }
@@ -47393,6 +47383,9 @@ function renderPracticePhase(lesson) {
     // Render visual if the question has one (shapes, coordinate planes, number lines, etc.)
     const practiceVisualEl = document.getElementById('practice-visual');
     practiceVisualEl.innerHTML = '';
+    // Set before drawing: an interactive visual reports its first value
+    // (the clock's starting 12:00) while it is being drawn.
+    state.visualAnswer = null;
     if (question.visual && typeof question.visual === 'object') {
         const v = question.visual;
         switch (v.type) {
@@ -47413,8 +47406,18 @@ function renderPracticePhase(lesson) {
     const practiceTyped = shouldTypeAnswer(question, state.learningTier);
     state.practiceTyped = practiceTyped;
     const optsEl = document.getElementById('practice-options');
+    // "Set the clock to 3:45", "plot (2, 4)": the answer is what the student
+    // sets on the visual. generateQuestion fills in options for every question,
+    // so these used to show multiple choice and the clock did nothing.
+    const practiceInteractive = !!(question.visual && question.visual.mode === 'interactive');
+    state.practiceInteractive = practiceInteractive;
 
-    if (practiceTyped) {
+    if (practiceInteractive) {
+        optsEl.innerHTML = `
+            <div style="grid-column:1/-1;display:flex;justify-content:center;">
+                <button type="button" class="btn btn-emerald" id="practice-submit-btn" onclick="submitPracticeVisualAnswer()">Check</button>
+            </div>`;
+    } else if (practiceTyped) {
         const ansStr = String(question.answer) + ' ' + (question.acceptableAnswers || []).join(' ');
         const sym = [
             [/√|sqrt/i, '√', 'Square root'], [/∛|cbrt/i, '∛', 'Cube root'],
@@ -47483,6 +47486,18 @@ function submitPracticeTypedAnswer() {
     const btn = document.getElementById('practice-submit-btn');
     if (btn) btn.disabled = true;
     applyPracticeResult(question, typedAnswerIsCorrect(userInput, question), -1);
+}
+
+// Grades what the student set on an interactive visual, with the same rule
+// the arena uses (compareVisualAnswer).
+function submitPracticeVisualAnswer() {
+    const question = state.currentPracticeQuestion;
+    if (!question || !question.visual) return;
+    const v = question.visual;
+    const target = v.data.target !== undefined ? v.data.target : v.data.targetPoint;
+    const btn = document.getElementById('practice-submit-btn');
+    if (btn) btn.disabled = true;
+    applyPracticeResult(question, compareVisualAnswer(state.visualAnswer, target, v.type), -1);
 }
 
 function selectPracticeOption(index) {
