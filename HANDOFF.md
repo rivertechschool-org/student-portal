@@ -35,8 +35,31 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-14 — Jordan's Claude (Word Lab regrade: easy low, rare high)
+**Every word re-placed by difficulty; 7,415 words, 541–625 a grade.** Jordan's rule: low
+grades are sight words and easy common words, the higher the grade the more uncommon and
+sophisticated; a small word sits high only when it is taught in a rarely used meaning
+("foil" = a contrasting character, "temper" = to moderate).
+
+- **Evidence per word:** Kuperman age-of-acquisition ratings, a subtitle frequency list, and
+  where published programs teach it: Dolch, Fry, Wordly Wise 3000, Sadlier Vocabulary
+  Workshop, Vocabulary Power Plus, the Academic Word List, core-content subject lists. Fry's
+  grade tags were not used for placement (Fry is K–2 sight words whatever the hundred).
+- **850 moves.** Many Wordly Wise/Vocabulary Workshop 5–7 words had been sitting in 9–11
+  (thwart, loathe, indignant); they came down, and hard words left K–3 (slither, fragile,
+  murky went up). Words within a grade of right were left alone.
+- **685 added**: book-list words we were missing (Dolch/Fry sight words in K–1, grade-3
+  content words, SAT/GRE-grade words in 10–12: atavistic, insuperable, badinage).
+- **Order inside a grade** is now the age-of-acquisition/frequency blend, easiest first.
+  Levels changed again; per-word progress is kept. `BANK_VERSION` is 5.
+- "deprecate" now teaches its main sense (disapprove of). Seven more words on
+  `ipa-skip.json` where the dictionary stresses the wrong syllable (picturesque, atavistic…).
+- **Bug fixed:** two examples that differ only in the headword ("Wearing a helmet is
+  mandatory/obligatory…") made "Use it right" show the same wrong sentence twice. The builder
+  now drops repeats, and `validate.js` rejects such pairs.
+
 ## 2026-10-14 — Jordan's Claude (Word Lab: 500+ words a grade)
-**The Word Lab bank doubled: 6,730 words, 513–522 a grade (was ~250).**
+**The Word Lab bank doubled: 6,730 words, 513–522 a grade (was ~250).** (Regraded since; see above.)
 
 - **New words:** each grade was written to fit that grade and checked against every other
   grade (a word lives in one grade only, the lowest). New words are interleaved by
@@ -54,14 +77,8 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 - **Checks:** `validate.js` now requires 500 a grade. `tests/wordlab-questions.test.js` checks
   levelCount and the 500 minimum (364,976 checks, all passing). `BANK_VERSION` is 4.
 
-**For someone to decide:**
-- **"evolution"** is a grade-8 entry, defined neutrally ("the slow change in living things over
-  many generations"). Keep it, or swap it?
-- **Grade fit:** a few existing words were flagged as sitting a grade or two off: telephone
-  (4), tone and crust (7), herbivore (6), docile and calamity (11). Narrow science words
-  were also flagged: allele and meiosis (8), mitosis (9).
-- **"deprecate"** (grade 11) is taught as "play down your own abilities". That sense is real, but
-  the main sense is "disapprove of".
+**For someone to decide:** "evolution" is a grade-8 entry, defined neutrally ("the slow change
+in living things over many generations"). Keep it, or swap it?
 
 ## 2026-10-13 — Jordan's Claude (Lyceum audit: last gaps closed)
 **The "Not done" items in the audit entry below are now done.**
@@ -155,7 +172,7 @@ practice by picking the right sentence.
 - **🏅 Evaluation:** the level test; 80% moves the student up a level.
 
 **How it's built:**
-- **Word bank:** `data/vocab/grade-K..12.json`, 6,730 words, over 500 a grade, in levels of
+- **Word bank:** `data/vocab/grade-K..12.json`, 7,415 words, over 500 a grade, placed by difficulty (age learned, frequency, published programs), in levels of
   12 ordered easiest first. Every definition and example is original. IPA comes from the CMU
   dictionary (BSD; licence beside the files). `node data/vocab/validate.js` checks the
   rules. `add-ipa.js` regenerates IPA.

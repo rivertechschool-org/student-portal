@@ -41,6 +41,9 @@ for (const g of grades) {
   if (words.length < MIN_WORDS) err(-1, '', `only ${words.length} words (want at least ${MIN_WORDS})`);
   total += words.length;
   const inFile = new Set();
+  // "Use it right" swaps the word into other words' examples; two examples that
+  // are the same apart from the headword make the same wrong sentence twice.
+  const frames = new Map();
 
   words.forEach((e, i) => {
     const w = e && e.w;
@@ -68,6 +71,9 @@ for (const g of grades) {
       if (!wholeWord(w).test(e.ex)) err(i, w, `example does not use "${w}" exactly: "${e.ex}"`);
       if (!/[.!?]["”']?$/.test(e.ex.trim())) err(i, w, `example does not end with . ! or ?: "${e.ex}"`);
       if (e.ex.length > 160) warn(i, w, 'example is long');
+      const frame = e.ex.toLowerCase().split(key).join('_');
+      if (frames.has(frame)) err(i, w, `example is the same as "${frames.get(frame)}"'s apart from the word`);
+      else frames.set(frame, w);
     }
 
     if (!Array.isArray(e.syn)) err(i, w, 'syn is not a list');

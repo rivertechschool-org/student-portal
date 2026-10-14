@@ -32,7 +32,7 @@
   const PASS_PCT = 80;
   const DAY = 86400000;
   const BOX_DAYS = [0, 1, 3, 7, 14, 30];
-  const BANK_VERSION = '4';
+  const BANK_VERSION = '5';
 
   const gradeLabel = (g) => (g === 'K' ? 'Kindergarten' : `Grade ${g}`);
   const gradeShort = (g) => (g === 'K' ? 'K' : `Gr ${g}`);
@@ -627,8 +627,11 @@
       case 'usage': {
         // Wrong sentences come from words of a DIFFERENT part of speech, so
         // they really are wrong; same-POS swaps were often fine sentences.
+        // Two words with the same example frame ("Wearing a helmet is ___")
+        // would make the same wrong sentence twice, so repeats are dropped.
+        const seenT = new Set([e.ex]);
         const wrong = others(e, 3, x => wordRx(x.w).test(x.ex), 'other').map(x => ({ t: misuse(e, x) }))
-          .filter(o => o.t !== e.ex);
+          .filter(o => !seenT.has(o.t) && seenT.add(o.t));
         q.html = `<div class="qprompt">Which sentence uses <b>${esc(e.w)}</b> correctly?</div>`;
         q.options = shuffle([{ t: e.ex, ok: true }, ...wrong]);
         break;
