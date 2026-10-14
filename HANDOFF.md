@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-14 — Jordan's Claude (Class Progress: Overview tab)
+**Class Progress opens on a new Overview tab**, Jordan's request: every student in one row
+with every subject side by side. English Lyceum is always a column, the graduation core
+(X of 65 required math items) and the Word Lab level are shown too, and there is a class
+average row. Tapping a subject square opens that subject's Skills grid.
+- English Lyceum stores its skills as subject `Reading`; that subject is now labelled
+  "English (Lyceum)" everywhere the portal names it.
+- The core count is worked out in the browser from `data/math_graduation_plan.json` and
+  `data/math_curriculum_v2.json` (fetched as static files), with the Dojo's rule: an item is
+  done when every skill in it is mastered or needs review. A skill row is matched by
+  `node_id`, a merged-away id, the curriculum title, or the Dojo's name for it. No RPC changed.
+**Needs:** nothing.
+
 ## 2026-10-14 — Jordan's Claude (Word Lab regrade: easy low, rare high)
 **Every word re-placed by difficulty; 7,415 words, 541–625 a grade.** Jordan's rule: low
 grades are sight words and easy common words, the higher the grade the more uncommon and

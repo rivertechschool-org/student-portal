@@ -958,6 +958,17 @@
     .cp-sort, .cp-link { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 0; }
     .cp-link { color: var(--accent); font-weight: 600; text-align: left; }
     .cp-grid th.cp-col { vertical-align: bottom; padding: 4px 2px; }
+    /* Overview: every subject side by side, one row per student. */
+    .cp-overview td { min-width: 64px; }
+    .cp-ov-cell button { background: none; border: none; color: inherit; font: inherit; cursor: pointer; padding: 2px 4px; width: 100%; }
+    .cp-ov-cell.none { color: var(--muted); }
+    .cp-ov-w { color: #93c5fd; font-size: 11px; margin-left: 3px; }
+    .cp-ov-stuck { color: var(--warning); font-weight: 700; margin-left: 3px; }
+    .cp-ov-core { display: flex; align-items: baseline; justify-content: center; gap: 2px; }
+    .cp-ov-bar { height: 4px; background: var(--border); border-radius: 99px; overflow: hidden; margin-top: 3px; min-width: 50px; }
+    .cp-ov-bar i { display: block; height: 100%; background: #f5b301; }
+    .cp-ov-avg th, .cp-ov-avg td { position: sticky; bottom: 0; background: var(--card); font-weight: 600; border-top: 2px solid var(--border); }
+    .cp-ov-avg .cp-name { z-index: 3; }
     .cp-grid th.cp-col span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); max-height: 130px; overflow: hidden; text-overflow: ellipsis; font-weight: 500; font-size: 11px; }
     .modal-content .cp-grid td.cp-cell { padding: 0 !important; width: 30px; min-width: 30px; height: 30px; border: 1px solid var(--card); }
     .cp-cell button { width: 100%; height: 30px; background: none; border: none; color: inherit; font-size: 11px; font-weight: 600; cursor: pointer; padding: 0; }
@@ -30557,7 +30568,8 @@ Students you had withdrawn stay withdrawn.`)) {
       _progressSubjectLabel(subject) {
         const LABELS = {
           Creative: 'Art (Art Studio)', Social: 'Social Studies', LifeSkills: 'Life Skills',
-          Physical: 'PE', Bible: 'Bible', Language: 'Language', Reading: 'Reading',
+          // English Lyceum writes its skills as subject 'Reading'.
+          Physical: 'PE', Bible: 'Bible', Language: 'Language', Reading: 'English (Lyceum)',
         };
         if (!subject) return 'All subjects';
         return LABELS[subject] || String(subject);
@@ -30714,7 +30726,7 @@ Students you had withdrawn stay withdrawn.`)) {
           className: cls?.name || prev?.className || '',
           subject: opts.subject !== undefined ? opts.subject : (prev ? prev.subject : null),
           filter: prev?.filter || 'all',
-          tab: opts.tab || prev?.tab || 'students',
+          tab: opts.tab || prev?.tab || 'overview',
           sortKey: prev?.sortKey || 'name',
           sortDir: prev?.sortDir || 1,
           data: null, homework: prev?.homework || null, loading: true, error: null,
@@ -30752,6 +30764,199 @@ Students you had withdrawn stay withdrawn.`)) {
           }
         }
         if (this._cp.tab === 'vocab' && !this._cp.loading) this.loadClassVocab(this._cp.classId);
+        if (this._cp.tab === 'overview' && !this._cp.loading) this.loadClassOverview(this._cp.classId);
+      }
+
+      // ---- Overview tab ----------------------------------------------------
+      //
+      // One row per student: how far along they are in every subject, how
+      // many of the 65 required graduation-core math items are complete, and
+      // their Word Lab level. Everything else on this screen looks at one
+      // subject at a time; this is the glance across all of them.
+      //
+      // The subject numbers need every subject's skill rows, so when the
+      // picker is on one subject the all-subjects answer is fetched once more
+      // and kept. The graduation plan is the same JSON the Math Dojo is
+      // compiled from (data/math_graduation_plan.json), read as a static file.
+      async loadClassOverview(classId) {
+        const el = () => document.getElementById('cp-overview');
+        const cp = this._cp;
+        try {
+          const all = !cp.subject && cp.data ? Promise.resolve(cp.data)
+            : (cp.overviewData && cp.overviewFor === classId) ? Promise.resolve(cp.overviewData)
+            : this._pickupRpc('rt_class_progress', { p_class_id: classId, p_subject: null });
+          const vocab = (cp.vocab && cp.vocabFor === classId) ? Promise.resolve(cp.vocab)
+            : this._pickupRpc('rt_class_vocab', { p_class_id: classId });
+          // The plan and Word Lab are extras: if either fails the subject
+          // columns still show, with that column saying it is unavailable.
+          const [allR, planR, vocabR] = await Promise.allSettled([all, this._loadMathPlan(), vocab]);
+          if (this._cp !== cp || cp.tab !== 'overview') return;
+          if (allR.status === 'rejected') throw allR.reason;
+          cp.overviewData = allR.value || {}; cp.overviewFor = classId;
+          if (vocabR.status === 'fulfilled') { cp.vocab = vocabR.value || []; cp.vocabFor = classId; }
+          else console.error('rt_class_vocab failed:', vocabR.reason);
+          if (planR.status === 'rejected') console.error('Graduation plan failed to load:', planR.reason);
+          if (el()) el().innerHTML = this._classOverviewHtml(cp.overviewData,
+            planR.status === 'fulfilled' ? planR.value : null,
+            vocabR.status === 'fulfilled' ? (vocabR.value || []) : null);
+        } catch (e) {
+          console.error('Class overview failed:', e);
+          if (el()) el().innerHTML = `<div class="cp-empty" style="color: var(--danger);">The overview could not be loaded: ${this.escapeHtml(e?.message || String(e))}</div>`;
+        }
+      }
+
+      // The graduation plan plus a way to turn a skill_progress row into a
+      // curriculum id. Rows carry node_id when the writer knew it; older ones
+      // only have a name, which may be the curriculum title or the Dojo's own
+      // name for the skill, so both are indexed. Merged-away ids point at the
+      // id that replaced them. Loaded once per page.
+      _loadMathPlan() {
+        if (!this._mathPlanPromise) {
+          const get = (f) => fetch(`../data/${f}`).then(r => { if (!r.ok) throw new Error(`${f}: ${r.status}`); return r.json(); });
+          this._mathPlanPromise = Promise.all([get('math_graduation_plan.json'), get('math_curriculum_v2.json')])
+            .then(([plan, curriculum]) => this._buildMathPlanIndex(plan, curriculum))
+            .catch(e => { this._mathPlanPromise = null; throw e; });
+        }
+        return this._mathPlanPromise;
+      }
+
+      _buildMathPlanIndex(plan, curriculum) {
+        const byName = new Map(), ids = new Set(), merged = new Map();
+        (curriculum?.nodes || []).forEach(n => {
+          ids.add(n.id);
+          [n.title, n.dojo_skill].forEach(nm => { if (nm && !byName.has(nm.toLowerCase())) byName.set(nm.toLowerCase(), n.id); });
+        });
+        (curriculum?.merges || []).forEach(m => { if (m.legacy_id && m.canonical_id) merged.set(m.legacy_id, m.canonical_id); });
+        const items = (plan?.core?.domains || []).flatMap(d => (d.items || []).map(it => ({ ...it, domain: d.name })));
+        return { items, byName, ids, merged };
+      }
+
+      // Which graduation-core items one student has completed. An item is
+      // complete when every skill in it is mastered - the Dojo's rule, where
+      // "needs review" still counts as done.
+      _gradCoreForStudent(rows, planIdx) {
+        if (!planIdx || !planIdx.items.length) return null;
+        const done = new Set();
+        (rows || []).forEach(r => {
+          if (r.subject !== 'Math' || (r.state !== 'mastered' && r.state !== 'needs_review')) return;
+          let id = r.node_id && planIdx.merged.has(r.node_id) ? planIdx.merged.get(r.node_id) : r.node_id;
+          if (!id || !planIdx.ids.has(id)) id = planIdx.byName.get(String(r.skill || '').toLowerCase()) || null;
+          if (id) done.add(id);
+        });
+        const complete = planIdx.items.filter(it => (it.skills || []).every(id => done.has(id)));
+        const next = planIdx.items.find(it => !(it.skills || []).every(id => done.has(id))) || null;
+        return { done: complete.length, total: planIdx.items.length, next };
+      }
+
+      // Subject columns in a fixed order, so the same subject is in the same
+      // place in every class. English Lyceum is always shown, even before
+      // anyone in the class has used it: a zero there is worth seeing.
+      _overviewSubjects(skills) {
+        const ORDER = ['Math', 'Reading', 'Language', 'Science', 'Social', 'Bible', 'Creative', 'Art',
+                       'LifeSkills', 'Physical', 'Technology', 'Programming', 'Robotics'];
+        const seen = new Set((skills || []).map(k => k.subject).filter(Boolean));
+        seen.add('Reading');
+        return [...seen].sort((a, b) => {
+          const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+          return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || String(a).localeCompare(String(b));
+        });
+      }
+
+      _classOverviewHtml(data, planIdx, vocab) {
+        const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
+        const students = this._progressSortStudents(Array.isArray(data?.students) ? data.students : [], 'name', 1);
+        if (!students.length) return `<div class="cp-empty">No students are enrolled in this class.</div>`;
+        const skills = Array.isArray(data?.skills) ? data.skills : [];
+        const subjects = this._overviewSubjects(skills);
+
+        // student -> subject -> counts, and student -> their rows (for the core)
+        const per = new Map(), rowsOf = new Map();
+        skills.forEach(k => {
+          if (!rowsOf.has(k.student_id)) rowsOf.set(k.student_id, []);
+          rowsOf.get(k.student_id).push(k);
+          const key = `${k.student_id}\u0001${k.subject}`;
+          const c = per.get(key) || { mastered: 0, working: 0, stuck: 0 };
+          if (k.state === 'mastered' || k.state === 'needs_review') c.mastered++;
+          else if (k.state === 'in_progress' || k.state === 'activated') c.working++;
+          if (k.flag === 'stuck') c.stuck++;
+          per.set(key, c);
+        });
+        // Shading is relative to the class's best in that subject, so a
+        // column reads as "who is ahead, who is behind" at a glance.
+        const best = {};
+        subjects.forEach(sub => { best[sub] = Math.max(0, ...students.map(s => (per.get(`${s.id}\u0001${sub}`) || {}).mastered || 0)); });
+        const vocabBy = new Map((vocab || []).map(v => [v.student_id || v.id, v]));
+        const grade = (g) => g == null ? '' : (g === 'K' ? 'K' : `Gr ${g}`);
+
+        const cores = new Map(students.map(s => [s.id, this._gradCoreForStudent(rowsOf.get(s.id), planIdx)]));
+        const label = this._gridRowLabels(students);
+
+        const body = students.map(s => {
+          const core = cores.get(s.id);
+          const coreCell = !planIdx ? '<td class="cp-sub">—</td>' : (() => {
+            const pct = core.total ? Math.round(core.done / core.total * 100) : 0;
+            const tip = core.next ? `Next: ${core.next.code}. ${core.next.title}` : 'Every core item complete';
+            return `<td title="${esc(tip)}"><div class="cp-ov-core"><b>${core.done}</b><span class="cp-sub">/ ${core.total}</span></div><div class="cp-ov-bar"><i style="width:${pct}%"></i></div></td>`;
+          })();
+          const subjCells = subjects.map(sub => {
+            const c = per.get(`${s.id}\u0001${sub}`);
+            if (!c || (!c.mastered && !c.working)) return `<td class="cp-ov-cell none" title="${esc(this._progressSubjectLabel(sub))}: not started">·</td>`;
+            const a = best[sub] ? 0.15 + 0.6 * (c.mastered / best[sub]) : 0;
+            const tip = `${this._progressSubjectLabel(sub)}: ${c.mastered} mastered, ${c.working} in progress${c.stuck ? `, ${c.stuck} stuck` : ''}`;
+            return `<td class="cp-ov-cell" style="background: rgba(16, 185, 129, ${a.toFixed(2)});" title="${esc(tip)}">
+              <button onclick="event.stopPropagation(); app.openClassProgressSubject('${this.jsAttr(sub)}')" aria-label="${esc(tip)}">
+                <b>${c.mastered}</b>${c.working ? `<span class="cp-ov-w">+${c.working}</span>` : ''}${c.stuck ? `<span class="cp-ov-stuck" title="stuck">!</span>` : ''}
+              </button></td>`;
+          }).join('');
+          const v = vocabBy.get(s.id);
+          const vocabCell = vocab == null ? '<td class="cp-sub">—</td>'
+            : (!v || (!v.current_grade && !v.words_met)) ? '<td class="cp-sub">not started</td>'
+            : `<td>${esc(grade(v.current_grade))} · L${esc(v.current_level || 1)}<div class="cp-sub" style="margin:0;">${Number(v.mastered) || 0} words</div></td>`;
+          return `<tr onclick="app.openStudentHubSkills('${this.jsAttr(s.id)}', '')">
+            <th class="cp-name" scope="row"><button class="cp-link" onclick="event.stopPropagation(); app.openStudentHubSkills('${this.jsAttr(s.id)}', '')" title="${esc(`${s.first_name || ''} ${s.last_name || ''}`.trim())}">${esc(label.get(s.id))}</button>${s.grade_level ? `<span class="cp-sub">Gr ${esc(s.grade_level)}</span>` : ''}</th>
+            ${coreCell}${subjCells}${vocabCell}
+          </tr>`;
+        }).join('');
+
+        // A class row underneath: the average, so one student can be read
+        // against the room without adding anything up.
+        const avg = (xs) => xs.length ? (xs.reduce((a, b) => a + b, 0) / xs.length) : 0;
+        const fmt = (n) => (Math.round(n * 10) / 10).toString();
+        const coreAvg = planIdx ? fmt(avg(students.map(s => cores.get(s.id)?.done || 0))) : '—';
+        const subjAvg = subjects.map(sub => {
+          const started = students.filter(s => { const c = per.get(`${s.id}\u0001${sub}`); return c && (c.mastered || c.working); });
+          return `<td title="${started.length} of ${students.length} started">${fmt(avg(students.map(s => (per.get(`${s.id}\u0001${sub}`) || {}).mastered || 0)))}<div class="cp-sub" style="margin:0;">${started.length}/${students.length} started</div></td>`;
+        }).join('');
+        const vocabStarted = vocab == null ? '—' : `${(vocab || []).filter(v => v.current_grade || v.words_met).length}/${students.length} started`;
+
+        return `
+          <div class="cp-note" style="margin: 0 0 8px;">
+            <b>Grad core</b> is how many of the 65 required math items are complete (every skill in the item mastered).
+            Each subject shows <b>skills mastered</b>, <span class="cp-ov-w" style="margin:0;">+ in progress</span>, and <span class="cp-ov-stuck" style="margin:0;">!</span> when a skill is stuck.
+            Greener is further ahead of the class. Tap a subject square for that subject's skills grid.
+          </div>
+          <div class="cp-scroll cp-grid-scroll">
+            <table class="cp-table cp-overview">
+              <thead><tr>
+                <th class="cp-name">Student</th>
+                <th title="Graduation core: required math items complete">🎓 Grad core</th>
+                ${subjects.map(sub => `<th>${esc(this._progressSubjectLabel(sub))}</th>`).join('')}
+                <th title="English Lyceum's Word Lab vocabulary level">📖 Word Lab</th>
+              </tr></thead>
+              <tbody>${body}</tbody>
+              <tfoot><tr class="cp-ov-avg">
+                <th class="cp-name">Class average</th>
+                <td>${coreAvg}</td>${subjAvg}<td class="cp-sub">${vocabStarted}</td>
+              </tr></tfoot>
+            </table>
+          </div>
+          ${planIdx ? '' : '<div class="cp-note">The graduation plan could not be loaded, so Grad core is blank.</div>'}`;
+      }
+
+      // From an Overview square to that subject's skills grid.
+      openClassProgressSubject(subject) {
+        if (!this._cp) return;
+        this.showClassProgress(this._cp.classId, { subject: subject || null, tab: 'skills' });
       }
 
       // The Word Lab tab: each student's vocabulary level and memory, from
@@ -30861,7 +31066,9 @@ Students you had withdrawn stay withdrawn.`)) {
         // Short labels: all three have to fit across a phone.
         // Word Lab is English Lyceum's vocabulary system: per-word memory,
         // not per-skill, so it has its own tab rather than columns here.
-        const TABS = [['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments'], ['vocab', '📖 Word Lab']];
+        // Overview is every subject side by side, plus the graduation core and
+        // Word Lab, one row per student: the at-a-glance view.
+        const TABS = [['overview', '🧭 Overview'], ['students', '👥 Students'], ['skills', '🧩 Skills grid'], ['homework', '🎮 Assignments'], ['vocab', '📖 Word Lab']];
         const tabs = TABS.map(([key, label]) =>
           `<button class="cp-tab${cp.tab === key ? ' on' : ''}" onclick="app.setClassProgressTab('${key}')">${label}</button>`).join('');
 
@@ -30874,6 +31081,8 @@ Students you had withdrawn stay withdrawn.`)) {
           main = `<div id="cp-homework"><div class="cp-empty">Loading assignment results…</div></div>`;
         } else if (cp.tab === 'vocab') {
           main = `<div id="cp-vocab"><div class="cp-empty">Loading Word Lab…</div></div>`;
+        } else if (cp.tab === 'overview') {
+          main = `<div id="cp-overview"><div class="cp-empty">Loading overview…</div></div>`;
         } else if (!students.length) {
           main = `<div class="cp-empty">No students are enrolled in this class.</div>`;
         } else {
@@ -30891,7 +31100,7 @@ Students you had withdrawn stay withdrawn.`)) {
             </label>
           </div>
           <div class="cp-tabs">${tabs}</div>
-          ${cp.tab === 'homework' || cp.tab === 'vocab' ? '' : `<div class="cp-chips">${chips}</div>`}
+          ${cp.tab === 'homework' || cp.tab === 'vocab' || cp.tab === 'overview' ? '' : `<div class="cp-chips">${chips}</div>`}
           ${main}
           <details class="cp-defs">
             <summary>What these words mean</summary>

@@ -66,6 +66,7 @@ const METHODS = [
   '_classProgressHtml', '_classProgressEmptyText', '_classProgressStudentsHtml', '_gridRowLabels',
   '_classProgressGridHtml', '_fmtMmSs', '_homeworkGoalText', '_progressDate', '_classHomeworkHtml',
   '_hubSkillSubjectOptions', '_hubSkillsHtml', '_dojoFamilyLabel', '_weeklyActivityRows', '_weeklyActivityHtml',
+  '_buildMathPlanIndex', '_gradCoreForStudent', '_overviewSubjects', '_classOverviewHtml',
 ];
 const app = {};
 for (const n of METHODS) app[n] = extract(n);
@@ -245,6 +246,63 @@ const wk = app._weeklyActivityRows(
   [{ subject: 'Math', skill_name: 'Arrays', total_count: 10, correct_count: 6, source_type: 'game', game_id: 'practice-pilot', started_at: ago(1) }]);
 check('weekly activity merges every subject, newest first', wk.map(r => r.activity), ['Practice Pilot', 'Science Lab · practice']);
 ok('an empty week says so, in any subject', app._weeklyActivityHtml([]).includes('No practice recorded in the last 7 days, in any subject.'));
+
+// ---- Overview: every subject, the graduation core and Word Lab ------------
+//
+// The core count is the one that can be quietly wrong: a skill row may carry
+// its curriculum id, only a name (title OR the Dojo's name), or an id that was
+// merged away. All three must count, and "needs review" is still done.
+console.log('\n== overview ==\n');
+{
+  const PLAN = { core: { domains: [
+    { name: 'Number', items: [{ code: '1', title: 'Whole Numbers', skills: ['M-1', 'M-2'] }, { code: '2', title: 'Fractions', skills: ['M-3'] }] },
+    { name: 'Algebra', items: [{ code: '3', title: 'Equations', skills: ['M-4'] }] },
+  ] } };
+  const CURR = { nodes: [
+    { id: 'M-1', title: 'Addition and Subtraction', dojo_skill: 'Addition' },
+    { id: 'M-2', title: 'Multiplication Facts', dojo_skill: 'Multiplication' },
+    { id: 'M-3', title: 'Basic Fractions', dojo_skill: 'Fractions' },
+    { id: 'M-4', title: 'One-Step Equations', dojo_skill: 'Equations' },
+  ], merges: [{ legacy_id: 'M12', canonical_id: 'M-3' }] };
+  const idx = app._buildMathPlanIndex(PLAN, CURR);
+  const row = (student_id, subject, skill, state, extra = {}) => Object.assign({ student_id, subject, skill, state }, extra);
+  const core = app._gradCoreForStudent([
+    row('s1', 'Math', 'Addition and Subtraction', 'mastered'),       // by title
+    row('s1', 'Math', 'Multiplication', 'needs_review'),              // by Dojo name, needs review
+    row('s1', 'Math', 'Fractions (Concepts)', 'mastered', { node_id: 'M12' }), // merged id
+    row('s1', 'Math', 'One-Step Equations', 'in_progress'),           // not done
+    row('s1', 'Reading', 'Addition', 'mastered'),                     // wrong subject
+  ], idx);
+  check('grad core counts by id, title, Dojo name and merged id', [core.done, core.total], [2, 3]);
+  check('  and names the next item', core.next && core.next.title, 'Equations');
+  check('no plan, no core count', app._gradCoreForStudent([], null), null);
+
+  check('English Lyceum is always a column, subjects in a fixed order',
+    app._overviewSubjects([{ subject: 'Science' }, { subject: 'Math' }, { subject: 'Zoology' }]),
+    ['Math', 'Reading', 'Science', 'Zoology']);
+  check('English Lyceum has a name a teacher knows', app._progressSubjectLabel('Reading'), 'English (Lyceum)');
+
+  const data = {
+    students: [S('s1', 'Mara', 'Okonkwo'), S('s2', 'Theo', 'Brandt')],
+    skills: [
+      row('s1', 'Math', 'Addition', 'mastered'), row('s1', 'Math', 'Multiplication', 'mastered'),
+      row('s1', 'Reading', 'Phonics', 'in_progress', { flag: 'stuck' }),
+      row('s2', 'Math', 'Addition', 'mastered'),
+    ],
+  };
+  const vocab = [{ student_id: 's1', current_grade: '3', current_level: 2, mastered: 40, words_met: 90 }, { student_id: 's2' }];
+  const out = app._classOverviewHtml(data, idx, vocab);
+  ok('overview has a column for English Lyceum', out.includes('<th>English (Lyceum)</th>'));
+  ok('  a grad core cell out of the plan size', out.includes('<b>1</b><span class="cp-sub">/ 3</span>'));
+  ok('  in-progress and stuck are marked', out.includes('+1') && out.includes('cp-ov-stuck'));
+  ok('  Word Lab level and words', out.includes('Gr 3 · L2') && out.includes('40 words'));
+  ok('  a student who never opened Word Lab says so', out.includes('not started'));
+  ok('  a class average row', out.includes('Class average') && out.includes('1/2 started'));
+  ok('  tapping a subject opens its grid', out.includes("app.openClassProgressSubject('Math')"));
+  ok('no plan: the column says it is blank rather than 0',
+    app._classOverviewHtml(data, null, vocab).includes('could not be loaded'));
+  ok('no students says so', app._classOverviewHtml({ students: [], skills: [] }, idx, []).includes('No students are enrolled'));
+}
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
