@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recall test host</title>
+<style>body { margin: 0; background: #fff; } iframe { width: 100%; height: 100vh; border: 0; }</style>
+</head>
+<body>
+<!--
+  Test host for debug-tools/recall-journey.mjs. It stands in for portal/index.html
+  (homework launched from the portal): it loads the REAL shared/recall-bridge.js
+  and routes messages to it the way the portal does, over a stub database.
+  Invented student, invented rows. Nothing here signs in or talks to a real database.
+-->
+<script>
+  const now = Date.now(), DAY = 86400000;
+  const iso = (t) => new Date(t).toISOString();
+  window.__db = {
+    skill_progress: [
+      { user_id: 'journey-student', subject: 'Reading', skill_name: 'Vocabulary', state: 'mastered', mastery_score: 85,
+        practice_count: 5, mastered_at: iso(now - 3 * DAY), last_practiced: iso(now - 2 * DAY) },
+      { user_id: 'journey-student', subject: 'Reading', skill_name: 'Main Ideas', state: 'mastered', mastery_score: 90,
+        practice_count: 4, mastered_at: iso(now - 40 * DAY), last_practiced: iso(now - 35 * DAY) },
+    ],
+    math_dojo_sessions: [],
+  };
+  window.__writes = { upserts: [], inserts: [], rpcs: [] };
+  const copy = (x) => JSON.parse(JSON.stringify(x));
+  const from = (table) => {
+    const filters = [];
+    const q = {
+      select() { return q; },
+      eq(c, v) { filters.push(r => r[c] === v); return q; },
+      in(c, vs) { filters.push(r => vs.includes(r[c])); return q; },
+      gte(c, v) { filters.push(r => String(r[c]) >= String(v)); return q; },
+      then(res, rej) {
+        const rows = (window.__db[table] || []).filter(r => filters.every(f => f(r)));
+        return Promise.resolve({ data: copy(rows), error: null }).then(res, rej);
+      },
+      upsert(rows) {
+        rows = copy(Array.isArray(rows) ? rows : [rows]);
+        window.__writes.upserts.push({ table, rows });
+        // like onConflict user_id,subject,skill_name
+        rows.forEach(r => {
+          const t = window.__db[table] || (window.__db[table] = []);
+          const i = t.findIndex(x => x.user_id === r.user_id && x.subject === r.subject && x.skill_name === r.skill_name);
+          if (i >= 0) t[i] = Object.assign({}, t[i], r); else t.push(r);
+        });
+        return Promise.resolve({ error: null });
+      },
+      insert(rows) {
+        rows = copy(Array.isArray(rows) ? rows : [rows]);
+        window.__writes.inserts.push({ table, rows });
+        (window.__db[table] || (window.__db[table] = [])).push(...rows.map(r => Object.assign({ created_at: new Date().toISOString() }, r)));
+        return Promise.resolve({ error: null });
+      },
+    };
+    return q;
+  };
+  window.portalAuth = {
+    supabase: { from, rpc(fn, args) { window.__writes.rpcs.push({ fn, args: copy(args) }); return Promise.resolve({ data: 3 * (args.p_skill_count || 0), error: null }); } },
+    getUserInfo: () => ({ profile: { id: 'journey-student', user_type: 'student' } }),
+  };
+  // The portal's listener, as far as recall goes.
+  window.addEventListener('message', (event) => {
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || typeof event.data.type !== 'string') return;
+    window.RecallBridge && window.RecallBridge.handle(event);
+  });
+</script>
+<script src="../shared/recall-bridge.js"></script>
+<iframe id="game" src="../games/english-lyceum.html?userId=journey-student"></iframe>
+</body>
+</html>

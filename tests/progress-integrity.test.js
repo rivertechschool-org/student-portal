@@ -134,6 +134,9 @@ function makeIntegration({ profile, tables, failSelect } = {}) {
 }
 global.document = { getElementById: () => null, querySelectorAll: () => [] };
 global.window = { PortalUI: { showNotification() {} }, location: { origin: 'http://x' } };
+// Recall's logic lives in shared/recall-bridge.js; index.html's methods call
+// it, and the portal uses it directly. Load it the way the pages do.
+require('vm').runInThisContext(read('shared/recall-bridge.js'));
 global.SkillTreeIntegration = { LEGACY_SUBJECT_MAP: { Creative: 'Art', Language: 'Reading', Technology: 'Programming' } };
 console.log = ((orig) => (...a) => { if (typeof a[0] === 'string' && /^(pass|  FAIL|\n\d)/.test(a[0])) orig(...a); })(console.log);
 console.warn = () => {}; console.error = () => {};
@@ -390,6 +393,35 @@ const TEACHER = { id: 'prof-mr-oduya', user_type: 'teacher' };
     check('score clamps to 0-100', [helper.normaliseScore(140), helper.normaliseScore(-3)], [100, 0]);
     const noHw = helper.buildSummary('practice-pilot', {}, new URLSearchParams(''), { score: 50, correct: 1, total: 2 }, 5);
     check('no ?homework= -> homeworkId null', noHw.homeworkId, null);
+  }
+
+  // ============================================================ recall from the portal
+  // Lyceum or Math Dojo launched as homework from the portal: the portal
+  // answers through shared/recall-bridge.js, the same save as the student site.
+  {
+    const supabase = makeSupabase({ skill_progress: [
+      { user_id: 'prof-ines', subject: 'Reading', skill_name: 'Main Idea', state: 'mastered', mastery_score: 80, practice_count: 4,
+        mastered_at: new Date().toISOString(), last_practiced: new Date().toISOString() },
+      { user_id: 'prof-ines', subject: 'Reading', skill_name: 'Prefixes', state: 'mastered', mastery_score: 92, practice_count: 6 }],
+      math_dojo_sessions: [] });
+    window.portalAuth = { supabase, getUserInfo: () => ({ profile: STUDENT }) };
+    const posted = [];
+    const source = { postMessage: (m) => posted.push(m) };
+    const settle = () => new Promise(r => setTimeout(r, 20));
+    ok('the portal answers a line-up request', window.RecallBridge.handle({ data: { type: 'DOGO_REQUEST_WEEKLY_MASTERIES', subject: 'Reading' }, source }));
+    await settle();
+    const lu = posted.find(m => m.type === 'WEEKLY_MASTERIES_FOR_DOGO');
+    check('  with the student\'s own skills, padded to 21 slots', lu && [lu.skills.length, [...new Set(lu.skills.map(x => x.skill))].sort()], [21, ['Main Idea', 'Prefixes']]);
+    window.RecallBridge.handle({ data: { type: 'DOGO_GAUNTLET_COMPLETE', subject: 'Reading',
+      cleared: [{ skill: 'Main Idea', category: 'recent' }], failed: [{ skill: 'Prefixes' }], correctCount: 5, questionsAsked: 7 }, source });
+    await settle();
+    const saved = supabase.log.upserts.filter(u => u.table === 'skill_progress').flatMap(u => u.rows);
+    check('  a finished run is saved there too (clear kept, miss demoted)',
+      saved.map(r => [r.skill_name, r.state]).sort(), [['Main Idea', 'mastered'], ['Prefixes', 'activated']]);
+    check('  RTC is asked for the clear', supabase.log.rpcs.map(r => r.args.p_skill_count), [1]);
+    ok('  and the game is told the result (no more endless "Calculating")', posted.some(m => m.type === 'GAUNTLET_RTC_RESULT'));
+    ok('  other messages are left to the page', !window.RecallBridge.handle({ data: { type: 'DOGO_SESSION_COMPLETE' }, source }));
+    delete window.portalAuth;
   }
 
   console.log(`\n${pass} passed, ${fail} failed`);

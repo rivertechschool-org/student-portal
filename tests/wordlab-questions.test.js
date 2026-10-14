@@ -64,6 +64,14 @@ const W = ctx.WordLab._internals;
       words++;
       const tag = `grade ${g} "${e.w}"`;
 
+      // `near` pairs (thrive / flourish) count as related, so neither is ever
+      // offered as a wrong answer to the other. The option checks below lean on
+      // related(), so prove it honours `near` directly.
+      for (const n of (e.near || [])) {
+        const x = bank.find(o => o.k === n.toLowerCase());
+        check(`${tag}: near word "${n}" is in the loaded bank and related`, !!x && W.related(e, x) && W.related(x, e), n);
+      }
+
       const blank = W.blankOut(e);
       check(`${tag}: the blank removes the word`, /wl-blank/.test(blank) && !W.wordRx(e.w).test(blank.replace(/<[^>]+>/g, ' ')), blank);
 

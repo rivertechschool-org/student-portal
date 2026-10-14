@@ -46,6 +46,7 @@
     <script src="shared/config.js?v=21"></script>
     <script src="shared/supabase.min.js"></script>
     <script src="shared/vocab-bridge.js?v=2"></script>
+    <script src="shared/recall-bridge.js?v=1"></script>
 
     <style>
        :root{
@@ -6554,324 +6555,51 @@
                 }
             }
 
+            // Recall (Math Dojo's Retention Gauntlet, Lyceum's Recall Trials):
+            // the line-up, the dedupe, the write plan and the save all live in
+            // shared/recall-bridge.js, which the portal uses too - homework
+            // launched there used to get no answer at all. These keep their
+            // names so callers and tests are unchanged.
             async sendWeeklyMasteriesToDojo(sourceWindow, subject = 'Math') {
-                // Build the retention gauntlet line-up from skill_progress, the
-                // authoritative per-skill record of what the student has actually
-                // engaged with. This avoids generating questions on topics the
-                // student hasn't been taught yet.
-                //
-                // 21 skills, three buckets of 7:
-                //   recent     — mastered within the last 14 days (top of mind)
-                //   touch_on   — in_progress, or mastered with stale practice (8-30d)
-                //   retention  — mastered long ago, practice > 30 days stale
-                try {
-                    if (!this.portal.auth.isAuthenticated()) {
-                        sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
-                        return;
-                    }
-                    const userId = this.portal.auth.getUserInfo().profile.id;
-                    const { data, error } = await this.portal.auth.supabase
-                        .from('skill_progress')
-                        .select('skill_name, state, mastery_score, last_practiced, mastered_at, practice_count')
-                        .eq('user_id', userId)
-                        .eq('subject', subject);
-                    if (error) {
-                        console.error('Failed to load skill_progress for gauntlet:', error);
-                        sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
-                        return;
-                    }
-
-                    const now = Date.now();
-                    const DAY = 86400000;
-                    const recent = [];
-                    const touchOn = [];
-                    const retention = [];
-
-                    (data || []).forEach(row => {
-                        if (!row.skill_name) return;
-                        const lp  = row.last_practiced ? new Date(row.last_practiced).getTime() : 0;
-                        const mst = row.mastered_at   ? new Date(row.mastered_at).getTime()   : 0;
-                        const daysSinceMaster   = mst ? (now - mst) / DAY : Infinity;
-                        const daysSincePractice = lp  ? (now - lp)  / DAY : Infinity;
-
-                        if (row.state === 'mastered' || row.state === 'activated') {
-                            if (daysSinceMaster <= 14)       recent.push({ ...row, _sort: -daysSinceMaster });
-                            else if (daysSincePractice >= 30) retention.push({ ...row, _sort: daysSincePractice });
-                            else if (daysSincePractice >= 8)  touchOn.push({ ...row, _sort: daysSincePractice });
-                            else                              recent.push({ ...row, _sort: -daysSincePractice });
-                        } else if (row.state === 'in_progress') {
-                            touchOn.push({ ...row, _sort: 1000 });   // surface in_progress at the top of touch_on
-                        }
-                    });
-
-                    // recent: most recently mastered first; touch: most stale first; retention: oldest practice first
-                    recent.sort((a, b)    => b._sort - a._sort);
-                    touchOn.sort((a, b)   => b._sort - a._sort);
-                    retention.sort((a, b) => b._sort - a._sort);
-
-                    const used = new Set();
-                    const pickN = (arr, n, category) => {
-                        const out = [];
-                        for (const r of arr) {
-                            if (out.length >= n) break;
-                            if (used.has(r.skill_name)) continue;
-                            used.add(r.skill_name);
-                            out.push({ skill: r.skill_name, tier: 1, category });
-                        }
-                        return out;
-                    };
-
-                    const baseLineup = [
-                        ...pickN(recent,    7, 'recent'),
-                        ...pickN(touchOn,   7, 'touch_on'),
-                        ...pickN(retention, 7, 'retention')
-                    ];
-
-                    // Pad to 21 slots by cycling through what the student has.
-                    // Each slot is an independent gauntlet entry (own 3-in-a-row streak),
-                    // so a student with only N mappable mastered skills still answers
-                    // 21 × 3 = 63 questions max. RTC is gated by the per-skill 24h
-                    // cooldown in handleGauntletComplete, so repeats can't double-pay.
-                    const TARGET_SLOTS = 21;
-                    let skills = [];
-                    if (baseLineup.length > 0) {
-                        for (let i = 0; i < TARGET_SLOTS; i++) {
-                            skills.push(baseLineup[i % baseLineup.length]);
-                        }
-                    }
-
-                    const byCatLog = baseLineup.reduce((m, s) => { m[s.category] = (m[s.category] || 0) + 1; return m; }, {});
-                    console.log(`🥋 Retention gauntlet lineup: ${baseLineup.length} unique skills (recent=${byCatLog.recent||0}, touch_on=${byCatLog.touch_on||0}, retention=${byCatLog.retention||0}) → ${skills.length} slots (padded ${skills.length - baseLineup.length})`);
-
-                    sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills }, '*');
-                } catch (e) {
-                    console.error('Error sending weekly masteries:', e);
+                if (!this.portal.auth.isAuthenticated()) {
                     sourceWindow?.postMessage({ type: 'WEEKLY_MASTERIES_FOR_DOGO', skills: [] }, '*');
+                    return;
                 }
+                await window.RecallBridge.sendLineup(this.portal.auth.supabase,
+                    this.portal.auth.getUserInfo().profile.id, subject, sourceWindow);
             }
 
-            // One entry per skill name. A skill that cleared in ANY slot counts
-            // as cleared and is dropped from failed: the line-up pads repeats of
-            // the same skill, and a later miss should not undo an earned clear
-            // (the same rule Math Dojo's endRetentionGauntlet applies).
             dedupeGauntletLists(cleared, failed) {
-                const key = (s) => s && (s.skill || s.domain);
-                const uniq = (arr) => {
-                    const seen = new Set(), out = [];
-                    for (const s of (Array.isArray(arr) ? arr : [])) {
-                        const k = key(s);
-                        if (!k || seen.has(k)) continue;
-                        seen.add(k); out.push(s);
-                    }
-                    return out;
-                };
-                const c = uniq(cleared);
-                const clearedKeys = new Set(c.map(key));
-                return { cleared: c, failed: uniq(failed).filter(s => !clearedKeys.has(key(s))) };
+                return window.RecallBridge.dedupe(cleared, failed);
             }
 
-            // What a recall run may write. Recall is a CHECK on what the student
-            // already has, so it only touches skills that already have a row
-            // (`existing`, freshly read from the database), and:
-            //   cleared + mastered   -> stays mastered, score raised to >= 90
-            //   cleared + activated  -> stays activated, score raised to >= 90
-            //   cleared + anything else -> practice recorded, state unchanged
-            //                          (a clear confirms mastery, never creates it)
-            //   failed  + mastered   -> demoted to activated, score capped at 70
-            //   failed  + anything else -> practice recorded, never promoted
-            //                          (it used to write 'activated' - which the
-            //                          tree shows as Mastered - for a FAILED skill)
-            // `existing` null means the lookup failed: write nothing rather
-            // than guess.
             planRecallRows(userId, subject, cleared, failed, existing, now) {
-                const rows = [];
-                if (!existing) return rows;
-                const base = (name, prev) => ({
-                    user_id: userId, subject, skill_name: name,
-                    last_practiced: now,
-                    practice_count: (prev.practice_count || 0) + 1,
-                    source: 'recall', updated_at: now
-                });
-                for (const c of cleared) {
-                    const name = c.skill || c.domain;
-                    const prev = existing.get(name);
-                    if (!prev) continue;
-                    const row = { ...base(name, prev), state: prev.state, mastery_score: prev.mastery_score || 0 };
-                    if (prev.state === 'mastered' || prev.state === 'activated') {
-                        row.mastery_score = Math.max(prev.mastery_score || 0, 90);
-                    }
-                    rows.push(row);
-                }
-                for (const f of failed) {
-                    const name = f.skill || f.domain;
-                    const prev = existing.get(name);
-                    if (!prev) continue;
-                    const row = { ...base(name, prev), state: prev.state, mastery_score: prev.mastery_score || 0 };
-                    if (prev.state === 'mastered') {
-                        row.state = 'activated';
-                        row.mastery_score = Math.min(prev.mastery_score || 70, 70);
-                    } else if (prev.state === 'activated') {
-                        row.mastery_score = Math.min(prev.mastery_score || 70, 70);
-                    }
-                    rows.push(row);
-                }
-                return rows;
+                return window.RecallBridge.planRows(userId, subject, cleared, failed, existing, now);
             }
 
             async handleGauntletComplete(data) {
                 if (!this.portal.auth.isAuthenticated()) return;
                 try {
-                    const subject = data.subject || 'Math';
-                    const label = subject === 'Math' ? 'Retention Gauntlet' : 'Recall Trials';
-                    const userId = this.portal.auth.getUserInfo().profile.id;
-                    const now = new Date().toISOString();
-                    const sb = this.portal.auth.supabase;
-                    const { cleared, failed } = this.dedupeGauntletLists(data.cleared, data.failed);
-
-                    // ----- Per-category reward rates -----
-                    // recent (top 7 freshly mastered)        = 3 RTC/clear
-                    // touch_on (recap of stale-but-recent)   = 2 RTC/clear
-                    // retention (long-term recall, > 30 days)= 1 RTC/clear
-                    // The amount actually minted is decided server-side by
-                    // award_skill_gauntlet_rtc (with its own daily caps); these
-                    // rates only shape the projection the game shows.
-                    const PER_CATEGORY_RTC = { recent: 3, touch_on: 2, retention: 1 };
-
-                    // Per-skill 24h cooldown: a skill already cleared in a recall
-                    // run for this subject in the last 24h does not pay again.
-                    // This used to look for rtc_transactions of type
-                    // 'retention_gauntlet' / 'recall_trials_*' with the skill in
-                    // reference_id - but the RPC writes type 'skill_gauntlet' and
-                    // a reference id with no skill in it, so it never matched.
-                    // The per-skill record of a clear is the session log below.
-                    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-                    const recentlyRewarded = new Set();
-                    try {
-                        const { data: recentRuns } = await sb
-                            .from('math_dojo_sessions')
-                            .select('skill_details')
-                            .eq('user_id', userId)
-                            .eq('subject', subject)
-                            .eq('mode', 'retention')
-                            .gte('created_at', dayAgo);
-                        (recentRuns || []).forEach(run => {
-                            (Array.isArray(run.skill_details) ? run.skill_details : []).forEach(d => {
-                                if (d && d.cleared) recentlyRewarded.add(d.skill || d.domain);
+                    await window.RecallBridge.complete(this.portal.auth.supabase, this.portal.auth.getUserInfo().profile.id, data, {
+                        // keep this page's skill cache in step with what was saved
+                        onRows: (rows, subject, now) => {
+                            if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
+                            rows.forEach(r => {
+                                this.skillProgress[subject][r.skill_name] = {
+                                    ...(this.skillProgress[subject][r.skill_name] || {}),
+                                    state: r.state, mastery_score: r.mastery_score,
+                                    last_practiced: now, practice_count: r.practice_count
+                                };
                             });
-                        });
-                    } catch (_) {}
-
-                    // The student's current rows for these skills. Recall may only
-                    // touch skills that already exist (planRecallRows).
-                    const names = [...new Set([...cleared, ...failed].map(s => s.skill || s.domain).filter(Boolean))];
-                    let existing = null;
-                    if (names.length > 0) {
-                        try {
-                            const { data: rows, error } = await sb
-                                .from('skill_progress')
-                                .select('skill_name, state, mastery_score, practice_count, mastered_at')
-                                .eq('user_id', userId)
-                                .eq('subject', subject)
-                                .in('skill_name', names);
-                            if (error) console.error('Recall: could not read existing skills, writing nothing:', error);
-                            else existing = new Map((rows || []).map(r => [r.skill_name, r]));
-                        } catch (e) {
-                            console.error('Recall: could not read existing skills, writing nothing:', e);
+                        },
+                        // the real award, to the game showing the projection
+                        reply: (msg) => {
+                            try { this.portal?.loadRTCBalance?.(); } catch (_) {}
+                            document.querySelectorAll('iframe').forEach(f => {
+                                try { f.contentWindow?.postMessage(msg, '*'); } catch (_) {}
+                            });
                         }
-                    } else {
-                        existing = new Map();
-                    }
-
-                    const rows = this.planRecallRows(userId, subject, cleared, failed, existing, now);
-                    if (rows.length > 0) {
-                        if (!this.skillProgress[subject]) this.skillProgress[subject] = {};
-                        rows.forEach(r => {
-                            this.skillProgress[subject][r.skill_name] = {
-                                ...(this.skillProgress[subject][r.skill_name] || {}),
-                                state: r.state, mastery_score: r.mastery_score,
-                                last_practiced: now, practice_count: r.practice_count
-                            };
-                        });
-                        const { error: recallErr } = await sb
-                            .from('skill_progress')
-                            .upsert(rows, { onConflict: 'user_id,subject,skill_name' });
-                        if (recallErr) console.error('Failed to save recall results:', recallErr);
-                        else console.log(`✅ Recall updated ${rows.length} existing skills`);
-                    }
-
-                    // Only clears of skills the student actually has can pay.
-                    const eligibleForRtc = cleared.filter(c => {
-                        const name = c.skill || c.domain;
-                        return existing && existing.has(name) && !recentlyRewarded.has(name);
                     });
-                    const skippedCooldown = cleared.filter(c => recentlyRewarded.has(c.skill || c.domain)).length;
-
-                    // Award through the dedicated system-granted RPC, which
-                    // computes and mints the amount server-side. Swallow any
-                    // error (e.g. RPC not yet deployed) and fall back to 0 so the
-                    // gauntlet flow never crashes.
-                    let actualAwarded = 0;
-                    const rewardedByCategory = { recent: 0, touch_on: 0, retention: 0 };
-                    if (eligibleForRtc.length > 0) {
-                        try {
-                            const { data: awarded, error: rtcErr } = await sb
-                                .rpc('award_skill_gauntlet_rtc', { p_skill_count: eligibleForRtc.length });
-                            if (rtcErr) console.error('Failed to award gauntlet RTC:', rtcErr);
-                            else actualAwarded = Number(awarded) || 0;
-                        } catch (rtcEx) {
-                            console.error('Gauntlet RTC RPC unavailable, awarding 0:', rtcEx);
-                        }
-                        console.log(`🪙 Awarded ${actualAwarded} RTC for ${label}`);
-                    }
-
-                    // Log session to math_dojo_sessions so the weekly card picks it
-                    // up - and so the next run's cooldown can see these clears.
-                    try {
-                        const stateOf = (name) => {
-                            const r = rows.find(x => x.skill_name === name);
-                            return r ? r.state : null;
-                        };
-                        const skillDetails = [
-                            ...cleared.map(c => ({ skill: c.skill, domain: c.domain, tier: c.tier, state: stateOf(c.skill || c.domain), cleared: true })),
-                            ...failed.map(f => ({ skill: f.skill, domain: f.domain, tier: f.tier, state: stateOf(f.skill || f.domain), cleared: false }))
-                        ];
-                        await sb
-                            .from('math_dojo_sessions')
-                            .insert({
-                                user_id: userId,
-                                subject: subject,
-                                mode: 'retention',
-                                skills_practiced: skillDetails.length,
-                                total_correct: Number(data.correctCount) || 0,
-                                total_questions: Number(data.questionsAsked) || 0,
-                                skill_details: skillDetails,
-                                duration_seconds: Math.round((Number(data.durationMs) || 0) / 1000)
-                            });
-                    } catch (sessErr) {
-                        console.error('Failed to record gauntlet session:', sessErr);
-                    }
-
-                    // Refresh RTC balance display if present
-                    try { this.portal?.loadRTCBalance?.(); } catch (_) {}
-
-                    // Post the actual award back to the dojo so it can show the real number
-                    // (client-side projection doesn't know about the diminishing returns).
-                    try {
-                        const iframes = document.querySelectorAll('iframe');
-                        iframes.forEach(f => {
-                            try {
-                                f.contentWindow?.postMessage({
-                                    type: 'GAUNTLET_RTC_RESULT',
-                                    amount: actualAwarded,
-                                    perCategoryRtc: PER_CATEGORY_RTC,
-                                    rewardedByCategory,
-                                    skippedCooldown,
-                                    eligibleCount: eligibleForRtc.length,
-                                    clearedCount: cleared.length
-                                }, '*');
-                            } catch (_) {}
-                        });
-                    } catch (_) {}
                 } catch (e) {
                     console.error('Error handling gauntlet completion:', e);
                 }

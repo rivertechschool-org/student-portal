@@ -35,6 +35,27 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-13 — Jordan's Claude (Lyceum audit: last gaps closed)
+**The "Not done" items in the audit entry below are now done.**
+
+- **Recall works from the portal.** Recall's line-up and save logic moved into
+  `shared/recall-bridge.js`. `index.html` keeps its methods, which call the bridge, so
+  callers and `tests/progress-integrity.test.js` are unchanged. The portal routes Recall
+  messages to it next to `VocabBridge`, so homework launched there defends skills, saves
+  and pays RTC the same way. Lyceum still shows the "Games page" message, but only for a
+  host that never answers. Journey: `debug-tools/recall-journey.mjs` (host:
+  `recall-host.html`).
+- **Run-on questions:** 8 items, each with its own three wrong fixes (comma splice,
+  misplaced comma, a semicolon with "and"). The explanation names both thoughts.
+- **Stages:** Text Features is now stage 3. Poetry Analysis, Research Skills and Critical
+  Thinking are now stage 4, matching the curriculum graph.
+- **Close synonyms:** the word bank has an optional `near` list (README, `validate.js`).
+  46 same-grade pairs (thrive/flourish, glad/happy…) are marked, and Word Lab never sets
+  one against the other. `BANK_VERSION` is now 3, so cached banks reload.
+- New `tests/lyceum-content.test.js` holds the audit fixes in place.
+
+**Needs:** nothing. No backend change.
+
 ## 2026-10-13 — Jordan's Claude (English Lyceum audit)
 **A full audit of English Lyceum and Word Lab: content, teaching text, engine and word
 bank, all fixed.**
@@ -89,12 +110,7 @@ bank, all fixed.**
 near-twin definitions made distinguishable, and wrong-sense IPA removed. Removed IPA is
 listed in `data/vocab/ipa-skip.json` so `add-ipa.js` leaves those words alone.
 
-**Not done:**
-- **Recall in the portal:** porting Recall's save handlers into the portal (it shows a
-  message there instead).
-- **Run-on questions:** each run-on item needs its own wrong fixes; today they are other
-  items' sentences.
-- **Text Features:** still at stage 5, though it's grade-3 content.
+**Not done:** all three items are done now; see the entry above.
 
 **Needs:** nothing; the backend migrations are applied.
 

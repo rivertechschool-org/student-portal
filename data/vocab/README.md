@@ -35,6 +35,7 @@ Pronouncing Dictionary (BSD licence, see `LICENSE-cmudict.txt`) by `add-ipa.js`,
 | `syn` | 0–3 synonyms (single words) a child that age knows. Never the headword. Empty `[]` when there is no good one. |
 | `say` | a respelling for reading aloud: syllables joined by hyphens, the stressed one in CAPITALS (`ih-NOR-mus`, `KAT`). |
 | `ipa` | added by the tool; do not write it by hand. |
+| `near` | optional. Other words **in this grade** that mean nearly the same thing but aren't listed as synonyms (thrive / flourish). Word Lab never offers one as a wrong answer to the other. List it on both words. |
 
 Words are ordered **easiest first** within a grade. The game splits each grade into levels
 of 12 in that order, so the order is the progression.

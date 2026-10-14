@@ -32,7 +32,7 @@
   const PASS_PCT = 80;
   const DAY = 86400000;
   const BOX_DAYS = [0, 1, 3, 7, 14, 30];
-  const BANK_VERSION = '2';
+  const BANK_VERSION = '3';
 
   const gradeLabel = (g) => (g === 'K' ? 'Kindergarten' : `Grade ${g}`);
   const gradeShort = (g) => (g === 'K' ? 'K' : `Gr ${g}`);
@@ -495,6 +495,9 @@
   const synSet = (x) => new Set((x.syn || []).map(key));
   const defWords = (d) => new Set(String(d).toLowerCase().split(/[^a-z]+/).filter(t => t.length > 2 && !STOP.has(t)));
   function related(a, b) {
+    // `near`: true synonyms the data marks as too close to set against each
+    // other (thrive / flourish), though neither lists the other as a synonym.
+    if ((a.near || []).some(w => key(w) === b.k) || (b.near || []).some(w => key(w) === a.k)) return true;
     const sa = synSet(a), sb = synSet(b);
     if (sa.has(b.k) || sb.has(a.k)) return true;
     for (const x of sa) if (sb.has(x)) return true;

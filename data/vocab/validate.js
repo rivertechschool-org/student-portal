@@ -80,6 +80,15 @@ for (const g of grades) {
       });
     }
 
+    if (e.near !== undefined) {
+      if (!Array.isArray(e.near) || e.near.some(x => typeof x !== 'string' || !x.trim())) err(i, w, '`near` must be a list of words');
+      else e.near.forEach(x => {
+        if (x.toLowerCase() === key) err(i, w, '`near` lists the word itself');
+        else if (!words.some(o => o.w.toLowerCase() === x.toLowerCase())) err(i, w, `\`near\` word "${x}" is not in this grade`);
+        else if (!(words.find(o => o.w.toLowerCase() === x.toLowerCase()).near || []).some(y => y.toLowerCase() === key)) warn(i, w, `"${x}" does not list "${w}" back in its \`near\``);
+      });
+    }
+
     if (typeof e.say !== 'string' || !/^[A-Za-z]+(-[A-Za-z]+)*$/.test(e.say)) err(i, w, `respelling "${e.say}" is not syllables joined by hyphens`);
     else if (!/[A-Z]{2,}|^[A-Z]+$|-[A-Z]+(-|$)|^[A-Z]+-/.test(e.say) && e.say.split('-').length > 1) err(i, w, `respelling "${e.say}" has no stressed syllable in CAPITALS`);
   });
