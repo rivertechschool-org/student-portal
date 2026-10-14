@@ -1361,84 +1361,15 @@
 
                 if (error) throw error;
 
-                // Auto-grade MC questions
-                if (test) {
-                    const mcGrades = [];
-                    test.questions.forEach(q => {
-                        if (q.type === 'multiple-choice') {
-                            const isCorrect = answers[q.id] === q.correctAnswer;
-                            mcGrades.push({
-                                submission_id: submission.id,
-                                question_id: q.id,
-                                points_earned: isCorrect ? (q.maxPoints || 1) : 0,
-                                is_correct: isCorrect,
-                                graded_at: new Date().toISOString()
-                            });
-                        }
-                    });
-
-                    if (mcGrades.length > 0) {
-                        await supabaseClient.from('test_question_grades').insert(mcGrades);
-                    }
-                }
-
-                // Directly create/link assignment_submission (works even when not embedded)
-                let linkedAssignmentId = null;
-                if (testAssignmentId) {
-                    const { data: ta } = await supabaseClient
-                        .from('test_assignments')
-                        .select('linked_assignment_id')
-                        .eq('id', testAssignmentId)
-                        .single();
-                    linkedAssignmentId = ta?.linked_assignment_id;
-                }
-
-                if (!linkedAssignmentId) {
-                    const { data: tas } = await supabaseClient
-                        .from('test_assignments')
-                        .select('linked_assignment_id')
-                        .eq('test_id', testId)
-                        .not('linked_assignment_id', 'is', null)
-                        .limit(1);
-                    if (tas && tas.length > 0) linkedAssignmentId = tas[0].linked_assignment_id;
-                }
-
-                if (linkedAssignmentId) {
-                    const subData = {
-                        assignment_id: linkedAssignmentId,
-                        student_id: currentUser.id,
-                        submitted_at: new Date().toISOString(),
-                        status: status === 'graded' ? 'graded' : 'submitted'
-                    };
-
-                    // If auto-graded (all MC), sync the grade directly
-                    if (status === 'graded') {
-                        const assignmentMaxPoints = await gradebookPointsFor(linkedAssignmentId, currentUser.id, maxScore);
-                        const actualPoints = Math.round((autoScore / 100) * assignmentMaxPoints);
-                        const letterGrade = autoScore >= 97 ? 'A+' : autoScore >= 93 ? 'A' : autoScore >= 90 ? 'A-' :
-                            autoScore >= 87 ? 'B+' : autoScore >= 83 ? 'B' : autoScore >= 80 ? 'B-' :
-                            autoScore >= 77 ? 'C+' : autoScore >= 73 ? 'C' : autoScore >= 70 ? 'C-' :
-                            autoScore >= 67 ? 'D+' : autoScore >= 63 ? 'D' : autoScore >= 60 ? 'D-' : 'F';
-
-                        subData.points_earned = actualPoints;
-                        subData.grade = letterGrade;
-                        subData.graded_at = new Date().toISOString();
-                    }
-
-                    const { data: asSub } = await supabaseClient
-                        .from('assignment_submissions')
-                        .upsert(subData, { onConflict: 'assignment_id,student_id' })
-                        .select()
-                        .single();
-
-                    if (asSub) {
-                        // Link test_submission to assignment_submission
-                        await supabaseClient
-                            .from('test_submissions')
-                            .update({ linked_submission_id: asSub.id })
-                            .eq('id', submission.id);
-                    }
-                }
+                // Scored on the server: the database marks the answers against
+                // the test's answer key, records the question grades, and
+                // grades the linked class assignment when every question is
+                // multiple choice; with a write-in the teacher marks it. The
+                // score shown to the student right after is still worked out
+                // here, from the same answers.
+                const { error: scoreErr } = await supabaseClient
+                    .rpc('rt_score_test_submission', { p_test_submission_id: submission.id });
+                if (scoreErr) console.error('Scoring the test on the server failed:', scoreErr);
 
                 // Also notify portal via postMessage (for real-time UI update when embedded)
                 if (isEmbedded) {
