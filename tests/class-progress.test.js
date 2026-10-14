@@ -67,6 +67,9 @@ const METHODS = [
   '_classProgressGridHtml', '_fmtMmSs', '_homeworkGoalText', '_progressDate', '_classHomeworkHtml',
   '_hubSkillSubjectOptions', '_hubSkillsHtml', '_dojoFamilyLabel', '_weeklyActivityRows', '_weeklyActivityHtml',
   '_buildMathPlanIndex', '_gradCoreForStudent', '_overviewSubjects', '_classOverviewHtml',
+  'calculateLetterGrade', '_currentQuarter', '_summariseClassAttendance', '_summariseStudentNotes',
+  '_gradeBandEnd', '_studentGradeNumber', '_buildCurriculumIndex', '_gradeLevelFor', '_classLevels',
+  '_levelGradeName', '_levelBadge',
 ];
 const app = {};
 for (const n of METHODS) app[n] = extract(n);
@@ -302,6 +305,75 @@ console.log('\n== overview ==\n');
   ok('no plan: the column says it is blank rather than 0',
     app._classOverviewHtml(data, null, vocab).includes('could not be loaded'));
   ok('no students says so', app._classOverviewHtml({ students: [], skills: [] }, idx, []).includes('No students are enrolled'));
+
+  // ---- grade, attendance, notes ----
+  check('current quarter: the flagged one wins',
+    app._currentQuarter([{ id: 'q1', start_date: '2026-09-01', end_date: '2026-10-30' }, { id: 'q2', start_date: '2026-11-02', is_current: true }], '2026-10-14').id, 'q2');
+  check('  else the one today falls in',
+    app._currentQuarter([{ id: 'q1', start_date: '2026-09-01', end_date: '2026-10-30' }, { id: 'q2', start_date: '2026-11-02', end_date: '2027-01-22' }], '2026-10-14').id, 'q1');
+  check('  archived quarters never count',
+    app._currentQuarter([{ id: 'q1', start_date: '2026-09-01', end_date: '2026-10-30', is_archived: true }], '2026-10-14'), null);
+  const att = app._summariseClassAttendance([
+    { student_id: 's1', status: 'present', date: '2026-10-01' }, { student_id: 's1', status: 'absent', date: '2026-10-02' },
+    { student_id: 's1', status: 'late_left_early', date: '2026-10-03' }, { student_id: 's1', status: 'present', date: '2026-10-04' },
+  ]).get('s1');
+  check('attendance: late-and-left counts as both, and as present', [att.marks, att.absent, att.late, att.leftEarly, att.rate, att.lastAbsent], [4, 1, 1, 1, 75, '2026-10-02']);
+  const notes = app._summariseStudentNotes([
+    { student_id: 's1', sentiment: 'positive', note: 'Helped a classmate', created_at: '2026-10-01T10:00:00Z' },
+    { student_id: 's1', sentiment: 'negative', note: 'Phone in class', note_date: '2026-10-09', created_at: '2026-10-09T10:00:00Z' },
+    { student_id: 's1', note: 'Check in with family', created_at: '2026-10-05T10:00:00Z', private: true },
+  ]).get('s1');
+  check('notes: counted, sorted by sentiment, newest shown', [notes.count, notes.positive, notes.negative, notes.latest.text], [3, 1, 1, 'Phone in class']);
+
+  // ---- grade level ----
+  check('band ends', ['K', '3-5', '9-College', 'College', '8', 'K-2', '?'].map(b => app._gradeBandEnd(b)), [0, 5, 13, 13, 8, 2, null]);
+  check('student grades', ['K', '4', 4, '12th', '', null, 'PK'].map(g => app._studentGradeNumber(g)), [0, 4, 4, 12, null, null, null]);
+  // Five skills: two K, one grade 2, one 3-5, one grade 8.
+  const cidx = app._buildCurriculumIndex({ nodes: [
+    { id: 'A', title: 'Counting', grade_band: 'K' }, { id: 'B', title: 'Shapes', grade_band: 'K', dojo_skill: 'Basic Shapes' },
+    { id: 'C', title: 'Adding', grade_band: '2' }, { id: 'D', title: 'Fractions', grade_band: '3-5' }, { id: 'E', title: 'Slope', grade_band: '8' },
+  ], merges: [] });
+  const m = (title) => ({ subject: 'Math', skill: title, state: 'mastered' });
+  const lv4 = app._gradeLevelFor([m('Counting'), m('Basic Shapes'), m('Adding')], cidx, 4);
+  check('working level stops at the first grade under 80%', lv4.level, 4);
+  check('  a 4th grader with every grade through 4 done is ahead', lv4.status, 'ahead');
+  const lv7 = app._gradeLevelFor([m('Counting'), m('Basic Shapes'), m('Adding')], cidx, 7);
+  check('a 7th grader with the same record is behind', [lv7.status, lv7.expected, lv7.expectedMastered, lv7.gaps.map(g => g.id)], ['behind', 4, 3, ['D']]);
+  const lv6 = app._gradeLevelFor([m('Counting'), m('Basic Shapes'), m('Adding'), m('Fractions')], cidx, 6);
+  check('grade 8 has nothing mastered, so the level stops at 7', [lv6.level, lv6.status], [7, 'ahead']);
+  // The rule that matters: lots of early skills do not carry a student past
+  // a grade they have not done. 4 of 5 skills is 80% overall, but grade 8 is 0%.
+  check('  80% overall is not 80% of each grade', app._gradeLevelFor([m('Counting'), m('Basic Shapes'), m('Adding'), m('Fractions')], cidx, 9).level, 7);
+  const lv9 = app._gradeLevelFor([m('Counting'), m('Basic Shapes'), m('Adding'), m('Fractions')], cidx, 9);
+  check('  and a 9th grader missing grade 8 work is behind', lv9.status, 'behind');
+  const lv8 = app._gradeLevelFor([m('Counting'), m('Basic Shapes'), m('Adding'), m('Fractions')], cidx, 8);
+  check('  an 8th grader with everything through grade 7 is on par', lv8.status, 'on');
+  check('no records, no badge', app._gradeLevelFor([], cidx, 4), null);
+  // Prerequisites: Slope needs Fractions needs Adding needs Counting.
+  const pidx = app._buildCurriculumIndex({ nodes: [
+    { id: 'A', title: 'Counting', grade_band: 'K' }, { id: 'B', title: 'Shapes', grade_band: 'K' },
+    { id: 'C', title: 'Adding', grade_band: '2', hard_prereqs: ['A'] }, { id: 'D', title: 'Fractions', grade_band: '3-5', hard_prereqs: ['C'] },
+    { id: 'E', title: 'Slope', grade_band: '8', hard_prereqs: ['D'] },
+  ], merges: [] });
+  const onlySlope = app._gradeLevelFor([m('Slope')], pidx, 9);
+  check('a mastered skill vouches for its prerequisites, not for unrelated ones',
+    [onlySlope.gaps.map(g => g.id), onlySlope.mastered, onlySlope.implied], [['B'], 1, 3]);
+  check('no grade set: a level but no status', app._gradeLevelFor([m('Counting')], cidx, null).status, null);
+  const levels = app._classLevels({ students: [S('s1', 'Mara', 'Okonkwo', { grade_level: 9 })], skills: [
+    { student_id: 's1', subject: 'Math', skill: 'Counting', state: 'mastered' }] }, { Math: cidx, Reading: cidx });
+  check('class levels only for subjects the student has records in', [...levels.get('s1').keys()], ['Math']);
+
+  const ext = { quarter: { name: 'Q1' }, since: '2026-09-01',
+    grades: new Map([['s1', { class_grade: 88.4, academic_grade: 90, participation_grade: 85 }], ['s2', { class_grade: 0 }]]),
+    attendance: new Map([['s1', { marks: 20, absent: 3, late: 1, leftEarly: 0, rate: 85, lastAbsent: '2026-10-02' }]]),
+    notes: new Map([['s1', { count: 2, positive: 1, negative: 1, latest: { when: '2026-10-09', text: 'Phone in class' } }]]) };
+  const out2 = app._classOverviewHtml(data, idx, vocab, ext, app._classLevels(data, { Math: cidx }));
+  ok('grade shows letter and number', out2.includes('<b>B+</b>') && out2.includes('>88<'));
+  ok('  a 0 snapshot is "no grade yet", not an F', !out2.includes('<b>F</b>') && out2.includes('No grade on record for Q1 yet'));
+  ok('attendance rate, absences, lates, shaded under 90', out2.includes('<b>85%</b>') && out2.includes('3 abs · 1 late') && out2.includes('cp-warn'));
+  ok('notes count, sentiment and the latest', out2.includes('+1') && out2.includes('−1') && out2.includes('Phone in class'));
+  ok('level column opens where they should be', out2.includes("app.showStudentLevelDetail('s1')"));
+  ok('extras missing says so', app._classOverviewHtml(data, idx, vocab, null, null).includes('Grades, attendance and notes could not be loaded.'));
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

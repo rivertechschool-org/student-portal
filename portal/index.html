@@ -969,6 +969,17 @@
     .cp-ov-bar i { display: block; height: 100%; background: #f5b301; }
     .cp-ov-avg th, .cp-ov-avg td { position: sticky; bottom: 0; background: var(--card); font-weight: 600; border-top: 2px solid var(--border); }
     .cp-ov-avg .cp-name { z-index: 3; }
+    .cp-ov-click { cursor: pointer; }
+    .cp-ov-click:hover { text-decoration: underline; }
+    .cp-ov-note { margin: 0; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+    /* Grade-level badges: behind / on par / ahead. */
+    .cp-lv { font-size: 11px; font-weight: 700; margin-left: 4px; }
+    .cp-lv-behind { color: #f59e0b; }
+    .cp-lv-on { color: #93c5fd; }
+    .cp-lv-ahead { color: #34d399; }
+    .cp-gaps { display: flex; flex-wrap: wrap; gap: 6px; }
+    .cp-gaps span { background: var(--bg); border: 1px solid var(--border); border-radius: 99px; padding: 3px 9px; font-size: 12px; }
+    .cp-gaps i { color: var(--muted); font-style: normal; font-size: 10px; margin-left: 3px; }
     .cp-grid th.cp-col span { display: inline-block; writing-mode: vertical-rl; transform: rotate(180deg); max-height: 130px; overflow: hidden; text-overflow: ellipsis; font-weight: 500; font-size: 11px; }
     .modal-content .cp-grid td.cp-cell { padding: 0 !important; width: 30px; min-width: 30px; height: 30px; border: 1px solid var(--card); }
     .cp-cell button { width: 100%; height: 30px; background: none; border: none; color: inherit; font-size: 11px; font-weight: 600; cursor: pointer; padding: 0; }
@@ -30787,18 +30798,28 @@ Students you had withdrawn stay withdrawn.`)) {
             : this._pickupRpc('rt_class_progress', { p_class_id: classId, p_subject: null });
           const vocab = (cp.vocab && cp.vocabFor === classId) ? Promise.resolve(cp.vocab)
             : this._pickupRpc('rt_class_vocab', { p_class_id: classId });
-          // The plan and Word Lab are extras: if either fails the subject
-          // columns still show, with that column saying it is unavailable.
-          const [allR, planR, vocabR] = await Promise.allSettled([all, this._loadMathPlan(), vocab]);
+          // Everything past the skill rows is an extra: if one fails, its
+          // column says it is unavailable and the rest still show.
+          const extras = (cp.extras && cp.extrasFor === classId) ? Promise.resolve(cp.extras) : this._loadClassOverviewExtras(classId);
+          const [allR, planR, vocabR, extrasR] = await Promise.allSettled([all, this._loadMathPlan(), vocab, extras]);
           if (this._cp !== cp || cp.tab !== 'overview') return;
           if (allR.status === 'rejected') throw allR.reason;
           cp.overviewData = allR.value || {}; cp.overviewFor = classId;
           if (vocabR.status === 'fulfilled') { cp.vocab = vocabR.value || []; cp.vocabFor = classId; }
           else console.error('rt_class_vocab failed:', vocabR.reason);
           if (planR.status === 'rejected') console.error('Graduation plan failed to load:', planR.reason);
+          if (extrasR.status === 'fulfilled') { cp.extras = extrasR.value; cp.extrasFor = classId; }
+          else console.error('Class overview grades/attendance/notes failed:', extrasR.reason);
+          // Grade-level badges need each subject's curriculum (grade bands).
+          const subjects = this._overviewSubjects(cp.overviewData.skills);
+          const curricula = await this._loadCurricula(subjects);
+          if (this._cp !== cp || cp.tab !== 'overview') return;
+          cp.levels = this._classLevels(cp.overviewData, curricula);
           if (el()) el().innerHTML = this._classOverviewHtml(cp.overviewData,
             planR.status === 'fulfilled' ? planR.value : null,
-            vocabR.status === 'fulfilled' ? (vocabR.value || []) : null);
+            vocabR.status === 'fulfilled' ? (vocabR.value || []) : null,
+            extrasR.status === 'fulfilled' ? extrasR.value : null,
+            cp.levels);
         } catch (e) {
           console.error('Class overview failed:', e);
           if (el()) el().innerHTML = `<div class="cp-empty" style="color: var(--danger);">The overview could not be loaded: ${this.escapeHtml(e?.message || String(e))}</div>`;
@@ -30829,6 +30850,301 @@ Students you had withdrawn stay withdrawn.`)) {
         (curriculum?.merges || []).forEach(m => { if (m.legacy_id && m.canonical_id) merged.set(m.legacy_id, m.canonical_id); });
         const items = (plan?.core?.domains || []).flatMap(d => (d.items || []).map(it => ({ ...it, domain: d.name })));
         return { items, byName, ids, merged };
+      }
+
+      // ---- Grade, attendance and notes for the Overview ---------------------
+      //
+      // Read-only. The grade is the one on record for the current quarter
+      // (quarter_grade_snapshots, what Grade Management shows and the teacher
+      // overrides); this screen never calculates or writes one, so a student
+      // whose quarter grade has not been worked out yet shows a dash rather
+      // than a number that disagrees with the gradebook. Attendance is this
+      // class's own marks since the quarter began. Notes are the ones written
+      // about the student in this class, from every notes table this
+      // teacher can read.
+      _currentQuarter(quarters, todayStr) {
+        const qs = (quarters || []).filter(q => q && q.start_date && !q.is_archived);
+        return qs.find(q => q.is_current)
+          || qs.find(q => q.start_date <= todayStr && (!q.end_date || q.end_date >= todayStr))
+          || qs.filter(q => q.start_date <= todayStr).sort((a, b) => b.start_date.localeCompare(a.start_date))[0]
+          || null;
+      }
+
+      async _loadClassOverviewExtras(classId) {
+        const sb = this.auth.supabase;
+        const q = async (build) => { const { data, error } = await this.supabaseQuery(build); if (error) throw error; return data || []; };
+        const settle = (p) => p.then(v => v, e => { console.error('Overview extra failed:', e); return null; });
+        const todayStr = this.localTodayStr ? this.localTodayStr() : new Date().toISOString().slice(0, 10);
+
+        const [enrollments, quarters] = await Promise.all([
+          q(() => sb.from('class_enrollments').select('id, student_id').eq('class_id', classId).eq('status', 'active')),
+          settle(q(() => sb.from('quarters').select('id, name, start_date, end_date, is_current, is_archived'))),
+        ]);
+        const studentIds = enrollments.map(e => e.student_id);
+        const quarter = this._currentQuarter(quarters, todayStr);
+        // Without a quarter, the last 30 days stands in for attendance.
+        const since = quarter?.start_date || new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+        if (!studentIds.length) return { quarter, grades: new Map(), attendance: new Map(), notes: new Map(), since };
+
+        const [snaps, att, sNotes, uNotes, pNotes] = await Promise.all([
+          quarter ? settle(q(() => sb.from('quarter_grade_snapshots')
+            .select('enrollment_id, academic_grade, participation_grade, class_grade, class_grade_override')
+            .eq('quarter_id', quarter.id).in('enrollment_id', enrollments.map(e => e.id)))) : Promise.resolve(null),
+          settle(this.fetchAllRows((from, to) => sb.from('class_attendance')
+            .select('student_id, status, date').eq('class_id', classId).in('student_id', studentIds)
+            .gte('date', since).lte('date', todayStr).order('date', { ascending: true }).range(from, to))),
+          settle(q(() => sb.from('student_notes').select('student_id, sentiment, category, custom_category, note, created_at')
+            .eq('class_id', classId).in('student_id', studentIds))),
+          settle(q(() => sb.from('notes').select('student_id, sentiment, category, custom_category, note, note_date, created_at')
+            .eq('class_id', classId).in('student_id', studentIds))),
+          settle(q(() => sb.from('teacher_private_notes').select('student_id, note, created_at')
+            .eq('class_id', classId).in('student_id', studentIds))),
+        ]);
+
+        const studentOf = new Map(enrollments.map(e => [e.id, e.student_id]));
+        const grades = snaps == null ? null : new Map();
+        (snaps || []).forEach(s => { const sid = studentOf.get(s.enrollment_id); if (sid) grades.set(sid, s); });
+
+        const attendance = att == null ? null : this._summariseClassAttendance(att);
+
+        const allNotes = [sNotes, uNotes, pNotes];
+        const notes = allNotes.every(n => n == null) ? null : this._summariseStudentNotes(
+          [].concat(...allNotes.map((rows, i) => (rows || []).map(r => ({ ...r, private: i === 2 })))));
+        return { quarter, grades, attendance, notes, since };
+      }
+
+      // One row per mark -> per student: marks, absences, lates, left early.
+      _summariseClassAttendance(rows) {
+        const out = new Map();
+        (rows || []).forEach(r => {
+          const a = out.get(r.student_id) || { marks: 0, absent: 0, late: 0, leftEarly: 0, lastAbsent: null };
+          a.marks++;
+          if (r.status === 'absent') { a.absent++; if (!a.lastAbsent || r.date > a.lastAbsent) a.lastAbsent = r.date; }
+          if (r.status === 'late' || r.status === 'late_left_early') a.late++;
+          if (r.status === 'left_early' || r.status === 'late_left_early') a.leftEarly++;
+          out.set(r.student_id, a);
+        });
+        out.forEach(a => { a.rate = a.marks ? Math.round((a.marks - a.absent) / a.marks * 100) : null; });
+        return out;
+      }
+
+      // Notes from the three tables -> per student: how many, how many good
+      // and how many concerns, and the newest one to show on hover.
+      _summariseStudentNotes(rows) {
+        const out = new Map();
+        (rows || []).forEach(r => {
+          const n = out.get(r.student_id) || { count: 0, positive: 0, negative: 0, latest: null };
+          n.count++;
+          if (r.sentiment === 'positive') n.positive++;
+          if (r.sentiment === 'negative') n.negative++;
+          const when = r.note_date || r.created_at || '';
+          if (!n.latest || when > (n.latest.when || '')) n.latest = { when, text: r.note || '', private: !!r.private, category: r.custom_category || r.category || '' };
+          out.set(r.student_id, n);
+        });
+        return out;
+      }
+
+      // ---- Grade level: ahead / on par / behind --------------------------
+      //
+      // Every curriculum node has a grade band ("K", "3-5", "9-College").
+      // A skill is due by the END of its band: a "3-5" skill should be
+      // mastered once a student has finished grade 5.
+      //
+      //   Working level = the highest grade g such that every grade up to
+      //   and including g has at least 80% of its own skills mastered
+      //   (a grade's skills = those whose band ends there).
+      //   Expected      = finished last year's grade, i.e. their grade - 1.
+      //   Ahead   = working level is at or past their own grade
+      //   On par  = working level is last year's grade
+      //   Behind  = anything lower.
+      //
+      // It is evidence, not a test score: a skill nobody has practised in the
+      // portal counts as not shown yet. Only subjects a student has some
+      // record in get a badge, so a subject never opened is "not started"
+      // rather than "behind".
+      _curriculumFileFor(subject) {
+        return ({ Math: 'math', Reading: 'english', Language: 'english', Science: 'science', Social: 'social',
+                  Bible: 'bible', Creative: 'creative', Art: 'creative', LifeSkills: 'lifeskills', Physical: 'physical',
+                  Technology: 'technology', Programming: 'technology', Robotics: 'technology' })[subject] || null;
+      }
+
+      async _loadCurricula(subjects) {
+        this._curriculumCache = this._curriculumCache || {};
+        const files = [...new Set((subjects || []).map(s => this._curriculumFileFor(s)).filter(Boolean))];
+        await Promise.all(files.map(f => {
+          if (this._curriculumCache[f]) return this._curriculumCache[f];
+          const p = fetch(`../data/${f}_curriculum_v2.json`).then(r => { if (!r.ok) throw new Error(`${f}: ${r.status}`); return r.json(); })
+            .then(d => this._buildCurriculumIndex(d))
+            .catch(e => { console.error('Curriculum failed to load:', f, e); delete this._curriculumCache[f]; return null; });
+          this._curriculumCache[f] = p;
+          return p;
+        }));
+        const out = {};
+        for (const s of subjects || []) {
+          const f = this._curriculumFileFor(s);
+          if (f && this._curriculumCache[f]) out[s] = await this._curriculumCache[f];
+        }
+        return out;
+      }
+
+      // "K" -> 0, "3-5" -> 5, "9-College" -> 13. Null when unreadable.
+      _gradeBandEnd(band) {
+        if (band == null) return null;
+        const last = String(band).split('-').pop().trim();
+        if (/^k$/i.test(last)) return 0;
+        if (/college/i.test(last)) return 13;
+        const n = parseInt(last, 10);
+        return isNaN(n) ? null : n;
+      }
+
+      // A student's grade as a number: K = 0. Null when not set or pre-K.
+      _studentGradeNumber(g) {
+        if (g == null || g === '') return null;
+        const s = String(g).trim();
+        if (/^k/i.test(s)) return 0;
+        const n = parseInt(s, 10);
+        return isNaN(n) || n < 0 ? null : n;
+      }
+
+      _buildCurriculumIndex(curriculum) {
+        const nodes = [], byName = new Map(), ids = new Map(), merged = new Map();
+        (curriculum?.nodes || []).forEach(n => {
+          const end = this._gradeBandEnd(n.grade_band);
+          const node = { id: n.id, title: n.title, band: n.grade_band, end, prereqs: Array.isArray(n.hard_prereqs) ? n.hard_prereqs : [] };
+          nodes.push(node); ids.set(n.id, node);
+          [n.title, n.dojo_skill, n.game_skill].forEach(nm => { if (nm && !byName.has(String(nm).toLowerCase())) byName.set(String(nm).toLowerCase(), n.id); });
+        });
+        (curriculum?.merges || []).forEach(m => { if (m.legacy_id && m.canonical_id) merged.set(m.legacy_id, m.canonical_id); });
+        return { nodes: nodes.filter(n => n.end != null), byName, ids, merged };
+      }
+
+      // One student, one subject. rows = that student's skill rows in it.
+      _gradeLevelFor(rows, idx, studentGrade) {
+        if (!idx || !idx.nodes.length || !rows || !rows.length) return null;
+        const mastered = new Set();
+        rows.forEach(r => {
+          if (r.state !== 'mastered' && r.state !== 'needs_review') return;
+          let id = r.node_id && idx.merged.has(r.node_id) ? idx.merged.get(r.node_id) : r.node_id;
+          if (!id || !idx.ids.has(id)) id = idx.byName.get(String(r.skill || '').toLowerCase()) || null;
+          if (id) mastered.add(id);
+        });
+        // A mastered skill vouches for its hard prerequisites, all the way
+        // down. A 9th grader who only ever practised algebra here has no
+        // kindergarten counting record, and is not "below K" for it.
+        const direct = mastered.size;
+        const stack = [...mastered];
+        while (stack.length) {
+          const node = idx.ids.get(stack.pop());
+          (node?.prereqs || []).forEach(p => {
+            const id = idx.merged.get(p) || p;
+            if (idx.ids.has(id) && !mastered.has(id)) { mastered.add(id); stack.push(id); }
+          });
+        }
+        // Grade by grade, not cumulative: a big pile of early skills must not
+        // carry a student past a grade they have barely touched.
+        let level = -1;
+        for (let g = 0; g <= 13; g++) {
+          const due = idx.nodes.filter(n => n.end === g);
+          if (due.length && due.filter(n => mastered.has(n.id)).length / due.length < 0.8) break;
+          level = g;
+        }
+        const G = studentGrade;
+        const expected = G == null ? [] : idx.nodes.filter(n => n.end < G);
+        const gaps = expected.filter(n => !mastered.has(n.id)).sort((a, b) => a.end - b.end || String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+        const ahead = G == null ? 0 : idx.nodes.filter(n => n.end >= G && mastered.has(n.id)).length;
+        let status = null;
+        if (G != null) status = level >= G ? 'ahead' : level >= G - 1 ? 'on' : 'behind';
+        return { level, grade: G, status, expected: expected.length, expectedMastered: expected.length - gaps.length, gaps, ahead, mastered: direct, implied: mastered.size - direct };
+      }
+
+      // student id -> subject -> level result, for every subject with a curriculum.
+      _classLevels(data, curricula) {
+        const out = new Map();
+        const students = Array.isArray(data?.students) ? data.students : [];
+        const rowsBy = new Map();
+        (data?.skills || []).forEach(k => {
+          const key = `${k.student_id}\u0001${k.subject}`;
+          if (!rowsBy.has(key)) rowsBy.set(key, []);
+          rowsBy.get(key).push(k);
+        });
+        students.forEach(s => {
+          const G = this._studentGradeNumber(s.grade_level);
+          const m = new Map();
+          Object.keys(curricula || {}).forEach(sub => {
+            const r = this._gradeLevelFor(rowsBy.get(`${s.id}\u0001${sub}`), curricula[sub], G);
+            if (r) m.set(sub, r);
+          });
+          out.set(s.id, m);
+        });
+        return out;
+      }
+
+      _levelGradeName(g) {
+        if (g == null) return '';
+        if (g < 0) return 'below K';
+        if (g === 0) return 'K';
+        if (g >= 13) return 'college';
+        return `grade ${g}`;
+      }
+
+      _levelBadge(r) {
+        if (!r || !r.status) return '';
+        const B = { ahead: ['▲', 'cp-lv-ahead', 'ahead'], on: ['●', 'cp-lv-on', 'on par'], behind: ['▼', 'cp-lv-behind', 'behind'] }[r.status];
+        return `<span class="cp-lv ${B[1]}" title="Working at ${this.escapeHtml(this._levelGradeName(r.level))}, in ${this.escapeHtml(this._levelGradeName(r.grade))}: ${B[2]}">${B[0]}</span>`;
+      }
+
+      // "Where they should be": every subject for one student, with the
+      // skills due by now that are not mastered yet, easiest first.
+      showStudentLevelDetail(studentId) {
+        const cp = this._cp;
+        const s = (cp?.overviewData?.students || []).find(x => x.id === studentId);
+        const levels = cp?.levels?.get(studentId);
+        if (!s || !levels) return;
+        const esc = (v) => this.escapeHtml(v == null ? '' : String(v));
+        const STATUS = { ahead: 'Ahead', on: 'On par', behind: 'Behind' };
+        const subjects = [...levels.keys()];
+        const G = this._studentGradeNumber(s.grade_level);
+        const rows = subjects.map(sub => {
+          const r = levels.get(sub);
+          const pct = r.expected ? Math.round(r.expectedMastered / r.expected * 100) : null;
+          return `<tr><th class="cp-name">${esc(this._progressSubjectLabel(sub))}</th>
+            <td>${esc(this._levelGradeName(r.level))}</td>
+            <td>${r.status ? `${this._levelBadge(r)} ${esc(STATUS[r.status])}` : '<span class="cp-sub">grade not set</span>'}</td>
+            <td>${r.expected ? `${r.expectedMastered} of ${r.expected} <span class="cp-sub">(${pct}%)</span>` : '<span class="cp-sub">none due yet</span>'}</td>
+            <td>${r.ahead || 0}</td></tr>`;
+        }).join('');
+        const gapsHtml = subjects.map(sub => {
+          const r = levels.get(sub);
+          if (!r.gaps.length) return '';
+          const shown = r.gaps.slice(0, 15);
+          return `<h4 style="margin: 14px 0 4px;">${esc(this._progressSubjectLabel(sub))}: ${r.gaps.length} to catch up on</h4>
+            <div class="cp-gaps">${shown.map(n => `<span title="${esc(`Due by the end of ${this._levelGradeName(n.end)} (${n.band})`)}">${esc(n.title)} <i>${esc(n.band)}</i></span>`).join('')}${r.gaps.length > shown.length ? `<span class="cp-sub">+ ${r.gaps.length - shown.length} more</span>` : ''}</div>`;
+        }).join('');
+        const html = `
+          <div class="cp-detail">
+            <p style="margin: 0 0 10px; color: var(--muted); font-size: 13px;">
+              ${esc(s.first_name)} is in <b>${esc(G == null ? 'an unknown grade' : this._levelGradeName(G))}</b>.
+              <b>Working at</b> is the highest grade where it and every grade before it have 80% of their skills mastered.
+              On par means last year's skills are done; ahead means this year's are too.
+              A mastered skill also counts its prerequisites as shown.
+              Only subjects ${esc(s.first_name)} has started are shown.
+            </p>
+            ${subjects.length ? `<div class="cp-scroll"><table class="cp-table">
+              <thead><tr><th class="cp-name">Subject</th><th>Working at</th><th>Status</th><th title="Skills whose grade band ended before this year">Due by now, mastered</th><th title="Mastered skills from this grade or later">Ahead skills</th></tr></thead>
+              <tbody>${rows}</tbody></table></div>` : '<div class="cp-empty">No subject records yet.</div>'}
+            ${gapsHtml || (subjects.length ? '<p class="cp-note">Nothing due by now is missing.</p>' : '')}
+            <div class="cp-foot">
+              <button class="btn btn-secondary" onclick="app.closeModal('student-level-detail')">Close</button>
+              <button class="btn btn-primary" onclick="app.closeModal('student-level-detail'); app.openStudentHubSkills('${this.jsAttr(s.id)}', '')">Open Student Hub</button>
+            </div>
+          </div>`;
+        this.showModal('student-level-detail', `${esc(s.first_name)} ${esc(s.last_name)}: where they should be`, html, true);
+      }
+
+      // The Student Hub on a given tab (notes, attendance).
+      async openStudentHubTab(studentId, tab) {
+        await this.viewStudentDetails(studentId);
+        if (this._studentHubId === studentId && document.getElementById('student-hub-tabs')) this.switchStudentHubTab(tab);
       }
 
       // Which graduation-core items one student has completed. An item is
@@ -30862,7 +31178,7 @@ Students you had withdrawn stay withdrawn.`)) {
         });
       }
 
-      _classOverviewHtml(data, planIdx, vocab) {
+      _classOverviewHtml(data, planIdx, vocab, extras = null, levels = null) {
         const esc = (s) => this.escapeHtml(s == null ? '' : String(s));
         const students = this._progressSortStudents(Array.isArray(data?.students) ? data.students : [], 'name', 1);
         if (!students.length) return `<div class="cp-empty">No students are enrolled in this class.</div>`;
@@ -30887,9 +31203,54 @@ Students you had withdrawn stay withdrawn.`)) {
         subjects.forEach(sub => { best[sub] = Math.max(0, ...students.map(s => (per.get(`${s.id}\u0001${sub}`) || {}).mastered || 0)); });
         const vocabBy = new Map((vocab || []).map(v => [v.student_id || v.id, v]));
         const grade = (g) => g == null ? '' : (g === 'K' ? 'K' : `Gr ${g}`);
+        const fmtDate = (d) => { const x = new Date(String(d).slice(0, 10) + 'T12:00:00'); return isNaN(x) ? '' : x.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
 
         const cores = new Map(students.map(s => [s.id, this._gradCoreForStudent(rowsOf.get(s.id), planIdx)]));
         const label = this._gridRowLabels(students);
+        const quarterName = extras?.quarter?.name || 'this quarter';
+
+        const gradeCell = (s) => {
+          if (!extras || !extras.grades) return '<td class="cp-sub">—</td>';
+          const g = extras.grades.get(s.id);
+          const v = g ? Number(g.class_grade) : NaN;
+          // 0 is how the quarter snapshot says "nothing graded yet".
+          if (!g || isNaN(v) || v <= 0) return `<td class="cp-sub" title="No grade on record for ${esc(quarterName)} yet">—</td>`;
+          const tip = `${quarterName} class grade${g.class_grade_override ? ' (set by the teacher)' : ''}` +
+            (g.academic_grade != null ? ` · academic ${Math.round(g.academic_grade)}` : '') +
+            (g.participation_grade != null ? ` · participation ${Math.round(g.participation_grade)}` : '');
+          return `<td class="${v < 70 ? 'cp-bad' : ''}" title="${esc(tip)}"><b>${esc(this.calculateLetterGrade(v))}</b> <span class="cp-sub" style="margin:0;">${Math.round(v)}</span></td>`;
+        };
+        const attendanceCell = (s) => {
+          if (!extras || !extras.attendance) return '<td class="cp-sub">—</td>';
+          const a = extras.attendance.get(s.id);
+          if (!a || !a.marks) return `<td class="cp-sub" title="No attendance marked in this class since ${esc(fmtDate(extras.since))}">—</td>`;
+          const cls = a.rate < 80 ? 'cp-bad' : a.rate < 90 ? 'cp-warn' : '';
+          const bits = [a.absent ? `${a.absent} abs` : '', a.late ? `${a.late} late` : '', a.leftEarly ? `${a.leftEarly} left` : ''].filter(Boolean).join(' · ');
+          const tip = `${a.marks - a.absent} of ${a.marks} class days present since ${fmtDate(extras.since)}` + (a.lastAbsent ? ` · last absent ${fmtDate(a.lastAbsent)}` : '');
+          return `<td class="cp-ov-click ${cls}" title="${esc(tip)}" onclick="event.stopPropagation(); app.openStudentHubTab('${this.jsAttr(s.id)}', 'attendance')"><b>${a.rate}%</b>${bits ? `<div class="cp-sub" style="margin:0;">${esc(bits)}</div>` : ''}</td>`;
+        };
+        const notesCell = (s) => {
+          if (!extras || !extras.notes) return '<td class="cp-sub">—</td>';
+          const n = extras.notes.get(s.id);
+          if (!n || !n.count) return `<td class="cp-sub cp-ov-click" title="No notes in this class. Tap to open the Student Hub notes." onclick="event.stopPropagation(); app.openStudentHubTab('${this.jsAttr(s.id)}', 'notes')">none</td>`;
+          const latest = n.latest ? `Latest (${fmtDate(n.latest.when)}${n.latest.private ? ', private' : ''}${n.latest.category ? ', ' + n.latest.category : ''}): ${String(n.latest.text).slice(0, 200)}` : '';
+          return `<td class="cp-ov-click" title="${esc(latest)}" onclick="event.stopPropagation(); app.openStudentHubTab('${this.jsAttr(s.id)}', 'notes')">
+            <b>${n.count}</b>${n.positive ? `<span class="cp-lv-ahead" style="margin-left:4px;">+${n.positive}</span>` : ''}${n.negative ? `<span class="cp-lv-behind" style="margin-left:4px;">−${n.negative}</span>` : ''}
+            ${n.latest ? `<div class="cp-sub cp-ov-note">${esc(String(n.latest.text).slice(0, 40))}</div>` : ''}</td>`;
+        };
+        const levelCell = (s) => {
+          const m = levels?.get(s.id);
+          if (!levels) return '<td class="cp-sub">—</td>';
+          if (this._studentGradeNumber(s.grade_level) == null) return '<td class="cp-sub" title="This student has no grade level set">no grade set</td>';
+          if (!m || !m.size) return '<td class="cp-sub">not started</td>';
+          // Behind first: that is what a teacher scans this column for.
+          const order = { behind: 0, on: 1, ahead: 2 };
+          const list = [...m.entries()].filter(([, r]) => r.status).sort((a, b) => order[a[1].status] - order[b[1].status]);
+          const n = (st) => list.filter(([, r]) => r.status === st).length;
+          const tip = list.map(([sub, r]) => `${this._progressSubjectLabel(sub)}: working at ${this._levelGradeName(r.level)}`).join('\n');
+          return `<td class="cp-ov-click" title="${esc(tip)}" onclick="event.stopPropagation(); app.showStudentLevelDetail('${this.jsAttr(s.id)}')">
+            ${n('behind') ? `<span class="cp-lv cp-lv-behind">▼${n('behind')}</span>` : ''}${n('on') ? `<span class="cp-lv cp-lv-on">●${n('on')}</span>` : ''}${n('ahead') ? `<span class="cp-lv cp-lv-ahead">▲${n('ahead')}</span>` : ''}</td>`;
+        };
 
         const body = students.map(s => {
           const core = cores.get(s.id);
@@ -30902,10 +31263,12 @@ Students you had withdrawn stay withdrawn.`)) {
             const c = per.get(`${s.id}\u0001${sub}`);
             if (!c || (!c.mastered && !c.working)) return `<td class="cp-ov-cell none" title="${esc(this._progressSubjectLabel(sub))}: not started">·</td>`;
             const a = best[sub] ? 0.15 + 0.6 * (c.mastered / best[sub]) : 0;
-            const tip = `${this._progressSubjectLabel(sub)}: ${c.mastered} mastered, ${c.working} in progress${c.stuck ? `, ${c.stuck} stuck` : ''}`;
+            const lv = levels?.get(s.id)?.get(sub);
+            const tip = `${this._progressSubjectLabel(sub)}: ${c.mastered} mastered, ${c.working} in progress${c.stuck ? `, ${c.stuck} stuck` : ''}` +
+              (lv && lv.status ? `. Working at ${this._levelGradeName(lv.level)}` : '');
             return `<td class="cp-ov-cell" style="background: rgba(16, 185, 129, ${a.toFixed(2)});" title="${esc(tip)}">
               <button onclick="event.stopPropagation(); app.openClassProgressSubject('${this.jsAttr(sub)}')" aria-label="${esc(tip)}">
-                <b>${c.mastered}</b>${c.working ? `<span class="cp-ov-w">+${c.working}</span>` : ''}${c.stuck ? `<span class="cp-ov-stuck" title="stuck">!</span>` : ''}
+                <b>${c.mastered}</b>${c.working ? `<span class="cp-ov-w">+${c.working}</span>` : ''}${c.stuck ? `<span class="cp-ov-stuck" title="stuck">!</span>` : ''}${this._levelBadge(lv)}
               </button></td>`;
           }).join('');
           const v = vocabBy.get(s.id);
@@ -30914,7 +31277,7 @@ Students you had withdrawn stay withdrawn.`)) {
             : `<td>${esc(grade(v.current_grade))} · L${esc(v.current_level || 1)}<div class="cp-sub" style="margin:0;">${Number(v.mastered) || 0} words</div></td>`;
           return `<tr onclick="app.openStudentHubSkills('${this.jsAttr(s.id)}', '')">
             <th class="cp-name" scope="row"><button class="cp-link" onclick="event.stopPropagation(); app.openStudentHubSkills('${this.jsAttr(s.id)}', '')" title="${esc(`${s.first_name || ''} ${s.last_name || ''}`.trim())}">${esc(label.get(s.id))}</button>${s.grade_level ? `<span class="cp-sub">Gr ${esc(s.grade_level)}</span>` : ''}</th>
-            ${coreCell}${subjCells}${vocabCell}
+            ${gradeCell(s)}${attendanceCell(s)}${notesCell(s)}${levelCell(s)}${coreCell}${subjCells}${vocabCell}
           </tr>`;
         }).join('');
 
@@ -30925,20 +31288,30 @@ Students you had withdrawn stay withdrawn.`)) {
         const coreAvg = planIdx ? fmt(avg(students.map(s => cores.get(s.id)?.done || 0))) : '—';
         const subjAvg = subjects.map(sub => {
           const started = students.filter(s => { const c = per.get(`${s.id}\u0001${sub}`); return c && (c.mastered || c.working); });
-          return `<td title="${started.length} of ${students.length} started">${fmt(avg(students.map(s => (per.get(`${s.id}\u0001${sub}`) || {}).mastered || 0)))}<div class="cp-sub" style="margin:0;">${started.length}/${students.length} started</div></td>`;
+          const behind = students.filter(s => levels?.get(s.id)?.get(sub)?.status === 'behind').length;
+          return `<td title="${started.length} of ${students.length} started">${fmt(avg(students.map(s => (per.get(`${s.id}\u0001${sub}`) || {}).mastered || 0)))}<div class="cp-sub" style="margin:0;">${started.length}/${students.length} started${behind ? ` · <span class="cp-lv-behind">▼${behind}</span>` : ''}</div></td>`;
         }).join('');
         const vocabStarted = vocab == null ? '—' : `${(vocab || []).filter(v => v.current_grade || v.words_met).length}/${students.length} started`;
+        const gradedNums = extras?.grades ? students.map(s => Number(extras.grades.get(s.id)?.class_grade)).filter(v => v > 0) : [];
+        const gradeAvg = gradedNums.length ? `${esc(this.calculateLetterGrade(avg(gradedNums)))} <span class="cp-sub" style="margin:0;">${Math.round(avg(gradedNums))}</span>` : '—';
+        const rates = extras?.attendance ? students.map(s => extras.attendance.get(s.id)?.rate).filter(v => v != null) : [];
+        const attAvg = rates.length ? `${Math.round(avg(rates))}%` : '—';
+        const behindAny = levels ? students.filter(s => [...(levels.get(s.id)?.values() || [])].some(r => r.status === 'behind')).length : 0;
 
         return `
           <div class="cp-note" style="margin: 0 0 8px;">
-            <b>Grad core</b> is how many of the 65 required math items are complete (every skill in the item mastered).
-            Each subject shows <b>skills mastered</b>, <span class="cp-ov-w" style="margin:0;">+ in progress</span>, and <span class="cp-ov-stuck" style="margin:0;">!</span> when a skill is stuck.
-            Greener is further ahead of the class. Tap a subject square for that subject's skills grid.
+            <b>Grade</b> is the ${esc(quarterName)} grade on record. <b>Attendance</b> is this class's marks this quarter. <b>Level</b> counts subjects
+            <span class="cp-lv-behind">▼ behind</span>, <span class="cp-lv-on">● on par</span> and <span class="cp-lv-ahead">▲ ahead</span> of the student's grade; tap it for what they should have by now.
+            <b>Grad core</b> is the 65 required math items. Each subject shows <b>skills mastered</b>, <span class="cp-ov-w" style="margin:0;">+ in progress</span>, <span class="cp-ov-stuck" style="margin:0;">!</span> stuck, and its level badge.
           </div>
           <div class="cp-scroll cp-grid-scroll">
             <table class="cp-table cp-overview">
               <thead><tr>
                 <th class="cp-name">Student</th>
+                <th title="${esc(quarterName)} class grade on record">Grade</th>
+                <th title="This class's attendance marks this quarter">Attendance</th>
+                <th title="Notes written about the student in this class">Notes</th>
+                <th title="Subjects behind / on par / ahead of the student's grade level">📏 Level</th>
                 <th title="Graduation core: required math items complete">🎓 Grad core</th>
                 ${subjects.map(sub => `<th>${esc(this._progressSubjectLabel(sub))}</th>`).join('')}
                 <th title="English Lyceum's Word Lab vocabulary level">📖 Word Lab</th>
@@ -30946,11 +31319,14 @@ Students you had withdrawn stay withdrawn.`)) {
               <tbody>${body}</tbody>
               <tfoot><tr class="cp-ov-avg">
                 <th class="cp-name">Class average</th>
+                <td>${gradeAvg}</td><td>${attAvg}</td><td></td>
+                <td>${levels ? `${behindAny ? `<span class="cp-lv-behind">▼ ${behindAny}</span> behind somewhere` : 'nobody behind'}` : '—'}</td>
                 <td>${coreAvg}</td>${subjAvg}<td class="cp-sub">${vocabStarted}</td>
               </tr></tfoot>
             </table>
           </div>
-          ${planIdx ? '' : '<div class="cp-note">The graduation plan could not be loaded, so Grad core is blank.</div>'}`;
+          ${planIdx ? '' : '<div class="cp-note">The graduation plan could not be loaded, so Grad core is blank.</div>'}
+          ${extras ? '' : '<div class="cp-note">Grades, attendance and notes could not be loaded.</div>'}`;
       }
 
       // From an Overview square to that subject's skills grid.

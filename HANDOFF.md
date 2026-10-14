@@ -46,6 +46,14 @@ average row. Tapping a subject square opens that subject's Skills grid.
   `data/math_curriculum_v2.json` (fetched as static files), with the Dojo's rule: an item is
   done when every skill in it is mastered or needs review. A skill row is matched by
   `node_id`, a merged-away id, the curriculum title, or the Dojo's name for it. No RPC changed.
+- **Later the same day:** Grade (the current quarter's snapshot, read-only: a 0 snapshot is
+  shown as "—", never F), Attendance (this class's marks since the quarter began), Notes (this
+  class's notes from all three notes tables), and **Level**: ahead / on par / behind per
+  subject. Level = the highest grade where it and every earlier grade have 80% of their own
+  skills mastered (a skill's grade = the end of its curriculum band; a mastered skill also
+  counts its hard prerequisites). On par = last year's grade; ahead = their own. Tapping it
+  lists the skills due by now that are missing. The 80% and the band-end rule are judgement
+  calls; adjust in `_gradeLevelFor` if teachers find the badges too harsh or too kind.
 **Needs:** nothing.
 
 ## 2026-10-14 — Jordan's Claude (Word Lab regrade: easy low, rare high)
