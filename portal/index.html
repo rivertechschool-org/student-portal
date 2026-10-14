@@ -5251,6 +5251,61 @@
         return 'F';
       }
 
+      // Points grading: the letter follows the points until the teacher
+      // picks a different one. 9 of 10 fills in A-; choosing B+ instead
+      // keeps B+ through any later change to the points, and the hint under
+      // the field says what the points work out to and offers it back.
+      //
+      // "Overridden" is simply "the letter differs from what the points give",
+      // so picking the worked-out letter again hands it back to the points.
+      // The max comes from the points input's own max attribute, which the
+      // modals already set to this student's version of the assignment.
+      _letterForPoints(pointsId) {
+        const p = document.getElementById(pointsId);
+        if (!p) return null;
+        const max = parseFloat(p.getAttribute('max'));
+        const pts = parseFloat(p.value);
+        if (!(max > 0) || !Number.isFinite(pts)) return null;
+        const pct = pts / max * 100;
+        return { letter: this.calculateLetterGrade(pct), pct: Math.round(pct * 10) / 10 };
+      }
+
+      syncLetterFromPoints(pointsId, letterId) {
+        const l = document.getElementById(letterId);
+        if (!l) return;
+        const auto = this._letterForPoints(pointsId);
+        if (auto && l.dataset.override !== '1') l.value = auto.letter;
+        this._renderLetterHint(pointsId, letterId, auto);
+      }
+
+      letterGradeEdited(pointsId, letterId) {
+        const l = document.getElementById(letterId);
+        if (!l) return;
+        const auto = this._letterForPoints(pointsId);
+        const typed = String(l.value || '').trim().toUpperCase();
+        l.dataset.override = (typed && (!auto || typed !== auto.letter)) ? '1' : '0';
+        this._renderLetterHint(pointsId, letterId, auto);
+      }
+
+      useAutoLetter(pointsId, letterId) {
+        const l = document.getElementById(letterId);
+        if (!l) return;
+        l.dataset.override = '0';
+        this.syncLetterFromPoints(pointsId, letterId);
+      }
+
+      _renderLetterHint(pointsId, letterId, auto) {
+        const hint = document.getElementById(letterId + '-auto-hint');
+        const l = document.getElementById(letterId);
+        if (!hint || !l) return;
+        if (!auto) { hint.innerHTML = ''; return; }
+        hint.innerHTML = l.dataset.override === '1'
+          ? `Your choice. The points work out to <strong>${auto.letter}</strong> (${auto.pct}%).
+             <button type="button" class="btn btn-secondary small" style="padding:2px 8px; margin-left:6px;"
+                     onclick="app.useAutoLetter('${pointsId}', '${letterId}')">Use ${auto.letter}</button>`
+          : `Worked out from the points: ${auto.pct}%. Change it to override.`;
+      }
+
       async checkAndRefreshSession() {
         // First check if connection is alive at all
         const isAlive = await this.checkConnectionHealth();
@@ -27434,7 +27489,7 @@ Students you had withdrawn stay withdrawn.`)) {
           if (assignment.rubric_id) {
             const { data: rubric } = await this.supabaseQuery(() => this.auth.supabase
               .from('rubrics')
-              .select('id, name, description')
+              .select('id, name, description, categories')
               .eq('id', assignment.rubric_id)
               .single());
             
@@ -27442,6 +27497,7 @@ Students you had withdrawn stay withdrawn.`)) {
           }
           
           const isRubricGrading = assignment.grading_type === 'rubric' && assignment.rubric_id;
+          const isCategoryRubric = isRubricGrading && this._isCategoryRubric(rubricInfo);
       
           // Load rubric criteria if using rubric grading
           let rubricCriteria = [];
@@ -27495,7 +27551,7 @@ Students you had withdrawn stay withdrawn.`)) {
       
               <!-- Grading Form -->
               <form id="grade-form" onsubmit="app.submitGrade(event, '${submissionId}', '${assignmentId}')">
-                ${isRubricGrading ? `
+                ${isCategoryRubric ? this._categoryRubricGradingHtml(rubricInfo.categories, assignment, submission) : isRubricGrading ? `
                   <!-- Rubric-Based Grading -->
                   <div class="form-group">
                     <label style="font-weight: 600; margin-bottom: 10px; display: block;">Select Performance Level:</label>
@@ -27530,13 +27586,14 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                       <div class="form-group" style="margin: 0;">
                         <label for="manual-letter-grade">Letter Grade:</label>
-                        <input type="text" id="manual-letter-grade" placeholder="e.g., B+" style="width: 100%; padding: 10px;">
+                        <input type="text" id="manual-letter-grade" placeholder="Fills in from the points" data-override="0" oninput="app.letterGradeEdited('manual-points', 'manual-letter-grade')" style="width: 100%; padding: 10px;">
                       </div>
                       <div class="form-group" style="margin: 0;">
                         <label for="manual-points">Points Earned:</label>
-                        <input type="number" id="manual-points" min="0" max="${assignment.max_points}" step="0.5" style="width: 100%; padding: 10px;">
+                        <input type="number" id="manual-points" min="0" max="${assignment.max_points}" step="0.5" oninput="app.syncLetterFromPoints('manual-points', 'manual-letter-grade')" style="width: 100%; padding: 10px;">
                       </div>
                     </div>
+                    <div id="manual-letter-grade-auto-hint" style="font-size:12px; color:var(--muted); margin-top:6px;"></div>
                   </div>
                 
                   <!-- Hidden fields to store selected values -->
@@ -27547,13 +27604,20 @@ Students you had withdrawn stay withdrawn.`)) {
                   <!-- Traditional Points-Based Grading -->
                   <div class="form-group">
                     <label for="points-earned">Points Earned:</label>
-                    <input type="number" id="points-earned" min="0" max="${assignment.max_points}" step="0.5" required 
-                           value="${submission.points_earned || ''}">
+                    <input type="number" id="points-earned" min="0" max="${assignment.max_points}" step="0.5" required
+                           value="${submission.points_earned ?? ''}"
+                           oninput="app.syncLetterFromPoints('points-earned', 'letter-grade')">
                   </div>
                   <div class="form-group">
                     <label for="letter-grade">Letter Grade:</label>
-                    <input type="text" id="letter-grade" placeholder="e.g., A, B+, C" 
-                           value="${submission.grade || ''}" required>
+                    ${/* A letter already saved that the points would not give
+                          was the teacher's choice, so it opens as overridden. */''}
+                    <input type="text" id="letter-grade" placeholder="Fills in from the points"
+                           value="${this.escapeHtml(submission.grade || '')}" required
+                           data-override="${submission.grade && (submission.points_earned == null || !(assignment.max_points > 0)
+                              || submission.grade !== this.calculateLetterGrade(submission.points_earned / assignment.max_points * 100)) ? '1' : '0'}"
+                           oninput="app.letterGradeEdited('points-earned', 'letter-grade')">
+                    <div id="letter-grade-auto-hint" style="font-size:12px; color:var(--muted); margin-top:4px;"></div>
                   </div>
                 `}
       
@@ -27571,6 +27635,10 @@ Students you had withdrawn stay withdrawn.`)) {
           `;
       
           this.showModal('grade-submission', '📝 Grade Submission', modalContent, true);
+          // Fill the letter (if the points give one and it is not overridden)
+          // and the line under it. No-ops on a rubric assignment.
+          this.syncLetterFromPoints('points-earned', 'letter-grade');
+          if (isCategoryRubric) this.updateCategoryRubricTotal();
       
           // Add CSS for rubric options
           this.addRubricGradingStyles();
@@ -27612,7 +27680,7 @@ Students you had withdrawn stay withdrawn.`)) {
           if (isRubricGrading) {
             const { data: rubric } = await this.supabaseQuery(() => this.auth.supabase
               .from('rubrics')
-              .select('id, name')
+              .select('id, name, categories')
               .eq('id', assignment.rubric_id)
               .single());
             rubricInfo = rubric;
@@ -27664,7 +27732,9 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>
               
               <div id="grading-section">
-                ${isRubricGrading ? `
+                ${isRubricGrading && this._isCategoryRubric(rubricInfo)
+                  ? this._categoryRubricGradingHtml(rubricInfo.categories, assignment)
+                  : isRubricGrading ? `
                   <!-- Rubric-Based Grading -->
                   <div class="form-group">
                     <label>Select Performance Level:</label>
@@ -27704,12 +27774,13 @@ Students you had withdrawn stay withdrawn.`)) {
                   <div id="manual-grade-section" style="display: none;">
                     <div class="form-group">
                       <label for="manual-letter-grade">Letter Grade:</label>
-                      <input type="text" id="manual-letter-grade" placeholder="e.g., B+">
+                      <input type="text" id="manual-letter-grade" placeholder="Fills in from the points" data-override="0" oninput="app.letterGradeEdited('manual-points', 'manual-letter-grade')">
                     </div>
                     <div class="form-group">
                       <label for="manual-points">Points Earned:</label>
-                      <input type="number" id="manual-points" min="0" max="${assignment.max_points}" step="0.5">
+                      <input type="number" id="manual-points" min="0" max="${assignment.max_points}" step="0.5" oninput="app.syncLetterFromPoints('manual-points', 'manual-letter-grade')">
                     </div>
+                    <div id="manual-letter-grade-auto-hint" style="font-size:12px; color:var(--muted); margin-top:6px;"></div>
                   </div>
       
                   <!-- Hidden fields -->
@@ -27724,18 +27795,24 @@ Students you had withdrawn stay withdrawn.`)) {
                         type="number" 
                         id="grade-score" 
                         min="0" 
-                        max="${assignment?.max_points || 100}" 
+                        max="${assignment?.max_points || 100}"
                         value="0"
                         placeholder="Enter points"
+                        oninput="app.syncLetterFromPoints('grade-score', 'grade-letter')"
                       >
                     </div>
-                    
+
                     <div class="form-group">
                       <label for="grade-letter">Letter Grade</label>
-                      <select id="grade-letter">
+                      ${/* Every letter calculateLetterGrade can give must be an
+                            option, or setting the select to D+ leaves it blank. */''}
+                      <select id="grade-letter" data-override="0"
+                              onchange="app.letterGradeEdited('grade-score', 'grade-letter')">
                         <option value="">Select Grade</option>
                         <option value="F" selected>F</option>
+                        <option value="D-">D-</option>
                         <option value="D">D</option>
+                        <option value="D+">D+</option>
                         <option value="C-">C-</option>
                         <option value="C">C</option>
                         <option value="C+">C+</option>
@@ -27746,8 +27823,9 @@ Students you had withdrawn stay withdrawn.`)) {
                         <option value="A">A</option>
                         <option value="A+">A+</option>
                       </select>
+                      <div id="grade-letter-auto-hint" style="font-size:12px; color:var(--muted); margin-top:4px;"></div>
                     </div>
-                    
+
                     <div class="form-group">
                       <label for="grade-feedback">Feedback</label>
                       <textarea
@@ -27781,6 +27859,8 @@ Students you had withdrawn stay withdrawn.`)) {
           `;
           
           this.showModal('grade-non-submitted', isInClassAssignment ? 'Grade In-Class Assignment' : 'Grade Missing Assignment', modalContent, true);
+          this.syncLetterFromPoints('grade-score', 'grade-letter');
+          this.updateCategoryRubricTotal();
           
           // Add rubric styles if using rubric grading
           if (isRubricGrading) {
@@ -27830,8 +27910,14 @@ Students you had withdrawn stay withdrawn.`)) {
           } else {
             // Handle grading
             let grade, pointsEarned, feedback;
+            let gradeOverride = isRubricGrading && document.getElementById('grade-override')?.checked;
+            let rubricScores = null;
+            const categoryGrade = this._collectCategoryRubricGrade();
             
-            if (isRubricGrading) {
+            if (categoryGrade) {
+              ({ grade, points_earned: pointsEarned, grade_override: gradeOverride, rubric_scores: rubricScores } = categoryGrade);
+              feedback = document.getElementById('grade-feedback')?.value || '';
+            } else if (isRubricGrading) {
               const isOverride = document.getElementById('grade-override')?.checked;
               
               if (isOverride) {
@@ -27865,7 +27951,8 @@ Students you had withdrawn stay withdrawn.`)) {
                 feedback: feedback,
                 graded_at: new Date().toISOString(),
                 submitted_at: new Date().toISOString(),
-                grade_override: isRubricGrading && document.getElementById('grade-override')?.checked
+                grade_override: !!gradeOverride,
+                ...(rubricScores ? { rubric_scores: rubricScores } : {})
               }));
 
             if (error) throw error;
@@ -28143,8 +28230,13 @@ Students you had withdrawn stay withdrawn.`)) {
           assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [submission?.student_id]);
       
           let gradeData;
+          // A category rubric on screen carries its own points, letter and
+          // picks; null when the modal is not showing one.
+          const categoryGrade = this._collectCategoryRubricGrade();
       
-          if (assignment.grading_type === 'rubric') {
+          if (categoryGrade) {
+            gradeData = categoryGrade;
+          } else if (assignment.grading_type === 'rubric') {
             const isOverride = document.getElementById('grade-override')?.checked;
       
             if (isOverride) {
@@ -28254,7 +28346,7 @@ Students you had withdrawn stay withdrawn.`)) {
               </p>
       
               <div style="max-height: 500px; overflow-y: auto;">
-                ${criteria.map(criterion => `
+                ${this._isCategoryRubric(rubric) ? this._categoryRubricViewHtml(rubric.categories, maxPoints) : (criteria || []).map(criterion => `
                   <div class="card" style="margin-bottom: 15px; border-left: 4px solid var(--accent);">
                     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
                       <strong style="font-size: 18px; color: var(--accent);">${criterion.letter_grade}</strong>
@@ -28757,6 +28849,9 @@ Students you had withdrawn stay withdrawn.`)) {
                           ${rubric.description || 'No description'}
                         </p>
                         <small style="color: var(--muted);">
+                          ${this._isCategoryRubric(rubric)
+                            ? `${rubric.categories.length} categor${rubric.categories.length === 1 ? 'y' : 'ies'}, out of ${this._fmtPts(rubric.categories.reduce((t, c) => t + this._rubricCategoryMax(c), 0))} points · `
+                            : 'Letter-grade levels · '}
                           Created: ${new Date(rubric.created_at).toLocaleDateString()}
                         </small>
                       </div>
@@ -28818,7 +28913,7 @@ Students you had withdrawn stay withdrawn.`)) {
               </p>
       
               <div style="max-height: 500px; overflow-y: auto;">
-                ${criteria.map(criterion => `
+                ${this._isCategoryRubric(rubric) ? this._categoryRubricViewHtml(rubric.categories) : (criteria || []).map(criterion => `
                   <div class="card" style="margin-bottom: 12px; border-left: 4px solid var(--accent);">
                     <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
                       <strong style="font-size: 16px;">${criterion.letter_grade}</strong>
@@ -28861,15 +28956,16 @@ Students you had withdrawn stay withdrawn.`)) {
               <textarea id="rubric-description" rows="2" placeholder="Optional description..."></textarea>
             </div>
       
-            <div class="form-group">
-              <label>Base on Existing Rubric:</label>
-              <select id="base-rubric" onchange="app.loadRubricTemplate(this.value)">
-                <option value="">Start from scratch</option>
-                <option value="default">European Holistic (Default)</option>
-              </select>
-            </div>
-      
-            <div class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+            ${this._rubricKindHtml('categories')}
+
+            <div id="levels-card" class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+              <div class="form-group">
+                <label>Base on Existing Rubric:</label>
+                <select id="base-rubric" onchange="app.loadRubricTemplate(this.value)">
+                  <option value="">Start from scratch</option>
+                  <option value="default">European Holistic (Default)</option>
+                </select>
+              </div>
               <h4 style="margin-bottom: 10px;">Grade Levels</h4>
               <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
                 Add the performance levels for this rubric. You can add as many or as few as needed.
@@ -28895,6 +28991,9 @@ Students you had withdrawn stay withdrawn.`)) {
         
         // Add one default criterion field
         this.addCriterionField();
+        // Categories is what teachers ask for, so a new rubric starts there;
+        // this also disables the level fields it hides.
+        this.setRubricKind('categories');
       }
       
       addCriterionField() {
@@ -28986,6 +29085,9 @@ Students you had withdrawn stay withdrawn.`)) {
       
           const name = document.getElementById('rubric-name').value.trim();
           const description = document.getElementById('rubric-description').value.trim();
+          // Read before inserting, so a half-filled category leaves no
+          // empty rubric behind.
+          const categories = this._selectedRubricKind() === 'categories' ? this._readRubricCategories() : null;
       
           // Create rubric
           const { data: rubric, error: rubricError } = await this.supabaseQuery(() => this.auth.supabase
@@ -28994,12 +29096,20 @@ Students you had withdrawn stay withdrawn.`)) {
               name,
               description,
               created_by: this.userInfo.user.id,
-              is_default: false
+              is_default: false,
+              ...(categories ? { categories } : {})
             })
             .select()
             .single());
       
           if (rubricError) throw rubricError;
+
+          if (categories) {
+            this.showNotification('Rubric created!', 'success');
+            this.closeModal('create-rubric');
+            this.manageRubrics();
+            return;
+          }
       
           // Collect all criteria
           const criteriaFields = document.querySelectorAll('.criterion-field');
@@ -29054,7 +29164,7 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           const { data: rubric, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('rubrics')
-            .select('id, name, description, is_default')
+            .select('id, name, description, is_default, categories')
             .eq('id', rubricId)
             .single());
           if (error) throw error;
@@ -29084,7 +29194,9 @@ Students you had withdrawn stay withdrawn.`)) {
                 <textarea id="rubric-description" rows="2">${esc(rubric.description)}</textarea>
               </div>
 
-              <div class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+              ${this._rubricKindHtml(this._isCategoryRubric(rubric) ? 'categories' : 'levels')}
+
+              <div id="levels-card" class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
                 <h4 style="margin-bottom: 10px;">Grade Levels</h4>
                 <p style="color: var(--muted); font-size: 13px; margin-bottom: 15px;">
                   Saving replaces the levels below. Assignments using this rubric keep using it \u2014
@@ -29116,6 +29228,8 @@ Students you had withdrawn stay withdrawn.`)) {
             last.querySelector('.criterion-description').value = c.core_meaning ?? '';
           });
           if (!criteria || criteria.length === 0) this.addCriterionField();
+          if (this._isCategoryRubric(rubric)) rubric.categories.forEach(c => this.addRubricCategory(c));
+          this.setRubricKind(this._isCategoryRubric(rubric) ? 'categories' : 'levels');
 
         } catch (e) {
           console.error('editRubric failed:', e);
@@ -29139,6 +29253,22 @@ Students you had withdrawn stay withdrawn.`)) {
           const name = document.getElementById('rubric-name').value.trim();
           const description = document.getElementById('rubric-description').value.trim();
 
+          // A category rubric is saved whole on the rubric row. Its old level
+          // rows, if it had any, are left alone: nothing reads them while
+          // categories is set, and switching back to levels finds them again.
+          if (this._selectedRubricKind() === 'categories') {
+            const categories = this._readRubricCategories();
+            const { error: catErr } = await this.supabaseQuery(() => this.auth.supabase
+              .from('rubrics')
+              .update({ name, description, categories })
+              .eq('id', rubricId));
+            if (catErr) throw catErr;
+            this.showNotification('Rubric updated.', 'success');
+            this.closeModal('edit-rubric');
+            this.manageRubrics();
+            return;
+          }
+
           const criteria = [];
           document.querySelectorAll('.criterion-field').forEach((field, index) => {
             criteria.push({
@@ -29159,7 +29289,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
           const { error: nameErr } = await this.supabaseQuery(() => this.auth.supabase
             .from('rubrics')
-            .update({ name, description })
+            .update({ name, description, categories: null })
             .eq('id', rubricId));
           if (nameErr) throw nameErr;
 
@@ -29397,6 +29527,409 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
       
+      // ==================== CATEGORY RUBRICS ====================
+      //
+      // A level rubric (rubric_criteria) is one list of letter grades: the
+      // teacher picks one and that is the grade. A category rubric is the
+      // usual analytic kind: several categories, each with its own levels
+      // worth points. The teacher picks a level in every category, the points
+      // add up (6 categories x 4 = out of 24), and that total, scaled to the
+      // assignment's points, becomes the points and the letter. Both stay
+      // overridable. The structure lives whole in rubrics.categories:
+      //   [{ name, description, levels: [{ label, points, description }] }]
+      // and the picks are copied onto the submission as rubric_scores, so
+      // regrading opens on them and a later edit to the rubric does not
+      // rewrite grades already given.
+
+      static DEFAULT_RUBRIC_LEVELS = [
+        { label: 'Exceeds', points: 4 },
+        { label: 'Meets', points: 3 },
+        { label: 'Approaching', points: 2 },
+        { label: 'Beginning', points: 1 },
+      ];
+
+      _isCategoryRubric(rubric) {
+        return Array.isArray(rubric?.categories) && rubric.categories.length > 0;
+      }
+
+      _rubricCategoryMax(cat) {
+        return Math.max(0, ...(cat?.levels || []).map(l => Number(l.points) || 0));
+      }
+
+      _fmtPts(n) {
+        return String(Math.round((Number(n) || 0) * 100) / 100);
+      }
+
+      // ---- building one (Create / Edit Rubric) ----
+
+      // The type switch and the categories card. The levels card stays as it
+      // was, with id="levels-card", and only one of the two is ever live.
+      _rubricKindHtml(kind) {
+        // The page styles every input at full width with padding, which
+        // stretches a radio across the row and pushes a grid of inputs past
+        // its card. Scoped back here.
+        return `
+          <style>
+            .rubric-kind-opt { display:flex !important; align-items:center; gap:8px; cursor:pointer; white-space:nowrap; margin:0; font-weight:500; }
+            .rubric-kind-opt input { width:auto !important; margin:0; }
+            .rcat-field input { box-sizing:border-box; min-width:0; width:100%; }
+          </style>
+          <div class="form-group">
+            <label>Rubric type:</label>
+            <div style="display:flex; gap:20px; flex-wrap:wrap;">
+              <label class="rubric-kind-opt">
+                <input type="radio" name="rubric-kind" value="categories" ${kind === 'categories' ? 'checked' : ''}
+                       onchange="app.setRubricKind('categories')">
+                Categories with points
+              </label>
+              <label class="rubric-kind-opt">
+                <input type="radio" name="rubric-kind" value="levels" ${kind === 'levels' ? 'checked' : ''}
+                       onchange="app.setRubricKind('levels')">
+                Letter-grade levels
+              </label>
+            </div>
+          </div>
+
+          <div id="categories-card" class="card" style="background: rgba(106, 169, 255, 0.1); margin: 20px 0; padding: 15px;">
+            <h4 style="margin-bottom: 6px;">Categories</h4>
+            <p style="color: var(--muted); font-size: 13px; margin-bottom: 12px;">
+              Each category has its own levels and points. When grading you pick a level in
+              every category; the points add up and become the grade, which you can still change.
+            </p>
+            <div id="categories-container"></div>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary" onclick="app.addRubricCategory()">➕ Add Category</button>
+              <strong id="rubric-builder-total" style="color: var(--accent);"></strong>
+            </div>
+          </div>`;
+      }
+
+      // Hidden fields are disabled, not just hidden: a hidden `required`
+      // input still blocks the form, with a message pointing at nothing.
+      setRubricKind(kind) {
+        const show = (id, on) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          el.style.display = on ? '' : 'none';
+          el.querySelectorAll('input, textarea, select, button').forEach(f => { f.disabled = !on; });
+        };
+        show('categories-card', kind === 'categories');
+        show('levels-card', kind === 'levels');
+        if (kind === 'categories' && !document.querySelector('#categories-container .rcat-field')) {
+          this.addRubricCategory();
+        }
+        this.updateRubricBuilderTotal();
+      }
+
+      // A new category copies the previous one's levels (labels and points),
+      // because a rubric almost always uses the same scale in every row. The
+      // first one starts on Exceeds 4 / Meets 3 / Approaching 2 / Beginning 1.
+      addRubricCategory(prefill = null) {
+        const container = document.getElementById('categories-container');
+        if (!container) return;
+        const prev = container.querySelector('.rcat-field:last-of-type');
+        const levels = prefill?.levels
+          || (prev ? [...prev.querySelectorAll('.rcat-level')].map(r => ({
+               label: r.querySelector('.rcat-level-label').value,
+               points: r.querySelector('.rcat-level-points').value,
+             }))
+             : ClassesPortalApp.DEFAULT_RUBRIC_LEVELS);
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+
+        const div = document.createElement('div');
+        div.className = 'rcat-field';
+        div.style.cssText = 'border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--card);';
+        div.innerHTML = `
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong class="rcat-title">Category</strong>
+            <span style="display:flex; align-items:center; gap:10px;">
+              <span class="rcat-max" style="color:var(--muted); font-size:12px;"></span>
+              <button type="button" class="btn btn-danger small"
+                      onclick="this.closest('.rcat-field').remove(); app.updateRubricBuilderTotal()">Remove</button>
+            </span>
+          </div>
+          <div style="display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap:10px; margin-bottom:8px;">
+            <input type="text" class="rcat-name" required placeholder="Category, e.g. Thesis" value="${esc(prefill?.name)}">
+            <input type="text" class="rcat-description" placeholder="What it covers (optional)" value="${esc(prefill?.description)}">
+          </div>
+          <div style="display:grid; grid-template-columns: minmax(0,1.2fr) 70px minmax(0,2fr) 34px; gap:6px; font-size:11px; color:var(--muted); margin-bottom:2px;">
+            <span>Level</span><span>Points</span><span>What it looks like (optional)</span><span></span>
+          </div>
+          <div class="rcat-levels"></div>
+          <button type="button" class="btn btn-secondary small" style="margin-top:4px;"
+                  onclick="app.addRubricLevel(this.closest('.rcat-field'))">➕ Add level</button>`;
+        container.appendChild(div);
+        levels.forEach(l => this.addRubricLevel(div, l));
+        this.updateRubricBuilderTotal();
+      }
+
+      addRubricLevel(catEl, level = {}) {
+        const list = catEl?.querySelector('.rcat-levels');
+        if (!list) return;
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+        const row = document.createElement('div');
+        row.className = 'rcat-level';
+        row.style.cssText = 'display:grid; grid-template-columns: minmax(0,1.2fr) 70px minmax(0,2fr) 34px; gap:6px; margin-bottom:6px;';
+        row.innerHTML = `
+          <input type="text" class="rcat-level-label" required placeholder="e.g. Meets" value="${esc(level.label)}">
+          <input type="number" class="rcat-level-points" required min="0" step="0.5" placeholder="0"
+                 value="${esc(level.points)}" oninput="app.updateRubricBuilderTotal()">
+          <input type="text" class="rcat-level-description" placeholder="Optional" value="${esc(level.description)}">
+          <button type="button" class="btn btn-secondary small" title="Remove this level" style="padding:2px 0;"
+                  onclick="this.closest('.rcat-level').remove(); app.updateRubricBuilderTotal()">×</button>`;
+        list.appendChild(row);
+        this.updateRubricBuilderTotal();
+      }
+
+      // "Out of 24 points" - the sum of each category's top level.
+      updateRubricBuilderTotal() {
+        const cats = [...document.querySelectorAll('#categories-container .rcat-field')];
+        let total = 0;
+        cats.forEach((c, i) => {
+          const max = Math.max(0, ...[...c.querySelectorAll('.rcat-level-points')].map(p => parseFloat(p.value) || 0));
+          total += max;
+          const t = c.querySelector('.rcat-title'); if (t) t.textContent = `Category ${i + 1}`;
+          const m = c.querySelector('.rcat-max'); if (m) m.textContent = `up to ${this._fmtPts(max)} pts`;
+        });
+        const out = document.getElementById('rubric-builder-total');
+        if (out) out.textContent = cats.length
+          ? `Out of ${this._fmtPts(total)} points (${cats.length} categor${cats.length === 1 ? 'y' : 'ies'})` : '';
+      }
+
+      // Reads the builder back. Throws a sentence a teacher can act on.
+      _readRubricCategories() {
+        const cats = [...document.querySelectorAll('#categories-container .rcat-field')].map((c, i) => {
+          const name = c.querySelector('.rcat-name').value.trim();
+          const levels = [...c.querySelectorAll('.rcat-level')].map(r => ({
+            label: r.querySelector('.rcat-level-label').value.trim(),
+            points: parseFloat(r.querySelector('.rcat-level-points').value),
+            description: r.querySelector('.rcat-level-description').value.trim(),
+          }));
+          if (!name) throw new Error(`Category ${i + 1} needs a name.`);
+          if (!levels.length) throw new Error(`"${name}" needs at least one level.`);
+          for (const l of levels) {
+            if (!l.label) throw new Error(`Every level in "${name}" needs a name.`);
+            if (!Number.isFinite(l.points) || l.points < 0) throw new Error(`"${l.label}" in "${name}" needs points (0 or more).`);
+          }
+          if (!levels.some(l => l.points > 0)) throw new Error(`"${name}" needs a level worth more than 0 points.`);
+          const out = { name, levels: levels.map(l => (l.description ? l : { label: l.label, points: l.points })) };
+          const description = c.querySelector('.rcat-description').value.trim();
+          if (description) out.description = description;
+          return out;
+        });
+        if (!cats.length) throw new Error('Add at least one category.');
+        return cats;
+      }
+
+      _selectedRubricKind() {
+        return document.querySelector('input[name="rubric-kind"]:checked')?.value || 'levels';
+      }
+
+      // ---- grading with one ----
+
+      _categoryRubricGradingHtml(categories, assignment, submission = null) {
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+        const max = Number(assignment.max_points) || 0;
+        const prior = Array.isArray(submission?.rubric_scores) ? submission.rubric_scores : [];
+        // A pick is matched back by category name, then by position, and the
+        // level by its label - so renaming a category later does not lose the
+        // picks on submissions graded before it.
+        const pickFor = (cat, i) => {
+          const p = prior.find(s => s.category === cat.name) || prior[i];
+          if (!p) return -1;
+          return (cat.levels || []).findIndex(l => l.label === p.level);
+        };
+        const possible = categories.reduce((s, c) => s + this._rubricCategoryMax(c), 0);
+        const picks = categories.map(pickFor);
+        const allPicked = picks.every(j => j >= 0);
+        const pickedTotal = picks.reduce((s, j, i) => s + (j >= 0 ? Number(categories[i].levels[j].points) || 0 : 0), 0);
+        const scaled = allPicked && possible > 0 ? Math.round(pickedTotal / possible * max * 100) / 100 : null;
+        const savedPts = submission?.points_earned;
+        // Saved points the picks do not give were typed by the teacher.
+        const ptsOverride = savedPts != null && (scaled == null || Math.abs(Number(savedPts) - scaled) > 0.001);
+        const letterOverride = !!submission?.grade && savedPts != null && max > 0
+          && submission.grade !== this.calculateLetterGrade(Number(savedPts) / max * 100);
+
+        return `
+          <style>
+            .crub-level { display:flex; align-items:center; gap:6px; padding:6px 10px; border:2px solid var(--border);
+                          border-radius:8px; cursor:pointer; font-size:13px; user-select:none; }
+            .crub-level input { margin:0; }
+            .crub-level:has(input:checked) { border-color: var(--accent); background: rgba(106,169,255,0.15); }
+          </style>
+          <div id="category-rubric" data-max="${max}">
+            <label style="font-weight:600; display:block; margin-bottom:8px;">Pick a level in each category:</label>
+            <div style="max-height: 380px; overflow-y: auto; padding-right: 4px;">
+            ${categories.map((c, i) => `
+              <div class="crub-cat" data-name="${esc(c.name)}" style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:10px;">
+                <div style="display:flex; justify-content:space-between; gap:10px;">
+                  <strong>${esc(c.name)}</strong>
+                  <span class="crub-cat-score" style="color:var(--muted); font-size:12px; white-space:nowrap;"></span>
+                </div>
+                ${c.description ? `<div style="color:var(--muted); font-size:12px; margin-top:2px;">${esc(c.description)}</div>` : ''}
+                <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">
+                  ${(c.levels || []).map((l, j) => `
+                    <label class="crub-level" title="${esc(l.description || '')}">
+                      <input type="radio" name="crub-${i}" value="${j}" data-label="${esc(l.label)}"
+                             data-points="${Number(l.points) || 0}" data-description="${esc(l.description || '')}"
+                             ${picks[i] === j ? 'checked' : ''} onchange="app.updateCategoryRubricTotal()">
+                      <span>${esc(l.label)}</span>
+                      <strong style="color:var(--accent);">${this._fmtPts(l.points)}</strong>
+                    </label>`).join('')}
+                </div>
+                <div class="crub-desc" style="color:var(--muted); font-size:12px; margin-top:6px;"></div>
+              </div>`).join('')}
+            </div>
+            <div id="crub-total" style="padding:10px 12px; background:rgba(106,169,255,0.1); border-radius:8px; margin:6px 0 12px;"></div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+              <div class="form-group" style="margin:0;">
+                <label for="crub-points">Points (out of ${this._fmtPts(max)})</label>
+                <input type="number" id="crub-points" min="0" max="${max}" step="0.01"
+                       value="${savedPts ?? ''}" data-override="${ptsOverride ? '1' : '0'}"
+                       oninput="app.categoryRubricPointsEdited()">
+                <div id="crub-points-hint" style="font-size:12px; color:var(--muted); margin-top:4px;"></div>
+              </div>
+              <div class="form-group" style="margin:0;">
+                <label for="crub-letter">Letter Grade</label>
+                <input type="text" id="crub-letter" placeholder="Fills in from the points"
+                       value="${esc(submission?.grade || '')}" data-override="${letterOverride ? '1' : '0'}"
+                       oninput="app.letterGradeEdited('crub-points', 'crub-letter')">
+                <div id="crub-letter-auto-hint" style="font-size:12px; color:var(--muted); margin-top:4px;"></div>
+              </div>
+            </div>
+          </div>`;
+      }
+
+      // The rubric's state as numbers: what is picked, the total, and that
+      // total scaled to the assignment (null until every category is picked -
+      // a part-picked rubric would give a low grade nobody meant).
+      _categoryRubricState() {
+        const box = document.getElementById('category-rubric');
+        if (!box) return null;
+        const max = parseFloat(box.dataset.max) || 0;
+        let total = 0, possible = 0;
+        const cats = [...box.querySelectorAll('.crub-cat')].map(cat => {
+          const radios = [...cat.querySelectorAll('input[type="radio"]')];
+          const catMax = Math.max(0, ...radios.map(r => parseFloat(r.dataset.points) || 0));
+          const sel = radios.find(r => r.checked) || null;
+          possible += catMax;
+          if (sel) total += parseFloat(sel.dataset.points) || 0;
+          return { el: cat, name: cat.dataset.name, max: catMax, sel };
+        });
+        const missing = cats.filter(c => !c.sel).length;
+        const scaled = !missing && possible > 0 ? Math.round(total / possible * max * 100) / 100 : null;
+        return { box, max, cats, total, possible, missing, scaled };
+      }
+
+      updateCategoryRubricTotal() {
+        const st = this._categoryRubricState();
+        if (!st) return;
+        st.cats.forEach(c => {
+          const s = c.el.querySelector('.crub-cat-score');
+          if (s) s.textContent = `${c.sel ? this._fmtPts(c.sel.dataset.points) : '–'} / ${this._fmtPts(c.max)}`;
+          const d = c.el.querySelector('.crub-desc');
+          if (d) d.textContent = c.sel?.dataset.description || '';
+        });
+        const totalEl = document.getElementById('crub-total');
+        if (totalEl) {
+          const pct = st.possible > 0 ? Math.round(st.total / st.possible * 1000) / 10 : 0;
+          totalEl.innerHTML = `Rubric total: <strong>${this._fmtPts(st.total)} / ${this._fmtPts(st.possible)}</strong>`
+            + (st.missing ? ` <span style="color:var(--muted);">· ${st.missing} categor${st.missing === 1 ? 'y' : 'ies'} still to pick</span>`
+                          : ` (${pct}%)`);
+        }
+        const pts = document.getElementById('crub-points');
+        if (pts && pts.dataset.override !== '1') pts.value = st.scaled == null ? '' : st.scaled;
+        this._renderRubricPointsHint(st);
+        this.syncLetterFromPoints('crub-points', 'crub-letter');
+      }
+
+      categoryRubricPointsEdited() {
+        const st = this._categoryRubricState();
+        const pts = document.getElementById('crub-points');
+        if (!st || !pts) return;
+        const v = parseFloat(pts.value);
+        pts.dataset.override = (pts.value !== '' && (st.scaled == null || Math.abs(v - st.scaled) > 0.001)) ? '1' : '0';
+        this._renderRubricPointsHint(st);
+        this.syncLetterFromPoints('crub-points', 'crub-letter');
+      }
+
+      useCategoryRubricPoints() {
+        const pts = document.getElementById('crub-points');
+        if (pts) pts.dataset.override = '0';
+        this.updateCategoryRubricTotal();
+      }
+
+      _renderRubricPointsHint(st) {
+        const hint = document.getElementById('crub-points-hint');
+        const pts = document.getElementById('crub-points');
+        if (!hint || !pts) return;
+        if (pts.dataset.override === '1') {
+          hint.innerHTML = st.scaled == null
+            ? 'Your number.'
+            : `Your number. The rubric works out to <strong>${this._fmtPts(st.scaled)}</strong>.
+               <button type="button" class="btn btn-secondary small" style="padding:2px 8px; margin-left:6px;"
+                       onclick="app.useCategoryRubricPoints()">Use ${this._fmtPts(st.scaled)}</button>`;
+        } else {
+          hint.textContent = st.scaled == null
+            ? 'Fills in once every category is picked.'
+            : `${this._fmtPts(st.total)} of ${this._fmtPts(st.possible)} rubric points, scaled to ${this._fmtPts(st.max)}. Change it to override.`;
+        }
+      }
+
+      // What the save writes, or null when this is not a category rubric.
+      // Every category must be picked unless the teacher typed the points.
+      _collectCategoryRubricGrade() {
+        const st = this._categoryRubricState();
+        if (!st) return null;
+        const ptsEl = document.getElementById('crub-points');
+        const letterEl = document.getElementById('crub-letter');
+        const ptsOverride = ptsEl?.dataset.override === '1';
+        if (st.missing && !ptsOverride) {
+          throw new Error(`Pick a level in every category (${st.missing} left), or type the points yourself.`);
+        }
+        const points = parseFloat(ptsEl?.value);
+        const grade = String(letterEl?.value || '').trim();
+        if (!Number.isFinite(points)) throw new Error('Enter the points.');
+        if (!grade) throw new Error('Enter a letter grade.');
+        return {
+          grade,
+          points_earned: points,
+          grade_override: ptsOverride || letterEl?.dataset.override === '1',
+          rubric_scores: st.cats.filter(c => c.sel).map(c => ({
+            category: c.name,
+            level: c.sel.dataset.label,
+            points: parseFloat(c.sel.dataset.points) || 0,
+            max: c.max,
+          })),
+        };
+      }
+
+      // ---- showing one (read only) ----
+
+      _categoryRubricViewHtml(categories, maxPoints = null) {
+        const esc = (v) => this.escapeHtml(String(v ?? ''));
+        const possible = categories.reduce((s, c) => s + this._rubricCategoryMax(c), 0);
+        return `
+          <p style="font-weight:600; margin-bottom:12px;">
+            ${categories.length} categor${categories.length === 1 ? 'y' : 'ies'}, out of ${this._fmtPts(possible)} rubric points${
+              maxPoints ? ` (scaled to the assignment's ${this._fmtPts(maxPoints)})` : ''}
+          </p>
+          ${categories.map(c => `
+            <div class="card" style="margin-bottom: 12px; border-left: 4px solid var(--accent);">
+              <div style="display:flex; justify-content:space-between; gap:10px; margin-bottom:4px;">
+                <strong style="font-size: 15px;">${esc(c.name)}</strong>
+                <span style="color: var(--accent); font-weight: 600; white-space:nowrap;">up to ${this._fmtPts(this._rubricCategoryMax(c))} pts</span>
+              </div>
+              ${c.description ? `<div style="color: var(--muted); font-size: 12px; margin-bottom: 6px;">${esc(c.description)}</div>` : ''}
+              ${(c.levels || []).map(l => `
+                <div style="display:flex; gap:10px; padding:4px 0; border-top:1px solid var(--border); font-size:13px;">
+                  <span style="min-width:110px; font-weight:600;">${esc(l.label)}</span>
+                  <span style="min-width:44px; color: var(--accent);">${this._fmtPts(l.points)}</span>
+                  <span style="color: var(--muted);">${esc(l.description || '')}</span>
+                </div>`).join('')}
+            </div>`).join('')}`;
+      }
+
       async previewRubric(rubricId) {
         try {
           // Load rubric info
@@ -29419,7 +29952,8 @@ Students you had withdrawn stay withdrawn.`)) {
               ${rubric?.description ? `<p style="color: var(--muted); margin-bottom: 20px;">${rubric.description}</p>` : ''}
               
               <div style="display: grid; gap: 10px;">
-                ${criteria && criteria.length > 0 ? criteria.map(c => `
+                ${this._isCategoryRubric(rubric) ? this._categoryRubricViewHtml(rubric.categories)
+                  : criteria && criteria.length > 0 ? criteria.map(c => `
                   <div class="card" style="border-left: 4px solid var(--accent);">
                     <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
                       <strong style="font-size: 18px;">${c.letter_grade}</strong>
@@ -67629,7 +68163,17 @@ Students you had withdrawn stay withdrawn.`)) {
       const bands = (criteria || [])
         .filter(c => c.letter_grade && c.point_percentage != null)
         .sort((a, b) => b.point_percentage - a.point_percentage);
-      if (!bands.length) return null;
+      if (!bands.length) {
+        // A category rubric scores in points and has no letter bands. Its
+        // letter comes from the school scale, as the grading modal's does -
+        // the teacher chose that rubric, so this is not a made-up letter.
+        try {
+          const { data: r } = await sb.from('rubrics').select('categories').eq('id', rubricId).limit(1);
+          const cats = (r || [])[0]?.categories;
+          if (Array.isArray(cats) && cats.length) return this.calculateLetterGrade(percent);
+        } catch (_) { /* fall through to "no rubric" */ }
+        return null;
+      }
 
       // The highest band the score reaches; below them all, the lowest band.
       const hit = bands.find(b => percent >= Number(b.point_percentage));
@@ -78321,7 +78865,10 @@ OK to discard and continue, Cancel to go back and save.`)) {
           this.pendingChanges[key] = {
             studentId,
             assignmentId,
-            points_earned: numValue
+            points_earned: numValue,
+            // This student's version of the assignment, so the letter written
+            // on save is worked out against the points they could earn.
+            max_points: parseFloat(inputElement?.dataset?.maxPoints)
           };
           inputElement.style.borderColor = 'var(--warning)';
           inputElement.style.borderWidth = '2px';
@@ -78477,6 +79024,16 @@ OK to discard and continue, Cancel to go back and save.`)) {
                   status: 'graded',
                   graded_at: new Date().toISOString()
                 };
+
+                // The letter follows the points, as it does in the grading
+                // modals. The grid has no letter field, so it used to leave the
+                // letter empty, or keep an old one that no longer matched. New
+                // points mean a new letter; a teacher who wants a different one
+                // sets it in the grading modal afterwards.
+                if (change.max_points > 0) {
+                  submissionData.grade = window.app.calculateLetterGrade(change.points_earned / change.max_points * 100);
+                  submissionData.grade_override = false;
+                }
 
                 // Keep a real submitted_at; do not invent one.
                 //

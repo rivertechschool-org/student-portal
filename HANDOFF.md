@@ -36,6 +36,31 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 ---
 
 ## 2026-10-13 — Jordan's Claude
+**Grading: the letter follows the points, and rubrics with categories.** Asked for by
+Jordan.
+- **Points grading:** typing the points fills in the letter from the school scale
+  (`calculateLetterGrade`; 9/10 → A-). A letter the teacher changes is kept, and the hint
+  under it offers the worked-out one back. This works in both grading modals and the rubric
+  manual override. The Gradebook grid now writes the letter when it saves points; before,
+  it left the letter blank or stale. The missing/in-class dropdown gained D+ and D-.
+- **Category rubrics:** a rubric can now be "Categories with points" (each category has
+  its own levels and points) as well as the old "Letter-grade levels". Grading picks a
+  level per category, and the total is scaled to the assignment's points: 18/24 on a
+  10-point assignment is 7.5, C. Points and letter are both overridable. The picks are
+  stored with the submission, so regrading opens on them. Riven grades a category-rubric
+  assignment on the school scale.
+- **Half points now save.** The forms always offered step 0.5, but the points column only
+  took whole numbers. Backend migration `…_rubrics_with_scored_categories.sql`, already
+  applied.
+
+Journeys: `debug-tools/grading-rubric-journeys.mjs` (58 checks, needs Chromium). Unit:
+`tests/grading-auto-letter.test.js`. The teacher guide's Marking section is updated.
+**Not done:** students don't see their per-category scores yet, only the letter, points
+and feedback. The inline "create rubric" on the assignment form still makes only the
+letter-level kind; teachers use Manage Rubrics for categories.
+**Needs:** nothing.
+
+## 2026-10-13 — Jordan's Claude
 **Pickup notes and parent early pickups show on both Pickup tabs.** Asked for by Jordan.
 **Here today** now shows each child's pickup notes and gives every row the ＋/📝 note button.
 A parent's early-pickup report ("collecting at 1:45, his uncle is coming") now appears under
