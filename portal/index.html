@@ -55401,7 +55401,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-12·a';
+      const RIVEN_BUILD = '2026-10-13·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -58521,7 +58521,7 @@ Students you had withdrawn stay withdrawn.`)) {
       // Track the last READ separately so "what about rory?" works even
       // right after a write (set grade -> ask about another student)
       const readIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
-        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES', 'DAILY_ROSTER',
+        'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'CLASS_STATS', 'CLASS_BRIEFING', 'GRADE_ISSUES', 'ATTENDANCE_ISSUES', 'DAILY_ROSTER',
         // practice reads. Only STUDENT_PRACTICE is about one student, so only
         // it is in reusableIntents ("what is ari stuck on" -> "what about mia?")
         'STUDENT_PRACTICE', 'PRACTICE_STUCK', 'PRACTICE_INACTIVE', 'HOMEWORK_RESULTS'];
@@ -60505,6 +60505,36 @@ Students you had withdrawn stay withdrawn.`)) {
             { re: /\b(give|award|add)\b.+\b(some|a little|a few)\b.*(rtc|gold)/i, w: 5 }
           ],
           requiresStudent: true
+        },
+        // CLASS_BRIEFING — "how is my robotics class doing", "how's robotics
+        // going", "who is behind in math". One named class: its grades, who is
+        // below 70, who is missing work and on what, what is waiting to be
+        // graded, who has stopped practising, and attendance.
+        //
+        // Without the word "class" these all went to VIEW_ROSTER: a named class
+        // gives it classMatchBoost, so "how is robotics doing" scored 24 and
+        // answered with a list of names. This bids with the same boost
+        // (10 + 6 + 2 + 8 = 26), so a check-in on a class beats its roster,
+        // while "who's in robotics" (no doing/going/behind) never reaches here.
+        // notIfStudent keeps "how is noah doing in math" with the grades
+        // reader. No class named ("how are my classes doing") is CLASS_STATS'
+        // ranking, below.
+        //
+        // Patterns run on NORMALIZED text: "how's" is "how is", "check" is
+        // "show", "give me" is "show".
+        {
+          intent: 'CLASS_BRIEFING',
+          w: 6, requiresClass: true, classMatchBoost: true, notIfStudent: true, notIfNoteCommand: true,
+          patterns: [
+            /\bhow (is|are) (my |the |our )?(?:[\w&-]+ ){0,5}(doing|going|looking|getting on|coming along|holding up|shaping up)\b/,
+            /\bhow are (the )?(things|students|kids)\b.{0,30}\b(in|with)\b/,
+            /^how is (my |the |our )?(?:[\w&-]+ ){1,5}?(class|section|period)?[?!. ]*$/,
+            /\b(overview|rundown|summary|snapshot)\b/,
+            /\bshow (in )?on (my |the )?(?:[\w&-]+ ){0,4}class\b/,
+            /\banything (i|we) (should|need to) know about\b/,
+            /\bwho(s| is| are)? (is |are )?(behind|falling behind|getting behind)\b/,
+            /\b(is|are) (anyone|anybody|any (students|kids)) (behind|falling behind)\b/,
+          ]
         },
         // CLASS_STATS — "how is AI class doing?", "which class has best grades?", "compare my classes"
         {
@@ -62795,6 +62825,7 @@ Students you had withdrawn stay withdrawn.`)) {
           break;
 
         case 'CLASS_STATS':
+        case 'CLASS_BRIEFING':
           await this.terminalClassStats(entities);
           break;
 
@@ -71463,63 +71494,14 @@ Students you had withdrawn stay withdrawn.`)) {
       const sb = this.auth.supabase;
 
       if (entities.classMatch) {
-        // Single class: detailed overview — enrollment, grade averages, attendance
+        // Single class: the class briefing. "How is my robotics class doing"
+        // wants the flags, not just an average: see _rivenClassBriefing.
         const res = await this._rivenRequireClass(entities);
         if (res.asked) return;
         const row = res.row;
         if (!row) { this.terminalPrintError('Which class?'); return; }
-
-        this.terminalPrint('Loading class overview…', '#6aa9ff');
-
-        // Enrollment
-        const { data: enr } = await sb.from('class_enrollments')
-          .select('id, student_id').eq('class_id', row.id).eq('status', 'active');
-        const enrolled = (enr || []).length;
-        const enrollmentIds = (enr || []).map(e => e.id);
-        const studentIds = (enr || []).map(e => e.student_id);
-
-        // Grade averages
-        const quarter = await this._rivenCurrentQuarter();
-        let gradeHtml = '';
-        if (quarter && enrollmentIds.length) {
-          const { data: snaps } = await sb.from('quarter_grade_snapshots')
-            .select('class_grade, academic_grade, participation_grade')
-            .eq('quarter_id', quarter.id).in('enrollment_id', enrollmentIds);
-          const graded = (snaps || []).filter(s => s.class_grade != null && s.class_grade !== 0);
-          if (graded.length) {
-            const avgFinal = Math.round((graded.reduce((s, g) => s + g.class_grade, 0) / graded.length) * 10) / 10;
-            const acad = graded.filter(g => g.academic_grade).map(g => g.academic_grade);
-            const part = graded.filter(g => g.participation_grade).map(g => g.participation_grade);
-            const avgA = acad.length ? Math.round((acad.reduce((s,v)=>s+v,0)/acad.length)*10)/10 : null;
-            const avgP = part.length ? Math.round((part.reduce((s,v)=>s+v,0)/part.length)*10)/10 : null;
-            gradeHtml = `<div style="margin: 4px 0;">📊 Avg grade: <b>${avgFinal} (${this._pctToLetter(avgFinal)})</b>${avgA != null ? ` · academic ${avgA}` : ''}${avgP != null ? ` · participation ${avgP}` : ''} <span style="color:var(--muted);font-size:11px;">(${graded.length}/${enrolled} graded)</span></div>`;
-          } else {
-            gradeHtml = `<div style="color:var(--muted);margin:4px 0;">📊 No grades recorded yet this quarter.</div>`;
-          }
-        }
-
-        // Attendance summary (last 30 days, class-specific)
-        const sinceDate = this._isoDaysAgo(30);
-        let attHtml = '';
-        if (studentIds.length) {
-          const { data: att } = await sb.from('class_attendance')
-            .select('status, student_id').eq('class_id', row.id).gte('date', sinceDate);
-          const issues = (att || []).filter(r => r.status !== 'present');
-          const absent = issues.filter(r => r.status === 'absent').length;
-          const late = issues.filter(r => r.status === 'late' || r.status === 'late_left_early').length;
-          const studentsWithIssues = new Set(issues.map(r => r.student_id)).size;
-          if (!issues.length) {
-            attHtml = `<div style="color:#8bffb0;margin:4px 0;">📅 Perfect attendance this month!</div>`;
-          } else {
-            attHtml = `<div style="margin:4px 0;">📅 Last 30 days: ❌ ${absent} absent, ⏰ ${late} late across <b>${studentsWithIssues}</b> student${studentsWithIssues !== 1 ? 's' : ''}.</div>`;
-          }
-        }
-
-        let html = `<div style="font-weight:600;margin-bottom:8px;">📋 ${this.escapeHtml(row.name)} — Overview</div>`;
-        html += `<div style="color:var(--muted);font-size:12px;margin-bottom:10px;">${this.escapeHtml(row.subject || '')} · ${enrolled} student${enrolled !== 1 ? 's' : ''} enrolled</div>`;
-        html += gradeHtml + attHtml;
-        html += `<div style="color:var(--muted);font-size:11px;margin-top:8px;">Say "show grades for ${this.escapeHtml(row.name)}" or "show attendance for ${this.escapeHtml(row.name)}" for full details.</div>`;
-        this._showRivenMessage(html, true);
+        this.terminalPrint(`Checking on ${row.name}…`, '#6aa9ff');
+        this._showRivenMessage(await this._rivenClassBriefing(row), true);
 
       } else {
         // Cross-class: rank all teacher's classes by grade average
@@ -71568,6 +71550,167 @@ Students you had withdrawn stay withdrawn.`)) {
         html += `<div style="color:var(--muted);font-size:11px;margin-top:8px;">Say "how is [class] doing?" for a detailed breakdown of any class.</div>`;
         this._showRivenMessage(html, true);
       }
+    }
+
+    // "How is my robotics class doing?" One class, everything a teacher would
+    // want flagged: the grade average, who is below 70%, who is missing work
+    // and on what, overdue game and skill work, what is waiting to be graded,
+    // who has stopped practising, and attendance over the last 30 days.
+    //
+    // Missing work uses the morning briefing's rule exactly - published, past
+    // due this quarter, not collected on paper (graded_offline), set for the
+    // whole class, no submission row, and not pushed later by the student's
+    // own version - because two Riven answers that disagree about who is
+    // missing work are worse than either alone.
+    //
+    // Each section is its own try: a read that fails costs that section, not
+    // the answer. Returns the HTML.
+    async _rivenClassBriefing(row) {
+      const sb = this.auth.supabase;
+      const esc = (v) => this.escapeHtml(v == null ? '' : String(v));
+      const today = this._isoDaysAgo(0);
+      const names = {};
+      (this._terminalAllStudents || []).forEach(st => { names[st.id] = st.full_name; });
+      const nameOf = (id) => names[id] || 'A student';
+      const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
+
+      const { data: enr } = await sb.from('class_enrollments')
+        .select('id, student_id').eq('class_id', row.id).eq('status', 'active');
+      const enrollments = enr || [];
+      const studentIds = enrollments.map(e => e.student_id);
+      const enrolled = studentIds.length;
+
+      let html = `<div style="font-weight:600;margin-bottom:4px;">📋 ${esc(row.name)} — how it's doing</div>`;
+      html += `<div style="color:var(--muted);font-size:12px;margin-bottom:10px;">${row.subject ? esc(row.subject) + ' · ' : ''}${plural(enrolled, 'student')} enrolled</div>`;
+      if (!enrolled) return html + `<div>No students are enrolled yet.</div>`;
+
+      const flags = [];
+      const broken = [];
+      const quarter = await this._rivenCurrentQuarter().catch(() => null);
+
+      // ── grades ──────────────────────────────────────────────────────────
+      try {
+        if (quarter) {
+          const { data: snaps } = await sb.from('quarter_grade_snapshots')
+            .select('enrollment_id, class_grade')
+            .eq('quarter_id', quarter.id).in('enrollment_id', enrollments.map(e => e.id));
+          const stuOfEnr = {};
+          enrollments.forEach(e => { stuOfEnr[e.id] = e.student_id; });
+          const graded = (snaps || []).filter(g => g.class_grade != null && g.class_grade !== 0);
+          if (graded.length) {
+            const avg = Math.round(graded.reduce((t, g) => t + Number(g.class_grade), 0) / graded.length * 10) / 10;
+            html += `<div style="margin:4px 0;">📊 Class average <b>${avg}% (${this._pctToLetter(avg)})</b> <span style="color:var(--muted);font-size:11px;">(${graded.length}/${enrolled} with a grade this quarter)</span></div>`;
+            const low = graded.filter(g => Number(g.class_grade) < 70)
+              .sort((a, b) => a.class_grade - b.class_grade)
+              .map(g => `• <b>${esc(nameOf(stuOfEnr[g.enrollment_id]))}</b> — <span style="color:#ff6a6a;">${Math.round(g.class_grade * 10) / 10}% (${this._pctToLetter(g.class_grade)})</span>`);
+            if (low.length) flags.push(`<div style="margin-top:8px;">📉 <b>Below 70%: ${plural(low.length, 'student')}</b><br><span style="font-size:12px;">${this._briefingExpand(low, 5, 'students')}</span></div>`);
+          } else {
+            html += `<div style="color:var(--muted);margin:4px 0;">📊 No grades recorded yet this quarter.</div>`;
+          }
+        }
+      } catch (e) { console.warn('Class briefing: grades', e); broken.push('grades'); }
+
+      // ── missing work and the grading queue ──────────────────────────────
+      try {
+        let q = sb.from('assignments')
+          .select('id, title, due_date, assigned_to_all, graded_offline')
+          .eq('class_id', row.id).eq('is_published', true).lt('due_date', today);
+        q = quarter?.start_date ? q.gte('due_date', quarter.start_date) : q.gte('due_date', this._isoDaysAgo(60));
+        const { data: aData } = await q;
+        const assignments = (aData || []).filter(a => !a.graded_offline);
+        if (assignments.length) {
+          const { data: sData } = await sb.from('assignment_submissions')
+            .select('assignment_id, student_id, status').in('assignment_id', assignments.map(a => a.id));
+          const subs = sData || [];
+          const versions = await this.loadStudentVersions(assignments.map(a => a.id));
+          const extended = (a, sid) => {
+            const d = this.studentVersionOf(versions, a.id, [sid])?.due_date;
+            return !!d && String(d).slice(0, 10) >= today;
+          };
+          const missingBy = {}, missedCount = {};
+          assignments.filter(a => a.assigned_to_all !== false).forEach(a => {
+            const handedIn = new Set(subs.filter(s => s.assignment_id === a.id).map(s => s.student_id));
+            studentIds.forEach(sid => {
+              if (!handedIn.has(sid) && !extended(a, sid)) {
+                (missingBy[sid] = missingBy[sid] || []).push(a);
+                missedCount[a.id] = (missedCount[a.id] || 0) + 1;
+              }
+            });
+          });
+          const who = Object.entries(missingBy).sort((x, y) => y[1].length - x[1].length);
+          if (who.length) {
+            const lines = who.map(([sid, list]) =>
+              `• <b>${esc(nameOf(sid))}</b> — ${list.length} missing: ${list.slice(0, 3).map(a => esc(a.title)).join(', ')}${list.length > 3 ? '…' : ''}`);
+            const worst = assignments.filter(a => missedCount[a.id]).sort((x, y) => missedCount[y.id] - missedCount[x.id])[0];
+            const worstLine = worst && missedCount[worst.id] >= 2
+              ? `<div style="font-size:12px;color:var(--muted);margin-top:2px;">Most missed: <b>${esc(worst.title)}</b> — ${missedCount[worst.id]} haven't turned it in.</div>` : '';
+            flags.push(`<div style="margin-top:8px;">⚠️ <b>Missing work: ${plural(who.length, 'student')}</b><br><span style="font-size:12px;">${this._briefingExpand(lines, 6, 'students')}</span>${worstLine}</div>`);
+          }
+          const waiting = subs.filter(s => s.status === 'submitted');
+          if (waiting.length) {
+            const per = {};
+            waiting.forEach(s => { per[s.assignment_id] = (per[s.assignment_id] || 0) + 1; });
+            const lines = assignments.filter(a => per[a.id]).sort((x, y) => per[y.id] - per[x.id]).map(a =>
+              `• <span style="color:var(--accent);cursor:pointer;text-decoration:underline;" onclick="app.viewSubmissions('${this.jsAttr(a.id)}')">${esc(a.title)}</span> — ${per[a.id]} waiting`);
+            flags.push(`<div style="margin-top:8px;">📥 <b>Waiting for you to grade: ${plural(waiting.length, 'submission')}</b><br><span style="font-size:12px;">${this._briefingExpand(lines, 4, 'assignments')}</span></div>`);
+          }
+        }
+      } catch (e) { console.warn('Class briefing: assignments', e); broken.push('missing work'); }
+
+      // ── overdue game and skill assignments ──────────────────────────────
+      // Overdue is COMPUTED (due date passed, still open); the 'overdue'
+      // status is never written.
+      try {
+        const { data: hw } = await sb.from('homework_assignments')
+          .select('student_id, due_date, status').eq('class_id', row.id)
+          .in('status', ['assigned', 'in_progress', 'overdue']).lt('due_date', today);
+        const late = {};
+        (hw || []).filter(h => h.due_date && studentIds.includes(h.student_id))
+          .forEach(h => { late[h.student_id] = (late[h.student_id] || 0) + 1; });
+        const lines = Object.entries(late).sort((x, y) => y[1] - x[1])
+          .map(([sid, n]) => `• <b>${esc(nameOf(sid))}</b> — ${plural(n, 'overdue', 'overdue')}`);
+        if (lines.length) flags.push(`<div style="margin-top:8px;">🎮 <b>Overdue game &amp; skill work: ${plural(lines.length, 'student')}</b><br><span style="font-size:12px;">${this._briefingExpand(lines, 5, 'students')}</span></div>`);
+      } catch (e) { console.warn('Class briefing: homework', e); broken.push('game and skill work'); }
+
+      // ── practice ────────────────────────────────────────────────────────
+      try {
+        const got = await this._rivenPracticeFromClasses([row], null);
+        // A failed read comes back as nobody, which would read as "everyone
+        // is practising". Say it could not load instead.
+        if (!got.people.length && got.failed) throw (got.lastError || new Error('class progress unavailable'));
+        const since = Date.now() - 7 * 86400000;
+        const quiet = (got.people || []).filter(p => !p.last || new Date(p.last).getTime() < since)
+          .sort((a, b) => (a.last ? new Date(a.last).getTime() : 0) - (b.last ? new Date(b.last).getTime() : 0));
+        if (quiet.length) {
+          const lines = quiet.map(p => {
+            const ago = this._rivenAgo(p.last);
+            return `• <b>${esc(p.name)}</b> — ${ago ? `last practised ${esc(ago)}` : 'no practice on record'}`;
+          });
+          flags.push(`<div style="margin-top:8px;">💤 <b>Not practised in 7 days: ${plural(quiet.length, 'student')}</b><br><span style="font-size:12px;">${this._briefingExpand(lines, 5, 'students')}</span></div>`);
+        }
+      } catch (e) { console.warn('Class briefing: practice', e); broken.push('practice'); }
+
+      // ── attendance, last 30 days ────────────────────────────────────────
+      try {
+        const { data: att } = await sb.from('class_attendance')
+          .select('status, student_id').eq('class_id', row.id).gte('date', this._isoDaysAgo(30));
+        const per = {};
+        (att || []).forEach(r => {
+          const p = per[r.student_id] = per[r.student_id] || { absent: 0, late: 0 };
+          if (/absent/i.test(r.status || '')) p.absent++;
+          else if (/late|tardy/i.test(r.status || '')) p.late++;
+        });
+        const lines = Object.entries(per).filter(([, p]) => p.absent >= 3 || p.late >= 3)
+          .sort((x, y) => (y[1].absent + y[1].late) - (x[1].absent + x[1].late))
+          .map(([sid, p]) => `• <b>${esc(nameOf(sid))}</b> — ${[p.absent ? plural(p.absent, 'absence', 'absences') : '', p.late ? `${p.late} late` : ''].filter(Boolean).join(', ')}`);
+        if (lines.length) flags.push(`<div style="margin-top:8px;">📅 <b>Attendance, last 30 days: ${plural(lines.length, 'student')} absent or late 3+ times</b><br><span style="font-size:12px;">${this._briefingExpand(lines, 5, 'students')}</span></div>`);
+      } catch (e) { console.warn('Class briefing: attendance', e); broken.push('attendance'); }
+
+      if (flags.length) html += flags.join('');
+      else if (!broken.length) html += `<div style="margin-top:8px;color:#8bffb0;">✅ Nothing needs attention: no one below 70%, no missing work, everyone practising and turning up.</div>`;
+      if (broken.length) html += `<div style="margin-top:8px;font-size:12px;color:#ffd36a;">Couldn't load: ${esc(broken.join(', '))}.</div>`;
+      html += `<div style="color:var(--muted);font-size:11px;margin-top:10px;">Say "how is &lt;student&gt; doing" for one student, or "show grades for ${esc(row.name)}" for the full list.</div>`;
+      return html;
     }
 
     async terminalShowRoster(entities) {

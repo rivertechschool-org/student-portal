@@ -2600,3 +2600,56 @@ app._nlpContext = {};
 });
 app._nlpContext = {};
 console.log(`round 44: ${p44} pass, ${f44} fail`);
+
+// -- round 45: "how is my <class> doing" --------------------------------------
+// A class-level check-in: how the class is doing and who is behind or missing
+// work. CLASS_BRIEFING answers it for a named class; with none named it is
+// CLASS_STATS' ranking of every class.
+// The grid is the ways teachers ask, with and without the word "class", and
+// the neighbours that must not move: one student, a student in a subject, a
+// game assignment's results, and the all-my-classes ranking.
+console.log('\n== round 45: how is my class doing ==');
+let p45 = 0, f45 = 0;
+const t45 = (label, ok) => { ok ? p45++ : f45++; if (!ok) { console.log('  FAIL', label); process.exitCode = 1; } };
+[
+  // a named class -> CLASS_STATS, with that class
+  ['how is my math class doing', 'CLASS_BRIEFING', 'c1'],
+  ['how is my robotics class doing?', 'CLASS_BRIEFING', 'c2'],
+  ['how is robotics doing', 'CLASS_BRIEFING', 'c2'],
+  ["how's robotics doing", 'CLASS_BRIEFING', 'c2'],
+  ['how is my robotics doing', 'CLASS_BRIEFING', 'c2'],
+  ['how is robotics going', 'CLASS_BRIEFING', 'c2'],
+  ['how is my world history class going', 'CLASS_BRIEFING', 'c4'],
+  ['how are my math kids doing', 'CLASS_BRIEFING', 'c1'],
+  ['how are the students in robotics doing', 'CLASS_BRIEFING', 'c2'],
+  ['how are things in robotics', 'CLASS_BRIEFING', 'c2'],
+  ["how's my math class", 'CLASS_BRIEFING', 'c1'],
+  ['how is math looking', 'CLASS_BRIEFING', 'c1'],
+  ['robotics overview', 'CLASS_BRIEFING', 'c2'],
+  ['give me a rundown of robotics', 'CLASS_BRIEFING', 'c2'],
+  ['anything i should know about robotics', 'CLASS_BRIEFING', 'c2'],
+  ['who is behind in robotics', 'CLASS_BRIEFING', 'c2'],
+  ['who is falling behind in math', 'CLASS_BRIEFING', 'c1'],
+  ['is anyone behind in math class', 'CLASS_BRIEFING', 'c1'],
+  ['check on my robotics class', 'CLASS_BRIEFING', 'c2'],
+  // no class named -> the ranking of every class
+  ['how are my classes doing', 'CLASS_STATS', null],
+  ['how is my class doing', 'CLASS_STATS', null],
+  // neighbours that must not move
+  ['how is clementine doing', 'STUDENT_BRIEFING', null],
+  ['how is noah doing in math', 'VIEW_GRADES', null],
+  ['how is clementine doing in math practice', 'STUDENT_PRACTICE', null],
+  ['how did math do on the fractions dojo', 'HOMEWORK_RESULTS', null],
+  ['anything i should know', 'BRIEFING', null],
+].forEach(([s, want, cls]) => {
+  app._nlpContext = {};
+  const got = run(s);
+  const n = app._normalizeInput(s);
+  const e = app._extractEntities(app._resolvePronouns(n), s);
+  const cm = e.classMatch;
+  const clsId = cm ? (cm.ambiguous ? 'picker' : (cm.id || cm.row?.id || cm.candidates?.[0]?.id)) : null;
+  t45(`"${s}" -> ${got.intent}${cls ? ' / class ' + clsId : ''} (want ${want}${cls ? ' / ' + cls : ''})`,
+      got.intent === want && (!cls || clsId === cls));
+});
+app._nlpContext = {};
+console.log(`round 45: ${p45} pass, ${f45} fail`);
