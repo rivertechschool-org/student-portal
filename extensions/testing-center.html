@@ -641,6 +641,7 @@
         let studentsDatabase = [];
         let currentStudentId = null;
         let testsDatabase = [];
+        let submitInFlight = false;
         let submissionsDatabase = {};
 
         // ==================== AUTH & INITIALIZATION ====================
@@ -879,16 +880,12 @@
                             }))
                     }));
                 } else {
-                    // Students see assigned tests (only active assignments)
-                    const { data, error } = await supabaseClient
-                        .from('tests')
-                        .select(`
-                            *,
-                            test_questions (*),
-                            test_assignments!inner (*)
-                        `)
-                        .eq('status', 'active')
-                        .eq('test_assignments.is_active', true);
+                    // Students see assigned tests (only active assignments),
+                    // from the database's own list: the questions come without
+                    // the answer key, which a student reads only after they
+                    // have submitted (loadAnswerKey). Same shape as the old
+                    // tests + test_questions + test_assignments select.
+                    const { data, error } = await supabaseClient.rpc('rt_my_assigned_tests');
 
                     if (error) throw error;
 
@@ -913,7 +910,7 @@
                                 type: q.question_type === 'multiple_choice' ? 'multiple-choice' : 'write-in',
                                 text: q.question_text,
                                 options: q.options || [],
-                                correctAnswer: q.correct_answer_index,
+                                correctAnswer: q.correct_answer_index ?? null,
                                 maxPoints: q.max_points || 1
                             }))
                     }));
@@ -1314,7 +1311,12 @@
             return points || fallback || 100;
         }
 
-        async function saveSubmissionToDatabase(testId, answers, autoScore, status) {
+        // Saves the student's answers and has the database score them.
+        // Returns { submission, result }: result is the server's score
+        // ({ status, score, mc_earned, mc_possible }) plus answer_key, which
+        // the database only hands over once the test is submitted - the page
+        // never has the key while the test is being taken.
+        async function saveSubmissionToDatabase(testId, answers) {
             if (!supabaseClient || !authReady) return null;
 
             try {
@@ -1331,44 +1333,43 @@
                 const test = testsDatabase.find(t => t.id === testId);
                 const maxScore = test ? test.questions.reduce((sum, q) => sum + (q.maxPoints || 1), 0) : 100;
 
-                // Check for existing submission
+                // One attempt per test. If this one is already saved - a second
+                // click on Submit, or a retry after a dropped connection - use
+                // it rather than make another, which the database refuses.
                 const { data: existing } = await supabaseClient
                     .from('test_submissions')
-                    .select('id, attempt_number')
+                    .select('*')
                     .eq('test_id', testId)
                     .eq('student_id', currentUser.id)
                     .order('attempt_number', { ascending: false })
                     .limit(1);
 
-                const attemptNumber = existing?.[0] ? existing[0].attempt_number + 1 : 1;
-
-                const { data: submission, error } = await supabaseClient
-                    .from('test_submissions')
-                    .insert({
-                        test_id: testId,
-                        student_id: currentUser.id,
-                        test_assignment_id: testAssignmentId,
-                        answers: answers,
-                        auto_score: autoScore,
-                        final_score: status === 'graded' ? autoScore : null,
-                        max_possible_score: maxScore,
-                        status: status === 'graded' ? 'graded' : 'submitted',
-                        submitted_at: new Date().toISOString(),
-                        attempt_number: attemptNumber
-                    })
-                    .select()
-                    .single();
-
-                if (error) throw error;
+                let submission = existing?.[0] || null;
+                if (!submission) {
+                    const { data: inserted, error } = await supabaseClient
+                        .from('test_submissions')
+                        .insert({
+                            test_id: testId,
+                            student_id: currentUser.id,
+                            test_assignment_id: testAssignmentId,
+                            answers: answers,
+                            max_possible_score: maxScore,
+                            status: 'submitted',
+                            submitted_at: new Date().toISOString(),
+                            attempt_number: 1
+                        })
+                        .select()
+                        .single();
+                    if (error) throw error;
+                    submission = inserted;
+                }
 
                 // Scored on the server: the database marks the answers against
                 // the test's answer key, records the question grades, and
                 // grades the linked class assignment when every question is
-                // multiple choice; with a write-in the teacher marks it. The
-                // score shown to the student right after is still worked out
-                // here, from the same answers.
-                const { error: scoreErr } = await supabaseClient
-                    .rpc('rt_score_test_submission', { p_test_submission_id: submission.id });
+                // multiple choice; with a write-in the teacher marks it.
+                const { data: result, error: scoreErr } = await supabaseClient
+                    .rpc('rt_submit_test_scored', { p_test_submission_id: submission.id });
                 if (scoreErr) console.error('Scoring the test on the server failed:', scoreErr);
 
                 // Also notify portal via postMessage (for real-time UI update when embedded)
@@ -1379,18 +1380,36 @@
                             testId: testId,
                             submissionId: submission.id,
                             studentId: currentUser.id,
-                            score: autoScore,
+                            score: result?.score ?? null,
                             maxScore: maxScore,
                             testAssignmentId: testAssignmentId
                         }
                     }, PARENT_ORIGIN);
                 }
 
-                return submission;
+                return { submission, result: result || null };
             } catch (error) {
                 console.error('Error saving submission:', error);
                 throw error;
             }
+        }
+
+        // The answer key for a test this student has submitted, put onto the
+        // cached questions so the review screen can mark the right answers.
+        // The database returns {} for anyone who has not submitted it.
+        function applyAnswerKey(test, key) {
+            if (!test || !key) return;
+            test.questions.forEach(q => {
+                if (q.type === 'multiple-choice' && key[q.id] != null) q.correctAnswer = Number(key[q.id]);
+            });
+        }
+
+        async function loadAnswerKey(test) {
+            if (!test || !supabaseClient || !authReady) return;
+            if (test.questions.every(q => q.type !== 'multiple-choice' || q.correctAnswer != null)) return;
+            const { data, error } = await supabaseClient.rpc('rt_test_answer_key', { p_test_id: test.id });
+            if (error) { console.error('Could not load the answer key:', error); return; }
+            applyAnswerKey(test, data);
         }
 
         // Returns { synced, reason }: whether the grade reached the class
@@ -2823,6 +2842,9 @@
             currentTestId = testId;
             currentQuestionIndex = 0;
             studentAnswers = {};
+            // submitTest() disables it while saving; a new test starts usable.
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) submitBtn.disabled = false;
 
             const test = testsDatabase.find(t => t.id === testId);
             document.getElementById('studentDashboard').style.display = 'none';
@@ -2905,64 +2927,70 @@
             // By the points the teacher gave each question, not by counting
             // questions: a 5-point question right and a 1-point one wrong is
             // 83%, not 50%. correct/mcTotal stay counts for the results screen.
-            let correct = 0, mcTotal = 0, mcPoints = 0, mcEarned = 0;
+            // Needs the answer key, which a signed-in student's page only has
+            // once the database returns it after submitting.
+            const countCorrect = () => {
+                let correct = 0, mcTotal = 0, mcPoints = 0, mcEarned = 0;
+                test.questions.forEach(q => {
+                    if (q.type === 'multiple-choice') {
+                        mcTotal++;
+                        mcPoints += q.maxPoints || 1;
+                        if (studentAnswers[q.id] === q.correctAnswer) { correct++; mcEarned += q.maxPoints || 1; }
+                    }
+                });
+                return { correct, mcTotal, autoScore: mcPoints > 0 ? Math.round((mcEarned / mcPoints) * 100) : 0 };
+            };
 
-            test.questions.forEach(q => {
-                if (q.type === 'multiple-choice') {
-                    mcTotal++;
-                    mcPoints += q.maxPoints || 1;
-                    if (studentAnswers[q.id] === q.correctAnswer) { correct++; mcEarned += q.maxPoints || 1; }
-                }
-            });
-
-            const autoScore = mcPoints > 0 ? Math.round((mcEarned / mcPoints) * 100) : 0;
             const hasWriteIn = test.questions.some(q => q.type === 'write-in');
-            const status = hasWriteIn ? 'pending_review' : 'graded';
+
+            // A second click while the first is still saving would try to make
+            // a second attempt, which the database refuses.
+            if (submitInFlight) return;
+            submitInFlight = true;
+            const submitBtn = document.getElementById('submitBtn');
+            if (submitBtn) submitBtn.disabled = true;
 
             try {
+                let correct, mcTotal, autoScore, status, submissionId = null;
+
                 // Save to database if authenticated
                 if (authReady && supabaseClient) {
-                    const submission = await saveSubmissionToDatabase(
-                        currentTestId,
-                        { ...studentAnswers },
-                        autoScore,
-                        status
-                    );
-
-                    // Update local cache
-                    submissionsDatabase[`${currentTestId}_${currentStudentId}`] = {
-                        id: submission?.id,
-                        testId: currentTestId,
-                        studentId: currentStudentId,
-                        answers: { ...studentAnswers },
-                        autoScore,
-                        finalScore: hasWriteIn ? null : autoScore,
-                        gradedAnswers: {},
-                        submittedAt: new Date().toISOString(),
-                        minutesTaken,
-                        overran,
-                        status
-                    };
+                    const saved = await saveSubmissionToDatabase(currentTestId, { ...studentAnswers });
+                    const result = saved?.result;
+                    submissionId = saved?.submission?.id || null;
+                    applyAnswerKey(test, result?.answer_key);
+                    ({ correct, mcTotal } = countCorrect());
+                    // The database's score is the one that counts. Without it
+                    // (scoring failed) the test is saved and shows as waiting.
+                    autoScore = result?.score != null ? Number(result.score) : null;
+                    status = result?.status === 'graded' ? 'graded' : 'pending_review';
                 } else {
-                    // Standalone mode
-                    submissionsDatabase[`${currentTestId}_${currentStudentId}`] = {
-                        testId: currentTestId,
-                        studentId: currentStudentId,
-                        answers: { ...studentAnswers },
-                        autoScore,
-                        finalScore: hasWriteIn ? null : autoScore,
-                        gradedAnswers: {},
-                        submittedAt: new Date().toISOString(),
-                        minutesTaken,
-                        overran,
-                        status
-                    };
+                    // Standalone mode: these tests come with their answers.
+                    ({ correct, mcTotal, autoScore } = countCorrect());
+                    status = hasWriteIn ? 'pending_review' : 'graded';
                 }
 
-                showStudentResults(test, autoScore, correct, mcTotal, hasWriteIn);
+                submissionsDatabase[`${currentTestId}_${currentStudentId}`] = {
+                    id: submissionId || undefined,
+                    testId: currentTestId,
+                    studentId: currentStudentId,
+                    answers: { ...studentAnswers },
+                    autoScore,
+                    finalScore: status === 'graded' ? autoScore : null,
+                    gradedAnswers: {},
+                    submittedAt: new Date().toISOString(),
+                    minutesTaken,
+                    overran,
+                    status
+                };
+
+                showStudentResults(test, autoScore, correct, mcTotal, status !== 'graded');
             } catch (error) {
                 console.error('Error submitting test:', error);
                 showToast('Error submitting test');
+                if (submitBtn) submitBtn.disabled = false;
+            } finally {
+                submitInFlight = false;
             }
         }
 
@@ -2972,8 +3000,10 @@
 
             document.getElementById('finalScore').textContent = pendingReview ? '--' : `${score}%`;
             document.querySelector('.score-circle').style.setProperty('--score-percent', `${pendingReview ? 0 : score}%`);
-            document.getElementById('resultsSubtitle').innerHTML = pendingReview ? 
-                'Your written responses are pending teacher review' :
+            document.getElementById('resultsSubtitle').innerHTML = pendingReview ?
+                (test.questions.some(q => q.type === 'write-in')
+                    ? 'Your written responses are pending teacher review'
+                    : 'Your test is saved. Your score will show once it has been marked.') :
                 `You answered ${correct} out of ${total} multiple choice questions correctly`;
 
             let html = '';
@@ -3017,10 +3047,13 @@
             document.getElementById('resultsDetails').innerHTML = html;
         }
 
-        function viewStudentResults(testId) {
+        async function viewStudentResults(testId) {
             const test = testsDatabase.find(t => t.id === testId);
             const submission = getSubmission(testId, currentStudentId);
             if (!submission) return;
+            // The questions arrive without the answer key; it is fetched now
+            // that this test has been submitted, to mark the right answers.
+            await loadAnswerKey(test);
 
             studentAnswers = submission.answers;
             currentTestId = testId;
