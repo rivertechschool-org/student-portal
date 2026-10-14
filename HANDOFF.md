@@ -35,6 +35,18 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-13 — Jordan's Claude (later)
+**No D+ or D-.** Jordan: the school doesn't use them. Every percent→letter scale now gives a
+plain **D for 60–69%**: `calculateLetterGrade` and its copies in the portal, the main site, the
+Testing Center, the report card and the transcript, plus the database's
+`calculate_letter_grade`. The report card and transcript scale tables show D as 60–69. The
+grade dropdowns no longer offer D+ or D-. Grades already recorded as D+ or D- are left alone,
+and the letter→percentage tables still read them.
+**Testing Center:** multiple-choice tests are now scored by the database
+(`rt_score_test_submission`), not in the student's browser. The database also fills in the
+class gradebook. Details are in the backend repo's migrations from today.
+**Needs:** nothing. All of it is applied.
+
 ## 2026-10-13 — Jordan's Claude
 **Grading: the letter follows the points, and rubrics with categories.** Asked for by
 Jordan.
@@ -42,7 +54,7 @@ Jordan.
   (`calculateLetterGrade`; 9/10 → A-). A letter the teacher changes is kept, and the hint
   under it offers the worked-out one back. This works in both grading modals and the rubric
   manual override. The Gradebook grid now writes the letter when it saves points; before,
-  it left the letter blank or stale. The missing/in-class dropdown gained D+ and D-.
+  it left the letter blank or stale. The missing/in-class dropdown matches the scale (see the later entry: no D+ or D-).
 - **Category rubrics:** a rubric can now be "Categories with points" (each category has
   its own levels and points) as well as the old "Letter-grade levels". Grading picks a
   level per category, and the total is scaled to the assignment's points: 18/24 on a

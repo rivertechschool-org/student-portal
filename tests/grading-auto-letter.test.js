@@ -71,6 +71,8 @@ console.log('\n== the points fill the letter ==\n');
   p.typePts(10); check('10 of 10 is A+', p.els.letter.value, 'A+');
   p.typePts(8.5); check('half points: 8.5 of 10 is B', p.els.letter.value, 'B');
   p.typePts(5); check('5 of 10 is F', p.els.letter.value, 'F');
+  p.typePts(6.9); check('no D+: 6.9 of 10 is D', p.els.letter.value, 'D');
+  p.typePts(6); check('no D-: 6 of 10 is D', p.els.letter.value, 'D');
 }
 {
   const p = makePage(20);
@@ -131,7 +133,8 @@ ok('Missing / in-class: points fill the dropdown',
 {
   const i = html.indexOf('<select id="grade-letter"');
   const sel = html.slice(i, html.indexOf('</select>', i));
-  ok('  and the dropdown has D- and D+, which the scale can give', /value="D-"/.test(sel) && /value="D\+"/.test(sel));
+  ok('  and the dropdown has D, and no D+ or D- (the school does not use them)',
+     /value="D"/.test(sel) && !/value="D\+"/.test(sel) && !/value="D-"/.test(sel));
 }
 ok('Rubric manual override: points fill the letter',
    (html.match(/app\.syncLetterFromPoints\('manual-points', 'manual-letter-grade'\)/g) || []).length === 2);
