@@ -71,8 +71,7 @@ const rows = await page.evaluate(({ TRIALS }) => {
   const sitting = (known, prof, onAsk) => {
     let n = 0;
     while (n < 120 && !shouldStopDiagnostic()) {
-      const cand = pickDiagnosticCandidate(); if (!cand) break;
-      const q = diagQuestionFor(cand); if (!q || !q.skillTags) break;
+      const q = diagNextQuestion(); if (!q || !q.skillTags) break;
       const node = byTitle[q.skillTags.primary_skill];
       if (onAsk) onAsk(node);
       let outcome;

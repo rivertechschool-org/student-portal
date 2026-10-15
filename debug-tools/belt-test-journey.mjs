@@ -17,7 +17,10 @@ const BASE = process.env.BELT_SIM_BASE || 'http://localhost:8765';
 const b = await chromium.launch(process.env.BELT_SIM_CHROME ? { executablePath: process.env.BELT_SIM_CHROME } : {});
 const page = await b.newPage({ viewport: { width: 1200, height: 900 } });
 const errs = [];
-page.on('pageerror', e => errs.push(e.message));
+// The portal is loaded only to be same-origin and is replaced at once; its own
+// start-up can race the replacement and throw (no login screen to show), which
+// says nothing about the Dojo.
+page.on('pageerror', e => { if (!String(e.stack || '').includes('/portal/')) errs.push(e.message); });
 await page.goto(BASE + '/portal/');   // same-origin host page
 await page.setContent('<html><body><iframe id="f" src="' + BASE + '/games/math-dojo.html" style="width:1180px;height:880px"></iframe><script>window.got=[];addEventListener("message",e=>{if(e.data&&e.data.type)window.got.push(e.data)});</script></body></html>');
 const frameEl = await page.waitForSelector('#f');

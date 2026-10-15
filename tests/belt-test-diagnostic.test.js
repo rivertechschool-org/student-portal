@@ -107,6 +107,35 @@ console.log('\nBelt Test diagnostic rules');
 }
 
 {
+  // Rows that were only unlocked carry the database default, 0.05, with no
+  // evidence behind them. Starting a skill there made a right answer read as
+  // a miss, and students who got nearly everything right were given belt 1.
+  const lowRows = {};
+  for (const id of ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'B3', 'C1', 'C2', 'D5']) lowRows[id] = 0.05;
+  const e = freshEngine({ stored: lowRows });
+  e.api.initDiagnostic(5);
+  e.answer('A4', 'correct', 8, ['a', 'b', 'c', 'd']);
+  e.answer('A5', 'correct');
+  const d = e.state.diag;
+  check('a saved value with no evidence behind it does not hold a right answer down',
+    d.own.A4 >= 0.7 && d.own.A5 >= 0.85, JSON.stringify({ A4: d.own.A4, A5: d.own.A5 }));
+  check('and the level does not fall', d.ceiling >= 5, d.ceiling);
+}
+
+{
+  // Starts under the chosen level and steps up with each right answer.
+  const e = freshEngine();
+  e.api.initDiagnostic(5);
+  const tiers = [];
+  for (let i = 0; i < 3; i++) {
+    const c = e.api.pickDiagnosticCandidate();
+    tiers.push(e.N[c.nodeId].dt);
+    e.answer(c.nodeId, 'correct');
+  }
+  check('the Belt Test opens under the chosen level and climbs', tiers[0] < 5 && tiers[1] > tiers[0], JSON.stringify(tiers));
+}
+
+{
   const e = freshEngine();
   e.api.initDiagnostic(3);
   e.answer('A3', 'never');

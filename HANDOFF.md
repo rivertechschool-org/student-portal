@@ -5229,3 +5229,25 @@ files here. About 29 MB, the largest file the 11.6 MB `.wasm` module.
   `debug-tools/fright-space-host.html`: the menu, Play, level 1, walking. Its
   screenshot can show a stale frame in headless Chrome; the checks read the game's
   own log instead.
+
+### 2026-10-15: Belt Test was placing middle schoolers at K-1
+
+Students who answered nearly every question right were given belt 1. The cause
+was old saved skill rows: a skill only unlocked earlier is saved with the
+default score of 5%, and the Belt Test started each skill's belief from whatever
+was saved, trusted or not. From 5%, a right answer barely moved it, the level
+rule read it as a miss, and the level fell to the bottom. Each such result
+unlocked more Tier 1 skills at 5%, so a retake was no better.
+
+- A saved score now shapes the test only when it has trusted evidence behind
+  it (a recent Belt Test, Hole Check or labelled practice).
+- The Belt Test now opens two tiers under the chosen level and climbs: each
+  right answer steps it up a tier (Middle School asks a Tier 4 question first,
+  then 5, 6, 7). The chosen level still sets the starting belief, so a right
+  answer on the way up counts.
+- A question whose generator lands on a skill already known is skipped for
+  another candidate instead of asking a practised skill again.
+
+Students who were given belt 1 should simply retake the Belt Test; nothing in
+the database needs clearing. `tests/belt-test-diagnostic.test.js` has a check
+for the old-rows case, and `debug-tools/belt-test-sim.mjs` passes.
