@@ -3584,7 +3584,7 @@
           try {
             const { data, error } = await this.supabaseQuery(() => this.auth.supabase
               .from('skill_progress')
-              .select('skill_name, state, mastery_score, p_mastered, last_evidence_at, practice_count, last_practiced')
+              .select('skill_name, state, mastery_score, p_mastered, last_evidence_at, practice_count, last_practiced, source')
               .eq('user_id', userId)
               .eq('subject', subject));
             if (error) throw error;
@@ -3593,7 +3593,10 @@
                 state: r.state, mastery_score: r.mastery_score || 0,
                 p_mastered: typeof r.p_mastered === 'number' ? r.p_mastered : undefined,
                 last_evidence_at: r.last_evidence_at || undefined,
-                practice_count: r.practice_count || 0, last_practiced: r.last_practiced || undefined
+                practice_count: r.practice_count || 0, last_practiced: r.last_practiced || undefined,
+                // Where the evidence came from: the Dojo's Belt Test counts
+                // practice, and its Hole Check carries on from the last Belt Test.
+                source: r.source || undefined
               };
             }
           } catch (e) {
@@ -3756,13 +3759,18 @@
           // Phase 2 — apply BKT updates first. These carry the per-skill
           // Bayesian probability and take priority over the legacy per-domain
           // aggregate mastery_score for any skill they cover.
+          // Label the evidence by what produced it, as the student site does.
+          // Everything used to be saved as 'practice', including Belt Tests,
+          // so a test's inferences looked like practice to anything reading them.
+          const source = mode === 'placement' ? 'belt_test' : mode === 'retention' ? 'recall'
+            : mode === 'learning' ? 'lesson' : 'dojo';
           const bktSkillNames = new Set();
           for (const bu of bktUpdates) {
             const masteryScore = Math.round(bu.p_mastered * 100);
             await this.upsertSkillProgress(
               bu.skill, subject,
               masteryScore, bu.derivedState,
-              bu.p_mastered, bu.last_evidence_at, 'practice'
+              bu.p_mastered, bu.last_evidence_at, source
             );
             bktSkillNames.add(bu.skill);
           }
@@ -3772,7 +3780,7 @@
           // but keep the path for safety / future generators without tags.
           for (const sp of skillProgress) {
             if (bktSkillNames.has(sp.skill)) continue;
-            await this.upsertSkillProgress(sp.skill, subject, sp.masteryScore, sp.skillState, null, null, 'practice');
+            await this.upsertSkillProgress(sp.skill, subject, sp.masteryScore, sp.skillState, null, null, source);
           }
 
           this.showNotification(`${subject === 'Reading' ? 'English' : subject} practice complete! ${skillProgress.length} skills updated.`, 'success');

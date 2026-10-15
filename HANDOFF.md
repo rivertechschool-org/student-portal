@@ -35,6 +35,32 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-15 — Jordan's Claude (Math Dojo Hole Check; practice counts in the Belt Test)
+45 Belt Test questions settle about a third of a student's skills; the rest is assumed or
+unreached. Jordan chose to close that over time rather than lengthen the test:
+- **Hole Check** (new card on the Dojo mode screen, and a button on Belt Test results). It
+  carries on from the last Belt Test: 15 questions a sitting, skills near a miss first, then
+  every skill the Belt Test only assumed, then the "likely" ones. Nothing above the student's
+  level is asked. Each sitting rebuilds where the student stands from their saved answers, so
+  there is no extra storage and it resumes on any device. In the simulator a student is fully
+  checked in about 7–15 sittings, with 85–95% of planted holes found.
+- **Practice counts in the Belt Test.** A skill mastered in practice in the last 180 days is
+  taken as shown and not asked. Saved Belt Test results count only for the Hole Check, and
+  only from when this engine went live (the old one saved guesses as mastery). Mastery labelled
+  "manual" (old Belt Tests) is never trusted.
+- **The sites now tell the Dojo where each skill's evidence came from**, and the portal labels a
+  Dojo session by what it was (Belt Test, lesson, recall, practice). It labelled everything
+  "practice" before, Belt Tests included.
+- **Belt Tests could not test most of a skill.** 83 generators only asked the sub-skills a
+  student had unlocked through lessons, so a Belt Test asked "decimal place value" and never
+  adding or multiplying decimals. In a Belt Test or Hole Check every sub-skill is now in play.
+  The decimal generator also tags which sub-skill each question is, so "Decimal Operations"
+  can finally be shown.
+- A skill whose generator will not produce it is set aside after two tries in a sitting
+  (one was eating whole sittings). Four skills still have no question that reaches them:
+  Classifying Triangles, Trigonometric Ratios, Factoring Trinomials, Applications of
+  Derivatives. They need generators.
+
 ## 2026-10-14 — Jordan's Claude (Math Dojo Belt Test checks for holes)
 Jordan asked for a Belt Test that really looks for holes: cut off what was never seen and
 everything above it, let a harder skill prove the ones beneath it, and check anything that

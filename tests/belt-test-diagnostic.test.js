@@ -58,7 +58,9 @@ function makeGraph() {
   return { nodes, titleToId };
 }
 
-function freshEngine({ stored = {} } = {}) {
+// evidence: { A3: { p: 0.9, source: 'dojo', daysAgo: 7 } } - a saved record as
+// the sites save it. `at` (an ISO time) overrides daysAgo.
+function freshEngine({ stored = {}, evidence = {} } = {}) {
   const MATH_GRAPH_V2 = makeGraph();
   const generators = {}, Q_MATRIX = {};
   for (const [id, n] of Object.entries(MATH_GRAPH_V2.nodes)) {
@@ -72,16 +74,20 @@ function freshEngine({ stored = {} } = {}) {
     : p * 0.1 / (p * 0.1 + (1 - p) * 0.8);
   const skillTreeData = { skills: {} };
   for (const [id, p] of Object.entries(stored)) skillTreeData.skills['Skill ' + id] = { p_mastered: p };
+  for (const [id, ev] of Object.entries(evidence)) {
+    skillTreeData.skills['Skill ' + id] = { p_mastered: ev.p, source: ev.source,
+      last_evidence_at: ev.at || new Date(Date.now() - (ev.daysAgo ?? 1) * 864e5).toISOString() };
+  }
   const _rawStoredP = t => (skillTreeData.skills[t] && skillTreeData.skills[t].p_mastered) || 0;
   const state = {};
   const sessionData = {};
   const writes = {};
-  const setMasteryProbability = (t, p) => { writes[t] = p; };
+  const setMasteryProbability = (t, p, at, source) => { writes[t] = p; (writes._source = writes._source || {})[t] = source; };
   // Typed from tier 5 up, as the page decides.
   const shouldTypeAnswer = (q, tier) => tier >= 5;
   const api = new Function('MATH_GRAPH_V2', 'generators', 'Q_MATRIX', 'BKT_PARAMS', 'bktUpdate', '_rawStoredP',
     'state', 'sessionData', 'setMasteryProbability', 'shouldTypeAnswer', 'skillTreeData',
-    engineSrc + '\nreturn { initDiagnostic, diagProcessAnswer, pickDiagnosticCandidate, shouldStopDiagnostic, diagClassify, diagDerivedBelt, diagHoleReport, diagCommitBeliefs, DIAG };')
+    engineSrc + '\nreturn { initDiagnostic, diagProcessAnswer, pickDiagnosticCandidate, shouldStopDiagnostic, diagClassify, diagDerivedBelt, diagHoleReport, diagCommitBeliefs, diagStillToCheck, diagStoredEvidence, DIAG };')
     (MATH_GRAPH_V2, generators, Q_MATRIX, BKT_PARAMS, bktUpdate, _rawStoredP, state, sessionData, setMasteryProbability, shouldTypeAnswer, skillTreeData);
   const N = MATH_GRAPH_V2.nodes;
   const answer = (id, outcome, time = 8) => api.diagProcessAnswer(
@@ -224,6 +230,108 @@ console.log('\nBelt Test diagnostic rules');
   check('only skills with evidence are written back', !('Skill C2' in e.writes) && ('Skill A6' in e.writes) && ('Skill A5' in e.writes),
     Object.keys(e.writes).join(', '));
   check('a skill ruled out from below keeps whatever it had', !('Skill C2' in e.writes));
+}
+
+// ---- Saved evidence: practice counts, and the Hole Check carries on --------
+
+console.log('\nSaved evidence and the Hole Check');
+
+{
+  const e = freshEngine({ evidence: { A3: { p: 0.92, source: 'dojo', daysAgo: 10 } } });
+  e.api.initDiagnostic(4);
+  const d = e.state.diag;
+  check('a skill mastered in practice counts as known in the Belt Test', d.status.A3 === 'known' && d.how.A3 === 'practice', JSON.stringify({ s: d.status.A3, how: d.how.A3 }));
+  let askedA3 = false;
+  for (let i = 0; i < 30 && !e.api.shouldStopDiagnostic(); i++) {
+    const c = e.api.pickDiagnosticCandidate(); if (!c) break;
+    if (c.nodeId === 'A3') askedA3 = true;
+    e.answer(c.nodeId, 'correct');
+  }
+  check('and is not asked again', !askedA3);
+  const e2 = freshEngine({ evidence: { A6: { p: 0.95, source: 'dojo', daysAgo: 3 } } });
+  e2.api.initDiagnostic(4);
+  check('a saved answer does not go on to prove the skills beneath it', e2.state.diag.status.A5 !== 'known', e2.state.diag.status.A5);
+}
+
+{
+  const e = freshEngine({ evidence: {
+    A1: { p: 0.95, source: 'manual', daysAgo: 3 },                       // old Belt Tests saved as manual
+    A2: { p: 0.95, source: 'belt_test', at: '2026-10-10T12:00:00Z' },    // before this engine
+    B3: { p: 0.95, source: 'dojo', daysAgo: 400 },                       // too old
+    C1: { p: 0.95, source: 'belt_test', daysAgo: 0 },                    // a Belt Test, not practice
+  } });
+  e.api.initDiagnostic(3);
+  const st = e.state.diag.status;
+  check('mastery saved as "manual" is not trusted', st.A1 !== 'known');
+  check('a Belt Test from before this engine is not trusted', st.A2 !== 'known' && e.api.diagStoredEvidence('Skill A2') === null);
+  check('practice older than the limit is not trusted', st.B3 !== 'known');
+  check('a Belt Test does not seed the next Belt Test (it re-measures)', st.C1 !== 'known');
+  const ev = e.api.diagStoredEvidence('Skill C1');
+  check('but the Hole Check carries on from it', ev && ev.kind === 'test');
+}
+
+{
+  // A saved Belt Test: A1..A3 and B3 shown, A4 a confirmed hole, C1 missed once.
+  const e = freshEngine({ evidence: {
+    A1: { p: 0.97, source: 'belt_test', daysAgo: 0 }, A2: { p: 0.97, source: 'belt_test', daysAgo: 0 },
+    A3: { p: 0.97, source: 'belt_test', daysAgo: 0 }, A4: { p: 0.04, source: 'belt_test', daysAgo: 0 },
+    C1: { p: 0.30, source: 'belt_test', daysAgo: 0 }, B3: { p: 0.97, source: 'belt_test', daysAgo: 0 },
+  } });
+  e.api.initDiagnostic(1, { holeCheck: true });
+  const d = e.state.diag;
+  check('the Hole Check starts from the saved level', d.ceiling === 3, 'ceiling ' + d.ceiling);
+  check('saved known skills stay known', d.status.A3 === 'known' && d.how.A3 === 'earlier');
+  check('a saved confirmed hole still rules out what is built on it', d.status.A5 === 'blocked' && d.status.A6 === 'blocked', JSON.stringify(d.status));
+  const asked = [];
+  for (let i = 0; i < 40 && !e.api.shouldStopDiagnostic(); i++) {
+    const c = e.api.pickDiagnosticCandidate(); if (!c) break;
+    asked.push(c.nodeId);
+    e.answer(c.nodeId, 'correct');
+  }
+  check('a skill missed once last time is asked again', asked.includes('C1'), asked.join(','));
+  check('saved known skills are not asked again', !asked.includes('A3') && !asked.includes('A1'), asked.join(','));
+  check('nothing above the level is asked', !asked.some(id => e.N[id].dt > 3), asked.join(','));
+  e.api.diagCommitBeliefs();
+  check('only what this sitting asked is written back', !('Skill A1' in e.writes) && ('Skill C1' in e.writes), Object.keys(e.writes).join(','));
+  check('and it is labelled as a test', e.writes._source['Skill C1'] === 'belt_test');
+}
+
+{
+  // Level 3 with A4 (tier 4) unsettled: the Hole Check stays at or below 3.
+  const e = freshEngine({ evidence: {
+    A1: { p: 0.97, source: 'belt_test', daysAgo: 0 }, A2: { p: 0.97, source: 'belt_test', daysAgo: 0 },
+    A3: { p: 0.97, source: 'belt_test', daysAgo: 0 }, B3: { p: 0.97, source: 'belt_test', daysAgo: 0 },
+  } });
+  e.api.initDiagnostic(1, { holeCheck: true });
+  const asked = [];
+  for (let i = 0; i < 40 && !e.api.shouldStopDiagnostic(); i++) {
+    const c = e.api.pickDiagnosticCandidate(); if (!c) break;
+    asked.push(c.nodeId); e.answer(c.nodeId, 'correct');
+  }
+  check('the Hole Check does not climb above the level', !asked.includes('A4') && !asked.includes('A5'), asked.join(','));
+  check('and asks what is left beneath it', asked.includes('C1') || asked.includes('C2'), asked.join(','));
+}
+
+{
+  const e = freshEngine({ evidence: { A3: { p: 0.97, source: 'belt_test', daysAgo: 0 } } });
+  e.api.DIAG.HOLE_CHECK_ITEMS = 3;
+  e.api.initDiagnostic(1, { holeCheck: true });
+  let n = 0;
+  while (!e.api.shouldStopDiagnostic() && n < 50) { const c = e.api.pickDiagnosticCandidate(); if (!c) break; e.answer(c.nodeId, 'wrong'); n++; }
+  check('a Hole Check sitting stops at its length', n === 3, 'asked ' + n);
+  e.api.DIAG.HOLE_CHECK_ITEMS = 15;
+}
+
+{
+  const e = freshEngine();
+  e.api.initDiagnostic(5);
+  e.answer('A5', 'correct');                 // typed, at the level: proves A4 and A3
+  e.answer('A3', 'correct');                 // multiple choice
+  e.api.diagCommitBeliefs();
+  const d = e.state.diag;
+  check('a skill that was asked is saved with its own answers, not the proof',
+    Math.abs(e.writes['Skill A3'] - d.own.A3) < 1e-9 && d.eff.A3 > d.own.A3, JSON.stringify({ saved: e.writes['Skill A3'], own: d.own.A3, eff: d.eff.A3 }));
+  check('a skill only proven is saved as proven', Math.abs(e.writes['Skill A4'] - d.eff.A4) < 1e-9, JSON.stringify({ saved: e.writes['Skill A4'], eff: d.eff.A4, st: d.status.A4, tested: d.tested.A4 }));
 }
 
 {

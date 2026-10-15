@@ -1083,7 +1083,18 @@
                         <div class="mode-feature"><span class="check">✓</span> Adaptive difficulty</div>
                         <div class="mode-feature"><span class="check">✓</span> Earn your belt rank</div>
                         <div class="mode-feature"><span class="check">✓</span> Weakness analysis</div>
-                        <div class="mode-feature"><span class="check">✓</span> 20-40 adaptive challenges</div>
+                        <div class="mode-feature"><span class="check">✓</span> 20-45 adaptive challenges</div>
+                    </div>
+                </div>
+                <div class="mode-card placement" onclick="selectMode('holecheck')">
+                    <div class="mode-icon">🔍</div><h3>Hole Check</h3>
+                    <div class="mode-subtitle">Leave No Gaps</div>
+                    <div class="mode-description">Carry on from your Belt Test, checking the skills it did not get to.</div>
+                    <div class="mode-features">
+                        <div class="mode-feature"><span class="check">✓</span> 15 questions a sitting</div>
+                        <div class="mode-feature"><span class="check">✓</span> Picks up where you left off</div>
+                        <div class="mode-feature"><span class="check">✓</span> Finds holes below your level</div>
+                        <div class="mode-feature"><span class="check">✓</span> Skips what you have shown</div>
                     </div>
                 </div>
                 <div class="mode-card learning" onclick="selectMode('learning')">
@@ -1149,6 +1160,12 @@
                 <div class="level-card" onclick="selectLevel(this, 7)"><h3>High School</h3><div class="grades">Grades 9-12</div><div class="tiers">Starts at Tier 7</div><div class="tier-list">Algebra II • Geometry<br>Pre-Calculus • Trigonometry</div></div>
             </div>
             <div style="display:flex;gap:1rem;justify-content:center"><button class="btn btn-ghost" onclick="goToModeSelect()">← Back</button><button id="start-placement-btn" class="btn btn-primary" onclick="startPlacementTest()" disabled>Begin Belt Test</button></div>
+        </div>
+
+        <div id="holecheck-setup-screen" class="screen">
+            <header class="header"><div class="header-badge badge-placement">Hole Check</div><h1>🔍 Hole Check</h1><p>Carry on from your Belt Test</p></header>
+            <div id="holecheck-setup-body" style="max-width:640px;margin:0 auto 2rem;text-align:center;color:var(--slate-300)"></div>
+            <div style="display:flex;gap:1rem;justify-content:center"><button class="btn btn-ghost" onclick="goToModeSelect()">← Back</button><button id="start-holecheck-btn" class="btn btn-primary" onclick="startHoleCheck()" disabled>Begin</button></div>
         </div>
 
         <div id="testing-setup-screen" class="screen">
@@ -4740,11 +4757,14 @@ function getMasteryProbability(skillName) {
 // legacy mastery_score and state fields in sync. State upgrades only — a
 // single wrong answer shouldn't visually demote a student who'd already
 // earned mastered status; the underlying p_mastered captures the dip.
-function setMasteryProbability(skillName, newP, timestamp) {
+function setMasteryProbability(skillName, newP, timestamp, source) {
     if (!skillTreeData.skills[skillName]) skillTreeData.skills[skillName] = {};
     const skill = skillTreeData.skills[skillName];
     skill.p_mastered = newP;
     skill.last_evidence_at = timestamp;
+    // Where the evidence came from, with the labels the sites save, so the
+    // Belt Test can tell practice from a test (diagStoredEvidence).
+    if (source) skill.source = source;
     skill.mastery_score = Math.round(newP * 100);
     const derivedState = stateFromP(newP);
     const rank = { 'locked': 0, 'available': 1, 'in_progress': 2, 'activated': 3, 'needs_review': 3, 'mastered': 4 };
@@ -4764,15 +4784,18 @@ function applyBktToTaggedSkills(q, correct) {
     if (!q || !q.skillTags || !q.skillTags.primary_skill) return [];
     const now = new Date().toISOString();
     const updates = [];
+    // The same labels the host saves the session under.
+    const source = state.mode === 'placement' ? 'belt_test' : state.mode === 'retention' ? 'recall'
+        : state.mode === 'learning' ? 'lesson' : 'dojo';
     const primary = q.skillTags.primary_skill;
     const oldPrimary = getMasteryProbability(primary);
     const newPrimary = bktUpdate(oldPrimary, correct);
-    setMasteryProbability(primary, newPrimary, now);
+    setMasteryProbability(primary, newPrimary, now, source);
     updates.push({ skill: primary, weight: 1, oldP: oldPrimary, newP: newPrimary });
     for (const sec of (q.skillTags.secondary_skills || [])) {
         const oldP = getMasteryProbability(sec);
         const newP = bktUpdateWeighted(oldP, correct, BKT_PARAMS.SECONDARY_WEIGHT);
-        setMasteryProbability(sec, newP, now);
+        setMasteryProbability(sec, newP, now, source);
         updates.push({ skill: sec, weight: BKT_PARAMS.SECONDARY_WEIGHT, oldP, newP });
     }
     // Track which skills were touched this session so endSessionTracking
@@ -5132,17 +5155,46 @@ const DIAG = {
     GUESS_TYPED: 0.03,
     NEVER_P: 0.02,
     FORGOT_P: 0.25,
-    PRIOR_CAP: 0.70,
+    PRIOR_CAP: 0.70,       // where the test starts never counts as known
     EVIDENCE_START: 0.5,
-    LIKELY_P: 0.75,        // one right multiple-choice answer from even odds       // where the test starts never counts as known
-    STORED_CAP: 0.75,      // nor does an earlier session: it is re-checked
+    LIKELY_P: 0.75,        // one right multiple-choice answer from even odds
+    STORED_CAP: 0.75,      // nor does an earlier session's guess: it is re-checked
     HOP_WEIGHT: [0, 1, 0.9, 0.6], // proof strength by steps down; deeper uses DEEP_WEIGHT
     DEEP_WEIGHT: 0.35,
     ASSUME_BELOW: 2,       // tiers below the student's level where a quiet skill may be assumed
     MAX_PER_SKILL: 2,      // asked once, and once more after a miss
     CLIMB_ITEMS: 12,       // questions spent finding the level before the sweep
     SPOT_CHECKS: 6,        // assumed skills audited at random
+    HOLE_CHECK_ITEMS: 15,  // one Hole Check sitting
+    // Saved evidence the tests can stand on (see diagStoredEvidence). Belt Test
+    // results count from when this engine went live; the one before inferred
+    // mastery it never asked about. Practice counts from when the sites began
+    // labelling where a skill's evidence came from.
+    EVIDENCE_MAX_AGE_DAYS: 180,
+    TRUST_TESTS_SINCE: '2026-10-15T01:10:00Z',
+    TRUST_PRACTICE_SINCE: '2026-10-02T00:00:00Z',
+    PRACTICE_SOURCES: ['dojo', 'practice', 'lesson', 'recall', 'game', 'homework', 'mathletics', 'math-tutor', 'teacher'],
 };
+
+// What a skill's saved record can be trusted for, if anything:
+//   { p, kind: 'practice' }  answered in practice (a lesson, the arena, a game...)
+//   { p, kind: 'test' }      answered or proven in a Belt Test or Hole Check
+//   null                     no answers behind it, too old, or from before the
+//                            labels could be trusted (old Belt Tests saved
+//                            guesses as mastery)
+function diagStoredEvidence(title) {
+    const s = skillTreeData.skills[title];
+    if (!s || typeof s.p_mastered !== 'number' || !s.last_evidence_at) return null;
+    const at = Date.parse(s.last_evidence_at);
+    if (!at || Date.now() - at > DIAG.EVIDENCE_MAX_AGE_DAYS * 864e5) return null;
+    if (s.source === 'belt_test' || s.source === 'placement') {
+        return at >= Date.parse(DIAG.TRUST_TESTS_SINCE) ? { p: s.p_mastered, kind: 'test' } : null;
+    }
+    if (DIAG.PRACTICE_SOURCES.includes(s.source)) {
+        return at >= Date.parse(DIAG.TRUST_PRACTICE_SINCE) ? { p: s.p_mastered, kind: 'practice' } : null;
+    }
+    return null;
+}
 
 // Ancestors and descendants of every skill with their step distance, built once.
 let _diagGraph = null;
@@ -5207,11 +5259,33 @@ function buildDiagCandidates() {
             const nodeId = MATH_GRAPH_V2.titleToId[Q_MATRIX[key].primary_skill];
             if (!nodeId || (byNode[nodeId] && byNode[nodeId].some(c => c.domain === m[2]))) continue;
             const c = { tier, domain: m[2], key: `T${tier}::${m[2]}`, nodeId, primary: Q_MATRIX[key].primary_skill, single: true, viaSubtype: true };
+            if (!_diagSubtypeLands(c)) continue;
             cands.push(c);
             (byNode[nodeId] = byNode[nodeId] || []).push(c);
         }
     }
     return { cands, byNode };
+}
+
+// Does this generator ever produce the sub-type aimed at? Some Q-matrix
+// sub-type keys name a sub-type the generator never emits; aiming at those
+// can only ever ask the neighbouring skill, so they are not candidates.
+// Sampled once per page, with every sub-skill in play as in a test.
+const _diagLandCache = {};
+function _diagSubtypeLands(c) {
+    const k = `${c.tier}::${c.domain}::${c.nodeId}`;
+    if (k in _diagLandCache) return _diagLandCache[k];
+    const mode = state.mode;
+    state.mode = 'placement';
+    let hit = false;
+    try {
+        for (let i = 0; i < 30 && !hit; i++) {
+            const q = generateQuestion(c.tier, c.domain);
+            hit = !!(q && q.skillTags && MATH_GRAPH_V2.titleToId[q.skillTags.primary_skill] === c.nodeId);
+        }
+    } catch (e) { hit = false; }
+    state.mode = mode;
+    return (_diagLandCache[k] = hit);
 }
 
 // Where the test starts: a skill's distance from the student's working level.
@@ -5229,14 +5303,36 @@ function diagPrior(id) {
     return 0.05;
 }
 
-function initDiagnostic(startTier) {
+// opts.holeCheck: a Hole Check sitting. It carries on from the saved Belt Test
+// and practice evidence instead of starting over, and only sweeps at or below
+// the student's level. A Belt Test takes saved PRACTICE mastery as shown, so
+// it spends no questions on skills the student has been getting right.
+// Saved answers are SEEDED: they count as answers for everything but proof
+// (a skill the last test only proved does not go on to prove others) and are
+// never written back unless asked again, so a sitting cannot refresh them.
+function initDiagnostic(startTier, opts = {}) {
     const built = buildDiagCandidates();
     const stored = {};
+    const seeds = {};
+    const holeCheck = !!opts.holeCheck;
     for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
         const s = _rawStoredP(node.t);
         if (s > 0) stored[id] = s;
+        const ev = diagStoredEvidence(node.t);
+        if (!ev) continue;
+        if (holeCheck || (ev.kind === 'practice' && ev.p >= DIAG.MASTER_P)) seeds[id] = ev;
+    }
+    if (holeCheck) {
+        // Start from the highest tier the saved evidence shows.
+        let top = 1;
+        for (const [id, ev] of Object.entries(seeds)) if (ev.p >= 0.7 && MATH_GRAPH_V2.nodes[id].dt > top) top = MATH_GRAPH_V2.nodes[id].dt;
+        startTier = top;
     }
     state.diag = {
+        kind: holeCheck ? 'holecheck' : 'belt',
+        seeded: {},          // nodeId → 'practice' | 'test' (answered before this sitting)
+        asked: {},           // nodeId → times asked this sitting
+        unreachable: {},     // nodeId → times its generator missed it this sitting
         startTier,
         ceiling: startTier,  // the student's working level; moves with evidence
         stored,
@@ -5254,6 +5350,16 @@ function initDiagnostic(startTier) {
         _cands: built.cands,
         _byNode: built.byNode,
     };
+    const d = state.diag;
+    for (const [id, ev] of Object.entries(seeds)) {
+        d.seeded[id] = ev.kind;
+        d.tested[id] = 1;
+        d.own[id] = ev.p;
+        // A saved belief stands in for the answers behind it: high is a right
+        // answer, low a miss, very low a miss confirmed.
+        d.obs[id] = ev.p >= 0.5 ? { c: 1, w: 0, never: 0, forgot: 0 }
+            : { c: 0, w: ev.p <= DIAG.OUT_P ? 2 : 1, never: 0, forgot: 0 };
+    }
     diagGraph();
     diagRecompute();
 }
@@ -5346,6 +5452,8 @@ function diagRecompute() {
     for (const D of Object.keys(d.tested)) {
         const pD = d.own[D];
         if (!(pD > 0.5)) continue;
+        // A saved answer proves nothing further: it may itself have been a proof.
+        if (d.seeded[D] && !d.asked[D]) continue;
         for (const [a, h] of G.anc[D]) {
             const w = h < DIAG.HOP_WEIGHT.length ? DIAG.HOP_WEIGHT[h] : DIAG.DEEP_WEIGHT;
             proof[a] = (proof[a] === undefined ? 1 : proof[a]) * (1 - w * pD);
@@ -5412,7 +5520,8 @@ function diagRecompute() {
             d.status[id] = 'known';
             const pr = proof[id] === undefined ? 1 : proof[id];
             const ownStrong = d.tested[id] && d.own[id] >= DIAG.MASTER_P;
-            d.how[id] = ownStrong || pr === 1 ? 'direct' : 'proven';
+            d.how[id] = d.seeded[id] && !d.asked[id] ? (d.seeded[id] === 'practice' ? 'practice' : 'earlier')
+                : ownStrong || pr === 1 ? 'direct' : 'proven';
             if (d.how[id] === 'proven' && provenBy[id]) d.provenBy[id] = provenBy[id].by;
         } else if (d.tested[id] ? e <= DIAG.OUT_P : (cap[id] !== undefined && cap[id] <= DIAG.OUT_P)) {
             d.status[id] = d.tested[id] ? 'gap' : 'blocked';
@@ -5472,6 +5581,7 @@ function diagProcessAnswer(q, outcome, time) {
     // alone, one right typed answer is.
     if (d.own[nodeId] === undefined) d.own[nodeId] = Math.min(diagPrior(nodeId), DIAG.EVIDENCE_START);
     d.tested[nodeId] = (d.tested[nodeId] || 0) + 1;
+    d.asked[nodeId] = (d.asked[nodeId] || 0) + 1;
     const o = _diagObs(nodeId);
     let p = d.own[nodeId];
 
@@ -5554,12 +5664,17 @@ function _diagAskable(id) {
 //   SPOT   a few assumed skills, audited, preferring ones nothing above can
 //          prove. One that fails makes its neighbours open again.
 //   FRONTIER the tier above, with what is left, until it is clearly not theirs.
+// A Hole Check sitting has no climb and no frontier: it sweeps the open
+// skills, then works through every assumed skill (closest to the level
+// first), then re-asks the "likely" ones, so over a few sittings everything
+// at or below the level is asked.
 function _diagScored() {
     const d = state.diag;
     const G = diagGraph();
     const N = MATH_GRAPH_V2.nodes;
     const open = id => d.status[id] === 'open';
-    const climbing = d.items < DIAG.CLIMB_ITEMS;
+    const holeCheck = d.kind === 'holecheck';
+    const climbing = !holeCheck && d.items < DIAG.CLIMB_ITEMS;
     const frontierDone = t => (d.tierMissed[t] || 0) >= 3 && (d.tierKnown[t] || 0) < 2 * (d.tierMissed[t] || 0);
     const scored = [];
     const seen = new Set();
@@ -5569,6 +5684,7 @@ function _diagScored() {
         seen.add(id);
         if (!(d._byNode[id] && d._byNode[id].length)) continue;
         if ((d.tested[id] || 0) >= DIAG.MAX_PER_SKILL) continue;
+        if ((d.unreachable[id] || 0) >= 2) continue;
         const dt = N[id].dt;
         let st = d.status[id];
         if (st === 'likely' && !climbing && dt <= d.ceiling && (d.tested[id] || 0) < 2
@@ -5589,10 +5705,16 @@ function _diagScored() {
         } else if (st === 'open' && dt <= d.ceiling) {
             const closeness = 1 / (1 + Math.max(0, d.ceiling - dt) * 0.35);
             score = 10 + settle * closeness * (d.risk[id] ? 3 : 1); kind = 'sweep';
+        } else if (st === 'assumed' && !d.tested[id] && holeCheck) {
+            const closeness = 1 / (1 + Math.max(0, d.ceiling - dt) * 0.35);
+            const unprovable = !(N[id].dep || []).length ? 1.5 : 1;
+            score = 1 + 2 * closeness * unprovable; kind = 'spot';
         } else if (st === 'assumed' && !d.tested[id] && !climbing && (d.spot || 0) < DIAG.SPOT_CHECKS) {
             const unprovable = !(N[id].dep || []).length ? 2 : 1;
             score = 1 + unprovable * (1 + Math.random()); kind = 'spot';
-        } else if (st === 'open' && dt === d.ceiling + 1 && !frontierDone(dt)) {
+        } else if (st === 'likely' && holeCheck && dt <= d.ceiling && !d.asked[id]) {
+            score = 0.5; kind = 'confirm';
+        } else if (st === 'open' && dt === d.ceiling + 1 && !holeCheck && !frontierDone(dt)) {
             score = 0.5 * settle; kind = 'frontier';
         } else continue;
         scored.push({ c, kind, score: score * staleness * diversity });
@@ -5613,6 +5735,26 @@ function selectNextDiagnosticItem() {
     return list[Math.floor(Math.random() * list.length)];
 }
 
+// A question that tests the skill the diagnostic aimed at. A generator picks
+// its sub-type at random, and some sub-types belong to another skill (the
+// decimal-operations generator also asks plain "Decimals"), so it is drawn
+// again until it lands. Without this a sitting could spend every question on
+// the neighbour and never reach the skill it was after.
+// A skill its generator will not reach after two tries in a sitting is set
+// aside for the rest of it, so it cannot soak up every question.
+function diagQuestionFor(cand) {
+    let q = null;
+    for (let tries = 0; tries < 40; tries++) {
+        const g = generateQuestion(cand.tier, cand.domain);
+        if (!g) continue;
+        q = g;
+        if (g.skillTags && MATH_GRAPH_V2.titleToId[g.skillTags.primary_skill] === cand.nodeId) return g;
+    }
+    const d = state.diag;
+    if (d) d.unreachable[cand.nodeId] = (d.unreachable[cand.nodeId] || 0) + 1;
+    return q;
+}
+
 // Next candidate to serve: re-checks and root-finding first, else the best question.
 function pickDiagnosticCandidate() {
     const d = state.diag;
@@ -5620,6 +5762,7 @@ function pickDiagnosticCandidate() {
     while (d.reprobe.length) {
         const target = d.reprobe.shift();
         if ((d.tested[target] || 0) >= DIAG.MAX_PER_SKILL) continue;
+        if ((d.unreachable[target] || 0) >= 2) continue;
         const st = d.status[target];
         if (st === 'known' || st === 'blocked' || (st === 'gap' && diagConfirmedGap(target))) continue;
         // Beyond the level now: a miss up there is not a hole, it is next to learn.
@@ -5634,7 +5777,7 @@ function pickDiagnosticCandidate() {
 function shouldStopDiagnostic() {
     const d = state.diag;
     if (!d) return true;
-    if (d.items >= DIAG.HARD_MAX) return true;
+    if (d.items >= (d.kind === 'holecheck' ? DIAG.HOLE_CHECK_ITEMS : DIAG.HARD_MAX)) return true;
     if (d.reprobe.some(id => (d.tested[id] || 0) < DIAG.MAX_PER_SKILL && d.status[id] === 'open')) return false;
     return _diagScored().length === 0;
 }
@@ -5722,11 +5865,33 @@ function diagCommitBeliefs() {
     const now = new Date().toISOString();
     if (!sessionData.bktTouched) sessionData.bktTouched = new Set();
     for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
-        const evidenced = d.tested[id] || d.status[id] === 'known';
-        if (!evidenced || !node.t) continue;
-        setMasteryProbability(node.t, d.eff[id], now);
+        if (!diagChangedThisSitting(id) || !node.t) continue;
+        if (!(d.tested[id] || d.status[id] === 'known')) continue;
+        // A skill that was asked keeps what its own answers say. Proof from a
+        // harder skill can make it known for this result, but saving that
+        // as if it were answered would let the next Hole Check read a lucky
+        // guess higher up as this skill's answer; it is confirmed there instead.
+        setMasteryProbability(node.t, d.tested[id] ? d.own[id] : d.eff[id], now, 'belt_test');
         sessionData.bktTouched.add(node.t);
     }
+}
+
+// Evidence this sitting produced: asked now, or newly proven by something asked
+// now. Saved answers that were only carried forward are not it.
+function diagChangedThisSitting(id) {
+    const d = state.diag;
+    if (d.asked[id]) return true;
+    return !d.seeded[id];
+}
+
+// What is still to check at or below the student's level: skills nothing has
+// settled (open), and skills only assumed. A Hole Check works through these.
+function diagStillToCheck() {
+    const d = state.diag;
+    if (!d) return [];
+    return Object.keys(MATH_GRAPH_V2.nodes).filter(id => MATH_GRAPH_V2.nodes[id].dt <= d.ceiling
+        && (d.status[id] === 'open' || d.status[id] === 'assumed')
+        && d._byNode[id] && d._byNode[id].length);
 }
 
 function renderDiagnosticReport() {
@@ -5752,16 +5917,31 @@ function renderDiagnosticReport() {
         + (list.length > max ? ` <span style="color:var(--slate-400)">+${list.length - max} more</span>` : '');
     const item = (icon, title, body) => `<div class="rec-item"><div class="rec-icon">${icon}</div><div class="rec-content"><h4>${title}</h4>${body}</div></div>`;
 
+    const fromPractice = b.mastered.filter(e => e.how === 'practice');
+    const fromEarlier = b.mastered.filter(e => e.how === 'earlier');
+    const toCheck = diagStillToCheck();
+    const atLevel = Object.keys(N).filter(id => N[id].dt <= d.ceiling && d._byNode[id] && d._byNode[id].length).length;
+
     // --- Summary → #recommendations ---
     const recs = document.getElementById('recommendations');
     if (recs) {
         let html = '';
         html += item('🎖️', `Belt: Tier ${belt}: ${TIERS[belt] ? esc(TIERS[belt].name) : ''}`,
-            `<p>The highest tier where that tier and every one below it hold up: at least 80% of the skills the test settled are known. ${d.items} question${d.items === 1 ? '' : 's'}.</p>`);
-        html += item('🥧', 'What the test found',
-            `<p><b>${shown.length}</b> shown directly · <b>${proven.length}</b> proven by a harder skill · <b>${b.likely.length}</b> likely (right once on multiple choice)`
+            `<p>The highest tier where that tier and every one below it hold up: at least 80% of the skills the test settled are known. ${d.items} question${d.items === 1 ? '' : 's'}${d.kind === 'holecheck' ? ' this sitting' : ''}.</p>`);
+        html += item('🥧', d.kind === 'holecheck' ? 'Where things stand' : 'What the test found',
+            `<p><b>${shown.length}</b> shown directly · <b>${proven.length}</b> proven by a harder skill`
+            + (fromPractice.length ? ` · <b>${fromPractice.length}</b> shown in practice` : '')
+            + (fromEarlier.length ? ` · <b>${fromEarlier.length}</b> from earlier checks` : '')
+            + ` · <b>${b.likely.length}</b> likely (right once on multiple choice)`
             + ` · <b>${b.assumed.length}</b> assumed, not checked · <b>${holes.length}</b> hole${holes.length === 1 ? '' : 's'}`
             + (blocked.length ? ` · <b>${blocked.length}</b> skipped (built on a hole)` : '') + `</p>`);
+        // The Hole Check: how much at or below their level is still unchecked.
+        const checked = atLevel - toCheck.length;
+        const bar = `<div style="height:8px;background:var(--slate-700,#334155);border-radius:4px;overflow:hidden;margin:.4rem 0"><div style="height:100%;width:${atLevel ? Math.round(checked / atLevel * 100) : 100}%;background:var(--cyan-500,#06b6d4)"></div></div>`;
+        html += item('🔍', 'Hole Check', toCheck.length
+            ? `<p><b>${checked}</b> of <b>${atLevel}</b> skills at or below Tier ${d.ceiling} settled. <b>${toCheck.length}</b> still to check, ${DIAG.HOLE_CHECK_ITEMS} questions a sitting, picking up where this left off.</p>${bar}`
+              + `<button class="btn btn-primary" onclick="startHoleCheck()">Check for holes (${Math.min(DIAG.HOLE_CHECK_ITEMS, toCheck.length)} questions)</button>`
+            : `<p>Everything at or below Tier ${d.ceiling} has been checked.</p>${bar}`);
         if (proven.length) {
             const pairs = proven.slice(0, 8).map(e => `${esc(e.title)} <span style="color:var(--slate-400)">← ${esc(N[e.provenBy] ? N[e.provenBy].t : '')}</span>`).join(' · ');
             html += item('🔗', 'Proven by a harder skill', `<p>${pairs}${proven.length > 8 ? ` <span style="color:var(--slate-400)">+${proven.length - 8} more</span>` : ''}</p>`);
@@ -5839,6 +6019,8 @@ function applyDiagnosticToTree() {
     const N = MATH_GRAPH_V2.nodes;
     const results = { shown: [], proven: [], likely: [], practice: [], assumed: [], unverified: [], holes: diagHoleReport(), totalSkillsUpdated: 0 };
     for (const [id, node] of Object.entries(N)) {
+        // Saved answers carried forward unchanged were saved last time.
+        if (!diagChangedThisSitting(id)) continue;
         const st = d.status[id];
         const entry = { skill: node.t, tier: node.dt, by: d.provenBy[id] ? N[d.provenBy[id]].t : null };
         if (st === 'known') {
@@ -6500,6 +6682,15 @@ window.addEventListener('message', (event) => {
                      new Date(skill.last_practiced) > new Date(skillTreeData.skills[name].last_practiced)))) {
                     skillTreeData.skills[name] = { ...skillTreeData.skills[name], ...skill };
                 }
+                // The evidence (probability, when, from what) follows whichever
+                // copy answered most recently, so a Hole Check on another
+                // device starts from the latest answers.
+                const local = skillTreeData.skills[name];
+                if (skill.last_evidence_at && (!local.last_evidence_at || Date.parse(skill.last_evidence_at) > Date.parse(local.last_evidence_at))) {
+                    local.last_evidence_at = skill.last_evidence_at;
+                    if (typeof skill.p_mastered === 'number') local.p_mastered = skill.p_mastered;
+                    if (skill.source) local.source = skill.source;
+                }
             });
             skillTreeData.lastSync = Date.now();
             saveSkillTreeData();
@@ -6917,6 +7108,19 @@ function typedAnswerIsCorrect(userInput, expectedOrQuestion) {
 // (most generators) or an array of types (some generators like Equations).
 // If `state` hasn't been initialised yet, completed is treated as empty.
 function getUnlockedSubSkillTypes(lessonKey, map, orderedSubSkillIds) {
+    // A Belt Test or Hole Check measures the whole skill, not how far the
+    // lessons have got: every sub-skill's question types are in play, evenly.
+    // Before this a student who had not done the lessons was only ever asked
+    // the first sub-skill of 83 generators (decimal "place value", never
+    // adding or multiplying decimals), so those parts could not be tested.
+    if (typeof state !== 'undefined' && state.mode === 'placement') {
+        const all = [];
+        for (const id of orderedSubSkillIds) {
+            const m = map[id];
+            if (Array.isArray(m)) all.push(...m); else if (m) all.push(m);
+        }
+        if (all.length) return all;
+    }
     const completed = (typeof state !== 'undefined' && state.completedSubSkills && state.completedSubSkills[lessonKey]) || [];
     const completedSet = new Set(completed);
     const current = orderedSubSkillIds.find(id => !completedSet.has(id));
@@ -10318,6 +10522,11 @@ const generators = {
             let availableOps = getUnlockedSubSkillTypes('3_Decimal Operations', subSkillToOp, subSkillOrder);
             const op = pick(availableOps);
             const a = (rand(10, 99) / 10).toFixed(1), b = (rand(10, 99) / 10).toFixed(1);
+            // Each question says which sub-skill it is (q.subType), so its
+            // evidence goes to the right skill: adding, subtracting and
+            // multiplying decimals are Decimal Operations; place value is Decimals.
+            const subType = { understand: 'understanding', '+': 'add', '-': 'subtract', '×': 'multiply' }[op];
+            const q = (() => {
 
             if (op === 'understand') {
                 const PLACES = ['tenths', 'hundredths', 'thousandths'];
@@ -10370,6 +10579,9 @@ const generators = {
             else answer = (parseFloat(a) * parseFloat(b)).toFixed(2);
             return { question: `What is ${a} ${op} ${b}?`, answer: parseFloat(answer), type: "procedural",
                 explanation: `${a} ${op} ${b} = ${answer}` };
+            })();
+            if (q) q.subType = subType;
+            return q;
         },
         Integers: () => {
             // Map sub-skill IDs to operations
@@ -42928,7 +43140,53 @@ function selectMode(mode) {
     } else if (mode === 'progress') {
         initProgressSetup();
         document.getElementById('progress-setup-screen').classList.add('active');
+    } else if (mode === 'holecheck') {
+        initHoleCheckSetup();
+        document.getElementById('holecheck-setup-screen').classList.add('active');
     }
+}
+
+// The Hole Check setup: rebuild where the student stands from their saved
+// evidence (nothing is asked or saved here) and say what is left.
+function initHoleCheckSetup() {
+    const body = document.getElementById('holecheck-setup-body');
+    const btn = document.getElementById('start-holecheck-btn');
+    initDiagnostic(1, { holeCheck: true });
+    const d = state.diag;
+    const fromTest = Object.values(d.seeded).filter(k => k === 'test').length;
+    const toCheck = diagStillToCheck();
+    state.diag = null;
+    if (!fromTest) {
+        body.innerHTML = '<p>The Hole Check carries on from a Belt Test, and there is no recent one to carry on from.</p>'
+            + '<p><button class="btn btn-primary" onclick="goToModeSelect();selectMode(\'placement\')">Take the Belt Test</button></p>';
+        btn.disabled = true;
+        return;
+    }
+    body.innerHTML = toCheck.length
+        ? `<p>Your level is Tier ${d.ceiling}. <b>${toCheck.length}</b> skill${toCheck.length === 1 ? '' : 's'} at or below it have not been checked yet.</p>`
+          + `<p>Each sitting asks up to ${DIAG.HOLE_CHECK_ITEMS} questions, starting with anything near a miss, and picks up where the last one stopped. Skills you have already shown are skipped.</p>`
+        : `<p>Everything at or below Tier ${d.ceiling} has been checked. Take the Belt Test again to look further up.</p>`;
+    btn.disabled = !toCheck.length;
+}
+
+// One Hole Check sitting: the Belt Test's machinery (questions, both "I don't
+// know" buttons, saving under the Belt Test's label), seeded from saved
+// evidence, with no climb and a 15-question sitting.
+function startHoleCheck() {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    resetState();
+    state.mode = 'placement';
+    initScores();
+    state.placementPhase = 'initial';
+    state.gapProbeQueue = [];
+    state.gapProbeIndex = 0;
+    state.gapProbeStats = { questionsAsked: 0, probedDomains: new Set() };
+    startSessionTracking('placement');
+    initDiagnostic(1, { holeCheck: true });
+    state.currentTier = state.diag.ceiling;
+    setupTestUI(false);
+    document.getElementById('test-screen').classList.add('active');
+    loadQuestion();
 }
 
 function goToModeSelect() {
@@ -43567,7 +43825,7 @@ function loadQuestion() {
         if (shouldStopDiagnostic()) { endTest(); return; }
         const cand = pickDiagnosticCandidate();
         if (!cand) { endTest(); return; }
-        const q = generateQuestion(cand.tier, cand.domain);
+        const q = diagQuestionFor(cand);
         if (!q) { endTest(); return; }
         state.currentQuestion = q;
         state.selectedAnswer = null;
@@ -45715,7 +45973,7 @@ function finishPlacementUI() {
     document.getElementById('test-screen').classList.remove('active');
     document.getElementById('results-screen').classList.add('active');
     document.getElementById('results-screen').classList.toggle('testing-center-results', state.mode === 'testing');
-    document.getElementById('results-title').textContent = state.mode === 'placement' ? 'Belt Test Results' : 'Practice Results';
+    document.getElementById('results-title').textContent = state.mode === 'placement' ? (state.diag && state.diag.kind === 'holecheck' ? 'Hole Check Results' : 'Belt Test Results') : 'Practice Results';
     renderResults(placement);
 
     // Apply belt test results to skill tree (for placement mode)
