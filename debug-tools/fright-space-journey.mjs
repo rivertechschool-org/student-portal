@@ -106,6 +106,17 @@ const [a, b] = [tickAt[Math.max(0, tickAt.length - 12)], tickAt[tickAt.length - 
 const tps = a && b && b[0] > a[0] ? (b[1] - a[1]) / ((b[0] - a[0]) / 1000) : 0;
 check(tps > 50 && tps < 70, `the game ran at ${tps.toFixed(0)} ticks a second (60 is real time)`);
 console.log(`     level 1: median ${med ? med.toFixed(1) : "?"} ms between frames (${med ? (1000 / med).toFixed(0) : "?"} fps) over ${raf.length} frames; sound blocks played: ${audio}`);
+// a restart (R, once the ghost has caught the idle player): level 1 again, with Bolchie's sheet
+// registered again - it once was not, and the restarted level had no player on screen
+const loads = () => lines.filter((l) => /loaded games\/fright-space\/worlds\/level1\.ron/.test(l)).length;
+const sheets = () => lines.filter((l) => /sheet "bolchie"/.test(l)).length;
+await inGame(`(w.focus(), w.document.getElementById("view").focus(), true)`);
+await send("Input.dispatchKeyEvent", { type: "keyDown", key: "r", code: "KeyR", windowsVirtualKeyCode: 82 });
+await sleep(200);
+await send("Input.dispatchKeyEvent", { type: "keyUp", key: "r", code: "KeyR", windowsVirtualKeyCode: 82 });
+for (let i = 0; i < 80 && loads() < 2; i++) await sleep(250);
+await sleep(1000);
+check(loads() >= 2 && sheets() >= 2, `R restarted level 1 with the player's sprite (${loads()} loads, ${sheets()} sprite sheets)`);
 if (shot) {
   const s = await send("Page.captureScreenshot", { format: "png" });
   writeFileSync(shot, Buffer.from(s.result.data, "base64"));
