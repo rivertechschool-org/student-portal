@@ -13816,40 +13816,19 @@
             );
           }
 
-          // Send email and in-app notification to each teacher (who opted in for email)
-          for (const teacher of teachers) {
-            // Always send in-app notification
-            await this.createNotificationFor(
-              teacher.id,
-              'strike',
-              `Student Strike: ${student.first_name} ${student.last_name}`,
-              `${student.first_name} ${student.last_name} has received a strike (${strikeCount}/3). Reason: ${reason}`,
-              null,
-              { studentId: studentId, strikeCount: strikeCount }
-            );
-
-            // Send email if opted in (default to false for teachers - must opt in)
-            const emailPrefs = teacher.email_notifications || {};
-            if (emailPrefs.strike_notifications === true) {
-              await this.sendEmailWithTracking(
-                teacher.email,
-                'strike_issued_staff',
-                {
-                  recipientName: teacher.first_name,
-                  studentName: `${student.first_name} ${student.last_name}`,
-                  strikeCount: strikeCount,
-                  reason: reason
-                },
-                { studentId, notificationType: 'strike' }
-              );
-            }
+          // Teachers of the student and every admin, each person once. An admin
+          // who also teaches the student is in both lists and used to get the
+          // in-app notification (and the email) twice.
+          const staff = new Map();
+          for (const p of [...teachers, ...(admins || [])]) {
+            if (p && p.id && !staff.has(p.id)) staff.set(p.id, p);
           }
 
-          // Send email and in-app notification to each admin (who opted in for email)
-          for (const admin of (admins || [])) {
-            // Always send in-app notification
+          for (const person of staff.values()) {
+            // Always send in-app notification. The bell reads by auth uid,
+            // which is not always the profile id.
             await this.createNotificationFor(
-              admin.id,
+              await this._resolveNotifyUserId(person.id),
               'strike',
               `Student Strike: ${student.first_name} ${student.last_name}`,
               `${student.first_name} ${student.last_name} has received a strike (${strikeCount}/3). Reason: ${reason}`,
@@ -13857,14 +13836,14 @@
               { studentId: studentId, strikeCount: strikeCount }
             );
 
-            // Send email if opted in (default to false for admins - must opt in)
-            const emailPrefs = admin.email_notifications || {};
+            // Send email if opted in (default to false for staff - must opt in)
+            const emailPrefs = person.email_notifications || {};
             if (emailPrefs.strike_notifications === true) {
               await this.sendEmailWithTracking(
-                admin.email,
+                person.email,
                 'strike_issued_staff',
                 {
-                  recipientName: admin.first_name,
+                  recipientName: person.first_name,
                   studentName: `${student.first_name} ${student.last_name}`,
                   strikeCount: strikeCount,
                   reason: reason
