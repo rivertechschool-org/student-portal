@@ -90,8 +90,8 @@ function freshEngine({ stored = {}, evidence = {} } = {}) {
     engineSrc + '\nreturn { initDiagnostic, diagProcessAnswer, pickDiagnosticCandidate, shouldStopDiagnostic, diagClassify, diagDerivedBelt, diagHoleReport, diagCommitBeliefs, diagStillToCheck, diagStoredEvidence, DIAG };')
     (MATH_GRAPH_V2, generators, Q_MATRIX, BKT_PARAMS, bktUpdate, _rawStoredP, state, sessionData, setMasteryProbability, shouldTypeAnswer, skillTreeData);
   const N = MATH_GRAPH_V2.nodes;
-  const answer = (id, outcome, time = 8) => api.diagProcessAnswer(
-    { skillTags: { primary_skill: N[id].t }, tier: N[id].dt, timeExpected: 20 }, outcome, time);
+  const answer = (id, outcome, time = 8, options) => api.diagProcessAnswer(
+    { skillTags: { primary_skill: N[id].t }, tier: N[id].dt, timeExpected: 20, options }, outcome, time);
   return { api, state, N, answer, writes, sessionData };
 }
 
@@ -230,6 +230,17 @@ console.log('\nBelt Test diagnostic rules');
   check('only skills with evidence are written back', !('Skill C2' in e.writes) && ('Skill A6' in e.writes) && ('Skill A5' in e.writes),
     Object.keys(e.writes).join(', '));
   check('a skill ruled out from below keeps whatever it had', !('Skill C2' in e.writes));
+}
+
+{
+  // A Yes/No question is a coin toss: right once is not even "likely".
+  const e = freshEngine();
+  e.api.initDiagnostic(3);
+  e.answer('A3', 'correct', 8, ['Yes', 'No']);
+  e.answer('B3', 'correct', 8, ['a', 'b', 'c', 'd']);
+  const d = e.state.diag;
+  check('a right Yes/No answer counts for less than a right four-way choice', d.own.A3 < d.own.B3 && d.status.A3 !== 'likely' && d.status.B3 === 'likely',
+    JSON.stringify({ yesNo: d.own.A3, four: d.own.B3, s: [d.status.A3, d.status.B3] }));
 }
 
 // ---- Saved evidence: practice counts, and the Hole Check carries on --------

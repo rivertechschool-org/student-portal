@@ -12,7 +12,7 @@
 //     asking it. These are the hardest holes to find in 45 questions.
 // Answers: a known skill is right 92% of the time (slips); an unknown one is
 // "never seen" when it is two or more tiers above the student, otherwise a
-// guess, which lands one time in four on multiple choice and 3% typed.
+// guess, which lands one time in however many options there are, and 3% typed.
 //
 // What it reports, per student type, averaged over the trials:
 //   items         questions asked
@@ -78,7 +78,7 @@ const rows = await page.evaluate(({ TRIALS }) => {
       let outcome;
       if (known.has(node)) outcome = rnd() < 0.92 ? 'correct' : 'wrong';
       else if (N[node].dt >= prof.level + 2 && rnd() < 0.7) outcome = 'never';
-      else outcome = rnd() < (shouldTypeAnswer(q, q.tier) ? 0.03 : 0.25) ? 'correct' : 'wrong';
+      else outcome = rnd() < (shouldTypeAnswer(q, q.tier) ? 0.03 : 1 / ((q.options && q.options.length) || 4)) ? 'correct' : 'wrong';
       diagProcessAnswer(q, outcome, 8 + rnd() * 8);
       n++;
     }

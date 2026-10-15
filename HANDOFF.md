@@ -35,6 +35,32 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-15 — Jordan's Claude (Math Dojo: every skill can be tested)
+The four skills no question reached all had questions; the question map sent their answers
+elsewhere. Every skill in the graph can now be tested, and the map validator
+(`tools/validate-q-matrix.js`) is clean for the first time.
+- **Factoring Trinomials**: the Tier 5 Factoring questions credited "Factoring", which is not a
+  skill, so those answers went nowhere. Trinomials now credit Factoring Trinomials, difference of
+  squares credits Difference of Squares. New in a Belt Test or Hole Check: negative roots and a
+  leading coefficient (2x² + 7x + 3), which the skill includes and the lesson does not teach yet.
+- **Classifying Triangles**: Tier 6 Triangles credited the Tier 4 Pythagorean skill, and its
+  "classify" questions were six fixed definitions. They now give a real triangle to classify by
+  angles, by sides, or both, plus "can a triangle be both right and isosceles?".
+- **Trigonometric Ratios**: the sin/cos/tan questions credited "Trigonometry" (the Tier 8 skill).
+  New in a Belt Test or Hole Check: a missing side from a ratio, the special angles from two
+  sides, and applied problems (ladder, ramp, kite), all whole-number answers.
+- **Applications of Derivatives** and **Investments and Growth**: questions credited names that
+  are not skills ("Applications", "Investments & Growth"). Remapped.
+- **A "Factor …" question needs a factored answer.** Typing the expression back was marked
+  right on every factoring question in the Dojo, because it is equal to the answer.
+- **The Belt Test weighs a multiple-choice guess by its options**: a right Yes/No answer is a
+  coin toss and counts for less than a right four-way choice.
+Checks: `debug-tools/dojo-new-skill-questions.mjs` (each answer recomputed from the question,
+no distractor also right, typed answers accepted, each question credits its skill).
+**Open:** the Factoring and Trigonometry lessons teach less than their skills; practice still
+follows the lessons, so signed and leading-coefficient trinomials and solving with ratios are
+only met in tests until lessons for them exist.
+
 ## 2026-10-15 — Jordan's Claude (Math Dojo Hole Check; practice counts in the Belt Test)
 45 Belt Test questions settle about a third of a student's skills; the rest is assumed or
 unreached. Jordan chose to close that over time rather than lengthen the test:
