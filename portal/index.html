@@ -47279,6 +47279,9 @@ Students you had withdrawn stay withdrawn.`)) {
         // Match Master needs to know which lesson it is copying INTO: "late"
         // means a different thing in period 1 than in period 6.
         this._classDailyPeriod = currentPeriod;
+        // And which DAY this copy is of. The button carries its own date and
+        // checks it against this before trusting what was loaded here.
+        this._classDailyDate = today;
 
         // Who is expected in late or out early on this date, and this
         // period's bell times, so each row can say whether THIS class is the
@@ -47528,7 +47531,7 @@ Students you had withdrawn stay withdrawn.`)) {
               ` : ''}
 
               <div style="display: flex; gap: 10px; margin-top: 20px;">
-                <button class="btn btn-secondary" onclick="app.matchClassToMaster()" style="flex: 1;">
+                <button class="btn btn-secondary" onclick="app.matchClassToMaster('${today}', ${currentPeriod === null ? 'null' : Number(currentPeriod)})" style="flex: 1;">
                   📋 Match Master
                 </button>
               </div>
@@ -47738,7 +47741,44 @@ Students you had withdrawn stay withdrawn.`)) {
       return 'present';
     }
 
-    matchClassToMaster() {
+    // The button carries the date and period of the register it sits on, and
+    // the day is fetched again for that date when it is pressed. What this
+    // screen loaded is not trusted on its own: it belongs to whichever load
+    // finished LAST, which is not always the one on screen (stepping through
+    // dates quickly overlaps loads), and the office may have marked the day
+    // since the register was opened. Copying another day's marks onto a past
+    // lesson is worse than copying nothing, so a failed fetch only falls back
+    // to the loaded copy when that copy is of the same day.
+    async matchClassToMaster(date = null, period = null) {
+      const day = date || this._classDailyDate || null;
+      const ids = [...document.querySelectorAll('.class-attendance-status')]
+        .map(f => f.dataset.studentId).filter(Boolean);
+      if (!ids.length) return;
+
+      if (day) {
+        try {
+          const rows = await this._pickupRpc('rt_daily_attendance_for', {
+            p_student_ids: ids,
+            p_date: day,
+          }) || [];
+          const byId = {};
+          for (const d of rows) byId[d.student_id] = d;
+          this._classDaily = byId;
+          this._classDailyDate = day;
+        } catch (e) {
+          console.warn('daily attendance unavailable:', e);
+          if (this._classDailyDate !== day) {
+            this.showNotification("Couldn't load the day's register for " + day + '. Nothing was changed.', 'error');
+            return;
+          }
+        }
+      }
+      if (date) this._classDailyPeriod = period;
+      this._applyMasterToClassRows();
+    }
+
+    // Pure on what is loaded: paint the day's marks onto the rows on screen.
+    _applyMasterToClassRows() {
       const daily = this._classDaily || {};
       const period = this._classDailyPeriod;
       const selects = document.querySelectorAll('.class-attendance-status');

@@ -5257,3 +5257,13 @@ Follow-up the same day: the Belt Test results saved by the buggy sittings
 retake or Hole Check on the same device would have read them as misses. The
 cutoff for trusting saved Belt Test results is now 16:55 UTC on 2026-10-15,
 after the fix went live. Results from before it are simply not used.
+
+## 2026-10-15: Match Master on a past day's register
+
+Reported: on a previous day's class register, Match Master copied the current day's marks. The button
+now carries the date and period of the register it sits on and asks for that day's register again
+when pressed, instead of reusing whatever the screen loaded last (which belongs to whichever load
+finished last, and misses marks the office made after the register opened). If that fetch fails,
+it only falls back to the loaded copy when that copy is of the same day; otherwise it changes nothing
+and says so. Painting the rows is now `_applyMasterToClassRows`; `tests/class-match-master.test.js`
+covers both halves.

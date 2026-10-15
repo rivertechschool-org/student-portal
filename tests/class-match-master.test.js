@@ -64,6 +64,7 @@ function method(name, indent = '    ') {
 }
 
 const matchClassToMaster = method('matchClassToMaster');
+const _applyMasterToClassRows = method('_applyMasterToClassRows');
 const _paintClassAttendanceRow = method('_paintClassAttendanceRow');
 const _dayStatusForPeriod = method('_dayStatusForPeriod');
 
@@ -123,11 +124,11 @@ function run(rows, daily, period) {
     _classDaily: daily,
     _classDailyPeriod: period === undefined ? null : period,
     showNotification: (message, type) => notes.push({ message, type }),
-    matchClassToMaster,
+    _applyMasterToClassRows,
     _paintClassAttendanceRow,
     _dayStatusForPeriod,
   };
-  app.matchClassToMaster();
+  app._applyMasterToClassRows();
   return {
     values: fields.map(f => f.value),
     // What the teacher actually sees: the lit button, or the chip's glyph.
@@ -291,6 +292,72 @@ r = run([{ id: 'a', value: '' }], undefined);
 check('a missing day map does not throw', r.values, ['']);
 check('  it warns', r.note.type, 'warning');
 
+// ---- which day ---------------------------------------------------------
+//
+// The button on a past day's register copied today's marks. What the screen
+// loaded belongs to whichever load finished last, so the button carries the
+// date of the register it sits on and asks the day again for that date.
+(async () => {
+console.log('\n== the day on screen, not today ==\n');
+
+async function press(rows, { loaded, loadedDate, loadedPeriod = null, days, date, period = null, fail = false }) {
+  const built = rows.map(r => buildRow(r.id, r.value));
+  const fields = built.map(b => b.field);
+  global.document = { querySelectorAll: () => fields };
+  const notes = [], asked = [];
+  const app = {
+    _classDaily: loaded,
+    _classDailyDate: loadedDate,
+    _classDailyPeriod: loadedPeriod,
+    showNotification: (message, type) => notes.push({ message, type }),
+    async _pickupRpc(name, args) {
+      asked.push({ name, args });
+      if (fail) throw new Error('offline');
+      return (days[args.p_date] || []).filter(d => args.p_student_ids.includes(d.student_id));
+    },
+    matchClassToMaster, _applyMasterToClassRows, _paintClassAttendanceRow, _dayStatusForPeriod,
+  };
+  const warn = console.warn; console.warn = () => {};
+  try { await app.matchClassToMaster(date, period); } finally { console.warn = warn; }
+  return { values: fields.map(f => f.value), notes, asked };
+}
+
+const DAYS = {
+  '2026-10-15': [{ student_id: 'a', status: 'present' }],
+  '2026-10-14': [{ student_id: 'a', status: 'absent' }],
+};
+
+// Loaded today, but the register on screen is Wednesday's.
+let m = await press([{ id: 'a', value: '' }],
+  { loaded: { a: { status: 'present' } }, loadedDate: '2026-10-15', days: DAYS, date: '2026-10-14' });
+check('a past register is matched to that day', m.values, ['absent']);
+check('  by asking for that date', m.asked.map(a => a.args.p_date), ['2026-10-14']);
+
+// The office marked the day after the register was opened.
+m = await press([{ id: 'a', value: '' }],
+  { loaded: {}, loadedDate: '2026-10-14', days: DAYS, date: '2026-10-14' });
+check('marks made since the register opened are picked up', m.values, ['absent']);
+
+// Lessons are read against the period on the button, not the last one loaded.
+m = await press([{ id: 'a', value: '' }], {
+  loaded: {}, loadedDate: '2026-10-14', loadedPeriod: 1, date: '2026-10-14', period: 5,
+  days: { '2026-10-14': [{ student_id: 'a', status: 'late', arrived_at_period: 3 }] } });
+check('the period comes from the button', m.values, ['present']);
+
+// No connection: another day's copy is never used.
+m = await press([{ id: 'a', value: '' }],
+  { loaded: { a: { status: 'present' } }, loadedDate: '2026-10-15', days: DAYS, date: '2026-10-14', fail: true });
+check("offline with another day's copy: nothing changes", m.values, ['']);
+check('  and it says so', m.notes[0] && m.notes[0].type, 'error');
+
+m = await press([{ id: 'a', value: '' }],
+  { loaded: { a: { status: 'absent' } }, loadedDate: '2026-10-14', days: DAYS, date: '2026-10-14', fail: true });
+check("offline with the same day's copy: that copy is used", m.values, ['absent']);
+
+// The button is wired with its own date.
+ok('the button passes the register date and period',
+  /onclick="app\.matchClassToMaster\('\$\{today\}', \$\{currentPeriod/.test(html));
+
 // ---- the two vocabularies have to stay in step -------------------------
 console.log('\n== daily and class offer the same statuses ==\n');
 
@@ -312,3 +379,4 @@ ok('including the ones this test copies',
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
+})();
