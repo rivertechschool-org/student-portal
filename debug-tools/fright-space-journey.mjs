@@ -17,6 +17,8 @@ const opt = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] :
 const port = +opt("--port", 8780), cdpPort = +opt("--cdp", 9370), shot = opt("--shot", "");
 // --direct: the game page on its own, no iframe (to tell the iframe from the game when something differs)
 const direct = argv.includes("--direct");
+// --origin https://rivertech.me: the live site instead of a local server
+const origin = opt("--origin", "");
 const chrome = process.env.CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const profile = mkdtempSync(join(tmpdir(), "fs-journey-"));
 const proc = spawn(chrome, ["--headless=new", "--enable-unsafe-webgpu", "--no-first-run", "--no-default-browser-check",
@@ -45,7 +47,7 @@ const done = async (code) => { try { ws.send(JSON.stringify({ id: ++id, method: 
 
 await send("Runtime.enable");
 await send("Page.enable");
-await send("Page.navigate", { url: direct ? `http://127.0.0.1:${port}/games/fright-space/web/fright-space.html?set=FS_DEBUG=1` : `http://127.0.0.1:${port}/debug-tools/fright-space-host.html?set=FS_DEBUG=1` });
+await send("Page.navigate", { url: (origin || `http://127.0.0.1:${port}`) + (direct ? "/games/fright-space/web/fright-space.html?set=FS_DEBUG=1" : "/debug-tools/fright-space-host.html?set=FS_DEBUG=1") });
 // the menu: the first frame drawn
 let ready = false;
 for (let i = 0; i < 120 && !ready; i++) { await sleep(500); ready = await inGame("!!(w.dr && w.dr.ready)"); }
