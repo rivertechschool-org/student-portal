@@ -82,6 +82,10 @@ function makeApp({ strikes = [], count = null, nextDecayDate = null } = {}) {
     async getStudentStrikes() {
       return { strikes, count: count === null ? strikes.filter(s => !s.decayed).length : count, nextDecayDate };
     },
+    notified: [],
+    async sendStrikeNotification(studentId, student, count, reason) {
+      app.notified.push({ studentId, student, count, reason });
+    },
     _requestConfirmation(summary, run) {
       app.confirmed = summary;
       app._pending = (async () => run())();
@@ -92,6 +96,12 @@ function makeApp({ strikes = [], count = null, nextDecayDate = null } = {}) {
           const q = {
             insert(row) { app.inserts.push({ table, row }); return Promise.resolve({ error: null }); },
             delete() { q._op = 'delete'; return q; },
+            select() { return q; },
+            single() {
+              return Promise.resolve(table === 'user_profiles'
+                ? { data: { first_name: 'Noah', last_name: 'Williams' }, error: null }
+                : { data: null, error: null });
+            },
             eq(c, v) { q._eq = q._eq || {}; q._eq[c] = v; return q; },
             then(res, rej) {
               if (q._op === 'delete') { app.deletes.push({ table, where: q._eq }); }
@@ -132,6 +142,9 @@ const strike = (over = {}) => ({ id: 's1', created_at: '2026-09-10T10:00:00Z', r
     // The number matters more than the act.
     ok('the confirmation says which one it is', /strike <b>1 of 3<\/b>/.test(app.confirmed));
     ok('the answer says the running total', /has 1 strike/.test(app.ok[0]));
+    // The same notice the strike form sends: parents, teachers, admins.
+    check('the usual notice goes out', app.notified,
+      [{ studentId: 'noah', student: { first_name: 'Noah', last_name: 'Williams' }, count: 1, reason: 'throwing chalk' }]);
   }
 
   {
@@ -145,6 +158,7 @@ const strike = (over = {}) => ({ id: 's1', created_at: '2026-09-10T10:00:00Z', r
     const app = makeApp({ strikes: [strike(), strike({ id: 's2' }), strike({ id: 's3' })] });
     await app.terminalIssueStrike.call(app, said('give noah a strike for shouting'));
     check('a fourth is not written', app.inserts, []);
+    check('  and nobody is told of one', app.notified, []);
     ok('  and says the maximum is reached', /already has <b>3<\/b> strikes/.test(app.said[0]));
   }
 
@@ -152,6 +166,7 @@ const strike = (over = {}) => ({ id: 's1', created_at: '2026-09-10T10:00:00Z', r
     const app = makeApp({ strikes: [] });
     await app.terminalIssueStrike.call(app, said('give noah a strike'));
     check('no reason, nothing written', app.inserts, []);
+    check('  and nothing sent', app.notified, []);
     ok('  and it asks what for', /A strike needs a reason/.test(app.errors[0]));
   }
 
