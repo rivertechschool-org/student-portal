@@ -741,7 +741,7 @@
                     </div>
                     <div style="display: flex; justify-content: center; gap: 20px; margin-top: 10px; font-size: 0.9rem;">
                         <span><span class="mastery-indicator mastery-none">Unknown</span> Not practiced</span>
-                        <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--danger); border-radius: 2px; margin-right: 5px;"></span>Slow (>4s)</span>
+                        <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--danger); border-radius: 2px; margin-right: 5px;"></span>Wrong or slow (>4s)</span>
                         <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--warning); border-radius: 2px; margin-right: 5px;"></span>Medium (2-4s)</span>
                         <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--success); border-radius: 2px; margin-right: 5px;"></span>Fast (<2s)</span>
                     </div>
@@ -1404,6 +1404,15 @@
                     this.studentData.problem_history[key].correct++;
                     this.studentData.problem_history[key].total++;
                 });
+                // Wrong answers count too, or a fact answered wrong fast never
+                // shows on the heatmap at all.
+                this.currentSession.responses.filter(r => !r.correct).forEach(response => {
+                    const key = `${response.problem.a}x${response.problem.b}`;
+                    const h = this.studentData.problem_history[key] =
+                        this.studentData.problem_history[key] || { times: [], correct: 0, total: 0 };
+                    h.wrong = (h.wrong || 0) + 1;
+                    h.total++;
+                });
                 
                 // Check for mastery progression
                 this.checkMasteryProgression(correctResponses, totalTime);
@@ -1600,16 +1609,23 @@
                 return keys;
             }
 
+            // r holds the last four first tries: 1 quick and right, 0 right but
+            // slow, -1 wrong. A wrong answer used to be stored as 0, the same as
+            // a slow right one, so a student typing wrong answers fast showed
+            // orange ("getting there") instead of red.
             factState(key) {
                 const r = this._facts()[key]?.r || [];
                 if (r.length >= 2 && r[r.length - 1] === 1 && r[r.length - 2] === 1) return 'mastered';
+                if (r.length && r[r.length - 1] === -1) return 'missed';
                 return r.length ? 'learning' : 'new';
             }
 
             rangeProgress() {
                 const keys = this.factsInRange();
                 const mastered = keys.filter(k => this.factState(k) === 'mastered').length;
-                const learning = keys.filter(k => this.factState(k) === 'learning');
+                // Missed facts first: they are what to practise next.
+                const learning = keys.filter(k => this.factState(k) === 'missed')
+                    .concat(keys.filter(k => this.factState(k) === 'learning'));
                 const pct = keys.length ? Math.round(100 * mastered / keys.length) : 0;
                 return { mastered, total: keys.length, pct, learning, medal: this.medalFor(pct) };
             }
@@ -1625,7 +1641,7 @@
                 const before = this.factState(key);
                 const quick = correct && seconds <= this.speedGoal();
                 const f = facts[key] || { r: [] };
-                f.r = (f.r || []).concat(quick ? 1 : 0).slice(-4);
+                f.r = (f.r || []).concat(quick ? 1 : correct ? 0 : -1).slice(-4);
                 facts[key] = f;
                 const now = this.factState(key);
                 if (now === 'mastered' && before !== 'mastered') {
@@ -1888,11 +1904,17 @@
                         // Inside the range: the same three states as the bar.
                         if (inRange) {
                             const st = this.factState(this._factKey(a, b));
-                            cell.classList.add(st === 'mastered' ? 'heatmap-fast' : st === 'learning' ? 'heatmap-medium' : 'heatmap-unknown');
-                            cell.title = `${a} × ${b}: ${st === 'mastered' ? 'mastered' : st === 'learning' ? 'getting there - two quick first tries in a row to master' : 'not tried yet'}`;
+                            cell.classList.add(st === 'mastered' ? 'heatmap-fast' : st === 'missed' ? 'heatmap-slow'
+                                : st === 'learning' ? 'heatmap-medium' : 'heatmap-unknown');
+                            cell.title = `${a} × ${b}: ${st === 'mastered' ? 'mastered' : st === 'missed' ? 'wrong on the last first try'
+                                : st === 'learning' ? 'getting there - two quick first tries in a row to master' : 'not tried yet'}`;
+                        } else if (history && history.wrong && history.wrong * 3 > history.total) {
+                            // More than a third of the answers wrong: red, however fast.
+                            cell.classList.add('heatmap-slow');
+                            cell.title = `${a} × ${b}: ${history.wrong} wrong of ${history.total} answers`;
                         } else if (history && history.times.length > 0) {
                             const avgTime = history.times.reduce((sum, t) => sum + t, 0) / history.times.length;
-                            
+
                             if (avgTime < 2) {
                                 cell.classList.add('heatmap-fast');
                             } else if (avgTime < 4) {
