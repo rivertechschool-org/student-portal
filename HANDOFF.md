@@ -5209,3 +5209,23 @@ In the class, a test's assignment now says it fills in from the Testing
 Center, rather than showing as an "Offline Assignment".
 `tests/testing-center-grades.test.js` (22 checks) runs the real functions
 against an in-memory database.
+
+### 2026-10-14: Fright Space in the games section
+
+`games/fright-space/` is a new game: Jordan's 2019 Full Sail game, remade on his
+DensaRender engine and built for the web (WebGPU). It is a generated build, not
+hand-written: rebuild it from the `fright-space` repo (`tools/web_build.sh`, then
+`tools/portal_package.py <engine> <game> games/fright-space`) rather than editing the
+files here. About 29 MB, the largest file the 11.6 MB `.wasm` module.
+
+- The card and the `gameConfig` entry in `index.html` point at
+  `games/fright-space/web/fright-space.html`. The page ignores the `userId` the
+  portal adds; it keeps no scores and talks to nothing.
+- It needs WebGPU. A device without it gets a plain "this device can't run Fright
+  Space" message instead of a black box. It has not yet been tried on a school
+  Chromebook; opening `webgpureport.org` on one says whether WebGPU is there.
+- `node debug-tools/fright-space-journey.mjs` (with `python -m http.server 8780`
+  running) walks it inside the same iframe sandbox the portal uses, through
+  `debug-tools/fright-space-host.html`: the menu, Play, level 1, walking. Its
+  screenshot can show a stale frame in headless Chrome; the checks read the game's
+  own log instead.
