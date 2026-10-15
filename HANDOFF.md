@@ -5251,3 +5251,9 @@ unlocked more Tier 1 skills at 5%, so a retake was no better.
 Students who were given belt 1 should simply retake the Belt Test; nothing in
 the database needs clearing. `tests/belt-test-diagnostic.test.js` has a check
 for the old-rows case, and `debug-tools/belt-test-sim.mjs` passes.
+
+Follow-up the same day: the Belt Test results saved by the buggy sittings
+(right answers stored low) were dated after the cutoff the tests trust, so a
+retake or Hole Check on the same device would have read them as misses. The
+cutoff for trusting saved Belt Test results is now 16:55 UTC on 2026-10-15,
+after the fix went live. Results from before it are simply not used.

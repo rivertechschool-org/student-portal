@@ -123,6 +123,20 @@ console.log('\nBelt Test diagnostic rules');
 }
 
 {
+  // Sittings before the belt-1 fix saved right answers at about 0.16, labelled
+  // as a Belt Test. A retake must not start from them.
+  const e = freshEngine({ evidence: {
+    A4: { p: 0.16, source: 'belt_test', at: '2026-10-15T10:00:00Z' },
+    A5: { p: 0.16, source: 'belt_test', at: '2026-10-15T10:00:00Z' },
+  } });
+  e.api.initDiagnostic(5);
+  e.answer('A4', 'correct', 8, ['a', 'b', 'c', 'd']);
+  const d = e.state.diag;
+  check('a Belt Test saved before the belt-1 fix is not evidence',
+    !d.seeded.A4 && !d.seeded.A5 && d.own.A4 >= 0.7, JSON.stringify({ seeded: d.seeded, A4: d.own.A4 }));
+}
+
+{
   // Starts under the chosen level and steps up with each right answer.
   const e = freshEngine();
   e.api.initDiagnostic(5);
