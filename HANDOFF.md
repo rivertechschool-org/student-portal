@@ -35,6 +35,37 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-14 — Jordan's Claude (Math Dojo Belt Test checks for holes)
+Jordan asked for a Belt Test that really looks for holes: cut off what was never seen and
+everything above it, let a harder skill prove the ones beneath it, and check anything that
+could be a gap instead of assuming it. The diagnostic in `games/math-dojo.html` is rebuilt
+around that (same function names, so nothing else in the page changed shape):
+- **Known means shown.** Answered right, or proven by a harder skill one or two steps
+  above (a right typed answer on decimal operations proves place value beneath it). Proof
+  fades with distance, so derivatives do not prove fraction addition five steps down.
+- **Nothing is assumed from the starting tier or an earlier session.** Before, everything
+  three tiers below the start counted as mastered with no question asked.
+- **Could be a gap → checked.** Anything near a miss, near the student's level, or with
+  nothing near it shown is asked. A miss is asked again before anything above it is ruled
+  out. A confirmed miss asks the skill beneath it, so the report says where the hole starts.
+- **Never seen** rules out everything built on it; none of it is asked.
+- **Multiple choice counts for less than typed.** One right multiple-choice answer (a one in
+  four guess) is "likely", saved as in progress, not mastered.
+- **Skills assumed rather than checked are listed as such** on the results page and saved
+  only as unlocked.
+- The decimal add/subtract/multiply questions now credit "Decimal Operations" (they
+  credited "Decimals", so that skill could never be shown).
+- Up to 45 questions (was 35); the belt is cumulative (a weak lower tier holds it down).
+
+Measured with invented students who have planted holes: holes wrongly credited as mastered
+went from 15 of 36 to 2 of 36, and belts land on the true belt or just under it (an
+overplaced Tier 3 student got Belt 4 before). The limit is holes in skills nothing builds
+on: no harder answer can reveal them, so in 45 questions most are caught only by spot
+checks or later in practice.
+Tests: `tests/belt-test-diagnostic.test.js` (the rules). Tuning: `debug-tools/belt-test-sim.mjs`
+(re-run after any change; it fails on a credited hole rate over 10% or a belt above the
+truth). Journey: `debug-tools/belt-test-journey.mjs`.
+
 ## 2026-10-14 — Jordan's Claude (Overview from the server; one notes table) — LIVE
 Live 2026-10-14 evening: the backend migrations were applied first, then both branches merged.
 - Class Progress's Overview now gets grade, attendance and notes from one server call. The

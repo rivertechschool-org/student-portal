@@ -5095,18 +5095,90 @@ function finalizePlacementTest() {
 // existing student data keying changes.
 // ============================================================================
 
+// How the Belt Test decides what a student knows (rebuilt 2026-10-14).
+//
+// EVIDENCE, NOT ASSUMPTION. A skill counts as known only when the student showed it:
+//   * DIRECT   they answered it.
+//   * PROVEN   they answered a harder skill that is built on it. Single-step
+//              decimal +/- proves place value and whole-number +/- beneath it.
+//              The proof is strongest one step down and fades with each step,
+//              so getting derivatives right does not prove fraction addition
+//              five steps below; that has to be shown some other way.
+//   * ASSUMED  well below the student's level, with no sign of trouble around it
+//              (nothing related missed, something related shown). Counted for
+//              the belt, reported as not checked, never saved as mastered.
+// Anything that could be a gap is checked: it is close to their level, or
+// something related was missed, or nothing near it has been shown at all.
+//
+// CUT OFF. "Never seen this" (or a miss confirmed by a second miss) rules out
+// everything built on that skill: none of it is asked. One miss alone only
+// makes the skills above uncertain and asks the skill again, because one
+// wrong answer can be a slip.
+//
+// FINDING THE ROOT. A confirmed miss asks the skills directly beneath it, so
+// the report names where the hole starts, not just where it showed.
+//
+// Beliefs are written back through the same title-keyed skill_progress /
+// p_mastered paths as before; only what the test has evidence for is written.
+
 const DIAG = {
-    HARD_MAX: 35,          // fatigue cap (hard stop)
-    MIN_ITEMS: 8,          // never stop before this many
-    UNCERTAIN_LO: 0.35,    // "frontier" band lower bound
-    UNCERTAIN_HI: 0.65,    // "frontier" band upper bound
-    CONFIDENT: 0.15,       // uncertainty below this → skill resolved, drop from pool
-    VERY_FAST: 1.2,        // seconds; correct+faster than this ⇒ likely guess
-    GUESS_HIGH: 0.45,      // inflated guess γ used to discount implausibly-fast correct
-    MASTER_P: 0.85,
-    NEVER_P: 0.02,         // "Never seen this" floor
-    FORGOT_P: 0.25,        // "Seen it — don't remember" (recoverable)
+    HARD_MAX: 45,          // fatigue cap
+    MIN_ITEMS: 8,
+    MASTER_P: 0.85,        // known
+    OUT_P: 0.15,           // ruled out
+    VERY_FAST: 1.2,        // seconds; a correct this fast is treated as a likely guess
+    GUESS_HIGH: 0.45,
+    GUESS_CHOICE: 0.25,    // four options
+    GUESS_TYPED: 0.03,
+    NEVER_P: 0.02,
+    FORGOT_P: 0.25,
+    PRIOR_CAP: 0.70,
+    EVIDENCE_START: 0.5,
+    LIKELY_P: 0.75,        // one right multiple-choice answer from even odds       // where the test starts never counts as known
+    STORED_CAP: 0.75,      // nor does an earlier session: it is re-checked
+    HOP_WEIGHT: [0, 1, 0.9, 0.6], // proof strength by steps down; deeper uses DEEP_WEIGHT
+    DEEP_WEIGHT: 0.35,
+    ASSUME_BELOW: 2,       // tiers below the student's level where a quiet skill may be assumed
+    MAX_PER_SKILL: 2,      // asked once, and once more after a miss
+    CLIMB_ITEMS: 12,       // questions spent finding the level before the sweep
+    SPOT_CHECKS: 6,        // assumed skills audited at random
 };
+
+// Ancestors and descendants of every skill with their step distance, built once.
+let _diagGraph = null;
+function diagGraph() {
+    if (_diagGraph) return _diagGraph;
+    const N = MATH_GRAPH_V2.nodes;
+    const walk = (id, next) => {
+        const dist = new Map();
+        let frontier = [id], h = 0;
+        while (frontier.length) {
+            h++;
+            const nxt = [];
+            for (const x of frontier) for (const y of (next(x) || [])) {
+                if (!N[y] || y === id || dist.has(y)) continue;
+                dist.set(y, h);
+                nxt.push(y);
+            }
+            frontier = nxt;
+        }
+        return dist;
+    };
+    const anc = {}, desc = {}, near = {};
+    for (const id of Object.keys(N)) {
+        anc[id] = walk(id, x => N[x].hp);
+        desc[id] = walk(id, x => N[x].dep);
+    }
+    // Relatives: direct prerequisites, direct dependents, and siblings that
+    // share a direct prerequisite. Where a related miss signals a possible gap.
+    for (const id of Object.keys(N)) {
+        const s = new Set([...(N[id].hp || []), ...(N[id].dep || [])]);
+        for (const pre of (N[id].hp || [])) for (const sib of (N[pre] ? N[pre].dep || [] : [])) if (sib !== id) s.add(sib);
+        near[id] = [...s].filter(x => N[x]);
+    }
+    _diagGraph = { anc, desc, near };
+    return _diagGraph;
+}
 
 // Build the candidate pool: every generator (tier,domain) whose Q-matrix primary
 // skill resolves to a graph node id. Cached per session on state.diag._cands.
@@ -5127,73 +5199,69 @@ function buildDiagCandidates() {
             cands.push(c);
             (byNode[nodeId] = byNode[nodeId] || []).push(c);
         }
+        // Generators whose sub-types aim at other skills (decimal add/subtract
+        // at Decimal Operations) make those skills reachable too.
+        for (const key of Object.keys(Q_MATRIX)) {
+            const m = key.match(/^T(\d+)::([^:]+)::/);
+            if (!m || +m[1] !== tier || !generators[tier][m[2]]) continue;
+            const nodeId = MATH_GRAPH_V2.titleToId[Q_MATRIX[key].primary_skill];
+            if (!nodeId || (byNode[nodeId] && byNode[nodeId].some(c => c.domain === m[2]))) continue;
+            const c = { tier, domain: m[2], key: `T${tier}::${m[2]}`, nodeId, primary: Q_MATRIX[key].primary_skill, single: true, viaSubtype: true };
+            cands.push(c);
+            (byNode[nodeId] = byNode[nodeId] || []).push(c);
+        }
     }
     return { cands, byNode };
 }
 
-// Grade on-ramp: seed each node's prior from the distance between its tier (dt)
-// and the student's chosen starting tier. Far below grade → high, far above → low,
-// near grade → uncertain. A returning student's stored p_mastered (if present)
-// overrides the grade prior so we start from real history.
-function diagSeedPriors(startTier) {
-    const pmap = {};
-    for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
-        // Prefer stored evidence from prior sessions (title-keyed skillTreeData).
-        const stored = _rawStoredP(node.t);
-        let prior;
-        if (stored > 0) {
-            prior = stored;
-        } else {
-            const d = (node.dt || 5) - startTier;
-            if (d <= -3) prior = 0.85;
-            else if (d === -2) prior = 0.72;
-            else if (d === -1) prior = 0.55;
-            else if (d === 0) prior = 0.40;
-            else if (d === 1) prior = 0.22;
-            else if (d === 2) prior = 0.10;
-            else prior = 0.05;
-        }
-        pmap[id] = prior;
-    }
-    return pmap;
+// Where the test starts: a skill's distance from the student's working level.
+// Never reaches "known" on its own (PRIOR_CAP); it only orders the questions.
+function diagPrior(id) {
+    const d = state.diag;
+    const stored = d.stored[id];
+    if (stored > 0) return Math.min(stored, DIAG.STORED_CAP);
+    const dist = (MATH_GRAPH_V2.nodes[id].dt || 5) - d.ceiling;
+    if (dist <= -2) return DIAG.PRIOR_CAP;
+    if (dist === -1) return 0.55;
+    if (dist === 0) return 0.40;
+    if (dist === 1) return 0.22;
+    if (dist === 2) return 0.10;
+    return 0.05;
 }
 
 function initDiagnostic(startTier) {
     const built = buildDiagCandidates();
+    const stored = {};
+    for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
+        const s = _rawStoredP(node.t);
+        if (s > 0) stored[id] = s;
+    }
     state.diag = {
-        pmap: diagSeedPriors(startTier),
-        pruned: {},          // nodeId → true (removed from selection this session)
-        tags: {},            // nodeId → Set of report tags
-        tested: {},          // nodeId → # times directly tested
-        reprobe: [],         // nodeIds queued for targeted prerequisite re-probe
-        askedRecently: [],   // last few nodeIds (diversity guard)
         startTier,
+        ceiling: startTier,  // the student's working level; moves with evidence
+        stored,
+        own: {},             // nodeId → belief from its own answers only
+        obs: {},             // nodeId → {c, w, never, forgot}
+        tested: {},          // nodeId → times asked
+        eff: {},             // nodeId → belief after proofs and cut-offs
+        status: {},          // nodeId → known | gap | blocked | assumed | open | above
+        how: {},             // nodeId → 'direct' | 'proven' (for known)
+        provenBy: {},        // nodeId → the skill whose answer proved it
+        tags: {},
+        reprobe: [],
+        askedRecently: [],
         items: 0,
         _cands: built.cands,
         _byNode: built.byNode,
     };
+    diagGraph();
+    diagRecompute();
 }
 
 function getDiagP(nodeId) {
     const d = state.diag;
-    const v = d && d.pmap[nodeId];
+    const v = d && d.eff[nodeId];
     return typeof v === 'number' ? v : 0.3;
-}
-
-// Authoritative belief write. Also reflects into the title-keyed skillTreeData
-// (via setMasteryProbability) and marks the title touched so endSessionTracking
-// persists p_mastered through the existing bktUpdates path.
-function setDiagP(nodeId, p) {
-    const d = state.diag;
-    if (!d) return;
-    const clamped = Math.max(0.01, Math.min(0.99, p));
-    d.pmap[nodeId] = clamped;
-    const node = MATH_GRAPH_V2.nodes[nodeId];
-    if (node && node.t) {
-        setMasteryProbability(node.t, clamped, new Date().toISOString());
-        if (!sessionData.bktTouched) sessionData.bktTouched = new Set();
-        sessionData.bktTouched.add(node.t);
-    }
 }
 
 function addDiagTag(nodeId, tag) {
@@ -5204,28 +5272,12 @@ function addDiagTag(nodeId, tag) {
 
 // Transitive hard-prerequisites (things this node depends on, walking hp).
 function diagHardPrereqs(nodeId) {
-    const out = new Set();
-    const stack = [...((MATH_GRAPH_V2.nodes[nodeId] || {}).hp || [])];
-    while (stack.length) {
-        const id = stack.pop();
-        if (out.has(id) || !MATH_GRAPH_V2.nodes[id]) continue;
-        out.add(id);
-        for (const p of (MATH_GRAPH_V2.nodes[id].hp || [])) stack.push(p);
-    }
-    return out;
+    return new Set(diagGraph().anc[nodeId] ? diagGraph().anc[nodeId].keys() : []);
 }
 
 // Transitive dependents (things that require this node, walking dep).
 function diagDependents(nodeId) {
-    const out = new Set();
-    const stack = [...((MATH_GRAPH_V2.nodes[nodeId] || {}).dep || [])];
-    while (stack.length) {
-        const id = stack.pop();
-        if (out.has(id) || !MATH_GRAPH_V2.nodes[id]) continue;
-        out.add(id);
-        for (const dpn of (MATH_GRAPH_V2.nodes[id].dep || [])) stack.push(dpn);
-    }
-    return out;
+    return new Set(diagGraph().desc[nodeId] ? diagGraph().desc[nodeId].keys() : []);
 }
 
 // BKT update with an overridable guess parameter (used to discount an
@@ -5242,20 +5294,163 @@ function bktUpdateGuess(p, correct, guess) {
     return den > 0 ? num / den : p;
 }
 
-// Queue a targeted re-probe of one still-testable hard prerequisite of nodeId
-// (to locate whether the gap is here or deeper).
-function diagEnqueueReprobe(nodeId) {
+function _diagObs(id) {
     const d = state.diag;
-    if (!d) return;
-    const node = MATH_GRAPH_V2.nodes[nodeId];
-    if (!node) return;
-    for (const pre of (node.hp || [])) {
-        if (d.pruned[pre]) continue;
-        if ((d.tested[pre] || 0) >= 2) continue;
-        if (!(d._byNode[pre] && d._byNode[pre].length)) continue; // no generator → can't probe directly
-        if (d.reprobe.includes(pre)) continue;
-        d.reprobe.push(pre);
-        return;
+    return d.obs[id] || (d.obs[id] = { c: 0, w: 0, never: 0, forgot: 0 });
+}
+
+// A miss we believe: "never seen", two misses, or a forgotten skill missed again.
+function diagConfirmedGap(id) {
+    const d = state.diag;
+    const o = d.obs[id];
+    if (!o) return false;
+    if (o.never) return true;
+    return (o.w + o.forgot) >= 2 && d.own[id] < 0.5;
+}
+
+function diagSuspectedGap(id) {
+    const d = state.diag;
+    return !!d.tested[id] && d.own[id] < 0.5 && !diagConfirmedGap(id);
+}
+
+// Recompute every skill's belief and status from the answers so far.
+function diagRecompute() {
+    const d = state.diag;
+    const N = MATH_GRAPH_V2.nodes;
+    const G = diagGraph();
+    const ids = Object.keys(N);
+
+    // The working level: the highest tier where the student showed at least
+    // as many skills as they missed. Above the starting tier one right answer
+    // could be luck, so it takes two. Before anything is shown it is the
+    // starting tier, or just below the lowest tier missed once two misses
+    // say the start was too high.
+    const shownAt = {}, missedAt = {};
+    let misses = 0, lowestMissed = 99;
+    for (const id of Object.keys(d.tested)) {
+        const t = N[id].dt;
+        if ((d.obs[id] || {}).c > 0 && d.own[id] >= 0.7) shownAt[t] = (shownAt[t] || 0) + 1;
+        else if (d.own[id] < 0.5) { missedAt[t] = (missedAt[t] || 0) + 1; misses++; lowestMissed = Math.min(lowestMissed, t); }
+    }
+    let level = 0;
+    for (let t = 1; t <= 10; t++) {
+        const sh = shownAt[t] || 0;
+        if (sh >= 1 && sh >= (missedAt[t] || 0) && (t <= d.startTier || sh >= 2)) level = t;
+    }
+    if (!level) level = misses >= 2 ? Math.max(1, Math.min(d.startTier, lowestMissed) - 1) : d.startTier;
+    d.ceiling = level;
+
+    // Proof from above: a believed answer on a harder skill, fading per step.
+    const proof = {};
+    const provenBy = {};
+    for (const D of Object.keys(d.tested)) {
+        const pD = d.own[D];
+        if (!(pD > 0.5)) continue;
+        for (const [a, h] of G.anc[D]) {
+            const w = h < DIAG.HOP_WEIGHT.length ? DIAG.HOP_WEIGHT[h] : DIAG.DEEP_WEIGHT;
+            proof[a] = (proof[a] === undefined ? 1 : proof[a]) * (1 - w * pD);
+            if (!provenBy[a] || h < provenBy[a].h) provenBy[a] = { by: D, h };
+        }
+    }
+
+    // Cut-offs from below: a confirmed gap rules out what is built on it; a
+    // single miss makes it uncertain.
+    const cap = {};
+    for (const P of Object.keys(d.tested)) {
+        const confirmed = diagConfirmedGap(P), suspected = diagSuspectedGap(P);
+        if (!confirmed && !suspected) continue;
+        const v = confirmed ? d.own[P] : 0.5;
+        for (const x of G.desc[P].keys()) cap[x] = Math.min(cap[x] === undefined ? 1 : cap[x], v);
+    }
+
+    for (const id of ids) {
+        const pr = proof[id] === undefined ? 1 : proof[id];
+        let e;
+        if (d.tested[id]) {
+            // A skill the student missed is not credited because a harder one
+            // went right: the two disagree, and the skill is asked again.
+            const o = d.obs[id] || {};
+            e = (o.w || o.never || o.forgot) ? d.own[id] : 1 - (1 - d.own[id]) * pr;
+        } else {
+            e = Math.max(diagPrior(id), 1 - pr);
+            if (cap[id] !== undefined) e = Math.min(e, cap[id]);
+        }
+        d.eff[id] = Math.max(0.01, Math.min(0.99, e));
+    }
+
+    // Status.
+    const negativeNear = id => G.near[id].some(x => d.tested[x] && (d.own[x] < 0.5 || (d.tags[x] && d.tags[x].has('fragile'))))
+        || [...G.anc[id].keys()].some(x => d.tested[x] && d.own[x] < 0.5);
+    const knownNear = id => G.near[id].filter(x => d.status[x] === 'known' || d.status[x] === 'likely').length
+        + ([...G.desc[id]].some(([x, h]) => h <= 2 && d.tested[x] && d.own[x] >= 0.7) ? 1 : 0);
+    // A tier is clean when what was checked in it held up: three or more
+    // skills known there and none missed.
+    const tierKnown = {}, tierMissed = {};
+    for (const id of ids) {
+        const t = N[id].dt;
+        if (d.status[id] === 'known') tierKnown[t] = (tierKnown[t] || 0) + 1;
+        if (d.tested[id] && d.own[id] < 0.5) tierMissed[t] = (tierMissed[t] || 0) + 1;
+    }
+    const tierClean = t => (tierKnown[t] || 0) >= 3 && !tierMissed[t];
+    // Proof is withheld from a skill while something built on it (two steps
+    // or fewer) was missed: a lucky guess on one harder skill must not
+    // outweigh misses on others. It could be the gap, so it is asked.
+    const missedAbove = id => !d.tested[id] && [...G.desc[id]].some(([x, h]) => h <= 2 && d.tested[x] && d.own[x] < 0.5);
+    d.status = {};
+    d.how = {};
+    d.provenBy = {};
+    d.risk = {};
+    for (const id of ids) if (!d.tested[id] && (negativeNear(id) || missedAbove(id))) d.risk[id] = true;
+    d.tierMissed = tierMissed;
+    d.tierKnown = tierKnown;
+    // First pass: what the evidence decides.
+    for (const id of ids) {
+        const e = d.eff[id];
+        if (e >= DIAG.MASTER_P && missedAbove(id)) {
+            d.status[id] = N[id].dt > d.ceiling + 1 ? 'above' : 'open';
+        } else if (e >= DIAG.MASTER_P) {
+            d.status[id] = 'known';
+            const pr = proof[id] === undefined ? 1 : proof[id];
+            const ownStrong = d.tested[id] && d.own[id] >= DIAG.MASTER_P;
+            d.how[id] = ownStrong || pr === 1 ? 'direct' : 'proven';
+            if (d.how[id] === 'proven' && provenBy[id]) d.provenBy[id] = provenBy[id].by;
+        } else if (d.tested[id] ? e <= DIAG.OUT_P : (cap[id] !== undefined && cap[id] <= DIAG.OUT_P)) {
+            d.status[id] = d.tested[id] ? 'gap' : 'blocked';
+        } else if (d.tested[id] && d.own[id] >= DIAG.LIKELY_P && !(d.obs[id].w || d.obs[id].never || d.obs[id].forgot)) {
+            // Right once on multiple choice, nothing missed: probably known,
+            // not proven. Counts for the belt; not saved as mastered.
+            d.status[id] = 'likely';
+        } else if (N[id].dt > d.ceiling + 1) {
+            d.status[id] = 'above';   // beyond the working level: not needed
+        } else {
+            d.status[id] = 'open';
+        }
+    }
+    // Second pass: a skill may be assumed only when nothing suggests a gap.
+    // Anything related that was missed, or anything beneath it that was cut
+    // off, means it could be a gap and it stays open to be checked. Beyond
+    // that, the closer to the student's level, the more evidence is needed:
+    //   well below (ASSUME_BELOW tiers or more): a clean tier or a known relative
+    //   one tier below: a known relative
+    //   at the level: two known relatives
+    for (const id of ids) {
+        if (d.status[id] !== 'open' || d.tested[id]) continue;
+        if (cap[id] !== undefined || negativeNear(id)) continue;
+        const gapBelow = d.ceiling - N[id].dt;
+        const k = knownNear(id);
+        if ((gapBelow >= DIAG.ASSUME_BELOW && (k >= 1 || tierClean(N[id].dt)))
+            || (gapBelow === 1 && k >= 1)
+            || (gapBelow === 0 && k >= 2)) d.status[id] = 'assumed';
+    }
+}
+
+// Queue skills to ask next (re-check or find the root), most urgent last-in.
+function _diagQueue(ids) {
+    const d = state.diag;
+    for (const id of ids) {
+        if (!d._byNode[id] || !d._byNode[id].length) continue;
+        if (d.reprobe.includes(id)) continue;
+        d.reprobe.push(id);
     }
 }
 
@@ -5266,196 +5461,322 @@ function diagProcessAnswer(q, outcome, time) {
     const title = q.skillTags.primary_skill;
     const nodeId = title && MATH_GRAPH_V2.titleToId[title];
     if (!nodeId) return;
+    const node = MATH_GRAPH_V2.nodes[nodeId];
 
     const te = q.timeExpected || 20;
     const veryFast = time < DIAG.VERY_FAST;
     const fast = time <= te * 0.7;
     const slow = time > te * 1.5;
+    // The answers carry a skill from even odds, whatever the starting guess:
+    // one right multiple-choice answer (a one-in-four guess) is not enough
+    // alone, one right typed answer is.
+    if (d.own[nodeId] === undefined) d.own[nodeId] = Math.min(diagPrior(nodeId), DIAG.EVIDENCE_START);
     d.tested[nodeId] = (d.tested[nodeId] || 0) + 1;
-    let p = getDiagP(nodeId);
+    const o = _diagObs(nodeId);
+    let p = d.own[nodeId];
 
+    // How likely a right answer is by luck: one in four on multiple choice,
+    // close to none on a typed answer.
+    const typed = typeof shouldTypeAnswer === 'function' && shouldTypeAnswer(q, q.tier);
+    const guess = typed ? DIAG.GUESS_TYPED : DIAG.GUESS_CHOICE;
     if (outcome === 'correct') {
-        if (veryFast) {
-            // Implausibly fast → treat as likely guess: inflate γ, discount the bump.
+        o.c++;
+        if (veryFast && !typed) {
             p = bktUpdateGuess(p, true, DIAG.GUESS_HIGH);
             addDiagTag(nodeId, 'fragile');
         } else if (slow) {
-            // Right but not fluent → fragile mastery, flag for review.
-            p = bktUpdate(p, true);
+            p = bktUpdateGuess(p, true, guess);
             addDiagTag(nodeId, 'fragile');
         } else {
-            p = bktUpdate(p, true);
-            if (fast) p = Math.min(0.99, p + 0.05); // fast+correct → full-confidence mastery
+            p = bktUpdateGuess(p, true, guess);
+            if (fast) p = Math.min(0.99, p + 0.05);
             addDiagTag(nodeId, 'mastered');
         }
-        setDiagP(nodeId, p);
-        // Propagate mastery DOWN: transitive hard-prereqs are very likely known.
-        if (p >= 0.6) {
-            for (const pre of diagHardPrereqs(nodeId)) {
-                const pp = getDiagP(pre);
-                if (pp < DIAG.MASTER_P) setDiagP(pre, pp + (0.9 - pp) * 0.5);
-            }
-        }
+        d.own[nodeId] = p;
     } else if (outcome === 'wrong') {
-        p = bktUpdate(p, false);
-        setDiagP(nodeId, p);
+        o.w++;
+        d.own[nodeId] = bktUpdateGuess(p, false, guess);
         addDiagTag(nodeId, 'struggling');
-        diagEnqueueReprobe(nodeId);
     } else if (outcome === 'never') {
-        // Strong evidence unlearned. Prune the whole dependent subtree.
-        setDiagP(nodeId, DIAG.NEVER_P);
+        o.never++;
+        d.own[nodeId] = DIAG.NEVER_P;
         addDiagTag(nodeId, 'teach_from_scratch');
-        for (const dep of diagDependents(nodeId)) {
-            d.pruned[dep] = true;
-            const pp = getDiagP(dep);
-            if (pp > 0.05) setDiagP(dep, 0.05);
-            addDiagTag(dep, 'blocked');
-        }
     } else if (outcome === 'forgot') {
-        // Decayed/recoverable: low but not floor; re-probe a prerequisite; don't prune.
-        setDiagP(nodeId, Math.min(p, DIAG.FORGOT_P));
+        o.forgot++;
+        d.own[nodeId] = Math.min(p, DIAG.FORGOT_P);
         addDiagTag(nodeId, 'review');
-        diagEnqueueReprobe(nodeId);
     }
+
+    diagRecompute();
+
+    // What to ask next because of this answer.
+    if (outcome !== 'correct') {
+        if (diagConfirmedGap(nodeId)) {
+            // Find where it starts: the skills directly beneath that are not known.
+            _diagQueue((node.hp || []).filter(x => d.status[x] !== 'known' && !diagConfirmedGap(x)));
+        } else if (outcome === 'wrong' && d.tested[nodeId] < 2) {
+            _diagQueue([nodeId]);   // one miss can be a slip: ask it again
+        } else if (outcome === 'forgot') {
+            _diagQueue((node.hp || []).filter(x => d.status[x] !== 'known'));
+        }
+    }
+    // A right answer that disagrees with an earlier miss beneath it: ask the
+    // missed skill again to settle which one to believe.
+    if (outcome === 'correct') {
+        const G = diagGraph();
+        _diagQueue([...G.anc[nodeId].keys()].filter(x => d.tested[x] === 1 && d.own[x] < 0.5 && !(d.obs[x] || {}).never));
+    }
+    // Implausibly fast correct on a skill near the level: confirm it.
+    if (outcome === 'correct' && veryFast && d.own[nodeId] < DIAG.MASTER_P && d.tested[nodeId] < 2) _diagQueue([nodeId]);
 
     d.askedRecently.push(nodeId);
     if (d.askedRecently.length > 3) d.askedRecently.shift();
     d.items++;
 }
 
-// Information-gain item selection. Score each un-pruned, unresolved candidate by
-// node uncertainty (closest to 0.5 wins) × staleness − diversity penalty, prefer
-// single-skill items, pick from the top quintile round-robin with ~10% exploration.
+// Is this skill still worth a question?
+function _diagAskable(id) {
+    const d = state.diag;
+    const st = d.status[id];
+    if (st !== 'open') return false;
+    if ((d.tested[id] || 0) >= DIAG.MAX_PER_SKILL) return false;
+    return !!(d._byNode[id] && d._byNode[id].length);
+}
+
+// Score every skill still worth a question, by phase:
+//   CLIMB  (first CLIMB_ITEMS): near the level, whatever settles most. For a
+//          skill believed at p, a right answer settles it and what it proves
+//          beneath (two steps); a miss settles it and makes what is built on it
+//          uncertain. The test climbs fast this way.
+//   SWEEP  everything at or below the level that could be a gap. Skills beside
+//          a miss first, then the closest to the level, the highest first
+//          (one right answer covers what is beneath it).
+//   SPOT   a few assumed skills, audited, preferring ones nothing above can
+//          prove. One that fails makes its neighbours open again.
+//   FRONTIER the tier above, with what is left, until it is clearly not theirs.
+function _diagScored() {
+    const d = state.diag;
+    const G = diagGraph();
+    const N = MATH_GRAPH_V2.nodes;
+    const open = id => d.status[id] === 'open';
+    const climbing = d.items < DIAG.CLIMB_ITEMS;
+    const frontierDone = t => (d.tierMissed[t] || 0) >= 3 && (d.tierKnown[t] || 0) < 2 * (d.tierMissed[t] || 0);
+    const scored = [];
+    const seen = new Set();
+    for (const c of d._cands) {
+        const id = c.nodeId;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (!(d._byNode[id] && d._byNode[id].length)) continue;
+        if ((d.tested[id] || 0) >= DIAG.MAX_PER_SKILL) continue;
+        const dt = N[id].dt;
+        let st = d.status[id];
+        if (st === 'likely' && !climbing && dt <= d.ceiling && (d.tested[id] || 0) < 2
+            && G.near[id].some(x => d.tested[x] && d.own[x] < 0.5)) st = 'open';
+        const p = d.eff[id];
+        let below = 0, above = 0;
+        if (st === 'open') {
+            for (const [a, h] of G.anc[id]) if (h <= 2 && open(a)) below++;
+            for (const x of G.desc[id].keys()) if (open(x)) above++;
+        }
+        const settle = p * (1 + below) + (1 - p) * (1 + 0.3 * Math.min(above, 12));
+        const staleness = 1 / (1 + (d.tested[id] || 0));
+        const diversity = d.askedRecently.includes(id) ? 0.35 : 1;
+        let score = 0, kind = null;
+        if (st === 'open' && climbing) {
+            if (dt < d.ceiling - 1) continue;
+            score = settle; kind = 'climb';
+        } else if (st === 'open' && dt <= d.ceiling) {
+            const closeness = 1 / (1 + Math.max(0, d.ceiling - dt) * 0.35);
+            score = 10 + settle * closeness * (d.risk[id] ? 3 : 1); kind = 'sweep';
+        } else if (st === 'assumed' && !d.tested[id] && !climbing && (d.spot || 0) < DIAG.SPOT_CHECKS) {
+            const unprovable = !(N[id].dep || []).length ? 2 : 1;
+            score = 1 + unprovable * (1 + Math.random()); kind = 'spot';
+        } else if (st === 'open' && dt === d.ceiling + 1 && !frontierDone(dt)) {
+            score = 0.5 * settle; kind = 'frontier';
+        } else continue;
+        scored.push({ c, kind, score: score * staleness * diversity });
+    }
+    return scored.sort((a, b) => b.score - a.score);
+}
+
 function selectNextDiagnosticItem() {
     const d = state.diag;
     if (!d) return null;
-    const scored = [];
-    for (const c of d._cands) {
-        if (d.pruned[c.nodeId]) continue;
-        const p = getDiagP(c.nodeId);
-        const uncertainty = 1 - Math.abs(p - 0.5) * 2; // 1 @0.5 … 0 @0/1
-        if (uncertainty < DIAG.CONFIDENT) continue;     // confidently known/unknown
-        const staleness = 1 / (1 + (d.tested[c.nodeId] || 0));
-        const diversity = d.askedRecently.includes(c.nodeId) ? 0.35 : 1;
-        const singleBonus = c.single ? 1.2 : 0.85;      // single-skill items most diagnostic
-        scored.push({ c, score: uncertainty * staleness * diversity * singleBonus });
-    }
-    if (scored.length === 0) return null;
-    scored.sort((a, b) => b.score - a.score);
-    if (Math.random() < 0.10) return scored[Math.floor(Math.random() * scored.length)].c;
-    const quintile = Math.max(1, Math.ceil(scored.length / 5));
-    return scored[Math.floor(Math.random() * quintile)].c;
+    const scored = _diagScored();
+    if (!scored.length) return null;
+    // A little variety among near-equal choices, so retakes differ.
+    const top = scored.filter(s => s.kind === scored[0].kind && s.score >= scored[0].score * 0.9).slice(0, 3);
+    const choice = top[Math.floor(Math.random() * top.length)];
+    if (choice.kind === 'spot') d.spot = (d.spot || 0) + 1;
+    const list = d._byNode[choice.c.nodeId];
+    return list[Math.floor(Math.random() * list.length)];
 }
 
-// Next candidate to serve: drain the targeted re-probe queue first, else info-gain.
+// Next candidate to serve: re-checks and root-finding first, else the best question.
 function pickDiagnosticCandidate() {
     const d = state.diag;
     if (!d) return null;
     while (d.reprobe.length) {
         const target = d.reprobe.shift();
-        if (d.pruned[target]) continue;
+        if ((d.tested[target] || 0) >= DIAG.MAX_PER_SKILL) continue;
+        const st = d.status[target];
+        if (st === 'known' || st === 'blocked' || (st === 'gap' && diagConfirmedGap(target))) continue;
+        // Beyond the level now: a miss up there is not a hole, it is next to learn.
+        if (st === 'above' || MATH_GRAPH_V2.nodes[target].dt > d.ceiling + 1) continue;
         const list = d._byNode[target];
         if (list && list.length) return list[Math.floor(Math.random() * list.length)];
     }
     return selectNextDiagnosticItem();
 }
 
-// Variable-length stop: hard fatigue cap, or the frontier is resolved (few
-// candidate nodes left in the uncertain band and no pending re-probes).
+// Stop when nothing that could matter is still open, or at the fatigue cap.
 function shouldStopDiagnostic() {
     const d = state.diag;
     if (!d) return true;
     if (d.items >= DIAG.HARD_MAX) return true;
-    if (d.items < DIAG.MIN_ITEMS) return false;
-    if (d.reprobe.length) return false;
-    const seen = new Set();
-    let uncertain = 0;
-    for (const c of d._cands) {
-        if (d.pruned[c.nodeId] || seen.has(c.nodeId)) continue;
-        seen.add(c.nodeId);
-        const p = getDiagP(c.nodeId);
-        if (p >= DIAG.UNCERTAIN_LO && p <= DIAG.UNCERTAIN_HI) uncertain++;
-    }
-    return uncertain <= 2;
+    if (d.reprobe.some(id => (d.tested[id] || 0) < DIAG.MAX_PER_SKILL && d.status[id] === 'open')) return false;
+    return _diagScored().length === 0;
 }
 
-// ---- Reporting: ALEKS-style classification + triaged holes ----------------
+// ---- Reporting ---------------------------------------------------------------
 
 function diagClassify() {
     const d = state.diag;
-    const buckets = { mastered: [], ready: [], notReady: [], remaining: [] };
+    const buckets = { mastered: [], likely: [], assumed: [], ready: [], notReady: [], remaining: [] };
     if (!d) return buckets;
     for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
         const p = getDiagP(id);
-        const hp = node.hp || [];
-        const prereqsMastered = hp.every(pr => getDiagP(pr) >= DIAG.MASTER_P);
+        const st = d.status[id];
         const entry = { id, title: node.t, p, tier: node.dt, stage: node.st,
-                        tested: (d.tested[id] || 0) > 0,
+                        tested: (d.tested[id] || 0) > 0, how: d.how[id] || null,
+                        provenBy: d.provenBy[id] || null,
                         tags: d.tags[id] ? [...d.tags[id]] : [] };
-        if (p >= DIAG.MASTER_P) buckets.mastered.push(entry);
-        else if (prereqsMastered) buckets.ready.push(entry);            // the frontier / teach-next queue
-        else if (entry.tested || p > 0.12) buckets.notReady.push(entry);
+        if (st === 'known') buckets.mastered.push(entry);
+        else if (st === 'assumed') buckets.assumed.push(entry);
+        else if (st === 'likely') buckets.likely.push(entry);
+        else if ((node.hp || []).every(pr => ['known', 'likely', 'assumed'].includes(d.status[pr]))) buckets.ready.push(entry);
+        else if (entry.tested || st === 'blocked' || st === 'gap') buckets.notReady.push(entry);
         else buckets.remaining.push(entry);
     }
     return buckets;
 }
 
+// Holes: skills at or below the working level the student showed they do not
+// have. Each says how sure we are and what it holds up.
+function diagHoleReport() {
+    const d = state.diag;
+    if (!d) return [];
+    const out = [];
+    for (const id of Object.keys(d.tested)) {
+        const node = MATH_GRAPH_V2.nodes[id];
+        if (!node || node.dt > d.ceiling) continue;
+        if (d.status[id] === 'known') continue;
+        const o = d.obs[id] || {};
+        let kind;
+        if (o.never) kind = 'never';
+        else if (diagConfirmedGap(id)) kind = 'confirmed';
+        else if (o.forgot) kind = 'forgot';
+        else if (d.own[id] < 0.5) kind = 'suspected';
+        else if (d.tags[id] && d.tags[id].has('fragile')) kind = 'shaky';
+        else continue;
+        // The root: no skill directly beneath it is also a hole.
+        const root = !(node.hp || []).some(x => d.tested[x] && d.status[x] !== 'known' && d.own[x] < 0.5);
+        out.push({ id, title: node.t, tier: node.dt, kind, root });
+    }
+    return out.sort((a, b) => a.tier - b.tier);
+}
+
+// The belt: the highest tier where this tier and every one below it has at
+// least 80% of its settled skills known (shown, proven, or safely assumed),
+// with at least a third of the tier settled. A skill the test ran out of time for
+// counts neither way; a gap, or a skill cut off beneath a gap, counts against.
 function diagDerivedBelt() {
     const d = state.diag;
     if (!d) return 1;
     const byTier = {};
-    const seen = new Set();
-    for (const c of d._cands) {
-        if (seen.has(c.nodeId)) continue;
-        seen.add(c.nodeId);
-        (byTier[c.tier] = byTier[c.tier] || []).push(getDiagP(c.nodeId));
+    for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
+        const t = node.dt;
+        const b = byTier[t] = byTier[t] || { good: 0, bad: 0, total: 0 };
+        b.total++;
+        const st = d.status[id];
+        if (st === 'known' || st === 'assumed' || st === 'likely') b.good++;
+        else if (st === 'gap' || st === 'blocked' || (d.tested[id] && d.own[id] < 0.5)) b.bad++;
     }
-    let belt = 1;
+    let belt = 0;
     for (let t = 1; t <= 10; t++) {
-        const ps = byTier[t];
-        if (!ps || ps.length === 0) continue;
-        const pass = ps.filter(p => p >= 0.7).length / ps.length;
-        if (pass >= 0.8) belt = t;
+        const b = byTier[t];
+        if (!b || !b.total) continue;
+        const settled = b.good + b.bad;
+        if (settled >= b.total / 3 && b.good / settled >= 0.8) belt = t; else break;
     }
-    return belt;
+    return Math.max(1, belt);
+}
+
+// Write what the test has evidence for into the skill tree before the session
+// is saved. Skills only assumed, ruled out from below, or never reached keep
+// whatever they had.
+function diagCommitBeliefs() {
+    const d = state.diag;
+    if (!d) return;
+    const now = new Date().toISOString();
+    if (!sessionData.bktTouched) sessionData.bktTouched = new Set();
+    for (const [id, node] of Object.entries(MATH_GRAPH_V2.nodes)) {
+        const evidenced = d.tested[id] || d.status[id] === 'known';
+        if (!evidenced || !node.t) continue;
+        setMasteryProbability(node.t, d.eff[id], now);
+        sessionData.bktTouched.add(node.t);
+    }
 }
 
 function renderDiagnosticReport() {
     const d = state.diag;
     if (!d) return;
     const b = diagClassify();
+    const N = MATH_GRAPH_V2.nodes;
     const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     // Keep the big headline tier consistent with the diagnostic-derived belt.
-    const belt0 = diagDerivedBelt();
-    const tn = document.getElementById('result-tier-number'); if (tn) tn.textContent = belt0;
-    const tt = document.getElementById('result-tier-title'); if (tt && TIERS[belt0]) tt.textContent = TIERS[belt0].name;
-    const tg = document.getElementById('result-tier-grades'); if (tg && TIERS[belt0]) tg.textContent = `Grades ${TIERS[belt0].grades}`;
+    const belt = diagDerivedBelt();
+    const tn = document.getElementById('result-tier-number'); if (tn) tn.textContent = belt;
+    const tt = document.getElementById('result-tier-title'); if (tt && TIERS[belt]) tt.textContent = TIERS[belt].name;
+    const tg = document.getElementById('result-tier-grades'); if (tg && TIERS[belt]) tg.textContent = `Grades ${TIERS[belt].grades}`;
 
-    // --- Frontier + classification summary → #recommendations ---
+    const shown = b.mastered.filter(e => e.how === 'direct');
+    const proven = b.mastered.filter(e => e.how === 'proven');
+    const holes = diagHoleReport();
+    // Skipped because a hole beneath them was confirmed, at or below their
+    // level. Above the level it is simply not learned yet, and not news.
+    const blocked = Object.keys(d.status).filter(id => d.status[id] === 'blocked' && N[id].dt <= d.ceiling);
+    const chips = (list, max) => list.slice(0, max).map(e => `${esc(e.title)} <span style="color:var(--slate-400)">(T${e.tier})</span>`).join(' · ')
+        + (list.length > max ? ` <span style="color:var(--slate-400)">+${list.length - max} more</span>` : '');
+    const item = (icon, title, body) => `<div class="rec-item"><div class="rec-icon">${icon}</div><div class="rec-content"><h4>${title}</h4>${body}</div></div>`;
+
+    // --- Summary → #recommendations ---
     const recs = document.getElementById('recommendations');
     if (recs) {
-        const belt = diagDerivedBelt();
-        const readySorted = b.ready.filter(e => e.p < DIAG.MASTER_P)
-            .sort((a, c) => (a.tier - c.tier) || (c.p - a.p)).slice(0, 12);
         let html = '';
-        html += `<div class="rec-item"><div class="rec-icon">🎖️</div><div class="rec-content"><h4>Belt: Tier ${belt} — ${TIERS[belt] ? TIERS[belt].name : ''}</h4>`
-            + `<p>Highest tier where ≥80% of skills are likely mastered. Diagnostic asked ${d.items} question${d.items === 1 ? '' : 's'}.</p></div></div>`;
-        html += `<div class="rec-item"><div class="rec-icon">🥧</div><div class="rec-content"><h4>Knowledge map</h4>`
-            + `<p><b>${b.mastered.length}</b> Mastered · <b>${b.ready.length}</b> Ready to Learn · <b>${b.notReady.length}</b> Not Ready · <b>${b.remaining.length}</b> Remaining</p></div></div>`;
-        if (readySorted.length) {
-            html += `<div class="rec-item"><div class="rec-icon">🎯</div><div class="rec-content"><h4>Teach next (the frontier)</h4><p>`
-                + readySorted.map(e => `${esc(e.title)} <span style="color:var(--slate-400)">(T${e.tier})</span>`).join(' · ')
-                + `</p></div></div>`;
+        html += item('🎖️', `Belt: Tier ${belt}: ${TIERS[belt] ? esc(TIERS[belt].name) : ''}`,
+            `<p>The highest tier where that tier and every one below it hold up: at least 80% of the skills the test settled are known. ${d.items} question${d.items === 1 ? '' : 's'}.</p>`);
+        html += item('🥧', 'What the test found',
+            `<p><b>${shown.length}</b> shown directly · <b>${proven.length}</b> proven by a harder skill · <b>${b.likely.length}</b> likely (right once on multiple choice)`
+            + ` · <b>${b.assumed.length}</b> assumed, not checked · <b>${holes.length}</b> hole${holes.length === 1 ? '' : 's'}`
+            + (blocked.length ? ` · <b>${blocked.length}</b> skipped (built on a hole)` : '') + `</p>`);
+        if (proven.length) {
+            const pairs = proven.slice(0, 8).map(e => `${esc(e.title)} <span style="color:var(--slate-400)">← ${esc(N[e.provenBy] ? N[e.provenBy].t : '')}</span>`).join(' · ');
+            html += item('🔗', 'Proven by a harder skill', `<p>${pairs}${proven.length > 8 ? ` <span style="color:var(--slate-400)">+${proven.length - 8} more</span>` : ''}</p>`);
         }
-        // Strand roll-up (by stage): mastered vs remaining bars.
+        const next = b.ready.filter(e => !['known', 'likely', 'assumed'].includes(d.status[e.id]) && e.tier <= d.ceiling + 1)
+            .sort((a, c) => (a.tier - c.tier) || (c.p - a.p)).slice(0, 12);
+        if (next.length) html += item('🎯', 'Teach next', `<p>${chips(next, 12)}</p>`);
+        // Strand roll-up (by stage): known (shown, proven, likely or assumed) of all.
         const stageAgg = {};
         for (const key of Object.keys(b)) {
             for (const e of b[key]) {
                 const s = e.stage || 'Other';
-                stageAgg[s] = stageAgg[s] || { mastered: 0, total: 0 };
+                stageAgg[s] = stageAgg[s] || { good: 0, total: 0 };
                 stageAgg[s].total++;
-                if (key === 'mastered') stageAgg[s].mastered++;
+                if (key === 'mastered' || key === 'likely' || key === 'assumed') stageAgg[s].good++;
             }
         }
         const STAGE_ORDER = ['Foundations', 'Building', 'Fluency', 'Application', 'Advanced', 'Mastery', 'Other'];
@@ -5464,52 +5785,130 @@ function renderDiagnosticReport() {
             return (ix === -1 ? 99 : ix) - (iy === -1 ? 99 : iy);
         });
         if (stages.length) {
-            let bars = '<div class="rec-item"><div class="rec-icon">📊</div><div class="rec-content"><h4>By strand</h4>';
+            let bars = '';
             for (const s of stages) {
                 const a = stageAgg[s];
-                const pct = a.total ? Math.round(a.mastered / a.total * 100) : 0;
-                bars += `<div style="margin:.35rem 0"><div style="display:flex;justify-content:space-between;font-size:.85rem;color:var(--slate-300)"><span>${esc(s)}</span><span>${a.mastered}/${a.total}</span></div>`
+                const pct = a.total ? Math.round(a.good / a.total * 100) : 0;
+                bars += `<div style="margin:.35rem 0"><div style="display:flex;justify-content:space-between;font-size:.85rem;color:var(--slate-300)"><span>${esc(s)}</span><span>${a.good}/${a.total}</span></div>`
                     + `<div style="height:8px;background:var(--slate-700,#334155);border-radius:4px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--emerald-500,#10b981)"></div></div></div>`;
             }
-            bars += '</div></div>';
-            html += bars;
+            html += item('📊', 'By strand', bars);
         }
         recs.innerHTML = html;
     }
 
-    // --- Triaged hole list → #gap-log ---
+    // --- Holes → #gap-log ---
     const gl = document.getElementById('gap-log');
     if (gl) {
-        const holes = { teach: [], review: [], struggle: [] };
-        for (const [id, tags] of Object.entries(d.tags)) {
-            const node = MATH_GRAPH_V2.nodes[id];
-            if (!node) continue;
-            const p = getDiagP(id);
-            if (p >= DIAG.MASTER_P) continue; // resolved upward, not a hole
-            if (tags.has('teach_from_scratch')) holes.teach.push(id);
-            else if (tags.has('review') || tags.has('fragile')) holes.review.push(id);
-            else if (tags.has('struggling')) holes.struggle.push(id);
-        }
-        const grp = (title, icon, ids, cls, withBlocked) => {
-            if (!ids.length) return '';
-            let h = `<div class="gap-group"><h4 style="margin:.5rem 0;color:var(--slate-200)">${icon} ${title} (${ids.length})</h4>`;
-            for (const id of ids.sort((a, c) => (MATH_GRAPH_V2.nodes[a].dt - MATH_GRAPH_V2.nodes[c].dt))) {
-                const node = MATH_GRAPH_V2.nodes[id];
-                h += `<div class="gap-item ${cls}"><span class="gap-tier">T${node.dt}</span><span class="gap-skill">${esc(node.t)}`;
-                if (withBlocked) {
-                    const blocked = [...diagDependents(id)].map(x => MATH_GRAPH_V2.nodes[x] && MATH_GRAPH_V2.nodes[x].t).filter(Boolean);
-                    if (blocked.length) h += ` <span style="color:var(--slate-400);font-size:.8rem">→ blocks ${blocked.length}: ${blocked.slice(0, 4).map(esc).join(', ')}${blocked.length > 4 ? '…' : ''}</span>`;
-                }
-                h += `</span></div>`;
+        const grp = (title, icon, note, list, cls) => {
+            if (!list.length) return '';
+            let h = `<div class="gap-group"><h4 style="margin:.5rem 0;color:var(--slate-200)">${icon} ${title} (${list.length})</h4>`;
+            if (note) h += `<p style="color:var(--slate-400);font-size:.85rem;margin:0 0 .4rem">${note}</p>`;
+            for (const e of list) {
+                const above = [...diagDependents(e.id)].filter(x => N[x] && N[x].dt <= d.ceiling + 1).length;
+                h += `<div class="gap-item ${cls}"><span class="gap-tier">T${e.tier}</span><span class="gap-skill">${esc(e.title)}`
+                    + (e.root && ['confirmed', 'never', 'forgot', 'suspected'].includes(e.kind) ? ' <span style="color:var(--amber-400);font-size:.8rem">where it starts</span>' : '')
+                    + (above ? ` <span style="color:var(--slate-400);font-size:.8rem">→ holds up ${above}</span>` : '')
+                    + `</span></div>`;
             }
             return h + '</div>';
         };
+        const of = kind => holes.filter(h => h.kind === kind);
         let out = '';
-        out += grp('Teach from scratch', '🆕', holes.teach, 'idk', true);
-        out += grp('Review (previously learned)', '🤔', holes.review, '', false);
-        out += grp('Struggling', '🔧', holes.struggle, 'incorrect', false);
-        gl.innerHTML = out || '<div class="no-gaps">✓ No holes identified below the frontier</div>';
+        out += grp('Holes', '🕳️', 'Missed twice. Everything built on these was skipped.', of('confirmed'), 'incorrect');
+        out += grp('Never seen', '🆕', 'Everything built on these was skipped.', of('never'), 'idk');
+        out += grp('Seen, forgotten', '🤔', '', of('forgot'), '');
+        out += grp('Possible holes', '❓', 'Missed once and not settled. Worth a look in practice.', of('suspected'), '');
+        out += grp('Shaky', '〰️', 'Right, but slowly or after a miss.', of('shaky'), '');
+        if (b.assumed.length) {
+            const list = b.assumed.slice().sort((a, c) => a.tier - c.tier);
+            out += `<div class="gap-group"><h4 style="margin:.5rem 0;color:var(--slate-200)">👁️ Not checked (${list.length})</h4>`
+                + `<p style="color:var(--slate-400);font-size:.85rem;margin:0 0 .4rem">Below their level, with nothing missed around them and something near them shown, so the test spent its questions elsewhere. Not saved as mastered.</p>`
+                + `<p style="font-size:.85rem">${chips(list, 20)}</p></div>`;
+        }
+        gl.innerHTML = out || '<div class="no-gaps">✓ No holes found at or below their level</div>';
     }
+}
+
+// Belt Test (diagnostic) → skill tree. Saves exactly what the evidence says:
+//   shown or proven by a harder skill  → mastered
+//   likely, or asked and not known      → in progress (never overwrites)
+//   assumed, or opened beneath evidence → available (unlocked, not credited)
+function applyDiagnosticToTree() {
+    const d = state.diag;
+    const N = MATH_GRAPH_V2.nodes;
+    const results = { shown: [], proven: [], likely: [], practice: [], assumed: [], unverified: [], holes: diagHoleReport(), totalSkillsUpdated: 0 };
+    for (const [id, node] of Object.entries(N)) {
+        const st = d.status[id];
+        const entry = { skill: node.t, tier: node.dt, by: d.provenBy[id] ? N[d.provenBy[id]].t : null };
+        if (st === 'known') {
+            updateSkillInTree(node.t, 'mastered', Math.round(d.eff[id] * 100));
+            (d.how[id] === 'proven' ? results.proven : results.shown).push(entry);
+        } else if (st === 'likely') {
+            updateSkillInTree(node.t, 'in_progress', Math.round(d.own[id] * 100));
+            results.likely.push(entry);
+        } else if (d.tested[id]) {
+            updateSkillInTree(node.t, 'in_progress', Math.round((d.own[id] || 0) * 100));
+            results.practice.push(entry);
+        } else if (st === 'assumed') {
+            const cur = skillTreeData.skills[node.t]?.state;
+            if (!cur || cur === 'locked') updateSkillInTree(node.t, 'available', 0);
+            results.assumed.push(entry);
+        } else continue;
+        results.totalSkillsUpdated++;
+    }
+    // Unlock (never credit) what sits beneath the evidence, as the legacy path did.
+    const opened = markUnprobedLowerTiersAsAvailable(diagDerivedBelt()).concat(openPrerequisitesOfEvidence());
+    results.unverified = opened;
+    results.totalSkillsUpdated += opened.length;
+    saveSkillTreeData();
+
+    if (window.parent && window.parent !== window) {
+        const skills = [];
+        const sent = new Set();
+        const push = (name, st, score) => {
+            if (!name || sent.has(name)) return;
+            sent.add(name);
+            skills.push({ skillName: name, state: st, mastery_score: Math.round(score || 0) });
+        };
+        results.shown.concat(results.proven).forEach(r => push(r.skill, 'mastered', 100));
+        results.likely.concat(results.practice).forEach(r => push(r.skill, 'in_progress', Math.round((getMasteryProbability(r.skill) || 0) * 100)));
+        results.assumed.forEach(r => push(r.skill, 'available', 0));
+        opened.forEach(r => push(r.skill || r, 'available', 0));
+        if (skills.length) window.parent.postMessage({ type: 'BACKFILL_SKILLS', subject: 'Math', skills }, '*');
+    }
+
+    localStorage.setItem('belt_test_complete', JSON.stringify({
+        timestamp: Date.now(),
+        userId: getUserId(),
+        results,
+        belt: diagDerivedBelt(),
+        tierScores: state.tierScores,
+        domainScores: state.domainScores
+    }));
+    return results;
+}
+
+function renderDiagnosticTreeResults(r) {
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const section = (color, title, note, list, chipStyle, label) => {
+        if (!list.length) return '';
+        let h = `<div class="result-section"><h4 style="color: var(${color});">${title} (${list.length})</h4>`;
+        if (note) h += `<p style="color: var(--slate-400); font-size: 0.85rem; margin: 0.25rem 0 0.5rem;">${note}</p>`;
+        h += '<div class="skill-chips">';
+        for (const s of list.slice(0, 16)) h += `<span class="skill-chip ${chipStyle}">${esc(label(s))}</span>`;
+        if (list.length > 16) h += `<span class="skill-chip more">+${list.length - 16} more</span>`;
+        return h + '</div></div>';
+    };
+    let html = '<div class="tree-sync-results">';
+    html += '<h3 style="color: var(--amber-400); margin-bottom: 1rem;">🌳 Skill Tree Updated</h3>';
+    html += section('--rose-400', '⚠️ Holes', 'Saved as needing practice.', r.holes.filter(h => h.kind !== 'shaky'), 'in-progress', h => `T${h.tier} · ${h.title}`);
+    html += section('--emerald-400', '✓ Mastered: shown', '', r.shown, 'mastered', s => s.skill);
+    html += section('--emerald-400', '✓ Mastered: proven by a harder skill', '', r.proven, 'mastered', s => s.by ? `${s.skill} ← ${s.by}` : s.skill);
+    html += section('--cyan-400', '◐ Likely', 'Right once on multiple choice. Saved as in progress until practice confirms it.', r.likely, 'activated', s => s.skill);
+    html += section('--slate-400', '◌ Not checked', 'Unlocked to practise, not credited.', r.assumed, '', s => s.skill);
+    html += `<div class="total-updated" style="margin-top: 1rem; color: var(--slate-400); font-size: 0.9rem;">Total skills updated: ${r.totalSkillsUpdated}</div></div>`;
+    return html;
 }
 
 // Apply belt test results to skill tree
@@ -7320,9 +7719,9 @@ const Q_MATRIX = {
     "T3::Advanced Fractions::mixed_subtract": { primary_skill: "Advanced Fractions", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
     // -- T3::Decimal Operations --
     "T3::Decimal Operations::understanding": { primary_skill: "Decimals", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
-    "T3::Decimal Operations::add": { primary_skill: "Decimals", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
-    "T3::Decimal Operations::subtract": { primary_skill: "Decimals", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
-    "T3::Decimal Operations::multiply": { primary_skill: "Decimals", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
+    "T3::Decimal Operations::add": { primary_skill: "Decimal Operations", secondary_skills: ["Decimals"], difficulty: 3, discrimination: 1, confidence: "manual" },
+    "T3::Decimal Operations::subtract": { primary_skill: "Decimal Operations", secondary_skills: ["Decimals"], difficulty: 3, discrimination: 1, confidence: "manual" },
+    "T3::Decimal Operations::multiply": { primary_skill: "Decimal Operations", secondary_skills: ["Decimals"], difficulty: 3, discrimination: 1, confidence: "manual" },
     // -- T3::Integers --
     "T3::Integers::understanding": { primary_skill: "Negatives", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
     "T3::Integers::add": { primary_skill: "Negatives", secondary_skills: [], difficulty: 3, discrimination: 1, confidence: "calibrated" },
@@ -45306,6 +45705,9 @@ function endTest() {
 }
 
 function finishPlacementUI() {
+    // The Belt Test's beliefs go into the skill tree before the session is
+    // saved, so the saved probabilities are the test's, evidence only.
+    if (state.mode === 'placement' && state.diag) diagCommitBeliefs();
     // End session tracking and send batched update
     endSessionTracking();
 
@@ -45317,7 +45719,16 @@ function finishPlacementUI() {
     renderResults(placement);
 
     // Apply belt test results to skill tree (for placement mode)
-    if (state.mode === 'placement') {
+    if (state.mode === 'placement' && state.diag) {
+        const r = applyDiagnosticToTree();
+        const treeSyncCard = document.getElementById('tree-sync-card');
+        treeSyncCard.style.display = r.totalSkillsUpdated > 0 ? 'block' : 'none';
+        if (r.totalSkillsUpdated > 0) document.getElementById('tree-sync-results').innerHTML = renderDiagnosticTreeResults(r);
+        const m = r.shown.length + r.proven.length;
+        if (m > 0) showNotification(`🎉 ${m} skill${m === 1 ? '' : 's'} mastered!`);
+        const h = r.holes.filter(x => x.kind === 'confirmed' || x.kind === 'never').length;
+        if (h > 0) showNotification(`⚠️ ${h} hole${h === 1 ? '' : 's'} found`);
+    } else if (state.mode === 'placement') {
         const treeResults = applyBeltTestToTree();
 
         // Show tree sync results
