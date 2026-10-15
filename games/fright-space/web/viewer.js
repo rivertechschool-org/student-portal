@@ -15,7 +15,7 @@
 //
 // Where the browser offers immersive-vr, an "Enter VR" button runs the world in a headset (V4; see
 // the WebXR section below and docs/PLATFORMS.md, VR).
-import init, * as wasm from "./pkg/densarender.js";
+import init, * as wasm from "./pkg/densarender.js?v=5978bdfc3eea";
 
 const q = new URLSearchParams(location.search);
 const world = q.get("world") || "solids";
@@ -48,11 +48,11 @@ async function audioToWav(bytes) {
 
 async function main() {
   const t0 = performance.now();
-  const exports = await init();
+  const exports = await init({ module_or_path: new URL("./pkg/densarender_bg.wasm?v=5978bdfc3eea", import.meta.url) });
   // the module's memory: everything the world holds on the CPU side, in one wasm32 heap (4 GiB at most)
   dr.heapMB = () => exports.memory.buffer.byteLength / 2 ** 20;
   if (!navigator.gpu) throw new Error("this browser has no WebGPU (navigator.gpu is undefined)");
-  const man = await (await fetch(`manifests/${world}.json`)).json();
+  const man = await (await fetch(`manifests/${world}.json?v=5978bdfc3eea`)).json();
   const base = man.base || "../";
   // a streamed piece (`"lazy"`, R2.5) is fetched when the world first asks for it, not now
   const eager = man.files.map((e, i) => [e, i]).filter(([e]) => !e.lazy);
@@ -67,7 +67,7 @@ async function main() {
     let b;
     for (let tries = 0; ; tries++) {
       try {
-        const r = await fetch(base + (e.url || e.path));
+        const r = await fetch(base + (e.url || e.path) + "?v=5978bdfc3eea");
         if (!r.ok) throw new Error(`${e.url || e.path}: HTTP ${r.status}`);
         b = new Uint8Array(await r.arrayBuffer());
         break;

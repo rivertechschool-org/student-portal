@@ -60,13 +60,33 @@ await send("Page.navigate", { url: (origin || `http://127.0.0.1:${port}`) + (dir
 let ready = false;
 for (let i = 0; i < 120 && !ready; i++) { await sleep(500); ready = await inGame("!!(w.dr && w.dr.ready)"); }
 check(ready, "the game's first frame drew inside the portal's iframe");
+await sleep(500);
+const menuShot = await screenshot();
 if (!ready) { console.log(lines.slice(-10).join("\n")); await done(1); }
 check((await inGame("w.dr.wgpuErrors ? w.dr.wgpuErrors() : 0")) === 0, "no WebGPU validation errors on the menu");
-const menuShot = await screenshot();
-// a click on Play, where the menu draws it (1280 x 720 canvas units: the button's centre 640, 327)
-const at = await inGame(`(() => { const f = ${direct ? "{ left: 0, top: 0 }" : "document.getElementById(\"game-iframe\").getBoundingClientRect()"}; const c = w.document.getElementById("view").getBoundingClientRect();
-  return { x: f.left + c.left + c.width * 640 / 1280, y: f.top + c.top + c.height * 327 / 720 }; })()`);
-for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
+// a click where the game draws something, in its 1280 x 720 canvas units
+const clickCanvas = async (cx, cy) => {
+  const at = await inGame(`(() => { const f = ${direct ? "{ left: 0, top: 0 }" : "document.getElementById(\"game-iframe\").getBoundingClientRect()"}; const c = w.document.getElementById("view").getBoundingClientRect();
+    return { x: f.left + c.left + c.width * ${cx} / 1280, y: f.top + c.top + c.height * ${cy} / 720 }; })()`);
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", clickCount: 1 });
+};
+const menuLoads = () => lines.filter((l) => /loaded games\/fright-space\/worlds\/menu\.ron/.test(l)).length;
+// Instructions (its button's centre 640, 600) and back with Main Menu - which Unity's layout put
+// past the right edge (1330), and the game now draws (and takes clicks) inside it, centre 1109, 673
+const m0 = menuLoads();
+await clickCanvas(640, 600);
+for (let i = 0; i < 40 && menuLoads() <= m0; i++) await sleep(250);
+await sleep(1000);
+const instrShot = await screenshot();
+if (shot) writeFileSync(shot.replace(/\.png$/, "-instructions.png"), Buffer.from(instrShot, "base64"));
+check(menuLoads() > m0 && instrShot !== menuShot, "Instructions opened");
+const m1 = menuLoads();
+await clickCanvas(1109, 673);
+for (let i = 0; i < 40 && menuLoads() <= m1; i++) await sleep(250);
+await sleep(1000);
+check(menuLoads() > m1, "Main Menu, inside the screen now, went back to the menu");
+// a click on Play, where the menu draws it (the button's centre 640, 327)
+await clickCanvas(640, 327);
 let loaded = false;
 for (let i = 0; i < 120 && !loaded; i++) { await sleep(500); loaded = lines.some((l) => /loaded games\/fright-space\/worlds\/level1\.ron/.test(l)); }
 check(loaded, "Play loaded level 1");
