@@ -49,6 +49,7 @@ const send = (method, params = {}) => new Promise((r) => { const i = ++id; waiti
 // the game's own window: the iframe's, reached through the host (same origin)
 const inGame = async (expr) => (await send("Runtime.evaluate", { expression: `(() => { const w = ${direct ? "window" : "document.getElementById(\"game-iframe\").contentWindow"}; return ${expr}; })()`, returnByValue: true, awaitPromise: true })).result?.result?.value;
 const results = [];
+const screenshot = async () => (await send("Page.captureScreenshot", { format: "png" })).result.data;
 const check = (ok, what) => { results.push([ok, what]); console.log(`${ok ? "ok  " : "FAIL"} ${what}`); };
 const done = async (code) => { try { ws.send(JSON.stringify({ id: ++id, method: "Browser.close" })); } catch {} await sleep(800); process.exit(code); };
 
@@ -61,6 +62,7 @@ for (let i = 0; i < 120 && !ready; i++) { await sleep(500); ready = await inGame
 check(ready, "the game's first frame drew inside the portal's iframe");
 if (!ready) { console.log(lines.slice(-10).join("\n")); await done(1); }
 check((await inGame("w.dr.wgpuErrors ? w.dr.wgpuErrors() : 0")) === 0, "no WebGPU validation errors on the menu");
+const menuShot = await screenshot();
 // a click on Play, where the menu draws it (1280 x 720 canvas units: the button's centre 640, 327)
 const at = await inGame(`(() => { const f = ${direct ? "{ left: 0, top: 0 }" : "document.getElementById(\"game-iframe\").getBoundingClientRect()"}; const c = w.document.getElementById("view").getBoundingClientRect();
   return { x: f.left + c.left + c.width * 640 / 1280, y: f.top + c.top + c.height * 327 / 720 }; })()`);
@@ -76,7 +78,13 @@ for (let i = 0; i < 60 && ticks() < 2; i++) await sleep(250);
 await inGame(`(w.focus(), w.document.getElementById("view").focus(), true)`);
 await send("Input.dispatchKeyEvent", { type: "keyDown", key: "d", code: "KeyD", windowsVirtualKeyCode: 68 });
 const before = ticks();
+for (let i = 0; i < 60 && ticks() < before + 2; i++) await sleep(250);
+const walkShot1 = await screenshot();
 for (let i = 0; i < 60 && ticks() < before + 4; i++) await sleep(250);
+const walkShot2 = await screenshot();
+// the screen itself, not the log: level 1 on it (not the menu's last picture) and moving. A level
+// once loaded without its canvas: the game played on and the screen kept the menu
+check(walkShot1 !== menuShot && walkShot2 !== menuShot && walkShot1 !== walkShot2, "the screen shows level 1 and changes as the player walks");
 await send("Input.dispatchKeyEvent", { type: "keyUp", key: "d", code: "KeyD", windowsVirtualKeyCode: 68 });
 check((await inGame("w.dr.wgpuErrors ? w.dr.wgpuErrors() : 0")) === 0, "no WebGPU validation errors in level 1");
 // the game's own log (FS_DEBUG): where the player is - it starts at x 4.63 and D walks it toward -x
