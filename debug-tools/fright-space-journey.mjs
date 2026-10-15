@@ -22,7 +22,9 @@ const origin = opt("--origin", "");
 const chrome = process.env.CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const profile = mkdtempSync(join(tmpdir(), "fs-journey-"));
 const proc = spawn(chrome, ["--headless=new", "--enable-unsafe-webgpu", "--no-first-run", "--no-default-browser-check",
-  "--window-size=1280,800", `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, "about:blank"], { stdio: "ignore" });
+  "--window-size=1280,800", `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`,
+  // JOURNEY_FLAGS: more Chrome switches, e.g. "--use-webgpu-adapter=swiftshader" for another GPU backend
+  ...(process.env.JOURNEY_FLAGS || "").split(" ").filter(Boolean), "about:blank"], { stdio: "ignore" });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let version;
 for (let i = 0; i < 60 && !version; i++) { try { version = await (await fetch(`http://127.0.0.1:${cdpPort}/json/version`)).json(); } catch { await sleep(500); } }
@@ -31,11 +33,16 @@ const pageT = (await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json
 const ws = new WebSocket(pageT.webSocketDebuggerUrl);
 await new Promise((r) => (ws.onopen = r));
 let id = 0;
-const waiting = new Map(), lines = [], errors = [];
+const waiting = new Map(), lines = [], errors = [], tickAt = [];   // tickAt: [wall ms, game tick] from the log
 ws.onmessage = (m) => {
   const d = JSON.parse(m.data);
   if (d.id && waiting.has(d.id)) { waiting.get(d.id)(d); waiting.delete(d.id); }
-  if (d.method === "Runtime.consoleAPICalled") lines.push(d.params.args.map((a) => a.value ?? a.description).join(" "));
+  if (d.method === "Runtime.consoleAPICalled") {
+    const l = d.params.args.map((a) => a.value ?? a.description).join(" ");
+    lines.push(l);
+    const m = / fs t(\d+) c=/.exec(l);
+    if (m) tickAt.push([Date.now(), +m[1]]);
+  }
   if (d.method === "Runtime.exceptionThrown") errors.push(d.params.exceptionDetails.exception?.description || d.params.exceptionDetails.text);
 };
 const send = (method, params = {}) => new Promise((r) => { const i = ++id; waiting.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
@@ -81,6 +88,15 @@ await sleep(4000);
 const raf = (await inGame("(w.dr.rafTimes || []).slice(-120)")) || [];
 const med = raf.slice().sort((a, b) => a - b)[raf.length >> 1];
 const audio = await inGame("w.dr.audio ? w.dr.audio.blocks : -1");
+// the game's tick and the frames drawn, two seconds apart, from the page itself
+const probe = async () => inGame("({ g: w.dr.game(), f: w.dr.viewer.frames(), t: w.performance.now() })");
+const p0 = await probe(); await sleep(2000); const p1 = await probe();
+console.log(`     probe: ${(p1.f - p0.f) / ((p1.t - p0.t) / 1000)} frames/s; game ${JSON.stringify(p0.g).slice(0, 120)} -> ${JSON.stringify(p1.g).slice(0, 120)}`);
+// the game's clock against the wall's: 60 ticks a second whatever the screen's rate (a 120 Hz
+// MacBook ran it at twice the speed when the engine ticked once a frame)
+const [a, b] = [tickAt[Math.max(0, tickAt.length - 12)], tickAt[tickAt.length - 1]];
+const tps = a && b && b[0] > a[0] ? (b[1] - a[1]) / ((b[0] - a[0]) / 1000) : 0;
+check(tps > 50 && tps < 70, `the game ran at ${tps.toFixed(0)} ticks a second (60 is real time)`);
 console.log(`     level 1: median ${med ? med.toFixed(1) : "?"} ms between frames (${med ? (1000 / med).toFixed(0) : "?"} fps) over ${raf.length} frames; sound blocks played: ${audio}`);
 if (shot) {
   const s = await send("Page.captureScreenshot", { format: "png" });
@@ -88,7 +104,9 @@ if (shot) {
   console.log(`     screenshot: ${shot}`);
 }
 const failed = results.filter(([ok]) => !ok).length;
-if (failed) {
+// JOURNEY_LOG=1: the page's whole log
+if (process.env.JOURNEY_LOG) for (const l of lines) console.log("       " + l.slice(0, 220));
+else if (failed) {
   console.log("     the page's last lines:");
   for (const l of lines.slice(-15)) console.log("       " + l.slice(0, 220));
 }

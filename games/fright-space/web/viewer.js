@@ -63,9 +63,19 @@ async function main() {
   const one = async (e, i) => {
     // `"decode": "audio"` (a game's music as OGG/MP3): fetched from `url`, decoded by the browser and
     // handed in as the 16-bit WAV at `path` that the engine reads (it reads WAV only) - a tenth of the bytes
-    const r = await fetch(base + (e.url || e.path));
-    if (!r.ok) throw new Error(`${e.url || e.path}: HTTP ${r.status}`);
-    let b = new Uint8Array(await r.arrayBuffer());
+    // a dropped connection (school Wi-Fi) is tried again, three times, before the load gives up
+    let b;
+    for (let tries = 0; ; tries++) {
+      try {
+        const r = await fetch(base + (e.url || e.path));
+        if (!r.ok) throw new Error(`${e.url || e.path}: HTTP ${r.status}`);
+        b = new Uint8Array(await r.arrayBuffer());
+        break;
+      } catch (err) {
+        if (tries >= 3) throw err;
+        await new Promise((res) => setTimeout(res, 500 * 2 ** tries));
+      }
+    }
     if (e.decode === "audio") b = await audioToWav(b);
     wasm.vfs_insert(e.path, b, e.mtime_s, e.mtime_ns, i);
     done++; bytes += b.length;
