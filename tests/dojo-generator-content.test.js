@@ -85,29 +85,33 @@ const first = (arr, f) => { const x = arr.find(f); return x ? x.question + ' -> 
 }
 
 // ---- Composing Shapes ------------------------------------------------------
+// Reported: "2 triangles can make a square, so how many triangles make a
+// square?" has no one answer, and "2 circles" was offered for building a square.
+// Every question now names an arrangement from the lesson, and a square is never
+// offered as wrong beside a rectangle (or the other way round).
 {
-  const sides = { 'large triangle': 3, square: 4, rectangle: 4, rhombus: 4, parallelogram: 4, trapezoid: 4, hexagon: 6, octagon: 8 };
-  // Independent of the page: n triangles can form any polygon with <= n + 2 sides.
-  const canMake = (n, part, whole) => {
-    if (!(whole in sides)) return false;
-    if (part === 'triangles') return n >= sides[whole] - 2;
-    if (part === 'squares') return whole === 'square' ? Number.isInteger(Math.sqrt(n)) : whole !== 'large triangle' && whole !== 'hexagon' && whole !== 'octagon';
-    return false;
-  };
   const qs = draw('Composing Shapes', 4000);
+  ok('Composing: no circles anywhere', !qs.some(q => /circle/i.test(q.question + ' ' + (q.options || []).join(' '))),
+    first(qs, q => /circle/i.test(q.question + ' ' + (q.options || []).join(' '))));
   const combine = qs.filter(q => q.subType === 'combine');
-  const wrongCombine = combine.filter(q => {
-    const [, n, part] = /make with (\d+) (?:smaller )?(\w+)\?/.exec(q.question);
-    return q.options.some(o => o !== q.answer && canMake(+n, part, o));
-  });
-  ok('Composing combine: no option that the pieces CAN make is graded wrong', combine.length > 200 && !wrongCombine.length, first(wrongCombine, () => true));
-  const build_ = qs.filter(q => q.subType === 'build');
-  const wrongBuild = build_.filter(q => {
-    const whole = /build an? (.+), you/.exec(q.question)[1];
-    return q.options.some(o => o !== q.answer && canMake(parseInt(o, 10), o.replace(/^\d+ /, ''), whole));
-  });
-  ok('Composing build: no piece set that CAN build the whole is graded wrong', build_.length > 200 && !wrongBuild.length, first(wrongBuild, () => true));
-  ok('Composing: every question has 4 options', qs.filter(q => q.options).every(q => q.options.length === 4), first(qs, q => q.options && q.options.length !== 4));
+  const twin = q => (q.answer === 'square' && q.options.includes('rectangle')) || (q.answer === 'rectangle' && q.options.includes('square'));
+  ok('Composing combine: a square answer never has rectangle as a wrong option, or vice versa', combine.length > 1000 &&
+    !combine.some(twin), first(combine, twin));
+  ok('Composing combine: every piece set is arranged (side by side / block / meet / cut)',
+    combine.every(q => /side by side|2-by-2|meet in the middle|corner to corner/.test(q.question)));
+  const counts = qs.filter(q => q.subType === 'count_pieces');
+  ok('Composing count: never the bare "how many triangles make a square"', counts.length > 500 &&
+    !counts.some(q => /how many triangles (make|in) a square/i.test(q.question)));
+  ok('Composing: answer always among the options', qs.every(q => q.options.map(String).includes(String(q.answer))));
+}
+
+// ---- Decimal Operations: place value -----------------------------------------
+// Reported: "In 1.114, which place is the 1 in?" - three right answers.
+{
+  const qs = draw('Decimal Operations', 6000);
+  const ask = qs.map(q => /^In (\d\.\d{3}), which place is the (\d) in\?|^What is the value of the (\d) in (\d\.\d{3})\?/.exec(q.question)).filter(Boolean);
+  const once = m => { const num = m[1] || m[4], d = m[2] || m[3]; return num.split(d).length === 2; };
+  ok('Decimal place value: the asked digit appears once in the number', ask.length > 100 && ask.every(once), (ask.find(m => !once(m)) || [])[0]);
 }
 
 // ---- Comparing Lengths -----------------------------------------------------
@@ -128,9 +132,19 @@ const first = (arr, f) => { const x = arr.find(f); return x ? x.question + ' -> 
 
 // ---- Classifying Objects / Estimation --------------------------------------
 {
-  const qs = draw('Classifying Objects');
-  const bad = /\b(a|an) (window|cracker|sandwich half|apple|grape|rose)\?/;
-  ok('Classifying: no ambiguous colour/shape items', !qs.some(q => bad.test(q.question)), first(qs, q => bad.test(q.question)));
+  const qs = draw('Classifying Objects', 4000);
+  // Sorting is by shape, size, or number vs shape: colour, fruit, weather and
+  // body parts were not maths.
+  ok('Classifying: no colour questions', !qs.some(q => /colou?r/i.test(q.question)), first(qs, q => /colou?r/i.test(q.question)));
+  ok('Classifying: no fruit/weather/body-part odd-one-out', !qs.some(q => /(banana|mango|hail|elbow|scooter)/.test(q.question)));
+  const counts = qs.filter(q => q.subType === 'count_sort');
+  ok('Classifying count_sort: answer matches the shapes shown', counts.length > 500 && counts.every(q => {
+    const row = /these shapes: (.+?)\. /.exec(q.question)[1].split(' ');
+    const n = s => row.filter(x => x === s).length;
+    if (typeof q.answer === 'number') return n(/\((.)\)/.exec(q.question)[1]) === q.answer;
+    const sym = { triangles: '▲', squares: '■', circles: '●' };
+    return Object.keys(sym).every(k => k === q.answer || n(sym[k]) < n(sym[q.answer]));
+  }));
   const est = draw('Estimation');
   ok('Estimation: no jelly-bean jar or parking lot', !est.some(q => /jelly beans|parking lot/.test(q.question)));
 }

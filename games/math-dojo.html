@@ -7549,7 +7549,7 @@ const Q_MATRIX = {
     "T1::Positional Words::opposite": { primary_skill: "Positional Words", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
     "T1::Positional Words::which_word": { primary_skill: "Positional Words", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
     // -- T1::Classifying Objects --
-    "T1::Classifying Objects::by_color": { primary_skill: "Classifying Objects", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
+    "T1::Classifying Objects::count_sort": { primary_skill: "Classifying Objects", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
     "T1::Classifying Objects::by_size": { primary_skill: "Classifying Objects", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
     "T1::Classifying Objects::by_shape": { primary_skill: "Classifying Objects", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
     "T1::Classifying Objects::odd_one_out": { primary_skill: "Classifying Objects", secondary_skills: [], difficulty: 2, discrimination: 1, confidence: "calibrated" },
@@ -8826,91 +8826,43 @@ const generators = {
             }
         },
         "Composing Shapes": () => {
-            // Procedural: each question is composed from a unique-answer "composition
-            // rule" table. For build/identify_parts we pick a random whole and look up
-            // its valid decomposition, then ask about that specific pair.
-            const compositions = [
-                { whole: "rectangle", parts: 2, part: "squares",          note: "two squares side by side" },
-                { whole: "square",    parts: 2, part: "triangles",        note: "two right triangles joined on the hypotenuse" },
-                { whole: "square",    parts: 4, part: "smaller squares",  note: "a 2×2 grid of smaller squares" },
-                { whole: "rectangle", parts: 2, part: "triangles",        note: "two triangles across a diagonal" },
-                { whole: "hexagon",   parts: 6, part: "triangles",        note: "six equilateral triangles around a center" },
-                { whole: "rectangle", parts: 4, part: "squares",          note: "four unit squares in a 1×4 or 2×2 layout" },
-                { whole: "trapezoid", parts: 3, part: "triangles",        note: "three equilateral triangles" },
-                { whole: "rhombus",   parts: 2, part: "triangles",        note: "two triangles sharing a diagonal" },
-                { whole: "parallelogram", parts: 2, part: "triangles",    note: "two congruent triangles across the long diagonal" },
-                { whole: "octagon",   parts: 8, part: "triangles",        note: "eight triangles from a center point" },
-                { whole: "large triangle", parts: 4, part: "triangles",   note: "four smaller triangles (Sierpinski arrangement)" }
+            // Only the four compositions the lesson teaches, each with its pieces
+            // ARRANGED, because "what can 2 triangles make" or "how many triangles
+            // make a square" has many right answers (2, 4, 8 ... triangles; square,
+            // rectangle, bigger triangle). The arrangement fixes the one answer.
+            // No circles: "2 circles" as a way to build a square read as nonsense.
+            const facts = [
+                { pieces: "2 squares put side by side (□□)", count: 2, part: "squares", whole: "rectangle",
+                  countQ: "How many squares do you put side by side to make the rectangle □□?",
+                  not: ["square"], note: "two squares side by side make a long shape with 4 square corners" },
+                { pieces: "4 matching squares in a 2-by-2 block", count: 4, part: "squares", whole: "square",
+                  countQ: "A big square is made from a 2-by-2 block of small squares. How many small squares is that?",
+                  not: ["rectangle"], note: "2 rows of 2 small squares make a bigger square" },
+                { pieces: "6 matching triangles that all meet in the middle, like pattern blocks", count: 6, part: "triangles", whole: "hexagon",
+                  countQ: "A pattern-block hexagon is made of matching triangles that meet in the middle. How many triangles?",
+                  not: [], note: "6 matching triangles around one point make a hexagon" },
+                { pieces: "the 2 triangles you get by cutting a square from corner to corner, put back together", count: 2, part: "triangles", whole: "square",
+                  countQ: "You cut a square from one corner to the opposite corner. How many triangles do you get?",
+                  not: ["rectangle"], note: "the two halves fit back together into the square" }
             ];
-            // "smaller squares" are squares.
-            const needOf = c => `${c.parts} ${c.part.replace(/^smaller /, "")}`;
-            // Whether a piece set CAN make a whole, by geometry rather than by the
-            // table: the table only lists one way each, so "4 triangles" was a wrong
-            // option for a square and "large triangle" a wrong answer for 2 triangles.
-            // Any polygon with k sides can be cut into any n >= k - 2 triangles.
-            // Equal squares make any rectangle, a square only from a square count,
-            // and (since a square is a rhombus/parallelogram/trapezoid to some
-            // teachers) those are never offered as wrong. Curved wholes and curved
-            // pieces never mix with polygons.
-            const sidesOf = { "large triangle": 3, square: 4, rectangle: 4, rhombus: 4, parallelogram: 4, trapezoid: 4, hexagon: 6, octagon: 8 };
-            const makes = (need, whole) => {
-                const [n, part] = [parseInt(need, 10), need.replace(/^\d+ /, "")];
-                const k = sidesOf[whole];
-                if (!k) return false;                       // circle, oval, half circle
-                if (part === "triangles") return n >= k - 2;
-                if (part === "squares") return whole === "square" ? Number.isInteger(Math.sqrt(n))
-                    : ["rectangle", "rhombus", "parallelogram", "trapezoid"].includes(whole);
-                return false;                               // circles, half circles
-            };
-            const curvedWholes = ["circle", "oval", "half circle"];
-            const curvedNeeds = ["2 circles", "3 circles", "4 half circles"];
-            const type = pick(["combine", "build", "identify_parts", "how_many"]);
-
-            if (type === "combine") {
-                const combo = pick(compositions);
-                // Options: the correct whole + 3 wholes these pieces can NOT make
-                const distractors = shuffle(Array.from(new Set(compositions.map(c => c.whole).concat(curvedWholes)))
-                    .filter(w => !makes(needOf(combo), w)));
-                const uniqueDistractors = distractors.slice(0, 3);
-                return { subType: type,
-                    question: `What shape can you make with ${combo.parts} ${combo.part}?`,
-                    answer: combo.whole, type: "reasoning",
-                    options: shuffle([combo.whole, ...uniqueDistractors]),
-                    explanation: `${cap(combo.whole)}: ${combo.note}. (${combo.parts} ${combo.part}.)`
+            const WHOLES = ["square", "rectangle", "triangle", "hexagon"];
+            const f = pick(facts);
+            if (pick(["combine", "combine", "count_pieces"]) === "combine") {
+                // A square is also a rectangle, so whichever is right, the other is
+                // never offered as wrong.
+                const wrong = WHOLES.filter(w => w !== f.whole && !f.not.includes(w));
+                return { subType: "combine",
+                    question: `What shape do you make with ${f.pieces}?`,
+                    answer: f.whole, type: "reasoning",
+                    options: shuffle([f.whole, ...wrong]),
+                    explanation: `${cap(f.whole)}: ${f.note}.`
                 };
             }
-            if (type === "build") {
-                const combo = pick(compositions);
-                const needStr = needOf(combo);
-                // Distractor needs: piece sets that can NOT build this whole.
-                const distractorNeeds = shuffle(Array.from(new Set(compositions.map(needOf).concat(curvedNeeds)))
-                    .filter(k => !makes(k, combo.whole)));
-                const uniqueDistractorNeeds = distractorNeeds.slice(0, 3);
-                return { subType: type,
-                    question: `To build a ${combo.whole}, you could use...?`,
-                    answer: needStr, type: "reasoning",
-                    options: shuffle([needStr, ...uniqueDistractorNeeds]),
-                    explanation: `You can build a ${combo.whole} from ${needStr} — ${combo.note}.`
-                };
-            }
-            if (type === "identify_parts") {
-                const combo = pick(compositions);
-                return { subType: type,
-                    question: `A ${combo.whole} is made of ${combo.parts} ${combo.part}. How many ${combo.part} is that?`,
-                    answer: combo.parts, type: "conceptual",
-                    options: shuffle([combo.parts, combo.parts + 1, Math.max(1, combo.parts - 1), combo.parts * 2]),
-                    explanation: `${cap(combo.whole)}: ${combo.note}. That's ${combo.parts} ${combo.part}.`
-                };
-            }
-            // how_many: "If you join N pieces together to make a W, and you have 2N pieces, how many Ws?"
-            const combo = pick(compositions);
-            const multiplier = pick([2, 3, 4]);
-            const totalPieces = combo.parts * multiplier;
-            return { subType: type,
-                question: `You have ${totalPieces} ${combo.part}. If it takes ${combo.parts} to make one ${combo.whole}, how many ${combo.whole}s can you make?`,
-                answer: multiplier, type: "procedural",
-                options: shuffle([multiplier, multiplier + 1, Math.max(1, multiplier - 1), multiplier + 2]),
-                explanation: `${totalPieces} ÷ ${combo.parts} = ${multiplier} ${combo.whole}${multiplier === 1 ? "" : "s"}.`
+            return { subType: "count_pieces",
+                question: f.countQ,
+                answer: f.count, type: "conceptual",
+                options: shuffle([...new Set([f.count, f.count + 1, f.count - 1, f.count + 2].filter(n => n > 0))].slice(0, 4)),
+                explanation: `${cap(f.whole)}: ${f.note}. That is ${f.count} ${f.part}.`
             };
         },
         "Comparing Lengths": () => {
@@ -9154,97 +9106,84 @@ const generators = {
             };
         },
         "Classifying Objects": () => {
-            // Procedural: item banks by category × on-the-fly odd-one-out. Odd-one-out
-            // picks a random category, grabs 3 members, then grabs 1 member of a
-            // different category as the odd one — combinatorially huge.
-            const byColor = {
-                // Apples, roses and grapes come in more than one colour.
-                red:    ["fire truck", "strawberry", "cherry", "tomato", "ladybug", "stop sign"],
-                blue:   ["sky", "ocean", "blueberry", "bluebird", "jeans", "sapphire"],
-                green:  ["grass", "leaf", "frog", "lime", "pine tree", "broccoli", "cactus"],
-                yellow: ["sun", "banana", "lemon", "corn", "bee", "school bus", "pineapple"],
-                purple: ["plum", "eggplant", "violet", "lilac"],
-                orange: ["pumpkin", "carrot", "basketball", "orange fruit", "tangerine"],
-                brown:  ["tree trunk", "chocolate", "bear", "coconut", "coffee bean"],
-                white:  ["snow", "polar bear", "milk", "cloud", "marshmallow"],
-                black:  ["crow", "charcoal", "panther", "ink"]
-            };
+            // Sorting by a MATH attribute - shape, size, or number vs shape - and
+            // counting the groups (K.MD.3: classify, count each category, compare
+            // the counts). Colour, fruit, weather and body-part sorting were not
+            // maths and are gone, and so are items whose shape or size depends on
+            // which one you picture (window, cracker, thimble, oval things).
             const bySize = {
-                big:   ["elephant", "house", "car", "truck", "bus", "whale", "mountain", "skyscraper", "airplane", "barn", "horse", "tree"],
-                small: ["ant", "button", "penny", "grain of rice", "key", "marble", "thimble", "paperclip", "pebble", "bead", "seed", "eraser"]
+                big:   ["elephant", "house", "car", "truck", "bus", "whale", "mountain", "airplane", "barn", "horse"],
+                small: ["ant", "button", "penny", "grain of rice", "key", "marble", "paperclip", "pebble", "bead", "seed"]
             };
             const byShape = {
-                circle:    ["clock", "wheel", "coin", "plate", "frisbee", "button", "pizza pie", "compact disc", "ring"],
-                // Windows and crackers are often rectangles, and rectangle is an option.
-                square:    ["chess board", "napkin", "tile", "sticky note"],
-                rectangle: ["door", "book", "phone", "TV screen", "envelope", "brick", "flag"],
-                triangle:  ["slice of pizza", "yield sign", "sail", "roof peak", "tortilla chip"],
-                oval:      ["egg", "racetrack", "watermelon", "almond", "rugby ball"]
+                circle:    ["wheel", "coin", "plate", "button", "ring", "round pizza"],
+                square:    ["chess board", "sticky note", "square cracker"],
+                rectangle: ["door", "book", "phone", "envelope", "brick", "dollar bill"],
+                triangle:  ["yield sign", "tortilla chip", "triangle ruler"]
             };
+            const SYMBOL = { triangles: "▲", squares: "■", circles: "●" };
+            const an = w => (/^[aeiou]/i.test(w) ? "an " : "a ") + w;
 
-            const type = pick(["by_color", "by_size", "by_shape", "odd_one_out"]);
+            const type = pick(["by_size", "by_shape", "count_sort", "count_sort", "odd_one_out"]);
 
-            if (type === "by_color") {
-                const colors = Object.keys(byColor);
-                const color = pick(colors);
-                const item = pick(byColor[color]);
-                // Offer 4 color options: correct + 3 others
-                const options = shuffle([color, ...shuffle(colors.filter(c => c !== color)).slice(0, 3)]);
-                return { subType: type, question: `What color group does a ${item} belong to?`,
-                    answer: color, type: "conceptual",
-                    options,
-                    explanation: `A ${item} is ${color}, so it belongs in the ${color} group.` };
-            }
             if (type === "by_size") {
                 const cat = pick(["big", "small"]);
                 const item = pick(bySize[cat]);
-                return { subType: type, question: `Is a ${item} big or small?`,
+                return { subType: type, question: `Is ${an(item)} big or small?`,
                     answer: cat, type: "conceptual",
                     options: ["big", "small"],
-                    explanation: `A ${item} is ${cat}.` };
+                    explanation: `${cap(an(item))} is ${cat}, so it goes in the ${cat} group.` };
             }
             if (type === "by_shape") {
                 const shapes = Object.keys(byShape);
                 const shape = pick(shapes);
                 const item = pick(byShape[shape]);
-                return { subType: type, question: `What shape is a ${item}?`,
+                return { subType: type, question: `Which shape group does ${an(item)} go in?`,
                     answer: shape, type: "conceptual",
-                    options: shuffle([shape, ...shuffle(shapes.filter(s => s !== shape)).slice(0, 3)]),
-                    explanation: `A ${item} is shaped like a ${shape}.` };
+                    options: shuffle(shapes),
+                    explanation: `${cap(an(item))} is shaped like ${an(shape)}.` };
             }
-            // odd_one_out: pick a category bank (fruits, animals, evens, shapes, colors, vehicles) + 1 outsider
-            const odd = pick(["fruits", "animals", "evens", "shapes", "colors", "vehicles", "body_parts", "weather"]);
+            if (type === "count_sort") {
+                // A row of shapes to sort and count. Counts are all different, so
+                // "which group has the most" has one answer.
+                const kinds = shuffle(Object.keys(SYMBOL));
+                const counts = shuffle([1, 2, 3, 4, 5]).slice(0, 3);
+                const row = shuffle(kinds.flatMap((k, i) => Array(counts[i]).fill(SYMBOL[k])));
+                const tally = kinds.map((k, i) => `${counts[i]} ${k}`).join(", ");
+                if (pick([true, false])) {
+                    const i = rand(0, 2);
+                    return { subType: type,
+                        question: `Sort these shapes: ${row.join(" ")}. How many ${kinds[i]} (${SYMBOL[kinds[i]]}) are there?`,
+                        answer: counts[i], type: "procedural",
+                        options: shuffle(shuffle([1, 2, 3, 4, 5].filter(n => n !== counts[i])).slice(0, 3).concat(counts[i])),
+                        explanation: `Put each shape in its group and count: ${tally}. There are ${counts[i]} ${kinds[i]}.` };
+                }
+                const most = kinds[counts.indexOf(Math.max(...counts))];
+                return { subType: type,
+                    question: `Sort these shapes: ${row.join(" ")}. Which group has the MOST?`,
+                    answer: most, type: "procedural",
+                    options: shuffle(kinds.slice()),
+                    explanation: `Sorted and counted: ${tally}. The ${most} group is biggest.` };
+            }
+            // odd_one_out: three from one group, one from another. The groups share
+            // no words, so the intruder is always the only answer.
             const banks = {
-                fruits:     ["apple", "banana", "orange", "pear", "grape", "kiwi", "mango", "peach", "plum"],
-                animals:    ["dog", "cat", "bird", "rabbit", "horse", "cow", "sheep", "tiger", "bear", "fox"],
-                evens:      ["2", "4", "6", "8", "10", "12", "14", "16", "18", "20"],
-                shapes:     ["circle", "square", "triangle", "pentagon", "hexagon", "rectangle", "oval"],
-                colors:     ["red", "blue", "green", "yellow", "purple", "orange", "pink", "black"],
-                vehicles:   ["car", "bus", "bike", "truck", "scooter", "train", "boat", "motorcycle"],
-                body_parts: ["hand", "foot", "eye", "ear", "nose", "elbow", "knee", "finger"],
-                weather:    ["rain", "snow", "wind", "sunshine", "hail", "fog", "thunder", "cloud"]
+                numbers: ["2", "3", "5", "7", "8", "10", "12", "15", "20"],
+                shapes:  ["circle", "square", "triangle", "rectangle", "hexagon"],
+                big:     bySize.big,
+                small:   bySize.small
             };
-            const oddOther = pick(Object.keys(banks).filter(k => k !== odd));
-            // Pick 3 from the main bank, 1 from the other bank.
-            const three = shuffle(banks[odd]).slice(0, 3);
-            // Words live in more than one bank: "orange" is a colour AND a
-            // fruit. An intruder that also belongs to the main category makes
-            // the question unanswerable - a student saw "which does NOT
-            // belong: orange, orange, red, blue". Only intrude with words the
-            // main bank does not contain.
-            const foreign = banks[oddOther].filter(w => !banks[odd].includes(w));
-            const intruder = pick(foreign.length ? foreign : banks[oddOther]);
+            const label = { numbers: "numbers", shapes: "shapes", big: "big things", small: "small things" };
+            const main = pick(Object.keys(banks));
+            const other = pick(Object.keys(banks).filter(k => k !== main));
+            const three = shuffle(banks[main]).slice(0, 3);
+            const intruder = pick(banks[other]);
             const listItems = shuffle([...three, intruder]);
-            const categoryLabel = odd === "evens" ? "an even number"
-                                : odd === "colors" ? "a color"
-                                : odd === "shapes" ? "a shape"
-                                : odd === "body_parts" ? "a body part"
-                                : odd.slice(0, -1); // drop trailing 's' for fruits/animals/etc.
             return { subType: type,
                 question: `Which one does NOT belong: ${listItems.join(", ")}?`,
                 answer: intruder, type: "reasoning",
                 options: listItems,
-                explanation: `${intruder} doesn't belong — the others are all ${categoryLabel === "fruit" || categoryLabel === "animal" || categoryLabel === "vehicle" || categoryLabel === "weather" ? categoryLabel + "s" : categoryLabel}.`
+                explanation: `${three.join(", ")} are all ${label[main]}. ${cap(intruder)} is not, so it does not belong.`
             };
         }
     },
@@ -10663,9 +10602,10 @@ const generators = {
                 const PLACES = ['tenths', 'hundredths', 'thousandths'];
                 // A three-decimal number with no zero digits after the point, so
                 // "which digit is in the hundredths place" always has one answer
-                // and the value of that digit is never 0.
-                const whole = rand(1, 9);
-                const digits = [rand(1, 9), rand(1, 9), rand(1, 9)];
+                // and the value of that digit is never 0. All four digits differ:
+                // "In 1.114, which place is the 1 in?" had three right answers.
+                const pool = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+                const [whole, ...digits] = [0, 1, 2, 3].map(() => pool.splice(rand(0, pool.length - 1), 1)[0]);
                 const num = `${whole}.${digits.join('')}`;
                 const idx = rand(0, 2);
                 const place = PLACES[idx];
@@ -19321,87 +19261,83 @@ const lessons = {
                 ]
             }}),
         "Classifying Objects": () => ({
-            goalProblem: `Which does NOT belong: apple, banana, orange, car?`,
+            goalProblem: `Sort these shapes: ▲ ■ ▲ ● ▲ ■. How many triangles are there?`,
             teachingSteps: [
                 {
                     title: "What is classifying?",
-                    explanation: "<strong>Classifying</strong> means sorting things into groups based on what they have in common. Things in the same group share something!",
-                    visual: "Sorting: 🍎🍌🍊 = Fruits | 🚗🚌🚲 = Vehicles"
+                    explanation: "<strong>Classifying</strong> means sorting things into groups that are the same in some way, like the same <strong>shape</strong> or the same <strong>size</strong>.",
+                    visual: "▲ ▲ ▲ | ■ ■ | ●"
                 },
                 {
-                    title: "Look for what's the SAME",
-                    explanation: "To classify, ask: 'What do most of these have in common?' Find the pattern or category that connects them.",
-                    visual: "apple, banana, orange → All FRUIT!"
+                    title: "Sort by shape",
+                    explanation: "Put all the triangles together, all the squares together and all the circles together. Every shape goes in exactly one group.",
+                    visual: "▲ ■ ▲ ● ▲ ■ → ▲▲▲  ■■  ●"
                 },
                 {
-                    title: "Find the one that's DIFFERENT",
-                    explanation: "Once you know the group, look for the item that <strong>doesn't fit</strong>. It's the 'odd one out'!",
-                    visual: "🍎 🍌 🍊 🚗 ← Which is different?"
+                    title: "Count each group",
+                    explanation: "After sorting, <strong>count</strong> each group. The group with the biggest number has the <strong>most</strong>.",
+                    visual: "triangles 3, squares 2, circles 1 → triangles have the most"
                 },
                 {
-                    title: "Apple, banana, orange are all fruits",
-                    explanation: "Apples, bananas, and oranges are all <strong>fruits</strong> - they grow on trees/plants and we eat them!",
-                    visual: "✓ apple (fruit) ✓ banana (fruit) ✓ orange (fruit)"
+                    title: "Sort by size",
+                    explanation: "Things can also be sorted into <strong>big</strong> and <strong>small</strong>. An elephant and a bus are big; an ant and a button are small.",
+                    visual: "big: elephant, bus | small: ant, button"
                 },
                 {
-                    title: "Car does NOT belong!",
-                    explanation: "A <strong>car</strong> is a vehicle, not a fruit! It doesn't belong with the fruits.",
-                    visual: "✗ car (NOT a fruit) - Doesn't belong!"
+                    title: "Find the one that does NOT belong",
+                    explanation: "When three things share a group and one does not, the different one is the <strong>odd one out</strong>.",
+                    visual: "circle, square, 7, triangle → 7 is a number, not a shape"
                 }
             ],
-            finalAnswer: "car",
-            answerExplanation: "Apple, banana, and orange are all fruits. A car is a vehicle - it doesn't belong in the fruit group!",
-            example: { problem: `Which does NOT belong: apple, banana, orange, car?`, steps: [
-                { text: "Find what 3 items have in common", math: "Apple, banana, orange = fruits" },
-                { text: "Check if the 4th item fits", math: "Car = vehicle, NOT a fruit" },
-                { text: "The odd one out is car", math: "Answer: <strong>car</strong>" }
+            finalAnswer: "3",
+            answerExplanation: "Sorting ▲ ■ ▲ ● ▲ ■ by shape gives ▲▲▲, ■■ and ●. The triangle group has 3.",
+            example: { problem: `Which does NOT belong: circle, square, 7, triangle?`, steps: [
+                { text: "What do most of them have in common?", math: "circle, square, triangle = shapes" },
+                { text: "Does the last one fit?", math: "7 is a number, not a shape" },
+                { text: "The odd one out", math: "Answer: <strong>7</strong>" }
             ]},
             keyPoints: [
-                "Look for what most items have in common",
-                "The odd one out doesn't share that feature",
-                "Common categories: colors, sizes, shapes, types (animals, foods, etc.)"
+                "Sort by what is the same: shape, size, or numbers vs shapes",
+                "Count each group after you sort",
+                "The odd one out is the one that is not in the group"
             ],
             mistakes: [
-                { wrong: "Not looking for the pattern", why: "First find what most items share, THEN find the different one." },
-                { wrong: "Picking something that does belong", why: "Make sure your answer is truly different from the others." }
+                { wrong: "Counting before sorting", why: "Sort first, then count one group at a time, so you don't miss or double-count a shape." },
+                { wrong: "Picking something that does belong", why: "Make sure your answer is the only one NOT in the group." }
             ],
             guided: {
-                problem: `Which does NOT belong: dog, cat, bird, table?`,
+                problem: `Sort these shapes: ● ■ ● ● ■. Which group has more, circles or squares?`,
                 steps: [
-                    { label: "What are dog, cat, and bird?", value: "Animals" },
-                    { label: "Is a table an animal?", value: "No" },
-                    { label: "The odd one out is", value: "?" }
+                    { label: "How many circles (●)?", value: "3" },
+                    { label: "How many squares (■)?", value: "2" },
+                    { label: "Which group has more?", value: "?" }
                 ],
-                answer: "table",
-                answerLabel: "Which doesn't belong?",
+                answer: "circles",
+                answerLabel: "Which group has more?",
                 interactiveSteps: [
                     {
-                        prompt: "Dog, cat, and bird are all living things that move around. What category are they?",
-                        hint: "They're all...",
-                        answer: "animals",
-                        acceptableAnswers: ["animals", "animal", "pets", "living things"],
-                        formatHint: "What type of things are they?",
-                        commonMistakes: {
-                            "objects": "Animals are living creatures, not just objects!"
-                        }
+                        prompt: "Count the circles in ● ■ ● ● ■. How many circles are there?",
+                        hint: "Touch each ● and count.",
+                        answer: "3",
+                        acceptableAnswers: ["3", "three"],
+                        formatHint: "Enter a number",
+                        commonMistakes: { "5": "5 is all the shapes. Count only the circles." }
                     },
                     {
-                        prompt: "Is a table an animal?",
-                        hint: "Can a table move on its own? Is it alive?",
-                        answer: "no",
-                        acceptableAnswers: ["no", "nope", "n"],
-                        formatHint: "yes or no",
-                        commonMistakes: {
-                            "yes": "A table is furniture, not a living animal!"
-                        }
-                    },
-                    {
-                        prompt: "Dog, cat, and bird are animals. Table is furniture. Which one does NOT belong?",
-                        hint: "Which one is different from the others?",
-                        answer: "table",
-                        acceptableAnswers: ["table", "the table", "a table"],
-                        formatHint: "Which item?",
+                        prompt: "Count the squares in ● ■ ● ● ■. How many squares are there?",
+                        hint: "Touch each ■ and count.",
+                        answer: "2",
+                        acceptableAnswers: ["2", "two"],
+                        formatHint: "Enter a number",
                         commonMistakes: {}
+                    },
+                    {
+                        prompt: "3 circles and 2 squares. Which group has more?",
+                        hint: "Which number is bigger, 3 or 2?",
+                        answer: "circles",
+                        acceptableAnswers: ["circles", "circle", "the circles"],
+                        formatHint: "circles or squares",
+                        commonMistakes: { "squares": "There are 3 circles and only 2 squares." }
                     }
                 ]
             }})
