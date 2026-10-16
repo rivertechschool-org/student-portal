@@ -132,6 +132,9 @@ with sync_playwright() as p:
             act = policy(e['i'], e['k'])
             if act == 'never':
                 pg.evaluate("submitNeverSeen()")
+            elif act == 'forgot':
+                # Click the real button: it has to be visible in this mode.
+                pg.click('#idk-forgot-btn')
             else:
                 pg.evaluate(ANSWER, act == 'right')
                 pg.evaluate("nextQuestion()")
@@ -182,6 +185,28 @@ with sync_playwright() as p:
     asked, pairs, rec = run_check(lambda i, k: 'right' if i < 30 else 'wrong')
     ok('both wrong four times in a row also stops', rec['reason'] == 'edge' and rec['summary']['edge']['code'] == rec['items'][30]['code'], rec['summary'].get('edge'))
     ok('those count as not yet, not not-seen', rec['summary']['notseen'] == 0 and rec['summary']['notyet'] >= 4, rec['summary'])
+
+    print('\n== "seen it - don\'t remember" ==')
+    # 2026-10-16, asked for by the school: an "I don't remember" button in the
+    # check. Right on the first 10 skills; then "don't remember" on the first
+    # question of each skill and right on the second.
+    pg.evaluate("goToModeSelect(); selectMode('progress'); startProgressCheck(false)")
+    ok('the button shows in a Progress Check', pg.is_visible('#idk-forgot-btn'))
+    pg.evaluate("endTest()"); pg.wait_for_timeout(200)
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    asked, pairs, rec = run_check(lambda i, k: 'right' if i < 10 or k == 1 else 'forgot')
+    later = rec['items'][10:]
+    ok('the skill\'s second question is still asked', all(any(p == (i, 1) for p in pairs) for i in range(10, 13)))
+    ok('one forgotten + one right = shaky, flagged forgot',
+       all(it['status'] == 'shaky' and it['forgot'] for it in later), [(it['status'], it.get('forgot')) for it in later[:3]])
+    ok('the first 10 are not flagged', not any(it['forgot'] for it in rec['items'][:10]))
+    ok('it is not "never seen"', rec['summary']['notseen'] == 0, rec['summary'])
+    ok('the results say which were not remembered', 'seen, did not remember' in pg.inner_text('#progress-result-items'))
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    asked, pairs, rec = run_check(lambda i, k: 'right' if i < 15 else 'forgot')
+    ok('forgotten on both questions four times in a row finds the edge',
+       rec['reason'] == 'edge' and rec['summary']['edge']['code'] == rec['items'][15]['code'], rec['summary'].get('edge'))
+    ok('...and those are "not yet", not "never seen"', rec['summary']['notseen'] == 0 and rec['items'][15]['status'] == 'notyet')
 
     print('\n== one wrong answer is not the edge ==')
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)

@@ -46574,6 +46574,7 @@ function submitNeverSeen() {
 }
 
 function submitDontRemember() {
+    if (state.mode === 'progress') { progressDontRemember(); return; }
     _submitDiagIDK('forgot', 'forgot', "Good to know — we'll review this");
 }
 
@@ -47053,7 +47054,7 @@ function initProgressSetup() {
         planEl.innerHTML = `<h3>Choose a check</h3>
             <p class="pc-muted"><strong>Progress Check</strong>: all ${nCore} graduation core skills, easiest first.</p>
             <p class="pc-muted"><strong>College Prep Check</strong> (extended): the same ${nCore}, then the ${nR || 8} Stage 7 College &amp; Assessment Readiness skills (66-73), for students heading to college, placement or assessment. You only reach Stage 7 by getting through the core.</p>
-            <p class="pc-muted">Two questions on each. If you have never seen a question's topic, press <strong>🆕 Never seen this</strong> - it is not counted as wrong. When you reach topics you have not learned yet, the check notices and finishes there, so nobody has to sit through work they have not been taught.</p>
+            <p class="pc-muted">Two questions on each. If you have never seen a question's topic, press <strong>🆕 Never seen this</strong> - it is not counted as wrong. If you have learned it but cannot remember how, press <strong>🤔 Seen it — don't remember</strong>, and it is marked for review. When you reach topics you have not learned yet, the check notices and finishes there, so nobody has to sit through work they have not been taught.</p>
             <p class="pc-muted">Nothing about your skills changes. Every check is saved so you can see what has moved since the last one.</p>`;
         btn.disabled = false;
         btnPrep.disabled = !nR;
@@ -47094,7 +47095,7 @@ function startProgressCheck(extended) {
     initScores();
     startSessionTracking('progress');
     state.mode = 'progress';
-    progressState.items.forEach(it => { it.results = []; it.notSeen = false; });
+    progressState.items.forEach(it => { it.results = []; it.notSeen = false; it.forgot = false; });
     progressState.block = [];
     progressState.next = 0;
     progressState.entry = null;
@@ -47160,10 +47161,12 @@ function loadProgressQuestion() {
         renderQuestion();
         startTimer();
         updateProgress();
-        // The never-seen button is shown in this mode; setupTestUI hides it
-        // for every other mode with a timer.
+        // Both IDK buttons are shown in this mode; setupTestUI hides them for
+        // every other mode with a timer.
         const ns = document.getElementById('idk-never-btn');
         if (ns) ns.style.display = 'inline-flex';
+        const fg = document.getElementById('idk-forgot-btn');
+        if (fg) fg.style.display = 'inline-flex';
         const done = progressState.items.filter(x => x.notSeen || x.results.length >= PROGRESS_LIMITS.perItem).length;
         const tierDisplay = document.getElementById('current-tier-display');
         if (tierDisplay) tierDisplay.textContent = `Progress Check · ${it.code}. ${it.title} · skill ${Math.min(done + 1, progressState.items.length)} of ${progressState.items.length}`;
@@ -47184,6 +47187,23 @@ function progressNeverSeen() {
     if (!entry) return;
     stopTimer();
     progressState.items[entry.i].notSeen = true;
+    progressState.entry = null;
+    recordQuestionResult(state.currentQuestion.domain, state.currentQuestion.tier, false, 0);
+    loadProgressQuestion();
+}
+
+// "Seen it - don't remember": the student was taught this but cannot recall
+// it. Unlike "never seen", the item's other question is still asked (it may
+// come back), so this question counts as not right and the item is flagged.
+// Status stays in the existing set (secure/shaky/notyet...), which the portal
+// already accepts; "forgot" rides alongside it.
+function progressDontRemember() {
+    const entry = progressState.entry;
+    if (!entry) return;
+    stopTimer();
+    const it = progressState.items[entry.i];
+    it.results.push(false);
+    it.forgot = true;
     progressState.entry = null;
     recordQuestionResult(state.currentQuestion.domain, state.currentQuestion.tier, false, 0);
     loadProgressQuestion();
@@ -47212,6 +47232,7 @@ function endProgressCheck(reason) {
         code: it.code, title: it.title, section: it.section, level: Math.round(it.level * 10) / 10,
         correct: it.results.filter(Boolean).length, total: it.results.length,
         status: progressItemStatus(it),
+        forgot: !!it.forgot,
         skills: [...new Set(it.picks.map(s => s.dojo))]
     }));
     // The edge: the first item of the run that ended the check.
@@ -47267,7 +47288,7 @@ function renderProgressResults(record, previous) {
         } else if (previous) change = '<span class="pc-change">new</span>';
         const cls = it.status === 'notseen' ? 'notyet' : it.status;
         return `<div class="pc-row"><span class="pc-code">${escapeHtml(it.code)}</span>
-            <span>${escapeHtml(it.title)}${it.section === 'R' ? ' <span class="plan-tag ready">Stage 7</span>' : ''} <span class="pc-muted">· ${it.status === 'notseen' ? 'never seen' : it.correct + '/' + it.total}</span>${change}</span>
+            <span>${escapeHtml(it.title)}${it.section === 'R' ? ' <span class="plan-tag ready">Stage 7</span>' : ''} <span class="pc-muted">· ${it.status === 'notseen' ? 'never seen' : it.correct + '/' + it.total}${it.forgot ? ' · seen, did not remember' : ''}</span>${change}</span>
             <span class="pc-status ${cls}">${PROGRESS_STATUS_LABEL[it.status]}</span></div>`;
     }).join('');
     const total = record.items.filter(it => it.section === 'core').length;
