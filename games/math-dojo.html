@@ -47695,6 +47695,46 @@ function buildProgressCheck(extended) {
     return { items, kind: extended ? 'college_prep' : 'progress' };
 }
 
+// Levels the student has shown, skipped in future checks (Jordan, 2026-10-16:
+// "if they always got T1 correct, drop it for future checks"). An item's level
+// is its Dojo tier, Math.round of its skills' average tier. A level is skipped
+// when EVERY item at that level was secure in each of the student's last
+// PROGRESS_SKIP_RUN checks; one miss at that level and it is asked again until
+// it earns a new run. Skipped items are recorded as secure with carried: true,
+// so "secure of 65" keeps meaning the same thing and the portal's status set
+// is unchanged. The level comes from the CODE through the current plan, not the
+// saved record: the portal does not keep `level`.
+const PROGRESS_SKIP_RUN = 3;
+function progressSkippedTiers(items) {
+    const tierOf = new Map(items.map(it => [String(it.code), Math.round(it.level)]));
+    const hist = progressHistory().slice(-PROGRESS_SKIP_RUN);
+    const skip = new Set();
+    if (hist.length < PROGRESS_SKIP_RUN) return skip;
+    const tiers = [...new Set(tierOf.values())].sort((a, b) => a - b);
+    for (const t of tiers) {
+        const shown = hist.every(c => {
+            const its = (c.items || []).filter(i => tierOf.get(String(i.code)) === t);
+            return its.length > 0 && its.every(i => i.status === 'secure');
+        });
+        if (shown) skip.add(t);
+    }
+    // Never skip everything: the top level is always asked.
+    if (skip.size && skip.size === tiers.length) skip.delete(tiers[tiers.length - 1]);
+    return skip;
+}
+function progressSkipNoteHtml(items) {
+    const skip = [...progressSkippedTiers(items)].sort((a, b) => a - b);
+    if (!skip.length) return '';
+    const n = items.filter(it => skip.includes(Math.round(it.level))).length;
+    return `<p class="pc-muted" id="progress-skip-note">⏭️ Skipped this time: <strong>${skip.map(t => 'T' + t).join(', ')}</strong> (${n} skill${n === 1 ? '' : 's'}) - every one right in your last ${PROGRESS_SKIP_RUN} checks. They still count as secure.</p>`;
+}
+function renderProgressSkipNote() {
+    const el = document.getElementById('progress-skip-note-slot');
+    if (!el) return;
+    const built = buildProgressCheck(false);
+    el.innerHTML = built && built.items.length ? progressSkipNoteHtml(built.items) : '';
+}
+
 function initProgressSetup() {
     const built = buildProgressCheck(false);
     const extended = buildProgressCheck(true);
@@ -47713,11 +47753,13 @@ function initProgressSetup() {
             <p class="pc-muted"><strong>Progress Check</strong>: all ${nCore} graduation core skills, easiest first.</p>
             <p class="pc-muted"><strong>College Prep Check</strong> (extended): the same ${nCore}, then the ${nR || 8} Stage 7 College &amp; Assessment Readiness skills (66-73), for students heading to college, placement or assessment. You only reach Stage 7 by getting through the core.</p>
             <p class="pc-muted">One question on each. If you have never seen a question's topic, press <strong>🆕 Never seen this</strong> - it is not counted as wrong. If you have learned it but cannot remember how, press <strong>🤔 Seen it — don't remember</strong>, and it is marked for review. When you reach topics you have not learned yet, the check notices and finishes there, so nobody has to sit through work they have not been taught.</p>
-            <p class="pc-muted">Nothing about your skills changes. Every check is saved so you can see what has moved since the last one.</p>`;
+            <p class="pc-muted">Nothing about your skills changes. Every check is saved so you can see what has moved since the last one. A level you get completely right ${PROGRESS_SKIP_RUN} checks in a row is skipped after that.</p>
+            <div id="progress-skip-note-slot"></div>`;
         btn.disabled = false;
         btnPrep.disabled = !nR;
     }
     renderProgressHistory();
+    renderProgressSkipNote();
     requestProgressHistory();
 }
 
@@ -47753,7 +47795,9 @@ function startProgressCheck(extended) {
     initScores();
     startSessionTracking('progress');
     state.mode = 'progress';
-    progressState.items.forEach(it => { it.results = []; it.notSeen = false; it.forgot = false; });
+    progressState.items.forEach(it => { it.results = []; it.notSeen = false; it.forgot = false; it.carried = false; });
+    const skipTiers = progressSkippedTiers(progressState.items);
+    progressState.items.forEach(it => { it.carried = skipTiers.has(Math.round(it.level)); });
     progressState.block = [];
     progressState.next = 0;
     progressState.entry = null;
@@ -47770,6 +47814,7 @@ function startProgressCheck(extended) {
 // An item is "beyond" the student when they had never seen it, or got both
 // of its questions wrong.
 function progressItemBeyond(it) {
+    if (it.carried) return false;
     return it.notSeen || (it.results.length >= PROGRESS_LIMITS.perItem && it.results.every(r => !r));
 }
 
@@ -47778,7 +47823,7 @@ function progressItemBeyond(it) {
 // the edge. Checked before every question, so "never seen" four times stops
 // the check straight away rather than at the end of a block.
 function progressItemResolved(it) {
-    return it.notSeen || it.results.length >= PROGRESS_LIMITS.perItem;
+    return it.carried || it.notSeen || it.results.length >= PROGRESS_LIMITS.perItem;
 }
 function progressEdgeRun() {
     let run = 0;
@@ -47800,8 +47845,10 @@ function loadProgressQuestion() {
             const end = Math.min(start + PROGRESS_LIMITS.block, progressState.items.length);
             progressState.next = end;
             for (let k = 0; k < PROGRESS_LIMITS.perItem; k++) {
-                for (let i = start; i < end; i++) progressState.block.push({ i, k });
+                for (let i = start; i < end; i++) if (!progressState.items[i].carried) progressState.block.push({ i, k });
             }
+            // A block of only skipped levels asks nothing: go to the next one.
+            if (!progressState.block.length) continue;
         }
         const entry = progressState.block.shift();
         const it = progressState.items[entry.i];
@@ -47825,9 +47872,11 @@ function loadProgressQuestion() {
         if (ns) ns.style.display = 'inline-flex';
         const fg = document.getElementById('idk-forgot-btn');
         if (fg) fg.style.display = 'inline-flex';
-        const done = progressState.items.filter(x => x.notSeen || x.results.length >= PROGRESS_LIMITS.perItem).length;
+        // Count only the skills this check asks: skipped levels are not in it.
+        const asking = progressState.items.filter(x => !x.carried);
+        const done = asking.filter(x => x.notSeen || x.results.length >= PROGRESS_LIMITS.perItem).length;
         const tierDisplay = document.getElementById('current-tier-display');
-        if (tierDisplay) tierDisplay.textContent = `Progress Check · ${it.code}. ${it.title} · skill ${Math.min(done + 1, progressState.items.length)} of ${progressState.items.length}`;
+        if (tierDisplay) tierDisplay.textContent = `Progress Check · ${it.code}. ${it.title} · skill ${Math.min(done + 1, asking.length)} of ${asking.length}`;
         return;
     }
 }
@@ -47868,6 +47917,7 @@ function progressDontRemember() {
 }
 
 function progressItemStatus(it) {
+    if (it.carried) return 'secure';
     if (it.notSeen) return 'notseen';
     const t = it.results.length;
     if (!t) return 'notreached';
@@ -47891,6 +47941,7 @@ function endProgressCheck(reason) {
         correct: it.results.filter(Boolean).length, total: it.results.length,
         status: progressItemStatus(it),
         forgot: !!it.forgot,
+        carried: !!it.carried,
         skills: [...new Set(it.picks.map(s => s.dojo))]
     }));
     // The edge: the first item of the run that ended the check.
@@ -47935,7 +47986,8 @@ function renderProgressResults(record, previous) {
     const before = new Map(((previous && previous.items) || []).map(i => [i.code, i.status]));
     const k = record.summary;
     let up = 0, down = 0;
-    const asked = record.items.filter(it => it.status !== 'notreached');
+    const asked = record.items.filter(it => it.status !== 'notreached' && !it.carried);
+    const carried = record.items.filter(it => it.carried);
     const rows = asked.map(it => {
         let change = '';
         const was = before.get(it.code);
@@ -47971,7 +48023,10 @@ function renderProgressResults(record, previous) {
             ? ` Since your last check on ${escapeHtml(new Date(previous.at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}: ${up} moved up, ${down} slipped.`
             : ' This is your first check: the next one will show what moved.'}</p>
         ${k.shaky + k.notyet ? '<p class="pc-muted">Shaky and not-yet skills are the ones to practice next in Training Grounds.</p>' : ''}`;
-    document.getElementById('progress-result-items').innerHTML = `<h3>Skill by skill (easiest first)</h3>${rows || '<p class="pc-muted">Nothing was answered.</p>'}
+    const carriedTiers = [...new Set(carried.map(it => 'T' + Math.round(it.level)))];
+    document.getElementById('progress-result-items').innerHTML = `<h3>Skill by skill (easiest first)</h3>
+        ${carried.length ? `<p class="pc-muted">⏭️ ${carried.length} skill${carried.length === 1 ? '' : 's'} at ${carriedTiers.join(', ')} skipped - all right in your last ${PROGRESS_SKIP_RUN} checks, counted as secure.</p>` : ''}
+        ${rows || '<p class="pc-muted">Nothing was answered.</p>'}
         ${k.notreached ? `<p class="pc-muted" style="margin-top:0.5rem">${k.notreached} harder skill${k.notreached === 1 ? '' : 's'} not reached this time.</p>` : ''}`;
 }
 
@@ -47987,6 +48042,7 @@ window.addEventListener('message', (event) => {
     if (event.data.owner && getUserId() && event.data.owner !== getUserId()) return;
     progressHistoryRemote = Array.isArray(event.data.checks) ? event.data.checks : [];
     renderProgressHistory();
+    renderProgressSkipNote();
 });
 
 // ========================================

@@ -179,12 +179,15 @@ with sync_playwright() as p:
     ok('the results name the edge', 'Your edge right now' in s and k['edge']['title'] in s, s.replace('\n', ' ')[:160])
 
     print('\n== wrong answers find the edge too ==')
+    # Earlier checks would trigger level skipping (3 in a row); start clean.
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
     asked, pairs, rec = run_check(lambda i, k: 'right' if i < 30 else 'wrong')
     ok('both wrong four times in a row also stops', rec['reason'] == 'edge' and rec['summary']['edge']['code'] == rec['items'][30]['code'], rec['summary'].get('edge'))
     ok('those count as not yet, not not-seen', rec['summary']['notseen'] == 0 and rec['summary']['notyet'] >= 4, rec['summary'])
 
     print('\n== "seen it - don\'t remember" ==')
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
     # 2026-10-16, asked for by the school: an "I don't remember" button in the
     # check. "Don't remember" on every other skill: never 4 in a row, so the
     # check runs to the end; then all from skill 15 on finds the edge.
@@ -206,6 +209,7 @@ with sync_playwright() as p:
     ok('...and those are "not yet", not "never seen"', rec['summary']['notseen'] == 0 and rec['items'][15]['status'] == 'notyet')
 
     print('\n== one wrong answer is not the edge ==')
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
     # Every other skill wrong: never 4 in a row, so none is the edge.
     asked, pairs, rec = run_check(lambda i, k: 'wrong' if i % 2 else 'right')
@@ -221,6 +225,46 @@ with sync_playwright() as p:
     import re as _re
     mv = _re.search(r'(\d+) moved up', s2)
     ok('all right after half wrong: the 32 wrong ones moved up', 'Since your last check' in s2 and mv and int(mv.group(1)) == 32, s2.replace('\n', ' ')[:200])
+
+    print('\n== a level right 3 checks in a row is skipped ==')
+    # 2026-10-16, Jordan: "if they always got T1 correct, drop it for future
+    # checks". Right on every T2-T3 skill, wrong from T4 (so each check stops
+    # at the T4 edge). After 3 such checks, T2 and T3 are skipped.
+    tiers = pg.evaluate("buildProgressCheck(false).items.map(it => Math.round(it.level))")
+    low = sum(1 for t in tiers if t <= 3)
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
+    pol = lambda i, k: 'right' if tiers[i] <= 3 else 'wrong'
+    for n in range(3):
+        pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+        if n < 3:
+            ok(f'before check {n + 1}: nothing skipped yet', 'Skipped this time' not in pg.inner_text('#progress-setup-plan'))
+        asked, pairs, rec = run_check(pol)
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    note = pg.inner_text('#progress-setup-plan')
+    ok('after 3: the setup says T2 and T3 are skipped', 'Skipped this time' in note and 'T2, T3' in note, note[-200:].replace('\n', ' '))
+    pg.evaluate("startProgressCheck(false)")
+    first = pg.evaluate("progressState.items[progressState.entry.i]")
+    ok('the first question is a T4 skill', round(first['level']) == 4, first['level'])
+    pg.evaluate("endTest()"); pg.wait_for_timeout(200)
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    asked, pairs, rec = run_check(lambda i, k: 'right' if tiers[i] <= 4 else 'wrong')
+    ok('no T2 or T3 skill is asked', all(tiers[i] >= 4 for i, _ in pairs), sorted({tiers[i] for i, _ in pairs}))
+    car = [it for it in rec['items'] if it.get('carried')]
+    ok(f'the {low} skipped skills are saved as secure, carried', len(car) == low and all(it['status'] == 'secure' for it in car), len(car))
+    ok('they count in "secure of 65"', rec['summary']['secure'] >= low, rec['summary'])
+    ok('the results say what was skipped', 'skipped' in pg.inner_text('#progress-result-items'))
+
+    print('\n== one miss at a level keeps it in ==')
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
+    first_t3 = tiers.index(3)
+    for n in range(3):
+        pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+        # Third check: one T3 skill wrong.
+        asked, pairs, rec = run_check(lambda i, k: 'wrong' if (tiers[i] > 3 or (n == 2 and i == first_t3)) else 'right')
+    pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
+    note = pg.inner_text('#progress-setup-plan')
+    ok('T2 is skipped, T3 is not', 'T2' in note and 'T3' not in note.split('Skipped this time')[-1][:40], note[-200:].replace('\n', ' '))
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
 
     print('\n== ending early ==')
     pg.evaluate("goToModeSelect(); selectMode('progress'); startProgressCheck(false)")
