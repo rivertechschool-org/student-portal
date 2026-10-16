@@ -145,16 +145,16 @@ with sync_playwright() as p:
     print('\n== a student who knows it all goes through every skill ==')
     before = pg.evaluate(STATES)
     asked, pairs, rec = run_check(lambda i, k: 'right')
-    ok('130 questions: two on each of the 65', asked == 130, asked)
-    ok('the two questions on one skill are never back to back',
-       all(pairs[j][0] != pairs[j + 1][0] for j in range(len(pairs) - 1)))
+    # 2026-10-16: one question per skill, so a whole check is 65 (it was 130).
+    ok('65 questions: one on each of the 65', asked == 65, asked)
+    ok('no skill is asked twice', len({i for i, _ in pairs}) == len(pairs))
     ok('it ends as complete, all 65 secure', rec['reason'] == 'complete' and rec['summary']['secure'] == 65, rec['summary'])
     ok('a Progress Check has no Stage 7 in it', rec['kind'] == 'progress' and rec['summary']['readiness']['total'] == 0, rec['summary']['readiness'])
 
     print('\n== the extended College Prep Check ==')
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
     asked, pairs, rec = run_check(lambda i, k: 'right', extended=True)
-    ok('two questions on every skill: the 65, then Stage 7', asked == 2 * plan['n'], (asked, plan['n']))
+    ok('one question on every skill: the 65, then Stage 7', asked == plan['n'], (asked, plan['n']))
     ok('saved as a College Prep Check', rec['kind'] == 'college_prep' and 'College Prep' in pg.inner_text('#progress-result-title'))
     ok('Stage 7 is counted on its own, not in the 65', rec['summary']['secure'] == 65 and rec['summary']['readiness']['total'] == nR and rec['summary']['readiness']['secure'] == nR, rec['summary']['readiness'])
     ok('the results report Stage 7', 'Stage 7 College & Assessment Readiness: 8 secure' in pg.inner_text('#progress-result-summary'))
@@ -171,8 +171,6 @@ with sync_playwright() as p:
        k['edge'] and k['edge']['code'] == rec['items'][20]['code'], (k['edge'], rec['items'][20]['code']))
     beyond = [it for it in rec['items'][20:] if it['status'] == 'notseen']
     ok('it stops right after the 4th never-seen skill', len(beyond) == 4, len(beyond))
-    ok('"never seen" skips that skill\'s second question',
-       not any(i >= 20 and kk == 1 for i, kk in pairs), [p for p in pairs if p[0] >= 20][:6])
     ok('Stage 7 is not reached when the core edge stops the check', rec['summary']['readiness']['notreached'] == nR, rec['summary']['readiness'])
     ok('everything after is "not reached", not wrong',
        all(it['status'] == 'notreached' for it in rec['items'][20 + len(beyond):]) and k['notreached'] == 65 - 20 - len(beyond), k)
@@ -188,31 +186,32 @@ with sync_playwright() as p:
 
     print('\n== "seen it - don\'t remember" ==')
     # 2026-10-16, asked for by the school: an "I don't remember" button in the
-    # check. Right on the first 10 skills; then "don't remember" on the first
-    # question of each skill and right on the second.
+    # check. "Don't remember" on every other skill: never 4 in a row, so the
+    # check runs to the end; then all from skill 15 on finds the edge.
     pg.evaluate("goToModeSelect(); selectMode('progress'); startProgressCheck(false)")
     ok('the button shows in a Progress Check', pg.is_visible('#idk-forgot-btn'))
     pg.evaluate("endTest()"); pg.wait_for_timeout(200)
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
-    asked, pairs, rec = run_check(lambda i, k: 'right' if i < 10 or k == 1 else 'forgot')
-    later = rec['items'][10:]
-    ok('the skill\'s second question is still asked', all(any(p == (i, 1) for p in pairs) for i in range(10, 13)))
-    ok('one forgotten + one right = shaky, flagged forgot',
-       all(it['status'] == 'shaky' and it['forgot'] for it in later), [(it['status'], it.get('forgot')) for it in later[:3]])
-    ok('the first 10 are not flagged', not any(it['forgot'] for it in rec['items'][:10]))
+    asked, pairs, rec = run_check(lambda i, k: 'forgot' if i % 2 else 'right')
+    odd = rec['items'][1::2]
+    ok('a forgotten skill is "not yet", flagged forgot',
+       all(it['status'] == 'notyet' and it['forgot'] for it in odd), [(it['status'], it.get('forgot')) for it in odd[:3]])
+    ok('the others are not flagged', not any(it['forgot'] for it in rec['items'][0::2]))
     ok('it is not "never seen"', rec['summary']['notseen'] == 0, rec['summary'])
     ok('the results say which were not remembered', 'seen, did not remember' in pg.inner_text('#progress-result-items'))
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
     asked, pairs, rec = run_check(lambda i, k: 'right' if i < 15 else 'forgot')
-    ok('forgotten on both questions four times in a row finds the edge',
+    ok('forgotten four times in a row finds the edge',
        rec['reason'] == 'edge' and rec['summary']['edge']['code'] == rec['items'][15]['code'], rec['summary'].get('edge'))
     ok('...and those are "not yet", not "never seen"', rec['summary']['notseen'] == 0 and rec['items'][15]['status'] == 'notyet')
 
     print('\n== one wrong answer is not the edge ==')
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
-    # Second question of every skill wrong: every skill shaky, none "beyond".
-    asked, pairs, rec = run_check(lambda i, k: 'right' if k == 0 else 'wrong')
-    ok('shaky everywhere, so it goes all the way through', rec['reason'] == 'complete' and rec['summary']['shaky'] == 65, rec['summary'])
+    # Every other skill wrong: never 4 in a row, so none is the edge.
+    asked, pairs, rec = run_check(lambda i, k: 'wrong' if i % 2 else 'right')
+    ok('wrong on every other skill still goes all the way through',
+       rec['reason'] == 'complete' and rec['summary']['secure'] == 33 and rec['summary']['notyet'] == 32, rec['summary'])
+    ok('no "shaky" tile when nothing is shaky', 'shaky' not in pg.inner_text('#progress-result-summary'))
 
     print('\n== the next check shows what moved ==')
     pg.evaluate("goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
@@ -221,7 +220,7 @@ with sync_playwright() as p:
     s2 = pg.inner_text('#progress-result-summary')
     import re as _re
     mv = _re.search(r'(\d+) moved up', s2)
-    ok('all right after an all-shaky check: every skill moved up', 'Since your last check' in s2 and mv and int(mv.group(1)) == 65, s2.replace('\n', ' ')[:200])
+    ok('all right after half wrong: the 32 wrong ones moved up', 'Since your last check' in s2 and mv and int(mv.group(1)) == 32, s2.replace('\n', ' ')[:200])
 
     print('\n== ending early ==')
     pg.evaluate("goToModeSelect(); selectMode('progress'); startProgressCheck(false)")
@@ -230,8 +229,7 @@ with sync_playwright() as p:
     pg.evaluate("endTest()"); pg.wait_for_timeout(300)
     rec = pg.evaluate("progressHistoryLocal().slice(-1)[0]")
     ok('ending early still saves what was answered', 'Ended early' in pg.inner_text('#progress-result-sub') and rec['reason'] == 'stopped')
-    ok('a skill with only one answer is never called secure',
-       all(i['status'] != 'secure' or i['total'] == 2 for i in rec['items']))
+    ok('the 4 answered are secure, one answer each', rec['summary']['secure'] == 4 and all(i['total'] <= 1 for i in rec['items']), rec['summary'])
     ok('the rest are not reached', rec['summary']['notreached'] >= 60, rec['summary'])
 
     print('\n== plot the point (found while building this) ==')
