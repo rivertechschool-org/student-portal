@@ -180,7 +180,7 @@ const mixedNum = s => { const m = /^(\d+)(?: (\d+)\/(\d+))?$/.exec(s.trim()) || 
     [8, '3D Coordinates', 'Right-handed or left-handed'],
     [8, 'Graph Theory', 'Spanning trees: the fewest edges that still connect'],
     [8, 'Algorithmic Complexity', 'Triangle loops and pairs'],
-    [8, 'Algorithmic Complexity', 'Classic algorithms to know'],
+    [8, 'Algorithmic Complexity', 'Reading a described algorithm'],
     [8, 'Simulation and Modeling', 'Simulating in a spreadsheet'],
     [9, 'Nonlinear Function Analysis', 'Finding the vertex in other forms'],
     [9, 'Nonlinear Function Analysis', 'Reading a·bˣ + k from a table'],
