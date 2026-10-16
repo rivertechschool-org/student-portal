@@ -12,8 +12,11 @@ const fs = require('fs');
 const path = require('path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'games', 'math-dojo.html'), 'utf8');
-const start = html.indexOf('function getSmartPlaceholder(step) {');
-if (start < 0) throw new Error('getSmartPlaceholder not found');
+// getSmartPlaceholder is a guard around _smartPlaceholderFor, which holds the
+// rules; take both.
+function fnSource(name) {
+const start = html.indexOf(`function ${name}(step) {`);
+if (start < 0) throw new Error(name + ' not found');
 // The function is plain code with no template literals spanning braces, but
 // count braces outside strings and regexes anyway: the body is full of both.
 let i = html.indexOf('{', start), depth = 0, mode = null;
@@ -30,7 +33,9 @@ for (; i < html.length; i++) {
   if (c === '{') depth++;
   else if (c === '}' && --depth === 0) break;
 }
-const getSmartPlaceholder = new Function(html.slice(start, i + 1) + '\nreturn getSmartPlaceholder;')();
+return html.slice(start, i + 1);
+}
+const getSmartPlaceholder = new Function(fnSource('getSmartPlaceholder') + '\n' + fnSource('_smartPlaceholderFor') + '\nreturn getSmartPlaceholder;')();
 
 let pass = 0, fail = 0;
 const ph = (answer, acceptableAnswers) => getSmartPlaceholder({ answer, acceptableAnswers });
@@ -58,7 +63,9 @@ ok('a fraction', ph('3/8') === 'e.g., 3/4', ph('3/8'));
 ok('a negative number gets the same hint as a positive one', ph('-5') === ph('5') && ph('-12') === ph('12'), ph('-5'));
 ok('  and a single digit is not flagged as one', ph('5') === ph('12'), ph('5'));
 ok('an angle', /°/.test(ph('30°')), ph('30°'));
-ok('a variable assignment', /x = -2/.test(ph('x = -2')), ph('x = -2'));
+ok('a variable assignment', /x = -2/.test(ph('x = 7')), ph('x = 7'));
+// ...but never the answer itself: "x = -2" gets a different example.
+ok('the example is never the answer', !/x = -2 /.test(ph('x = -2')) && /x = -?\d+/.test(ph('x = -2')), ph('x = -2'));
 ok('two solutions', /list both/.test(ph('x = 1/2, 3')), ph('x = 1/2, 3'));
 ok('a log expression is typed as written', /as written/.test(ph('log(31)/log(5)')), ph('log(31)/log(5)'));
 ok('an equation is not shown the Pythagorean theorem', !/a² \+ b²/.test(ph('2x = 8')), ph('2x = 8'));

@@ -1758,6 +1758,8 @@ const AnswerInterpreter = {
 
         // Radical expressions: "3√2", "√5", "2√3", "∛8"
         if (/\d*[√∛]\d+/.test(original) || /sqrt|cbrt/i.test(ans)) return 'radical';
+        // ...and the spellings parseRadical reads: "3√(2)", "3 root 2", "3 square root of 2".
+        if (/^\d*\s*[*·×]?\s*(?:[√∛]\s*\(\s*\d+\s*\)|(?:square\s*|cube\s*)?root(?:\s*of)?\s*\(?\s*\d+\s*\)?)$/i.test(original.trim())) return 'radical';
 
         // Pi expressions: "16π", "25π", "πr²"
         if (/\d+\s*π|π/i.test(original) || /\d+\s*pi\b/i.test(ans) || /^pi$/i.test(ans)) return 'pi_expression';
@@ -1946,8 +1948,11 @@ const AnswerInterpreter = {
     // Parse radical: "3√2" -> { coefficient: 3, radicand: 2, index: 2 }
     parseRadical(str) {
         const s = String(str).trim();
-        // Format: 3√2, √5, ∛8, sqrt(5), 3sqrt2, 3sqrt(2), cbrt(8), 3cbrt(8)
-        const sqrtMatch = s.match(/^(\d*)√(\d+)$/) || s.match(/^(\d*)\s*sqrt\(?(\d+)\)?$/i);
+        // Format: 3√2, √5, ∛8, sqrt(5), 3sqrt2, 3sqrt(2), cbrt(8), 3cbrt(8).
+        // Also what students type without the √ key: 3*sqrt(2), 3·√2, 3√(2),
+        // 3 sqrt 2, "3 root 2", "3 square root of 2" (2026-10-16 report).
+        const sqrtMatch = s.match(/^(\d*)√(\d+)$/) || s.match(/^(\d*)\s*sqrt\(?(\d+)\)?$/i)
+            || s.match(/^(\d*)\s*[*·×]?\s*(?:√|sqrt|square\s*root(?:\s*of)?|root)\s*\(?\s*(\d+)\s*\)?$/i);
         if (sqrtMatch) {
             return {
                 coefficient: sqrtMatch[1] ? parseInt(sqrtMatch[1]) : 1,
@@ -1956,7 +1961,8 @@ const AnswerInterpreter = {
                 value: (sqrtMatch[1] ? parseInt(sqrtMatch[1]) : 1) * Math.sqrt(parseInt(sqrtMatch[2]))
             };
         }
-        const cbrtMatch = s.match(/^(\d*)∛(\d+)$/) || s.match(/^(\d*)\s*cbrt\(?(\d+)\)?$/i);
+        const cbrtMatch = s.match(/^(\d*)∛(\d+)$/) || s.match(/^(\d*)\s*cbrt\(?(\d+)\)?$/i)
+            || s.match(/^(\d*)\s*[*·×]?\s*(?:∛|cbrt|cube\s*root(?:\s*of)?)\s*\(?\s*(\d+)\s*\)?$/i);
         if (cbrtMatch) {
             return {
                 coefficient: cbrtMatch[1] ? parseInt(cbrtMatch[1]) : 1,
@@ -12437,7 +12443,8 @@ const generators = {
                     options: uniqOpts([`${outside}√${inside}`, `${inside}√${outside}`, `${outside * inside}`, `√${radicand}`]),
                     explanation: `√${radicand} = √(${outside}² × ${inside}) = ${outside}√${inside}` };
             } else if (type === "add") {
-                const coeff1 = rand(2, 5), coeff2 = rand(2, 5), inside = rand(2, 7);
+                // Square-free inside: rand(2, 7) drew 4, keying "2√4 + 3√4 = 5√4" (it is 10).
+                const coeff1 = rand(2, 5), coeff2 = rand(2, 5), inside = pick([2, 3, 5, 6, 7]);
                 const sum = coeff1 + coeff2;
                 return { subType: type, question: `Simplify: ${coeff1}√${inside} + ${coeff2}√${inside}`, answer: `${sum}√${inside}`, type: "procedural",
                     options: uniqOpts([`${sum}√${inside}`, `${coeff1 * coeff2}√${inside}`, `${sum}√${inside * 2}`, `√${inside * sum}`]),
@@ -49005,7 +49012,26 @@ function showGuidedCompletion() {
 }
 
 // Derive a smart placeholder based on the expected answer type
+// The format examples are fixed ("(3, 5)", "30°", "3/4", "2√3"), so now and
+// then the example IS the answer: "Simplify √12" showed "e.g., 2√3", and a
+// sweep of 31,000 typed questions found the same in ~36 skills. When the
+// example matches an accepted answer, every number in it moves up by 2
+// (2√3 → 4√5, (3, 5) → (5, 7), 30° → 32°) until it no longer does.
 function getSmartPlaceholder(step) {
+    const ph = _smartPlaceholderFor(step);
+    if (!ph || !step) return ph;
+    const squash = v => String(v).replace(/\s+/g, '').toLowerCase();
+    const answers = new Set([step.answer, ...(step.acceptableAnswers || [])]
+        .filter(a => a !== undefined && a !== null).map(squash));
+    const example = t => t.replace(/^e\.g\.,?\s*/i, '').split(/\s+or\s+|\s+—|\s+\(/)[0];
+    let out = ph;
+    for (let i = 0; i < 5 && answers.has(squash(example(out))); i++) {
+        out = out.replace(/\d+/g, n => String(Number(n) + 2));
+    }
+    return out;
+}
+
+function _smartPlaceholderFor(step) {
     const answer = String(step.answer || '').toLowerCase().trim();
     const rawAnswer = String(step.answer || '').trim();
     const acceptableAnswers = step.acceptableAnswers || [];
