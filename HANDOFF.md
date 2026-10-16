@@ -35,6 +35,24 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-16 — Jordan's Claude (Math Dojo content pass: what practice may ask)
+**Rules Jordan set, now applied across the Dojo.** Practice may only ask what the skill's
+lesson teaches; every question has exactly one right answer; no non-maths content (colour
+sorting is gone from Classifying Objects); real-world examples must be true and familiar.
+Audits found ~170 places where practice asked something its lesson never taught. Most were
+fixed by adding a teaching step; a few subtypes beyond the skill's grade were dropped (each
+has a code comment saying why). Tests `tests/dojo-taught-gaps-{a,b,c,d}.test.js` hold them.
+**Things that changed shape, not just content:**
+- Progress Check items can carry `forgot: true` ("Seen it — don't remember"). The status
+  stays in the existing five, so the portal needs nothing; it simply does not show the flag.
+- `.step-visual` is now `white-space: pre-wrap`: 138 lesson visuals use `\n` and were
+  rendering on one line.
+- `getSmartPlaceholder` is a guard around `_smartPlaceholderFor`: the fixed format example
+  ("e.g., (3, 5)") moves its numbers when it would equal the answer.
+- Wasteland Adventure travel times are exact (decimal or "h + min", via `parseHoursAnswer`),
+  not `Math.ceil` whole hours.
+**Needs:** nothing.
+
 ## 2026-10-15 — Jordan's Claude (Math Dojo: every skill can be tested)
 The four skills no question reached all had questions; the question map sent their answers
 elsewhere. Every skill in the graph can now be tested, and the map validator
