@@ -119,6 +119,13 @@ const audio = await inGame("w.dr.audio ? w.dr.audio.blocks : -1");
 // the game's tick and the frames drawn, two seconds apart, from the page itself
 const probe = async () => inGame("({ g: w.dr.game(), f: w.dr.viewer.frames(), t: w.performance.now() })");
 const p0 = await probe(); await sleep(2000); const p1 = await probe();
+// a page whose engine has stopped (a panic leaves the viewer unusable) answers nothing: say so, with
+// the log, rather than die on the probe
+if (!p0 || !p1) {
+  console.log("FAIL the page stopped answering (the engine panicked?)");
+  for (const l of lines) console.log("       " + l.slice(0, 400));
+  await done(1);
+}
 console.log(`     probe: ${(p1.f - p0.f) / ((p1.t - p0.t) / 1000)} frames/s; game ${JSON.stringify(p0.g).slice(0, 120)} -> ${JSON.stringify(p1.g).slice(0, 120)}`);
 // the game's clock against the wall's: 60 ticks a second whatever the screen's rate (a 120 Hz
 // MacBook ran it at twice the speed when the engine ticked once a frame)
