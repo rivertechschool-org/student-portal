@@ -49773,8 +49773,10 @@ if ('speechSynthesis' in window) {
     }
   }, function(){
     let m = ri(1,4) * (Math.random()<0.5?1:-1);
-    const x1 = ri(1,4), y1 = ri(1,9);
-    let b = y1 - m*x1; if(b===0) b = (Math.random()<0.5?1:-1);
+    const x1 = ri(1,4);
+    // redraw the point rather than nudging b, so the keyed line really passes through (x1, y1)
+    let y1 = ri(1,9); while (y1 - m*x1 === 0) y1 = ri(1,9);
+    const b = y1 - m*x1;
     const fmt = (mm,bb) => `y = ${mm}x ${bb<0 ? `- ${-bb}` : `+ ${bb}`}`;
     const answer = fmt(m,b);
     return {
@@ -49887,16 +49889,18 @@ if ('speechSynthesis' in window) {
     const p = pick([10,15,20,25,40,50]);
     const price = ri(2,10)*10;
     const change = price*p/100;
+    // money shows cents when there are any: 15% of $30 is $4.50, not $4.5
+    const d = v => "$" + (Number.isInteger(v) ? String(v) : v.toFixed(2));
     if(type==="discount"){
       const ans = price - change;
-      return { subType:"discount", question:`A $${price} item is ${p}% off. What is the sale price?`, answer:`$${ans}`,
-        options: optS(`$${ans}`, [ `$${change}`, `$${price+change}`, `$${price-p}` ]),
-        explanation:`Discount = ${p}% of ${price} = ${change}. Sale price = ${price} − ${change} = ${ans}.` };
+      return { subType:"discount", question:`A $${price} item is ${p}% off. What is the sale price?`, answer:d(ans),
+        options: optS(d(ans), [ d(change), d(price+change), d(price-p) ]),
+        explanation:`Discount = ${p}% of ${d(price)} = ${d(change)}. Sale price = ${d(price)} − ${d(change)} = ${d(ans)}.` };
     }
     const ans = price + change;
-    return { subType:"tax", question:`A $${price} item has ${p}% tax added. What is the total?`, answer:`$${ans}`,
-      options: optS(`$${ans}`, [ `$${change}`, `$${price-change}`, `$${price+p}` ]),
-      explanation:`Tax = ${p}% of ${price} = ${change}. Total = ${price} + ${change} = ${ans}.` };
+    return { subType:"tax", question:`A $${price} item has ${p}% tax added. What is the total?`, answer:d(ans),
+      options: optS(d(ans), [ d(change), d(price-change), d(price+p) ]),
+      explanation:`Tax = ${p}% of ${d(price)} = ${d(change)}. Total = ${d(price)} + ${d(change)} = ${d(ans)}.` };
   });
 
   // =====================================================================
@@ -50701,7 +50705,9 @@ if ('speechSynthesis' in window) {
         explanation:`A negative exponent means reciprocal: ${base}^(-1/${n}) = 1/${base}^(1/${n}) = 1/${p}.` };
     }
     if(t==="convert_mn"){
-      const n=sh([2,3,4])[0]; const m=sh([2,3,5])[0];
+      // m/n must be in lowest terms and not 1: keying x^(2/2) or x^(2/4) is wrong
+      const gq=(a,b)=>b?gq(b,a%b):a;
+      let n=sh([2,3,4])[0], m=sh([2,3,5])[0]; while(gq(m,n)!==1){ n=sh([2,3,4])[0]; m=sh([2,3,5])[0]; }
       // Superscript roots so "4√x" can't be misread as 4·√x.
       const rootSym = n===2?"√":n===3?"∛":"⁴√";
       const answer=`x^(${m}/${n})`;
@@ -50710,7 +50716,9 @@ if ('speechSynthesis' in window) {
         explanation:`The root is the denominator and the power is the numerator: the ${n}-th root of x^${m} is x^(${m}/${n}).` };
     }
     if(t==="to_radical"){
-      const n=sh([2,3,4])[0]; const m=sh([1,2,3])[0];
+      // lowest terms only, as above: "x^(2/2)" or "x^(2/4)" is not a fair prompt
+      const gq=(a,b)=>b?gq(b,a%b):a;
+      let n=sh([2,3,4])[0], m=sh([1,2,3])[0]; while(gq(m,n)!==1){ n=sh([2,3,4])[0]; m=sh([1,2,3])[0]; }
       const rootSym = n===2?"√":n===3?"∛":"⁴√";
       const answer = m===1 ? `${rootSym}x` : `${rootSym}(x^${m})`;
       const options=sh(U(answer, [`x${rootSym}${m}`, `${rootSym}(x^${n})`, `x^${n}`]));
@@ -50763,7 +50771,9 @@ if ('speechSynthesis' in window) {
     if(t==="product"){
       const answer=`log(${a}) + log(${b})`;
       const options=sh(U(answer, [`log(${a}) - log(${b})`, `log(${a*b})`, `log(${a}) · log(${b})`]));
-      return { question:`Rewrite log(${a*b}) using the product rule.`, answer, options, subType:"product",
+      // log(24) is equally log(3) + log(8) or log(2) + log(12): accept every factor pair when typed
+      const pairs=[]; for(let d=2; d*2<=a*b; d++) if((a*b)%d===0) pairs.push(`log(${d}) + log(${a*b/d})`);
+      return { question:`Rewrite log(${a*b}) using the product rule.`, answer, acceptableAnswers:pairs, options, subType:"product",
         explanation:`Product rule: log(ab) = log(a) + log(b) = log(${a}) + log(${b}).` };
     } else if(t==="quotient"){
       const answer=`log(${a}) - log(${b})`;
@@ -50817,7 +50827,10 @@ if ('speechSynthesis' in window) {
     // checking for extraneous solutions — were unreachable. Both are here now.
     const t=sh(["exp","log","shift","take_log","extraneous","condense"])[0];
     if(t==="take_log"){
-      const base=sh([2,3,5,7])[0]; const val=ri(2,9)*10 + ri(1,9);
+      const base=sh([2,3,5,7])[0];
+      // the explanation says val is not a power of base, so 3^x = 81 / 2^x = 64 etc. must be redrawn
+      const isPow=(v,b)=>{ while(v%b===0) v/=b; return v===1; };
+      let val=ri(2,9)*10 + ri(1,9); while(isPow(val,base)) val=ri(2,9)*10 + ri(1,9);
       const answer=`log(${val})/log(${base})`;
       const options=sh(U(answer, [`log(${base})/log(${val})`, `log(${val} - ${base})`, `${val}/${base}`]));
       return { question:`Solve ${base}^x = ${val}. Give x exactly.`, answer, options, subType:"take_log",
@@ -52126,8 +52139,10 @@ if ('speechSynthesis' in window) {
         explanation:`Regular n-gon interior angle = (n−2)·180°/n = ${(n-2)*180}°/${n} = ${each}°.` };
     } else {
       const q=[
-        { question:"A quadrilateral with 4 equal sides and 4 right angles is a...", answer:"Square", options:["Square","Rectangle","Rhombus","Trapezoid"], explanation:"Four equal sides + four right angles defines a square." },
-        { question:"A quadrilateral with 4 right angles (sides not all equal) is a...", answer:"Rectangle", options:["Rectangle","Square","Rhombus","Parallelogram"], explanation:"Four right angles but unequal adjacent sides is a rectangle." },
+        // a square IS a rectangle and a rhombus, and a rectangle IS a parallelogram, so those
+        // were second correct options; every distractor below is false for the shape described
+        { question:"A quadrilateral with 4 equal sides and 4 right angles is best named a...", answer:"Square", options:["Square","Trapezoid","Kite","Isosceles trapezoid"], explanation:"Four equal sides + four right angles defines a square (it is also a rectangle and a rhombus, but square is the most specific name)." },
+        { question:"A quadrilateral with 4 right angles (sides not all equal) is a...", answer:"Rectangle", options:["Rectangle","Square","Rhombus","Trapezoid"], explanation:"Four right angles but unequal adjacent sides is a rectangle." },
         { question:"A quadrilateral with exactly one pair of parallel sides is a...", answer:"Trapezoid", options:["Trapezoid","Parallelogram","Rhombus","Rectangle"], explanation:"Exactly one pair of parallel sides defines a trapezoid." },
         { question:"A quadrilateral with 4 equal sides but no right angles is a...", answer:"Rhombus", options:["Rhombus","Square","Rectangle","Trapezoid"], explanation:"Four equal sides without right angles is a rhombus." }
       ][ri(0,3)];
@@ -52994,7 +53009,8 @@ if ('speechSynthesis' in window) {
       { q:`Which formula gives the volume by the disk method when y = f(x) is rotated about the x-axis on [a, b]?`,
         a:"π∫ₐᵇ [f(x)]² dx", d:["π∫ₐᵇ f(x) dx","2π∫ₐᵇ f(x) dx","∫ₐᵇ [f(x)]² dx"],
         e:`Each disk has area π[f(x)]², so V = π∫ₐᵇ [f(x)]² dx.` },
-      { q:`The solid of revolution has a hole through the middle. Which method applies?`,
+      // shells also handle a hole, so pin the slicing direction: perpendicular slices are disks or washers
+      { q:`A region is rotated about the x-axis and sliced perpendicular to that axis (integrating in x). The solid has a hole through the middle. Which method applies?`,
         a:"washer", d:["disk","shell about the same axis","cross-section"],
         e:`A hole means an outer radius R and an inner radius r: V = π∫ₐᵇ ([R]² − [r]²) dx.` },
       { q:`In the washer method, V = π∫ₐᵇ (R² − r²) dx. What is the classic error?`,
@@ -53155,7 +53171,7 @@ if ('speechSynthesis' in window) {
       const answer = fmt(comp);
       const options = sh([answer, fmt(A), fmt(union), fmt(inter)]);
       return { subType:"complement", type:"procedural",
-        question:`The universe is U = {1, 2, 3, 4, 5, 6} and ${fmt(A)} is a subset. Find Aᶜ (the complement of A).`,
+        question:`The universe is U = {1, 2, 3, 4, 5, 6} and A = ${fmt(A)}. Find Aᶜ (the complement of A).`,
         answer, options,
         explanation:`The complement is every element of U not in A: ${answer}.` };
     }
@@ -53559,7 +53575,7 @@ if ('speechSynthesis' in window) {
       { title: "Bring the point straight down", explanation: "The decimal point in the answer goes directly below the ones in the question.", visual: "4.70 + 2.35 = 7.05" }
     ],
     finalAnswer: "7.05",
-    answerExplanation: "4.70 + 2.35 = 7.05. The hundredths gave 105, so 05 is written and 1 is carried into the tenths.",
+    answerExplanation: "4.70 + 2.35 = 7.05. The decimal parts give 70 + 35 = 105 hundredths, so .05 is written and the 1 carries into the ones: 4 + 2 + 1 = 7.",
     example: { problem: "Compute 6.4 + 1.85.", steps: [
       { text: "Pad so both have two decimals", math: "6.40 + 1.85" },
       { text: "Add hundredths and tenths", math: "40 + 85 = 125 → .25, carry 1" },
@@ -53690,7 +53706,8 @@ if ('speechSynthesis' in window) {
       const tenth = pick([true,false]);
       const src = (T/1000).toFixed(3);
       const ans = tenth ? (Math.round(T/100)/10).toFixed(1) : (Math.round(T/10)/100).toFixed(2);
-      const look = tenth ? Math.floor(T/100) % 10 : Math.floor(T/10) % 10;
+      // the digit to the RIGHT of the rounding place decides (hundredths for a tenth, thousandths for a hundredth)
+      const look = tenth ? Math.floor(T/10) % 10 : T % 10;
       return {
         subType: "round",
         question: `Round ${src} to the nearest ${tenth ? "tenth" : "hundredth"}.`,
@@ -53959,7 +53976,9 @@ if ('speechSynthesis' in window) {
     ], answer: "(x - 6)(x + 6)", answerLabel: "factored =" }
   }, function(){
     const withCoef = pick([true,false]);
-    const c = ri(2,12), a = withCoef ? ri(2,6) : 1;
+    // "completely" means no GCF left: 4x² − 16 is 4(x − 2)(x + 2), not (2x − 4)(2x + 4)
+    let c = ri(2,12); const a = withCoef ? ri(2,6) : 1;
+    while (g(a,c) !== 1) c = ri(2,12);
     const lead = a === 1 ? "x" : `${a}x`;
     const ans = `(${lead} - ${c})(${lead} + ${c})`;
     const sq = a*a === 1 ? "x^2" : `${a*a}x^2`;
@@ -54006,14 +54025,17 @@ if ('speechSynthesis' in window) {
       { label: "Pull out the shared bracket", value: "?" }
     ], answer: "(5x + 2)(x^2 + 3)", answerLabel: "factored =" }
   }, function(){
-    const q = ri(2,6), r = ri(2,9), s = ri(2,9);
+    // gcd(q, r) = 1 keeps the first pair's GCF exactly x² (else a number is left to pull out),
+    // and r ≠ s keeps the swapped distractor from equalling the answer
+    let q = ri(2,6), r = ri(2,9), s = ri(2,9);
+    while (g(q,r) !== 1 || r === s) { q = ri(2,6); r = ri(2,9); s = ri(2,9); }
     const ans = `(${q}x + ${r})(x^2 + ${s})`;
     return {
       subType: "grouping",
       question: `Factor by grouping: ${q}x³ + ${r}x² + ${q*s}x + ${r*s}`,
       answer: ans,
       options: opt4(ans, [`(${q}x + ${s})(x^2 + ${r})`, `(${q}x + ${r})(x^2 - ${s})`,
-                          `(x^2 + ${r})(${q}x + ${s})`, `(${q}x + ${r*s})(x^2 + 1)`]),
+                          `(${q}x - ${r})(x^2 + ${s})`, `(${q}x + ${r*s})(x^2 + 1)`]), // was (x²+r)(qx+s): the same product as the first distractor
       explanation: `Group: (${q}x³ + ${r}x²) + (${q*s}x + ${r*s}) = x²(${q}x + ${r}) + ${s}(${q}x + ${r}). ` +
                    `Both share (${q}x + ${r}), so the factored form is ${ans}.`
     };
@@ -56862,7 +56884,7 @@ if ('speechSynthesis' in window) {
       if (kind === "dose") {
         const kg = ri(10, 80), D = pick([5, 10, 12, 15, 20]), lb = rnd(kg * 2.2, 1), ans = D * kg;
         return { subType: mode,
-          question: `A medicine dose is ${D} mg per kilogram of body weight. A patient weighs ${fx(lb, 1)} pounds. How many milligrams should the patient get? (1 kg = 2.2 lb)`,
+          question: `A medicine dose is ${D} mg per kilogram of body weight. A patient weighs ${fx(lb, 1)} pounds. How many milligrams should the patient get? (Use 1 kg ≈ 2.2 lb.)`,
           answer: nf(ans), acceptableAnswers: accept(ans, 0, ["mg"]),
           // used pounds as if they were kilograms; multiplied by 2.2 instead of dividing
           options: numOpts(ans, [D * lb, D * lb * 2.2, kg, D * kg * 10], 1),
@@ -58971,7 +58993,9 @@ if ('speechSynthesis' in window) {
       // Subtracting b is also "adding −b", and dividing by a is "multiplying
       // by 1/a" - so those pairs are never offered against each other.
       const CLASH = { "Subtraction Property of Equality": "Addition Property of Equality", "Addition Property of Equality": "Subtraction Property of Equality",
-        "Division Property of Equality": "Multiplication Property of Equality", "Multiplication Property of Equality": "Division Property of Equality" };
+        "Division Property of Equality": "Multiplication Property of Equality", "Multiplication Property of Equality": "Division Property of Equality",
+        // ax + bx = (a + b)x IS the distributive property, so it cannot be the wrong answer there
+        "Combining like terms": "Distributive Property" };
       const [ans, from, to] = pick(POOL);
       const wrongs = sh(POOL.map(p => p[0]).filter(n => n !== ans && n !== CLASH[ans])).slice(0, 3);
       const how = {
@@ -60154,7 +60178,7 @@ if ('speechSynthesis' in window) {
     teachingSteps: [
       { title: "Isolate the trig function", explanation: "Treat <strong>cos x</strong> like a single unknown and solve the linear equation for it, exactly as you would for y in 2y + √3 = 0.", visual: "2cos x + √3 = 0  →  cos x = −√3/2" },
       { title: "Find the reference angle", explanation: "Ignore the sign and ask the unit circle which first-quadrant angle has that value. That acute angle is the <strong>reference angle</strong>.", visual: "cos(π/6) = √3/2  →  reference angle π/6" },
-      { title: "Use the signs to find EVERY solution", explanation: "Each trig value (other than ±1 and 0) happens <strong>twice</strong> in one turn. Use the quadrant signs (All Students Take Calculus: QI all, QII sin, QIII tan, QIV cos) to place the reference angle in both quadrants.", visual: "cos is negative in QII and QIII\nQII: π − π/6 = 5π/6\nQIII: π + π/6 = 7π/6" },
+      { title: "Use the signs to find EVERY solution", explanation: "Each trig value happens <strong>twice</strong> in one turn — the only exceptions are sin or cos = ±1, which happen once (0 still happens twice: sin x = 0 at 0 and π). Use the quadrant signs (All Students Take Calculus: QI all, QII sin, QIII tan, QIV cos) to place the reference angle in both quadrants.", visual: "cos is negative in QII and QIII\nQII: π − π/6 = 5π/6\nQIII: π + π/6 = 7π/6" },
       { title: "Quadratic in a trig function: factor", explanation: "If you see sin²x and sin x, let u = sin x, factor, and solve each factor. <strong>Reject</strong> any value outside −1 ≤ u ≤ 1 for sine and cosine — it has no angle.", visual: "2sin²x − sin x − 1 = 0\n(2sin x + 1)(sin x − 1) = 0\nsin x = −1/2 or sin x = 1" },
       { title: "Use identities to get one function", explanation: "If two functions appear, rewrite with an identity so only one is left: cos²x = 1 − sin²x, sin 2x = 2sin x cos x, cos 2x = 1 − 2sin²x. Never divide by sin x or cos x — factor it out instead, or you lose the solutions where it is 0.", visual: "sin 2x = sin x\n2sin x cos x − sin x = 0\nsin x(2cos x − 1) = 0" },
       { title: "General solutions and other intervals", explanation: "Sine and cosine repeat every 2π, tangent every π. So the general solution adds <strong>2πk</strong> (or <strong>πk</strong> for tan). In degrees, add 360°k. For sin(2x), let u = 2x: u runs over two full turns, so expect twice as many solutions.", visual: "cos x = −√3/2:  x = 5π/6 + 2πk or x = 7π/6 + 2πk\ntan x = 1:  x = π/4 + πk" }
@@ -62322,7 +62346,7 @@ if ('speechSynthesis' in window) {
         { title: "Brackets tax slices, not the whole income", explanation: "In a <strong>progressive</strong> system each rate applies only to the slice of income inside its bracket. Earning into a higher bracket never raises the tax on the dollars below it.", visual: "60,000 = 12,000 + 36,000 + 12,000" },
         { title: "Tax each slice and add", explanation: "Multiply each slice by its rate (a percent of an amount), then add the pieces.", visual: a.parts.join(";  ") + ` → $${withCommas(String(a.t))}` },
         { title: "Marginal rate", explanation: "The <strong>marginal rate</strong> is the rate on the next dollar earned — the rate of the highest bracket you reach.", visual: `income 60,000 is in the ${a.marginal}% bracket → marginal rate ${a.marginal}%` },
-        { title: "Effective rate", explanation: "The <strong>effective rate</strong> is total tax ÷ income. It is always below the marginal rate in a progressive system.", visual: `${withCommas(String(a.t))} ÷ 60,000 = ${num(a.t / 600, 2)}%` },
+        { title: "Effective rate", explanation: "The <strong>effective rate</strong> is total tax ÷ income. It is at or below the marginal rate in a progressive system (equal only when all income sits in the lowest bracket).", visual: `${withCommas(String(a.t))} ÷ 60,000 = ${num(a.t / 600, 2)}%` },
         { title: "Sales tax and property tax", explanation: "Sales tax is a percent added to a price. Property tax is charged on <strong>assessed value</strong>, often a percent of market value, at a <strong>mill rate</strong>: 1 mill = $1 per $1,000 of assessed value.", visual: "assessed $200,000 at 25 mills: 200,000 × 25 ÷ 1,000 = $5,000" }
       ],
       finalAnswer: `$${withCommas(String(a.t))}; marginal ${a.marginal}%, effective ${num(a.t / 600, 1)}%`,
@@ -62380,12 +62404,15 @@ if ('speechSynthesis' in window) {
         `Tax each slice: ${a.parts.join("; ")}. Total = ${usd0(a.t)}. Taxing all ${usd0(Y)} at ${a.marginal}% would give ${usd0(Y * a.marginal / 100)}, but each rate applies only to its own slice.`);
     }
     if (st === "marginal_rate") {
-      const a = taxOn(Y, br);
+      // at exactly a bracket cap the NEXT dollar is in the next bracket, so the
+      // "next dollar is taxed at" explanation would be wrong there: step off it
+      const Ym = br.some(b => b[0] === Y) ? Y + 100 : Y;
+      const a = taxOn(Ym, br);
       const a1 = percent(a.marginal, 0);
-      return Q(st, `${lead} What is the marginal tax rate for someone with a taxable income of ${usd0(Y)}, as a percent?`, a1,
+      return Q(st, `${lead} What is the marginal tax rate for someone with a taxable income of ${usd0(Ym)}, as a percent?`, a1,
         // the other bracket rates, and the effective rate (a common confusion)
-        optN(a1, br.map(b => b[1]).filter(x => x !== a.marginal).concat([r0(a.t / Y * 100)]), 0),
-        `${usd0(Y)} reaches the ${a.marginal}% bracket, so the next dollar earned is taxed at ${a.marginal}%. (The effective rate, tax ÷ income, is ${num(a.t / Y * 100, 1)}%.)`);
+        optN(a1, br.map(b => b[1]).filter(x => x !== a.marginal).concat([r0(a.t / Ym * 100)]), 0),
+        `${usd0(Ym)} reaches the ${a.marginal}% bracket, so the next dollar earned is taxed at ${a.marginal}%. (The effective rate, tax ÷ income, is ${num(a.t / Ym * 100, 1)}%.)`);
     }
     if (st === "effective_rate") {
       const a = taxOn(Y, br);
@@ -62658,11 +62685,13 @@ if ('speechSynthesis' in window) {
     }
     if (st === "price_to_break_even") {
       const q = ri(5, 60) * 10;
-      const a1 = money(v + F / q);
-      return Q(st, `${/^[aeiou]/i.test(biz[0]) ? "An" : "A"} ${biz[0]} has fixed costs of ${usd0(F)} and spends ${usd(v)} to make each of its ${biz[1]}. It expects to sell ${q}. What is the lowest price per item that lets it break even, to the nearest cent?`, a1,
+      // round UP to the cent, as the lesson says: a price a fraction of a cent short still loses money
+      const pUp = Math.ceil((v + F / q) * 100 - 1e-6) / 100;
+      const a1 = money(pUp);
+      return Q(st, `${/^[aeiou]/i.test(biz[0]) ? "An" : "A"} ${biz[0]} has fixed costs of ${usd0(F)} and spends ${usd(v)} to make each of its ${biz[1]}. It expects to sell ${q}. What is the lowest price per item that lets it break even? Round up to the next cent if needed.`, a1,
         // forgets the variable cost | spreads only one unit's cost | adds the whole fixed cost to each item
         optN(a1, [F / q, (F + v) / q, v + F], 2),
-        `Break even: p × ${q} = ${F} + ${num(v, 2)} × ${q}, so p = ${num(v, 2)} + ${F} ÷ ${q} = ${usd(v + F / q)}.`);
+        `Break even: p × ${q} = ${F} + ${num(v, 2)} × ${q}, so p = ${num(v, 2)} + ${F} ÷ ${q} = ${num(v + F / q, 4)} → ${usd(pUp)} (round up, so every item covers its share).`);
     }
     // profit_function
     const ms = num(m, 2), ps = num(p, 2);
@@ -63211,7 +63240,8 @@ if ('speechSynthesis' in window) {
       why: "The engineer assigns the coating (treatment) and measures cracks (response): an experiment." },
     { s: () => "A city planner counts the cars passing an intersection every hour for one week.", a: "Observational study",
       why: "The planner records what happens without changing anything: observational." },
-    { s: n => `A coach records the 40-yard dash time of every player on the ${n}-person team.`, a: "Census",
+    // worded around the whole population so it does not read as "watching without changing anything" (observational)
+    { s: n => `To get the exact team average, a coach collects the 40-yard dash time of all ${n} players on the team: the whole population, not a sample.`, a: "Census",
       why: "Every member of the group being studied (the whole team) is measured: a census." },
     { s: () => "A streaming service emails a random 2% of its subscribers a few questions about a new feature.", a: "Sample survey",
       why: "A random sample of subscribers is asked questions: a sample survey." },
@@ -66992,7 +67022,7 @@ if ('speechSynthesis' in window) {
     ],
     mistakes: [
       { wrong: "5 3/4 in at 1/4\" = 1'-0\" is 5 3/4 × 1/4 = 1 7/16 ft", why: "Going from the drawing to the real thing you divide by the scale: 5 3/4 ÷ 1/4 = 23 ft." },
-      { wrong: "Missing dimension 14'-6\" − 10'-8\" = 4'-8\" (borrowing 10)", why: "A foot is 12 inches: 14'-6\" = 13'-18\", and 13'-18\" − 10'-8\" = 3'-10\"." }
+      { wrong: "Missing dimension 14'-6\" − 10'-8\" = 3'-8\" (borrowing 10: 13'-16\" − 10'-8\")", why: "A foot is 12 inches: 14'-6\" = 13'-18\", and 13'-18\" − 10'-8\" = 3'-10\"." }
     ],
     guided: { problem: "A plan is drawn at 1/2\" = 1'-0\". A room is 7 1/4 in long on the plan. How long is the room in feet and inches?", steps: [
       { label: "Scale units in 7 1/4 in", value: "7 1/4 ÷ 1/2 = 14 1/2" },
@@ -67313,7 +67343,8 @@ if ('speechSynthesis' in window) {
       { x: "lb of fertilizer", a: 3, y: "square feet of lawn", b: 1000, what: "lawn feeding" },
       { x: "oz of pool shock", a: 16, y: "gallons of pool water", b: 10000, what: "pool treatment" },
       { x: "quarts of water", a: 5, y: "lb of grout", b: 25, what: "tile grout" },
-      { x: "gallons of water", a: 5, y: "bags of concrete mix", b: 4, what: "bagged concrete" }
+      // an 80 lb bag takes about 3 quarts (0.75 gal); the old 5 gal per 4 bags was soup
+      { x: "gallons of water", a: 3, y: "bags of concrete mix", b: 4, what: "bagged concrete (80 lb bags)" }
     ];
     const rc = pick(RECIPES), t = ri(1, 9), c = rc.b * t / 2 === rc.b ? rc.b * (t + 1) / 2 : rc.b * t / 2;
     const ans = num(rc.a * c / rc.b, 3);
@@ -67384,7 +67415,7 @@ if ('speechSynthesis' in window) {
     interactiveSteps: [
       { prompt: "Multiply the driver pulley's diameter by its speed: 6 × 1750.", hint: "D1 × N1", answer: "10500", acceptableAnswers: ["10500", "10,500"], formatHint: "Enter a number" },
       { prompt: "That product equals 14 × N2. What is N2, in RPM?", hint: "Divide 10500 by 14.", answer: "750", acceptableAnswers: ["750", "750 rpm", "750 RPM"], formatHint: "Enter a number" },
-      { prompt: "Should a bigger driven pulley turn faster or slower than the motor? Type the motor's RPM minus the driven RPM to see the drop.", hint: "1750 − 750", answer: "1000", acceptableAnswers: ["1000", "1,000"], formatHint: "Enter a number" }
+      { prompt: "A bigger driven pulley turns slower than the motor. By how many RPM? (Motor RPM minus driven RPM.)", hint: "1750 − 750", answer: "1000", acceptableAnswers: ["1000", "1,000"], formatHint: "Enter a number" }
     ] }
   }, function(){
     const mode = pick(["ohms_law", "power", "board_feet", "tank", "pulley_gear", "rearrange"]);
@@ -70620,13 +70651,13 @@ if ('speechSynthesis' in window) {
     }
     if (t === "fence_cost") {
       const F = ri(6,25) * 8 + pick([0, ri(1,7)]), sp = pick([4,6]), pp = ri(1800,2800) / 100, pr = ri(700,1100) / 100, pk = ri(220,480) / 100, tx = pick([5,6,7,8]);
-      const sections = up(F / 8), posts = sections + 1, rails = sections * 2, pickets = up(F * 12 / sp);
+      const sections = up(F / 8), posts = sections + 1, rails = sections * 2, pickets = up(F * 12 / sp) + 1; // gaps + 1, as the lesson teaches (and as posts do)
       const sub = posts * pp + rails * pr + pickets * pk, total = sub * (1 + tx / 100);
       return numQ({ subType: t, dp: 2, value: total, money: true,
-        question: `A straight ${F} ft fence: posts at most 8 ft apart (one at each end), two 8 ft rails per section, and pickets every ${sp} in on center. Prices: post ${usd(pp)}, rail ${usd(pr)}, picket ${usd(pk)}. Sales tax ${tx}%. What is the material cost with tax, in dollars?`,
-        // missed the end post; one rail per section; no tax
-        cands: [(sub - pp) * (1 + tx / 100), (sub - sections * pr) * (1 + tx / 100), sub],
-        explanation: `Sections: ${F} ÷ 8 = ${fx(F / 8, 3)} → ${sections}; posts ${sections} + 1 = ${posts}; rails ${sections} × 2 = ${rails}; pickets ${F * 12} in ÷ ${sp} = ${fx(F * 12 / sp, 2)} → ${pickets}. Subtotal = ${posts} × ${usd(pp)} + ${rails} × ${usd(pr)} + ${pickets} × ${usd(pk)} = ${usd(sub)}. With tax: × ${fx(1 + tx / 100, 2)} = ${usd(total)}.` });
+        question: `A straight ${F} ft fence: posts at most 8 ft apart (one at each end), two 8 ft rails per section, and pickets every ${sp} in on center (one at each end). Prices: post ${usd(pp)}, rail ${usd(pr)}, picket ${usd(pk)}. Sales tax ${tx}%. What is the material cost with tax, in dollars?`,
+        // missed the end post; one rail per section; no tax; missed the end picket
+        cands: [(sub - pp) * (1 + tx / 100), (sub - sections * pr) * (1 + tx / 100), sub, (sub - pk) * (1 + tx / 100)],
+        explanation: `Sections: ${F} ÷ 8 = ${fx(F / 8, 3)} → ${sections}; posts ${sections} + 1 = ${posts}; rails ${sections} × 2 = ${rails}; pickets ${F * 12} in ÷ ${sp} = ${fx(F * 12 / sp, 2)} → ${pickets - 1} gaps + 1 = ${pickets}. Subtotal = ${posts} × ${usd(pp)} + ${rails} × ${usd(pr)} + ${pickets} × ${usd(pk)} = ${usd(sub)}. With tax: × ${fx(1 + tx / 100, 2)} = ${usd(total)}.` });
     }
     if (t === "roof_bundles") {
       const L = ri(24,48), W = pick([20,22,24,26,28,30,32]), p = pick([4,5,6,7,8,9,10,12]), w = pick([10,15]);
@@ -72084,7 +72115,7 @@ if ('speechSynthesis' in window) {
         explanation: "Nested loops multiply: an outer loop of n around an inner loop of m runs the inside n × m times. A loop that <strong>doubles</strong> i reaches N in about log₂ N steps — passing a million takes only about 20 doublings. Code here is JavaScript style.",
         visual: "i &lt; 1000 around j &lt; 1000 → 10⁶ runs<br>i = 1, 2, 4, ... while i &lt; 10⁶ → 20 steps" },
       { title: "Storage sizes",
-        explanation: "1 byte = 8 bits. For estimates use 1 KB ≈ 10³ bytes, 1 MB ≈ 10⁶ bytes, 1 GB ≈ 10⁹ bytes (exactly they are 2¹⁰, 2²⁰ and 2³⁰ bytes — within 7%). Size = how many × bytes each.",
+        explanation: "1 byte = 8 bits. For estimates use 1 KB ≈ 10³ bytes, 1 MB ≈ 10⁶ bytes, 1 GB ≈ 10⁹ bytes (exactly they are 2¹⁰, 2²⁰ and 2³⁰ bytes — within 8%: 2³⁰ is about 7.4% more than 10⁹). Size = how many × bytes each.",
         visual: "1920 × 1080 pixels × 4 bytes ≈ 8,000,000 bytes ≈ 8 MB" },
       { title: "Time anchors",
         explanation: "60 s × 60 min × 24 h = <strong>86,400</strong> seconds in a day. A 365-day year is 31,536,000 s ≈ 3 × 10⁷ s. A computer doing about 10⁹ simple steps per second needs 10¹² steps ÷ 10⁹ = 1,000 s — about 17 minutes.",
@@ -75521,7 +75552,7 @@ if ('speechSynthesis' in window) {
     mistakes: [
       { wrong: "Updating position before velocity when the rule says velocity first", why: "The order changes every later step. Follow the rule as written." },
       { wrong: "Changing cells one at a time, left to right", why: "Every cell must use the OLD row. Build the new row separately." },
-      { wrong: "Computing the percentage of the starting value every step", why: "Each step uses the current state, so 10% of 205 is 20, not 10% of 200." }
+      { wrong: "Computing the percentage of the starting value every step", why: "Each step uses the current state, so at step 3 the growth is 10% of 210 = 21, not 10% of 200 = 20." }
     ],
     guided: { problem: "A herd starts at 300. Each step: births are 10% of the herd (rounded down), then 20 animals leave. How many after 2 steps?", steps: [
       { label: "Step 1 births", value: "10% of 300 = 30" },
@@ -77762,7 +77793,7 @@ if ('speechSynthesis' in window) {
             return { q: `A child is ${h0} cm tall at age 5 and grows ${g} cm a year: h = ${h0} + ${g}(x - 5). The model predicts ${y} cm at age ${age}. Is that reasonable?`,
               a: "No: people stop growing in their late teens, so the model only fits childhood",
               d: ["Yes: a linear model works for any age", "No: the model should make the height shrink", `Yes: ${y} cm is a normal adult height`] }; },
-          () => { const a = pick([500, 800, 1000]), yrs = pick([60, 80, 100]);
+          () => { const a = pick([500, 800, 1000]), yrs = pick([130, 140, 150]); // every pair tops 8.2 billion (60-100 months never did)
             return { q: `A phone game had ${a} players and grew 15% a month: y = ${a}(1.15)^x. After ${yrs} months the model predicts more players than there are people on Earth. What does that show?`,
               a: "The model only fits the early months; growth has to slow as players run out",
               d: ["The game will really have that many players", "The rate should have been 1.15%, not 15%", "Exponential models can never be used for real data"] }; }]);
