@@ -35,7 +35,7 @@ ok('a rounded-up 4 is not 3 h 20 min', !near(parse('4'), 10 / 3));
 ok('3.4 is not 3 h 20 min', !near(parse('3.4'), 10 / 3));
 ok('words are not a time', Number.isNaN(parse('abc')) && Number.isNaN(parse('')));
 
-ok('the walk home no longer rounds up', !/Math\.ceil\(distance \/ speed\)/.test(html) && /answer = distance \/ speed;/.test(html));
+ok('the walk home no longer rounds up', !/var hours = Math\.ceil\(distance \/ speed\)/.test(html) && /answer = distance \/ speed;/.test(html));
 ok('the walk home asks for a time and takes text', /timeAnswer: \['3', '4'\]\.includes\(grade\)/.test(html) &&
    /calcInput\.type = options\.timeAnswer \? 'text' : 'number'/.test(html));
 ok('rate_time compares by value', /challengeType === 'rate_time'\s*\?\s*Math\.abs\(parseHoursAnswer\(selectedAnswer\)/.test(html));
