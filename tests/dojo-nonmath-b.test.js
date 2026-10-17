@@ -101,7 +101,7 @@ for (const tier of [6, 7, 8, 9, 10]) {
   const listing = qs.filter(q => q.subType === 'listing');
   ok('listing: position of k in 0, 1, −1, 2, −2, … is right and unique',
     listing.length > 100 && listing.every(q => {
-      const m = /position is (−?)(\d+)\?/.exec(q.question);
+      const m = /position is (−?)(\d+) in\?/.exec(q.question);
       const v = (m[1] ? -1 : 1) * Number(m[2]);
       const want = list.indexOf(v) + 1;
       return q.answer === want && oneRight(q, o => Number(o) === want);
