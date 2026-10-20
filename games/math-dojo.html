@@ -6867,7 +6867,9 @@ function answerValue(str) {
 // does a rectangle have", "how many primes from 11 to 20", "find the
 // hypotenuse" - so a near-miss can never accidentally be a second correct
 // answer. That is checked by sampling, not assumed: see
-// tests/dojo-answer-position.test.js.
+// tests/dojo-answer-position.test.js. A board whose choices are the items the
+// question shows ("Which is larger: 12 or 17?") never reaches here - see
+// closedSet in generateQuestion.
 function varyBracketedOptions(answer, opts) {
     // Kept inside the function so it travels with it when a harness lifts the
     // body out of this page - a constant left outside is how an extracted
@@ -44019,6 +44021,7 @@ function generateQuestion(tier, domain = null) {
     }
     
     // Generate options if not provided
+    const suppliedOptions = Array.isArray(q.options);
     if (!q.options) {
         if (typeof q.answer === "number") {
             q.options = [q.answer, ...generateDistractors(q.answer)];
@@ -44077,9 +44080,22 @@ function generateQuestion(tier, domain = null) {
         if (Number.isFinite(v)) values.push(v);
     }
     if (!seen.has(answerKey)) { seen.add(answerKey); opts.push(q.answer); }
-    if (opts.length < 4) backfillOptions(q.answer, opts, seen, 4);
+    // A question that asks you to pick from what it shows - "Which is larger:
+    // 12 or 17?", "In 48, what digit is in the tens place?", "Team 1 or Team
+    // 2?" - is answered from that set and nothing else. Topping it up to four
+    // invents choices the question never showed (13 and 14 beside "10 or 12",
+    // "Team 0", digits that are not in the number: Jordan, 2026-10-20), and
+    // each one is crossed off without doing the maths. Re-spacing the numbers
+    // around the answer does the same. So when the generator chose every
+    // choice and each one appears in the question (or is "equal"/"same"),
+    // the board is left as the generator made it.
+    const qText = String(q.question || '').toLowerCase().replace(/[−–]/g, '-');
+    const closedSet = suppliedOptions && opts.length >= 2 && opts.every(o =>
+        /^(?:they(?:'re| are) )?(?:equal|the same|same)$/i.test(String(o).trim())
+        || qText.includes(String(o).trim().toLowerCase().replace(/[−–]/g, '-')));
+    if (opts.length < 4 && !closedSet) backfillOptions(q.answer, opts, seen, 4);
     // After the backfill, so a topped-up set is judged on what it finally holds.
-    q.options = shuffle(varyBracketedOptions(q.answer, opts));
+    q.options = shuffle(closedSet ? opts : varyBracketedOptions(q.answer, opts));
     q.answerIndex = q.options.findIndex(o => optKey(o) === optKey(q.answer));
 
     return q;
@@ -52968,7 +52984,9 @@ if ('speechSynthesis' in window) {
         { s:"Choosing a student, then choosing a second different student", a:"Dependent" }
       ][ri(0,5)];
       return { subType:"classify", question:`Are these events independent or dependent? ${sc.s}.`, answer:sc.a,
-        options:sh(["Independent","Dependent","Mutually exclusive","Complementary"]),
+        // Only the two the question names: "mutually exclusive" beside a question
+        // asking "independent or dependent?" is crossed off without thinking.
+        options:sh(["Independent","Dependent"]),
         explanation:`${sc.a==="Dependent"?"The first outcome changes what's available for the second, so they are dependent.":"The first outcome does not affect the second, so they are independent."}` };
     } else if(t==="independent_prob"){
       const pool=[2,3,4,6]; const d1=pool[ri(0,3)]; let d2; do{d2=pool[ri(0,3)];}while(d2===d1);

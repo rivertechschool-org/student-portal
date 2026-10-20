@@ -35,6 +35,20 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-20 — Jordan's Claude (Math Dojo: pick-from-the-set boards stay closed)
+
+- "Which is larger: 10 or 12?" offered 13 and 14; "what digit is in the tens place of 48" offered
+  digits not in 48; "Team 0" appeared beside Team 1 and Team 2. The generators supplied the right
+  set; `generateQuestion` then topped every board under four choices up with invented values and
+  re-spaced numbers around the answer (`varyBracketedOptions`).
+- Rule now: when a generator supplies its choices and every one appears in the question text (or is
+  "equal"/"same"), the board is left exactly as the generator made it (`closedSet`). Computed-answer
+  boards are still topped up and re-spaced as before.
+- `debug-tools/dojo-distractor-sweep.js` gained checks 6 and 7 (a choice the question never shows; a
+  digit not in the number). Against the old page they found 13 generator groups; now 0.
+  `tests/dojo-closed-choice-set.test.js` holds the behaviour.
+- Independent/Dependent "classify" now offers only the two words the question names.
+
 ## 2026-10-16 — Jordan's Claude (Math Dojo content pass: what practice may ask)
 **Rules Jordan set, now applied across the Dojo.** Practice may only ask what the skill's
 lesson teaches; every question has exactly one right answer; no non-maths content (colour

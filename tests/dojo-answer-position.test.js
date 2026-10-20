@@ -154,11 +154,14 @@ console.log('\n== it is actually wired in ==\n');
 
 ok('generateQuestion runs options through it',
    /varyBracketedOptions\(q\.answer, opts\)/.test(html));
+// A pick-from-what-you-see board ("Which is larger: 12 or 17?") skips it:
+// its choices are the question's own items, not near-misses of a computed
+// value. tests/dojo-closed-choice-set.test.js holds that behaviour.
 ok('  before they are shuffled, not after',
-   /shuffle\(varyBracketedOptions\(/.test(html));
+   /shuffle\(closedSet \? opts : varyBracketedOptions\(/.test(html));
 ok('  and after the backfill, so a topped-up set is judged too',
    html.indexOf('backfillOptions(q.answer, opts, seen, 4)') <
-   html.indexOf('shuffle(varyBracketedOptions('));
+   html.indexOf('varyBracketedOptions(q.answer, opts)'));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

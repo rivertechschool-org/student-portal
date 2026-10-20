@@ -20,6 +20,12 @@
 //      right answer marked wrong. Not judged when the question is about form
 //      (simplest form, rounding, converting), where that is the lesson.
 //   5. two wrong choices with the same value (2/8 and 1/4): neither can be it
+//   6. a pick-from-what-you-see question offering a choice it never showed:
+//      "Which is larger: 10 or 12?" beside 13 and 14, "Team 0" when the
+//      question has Team 1 and Team 2, "independent or dependent?" beside
+//      "mutually exclusive". Reported 2026-10-20; the cause was the board
+//      being topped up to four after the generator chose its set.
+//   7. "what digit is in the tens place" offering a digit not in the number
 //
 // Yes/no and three-way comparisons are allowed fewer than four choices.
 //
@@ -165,6 +171,24 @@ for (const tier of Object.keys(generators)) {
       }
       const twin = ABOUT_FORM.test(String(q.question)) ? undefined : others.find(o => sameValue(o, q.answer));
       if (twin !== undefined) note('a distractor is the answer written differently (also correct)', sub, show);
+      // 6. The answer is one of the things the question lists, and the
+      // question asks you to choose ("Which is ...", "... A or B?"); every
+      // wrong choice must be listed too, or be "equal"/"same". A "which"
+      // mid-sentence (", which better describes") is not a choice.
+      const qs = String(q.question).replace(/\s+/g, ' ');
+      const norm = v => String(v).trim().toLowerCase().replace(/[−–]/g, '-').replace(/^['"“]|['"”.]$/g, '');
+      const toks = qs.split(/[,;:?()\[\]]|\bor\b|\band\b|\bvs\.?\b/i).map(norm).filter(Boolean);
+      const choosing = /(?:^|[.:?!]\s+)which\b/i.test(qs) || /\bor\b[^.?]*\?\s*$/i.test(qs);
+      if (choosing && toks.includes(norm(q.answer))) {
+        const generic = /same|equal|neither|cannot|can't|none|both|not enough|undefined|no solution/i;
+        const unseen = others.filter(o => !generic.test(String(o)) && !toks.includes(norm(o)) && !qs.toLowerCase().includes(norm(o)));
+        if (unseen.length) note('offers a choice the question never shows', sub, show);
+      }
+      // 7. A digit question answered from the digits on the page.
+      if (/\bdigit\b/i.test(qs) && /^\d$/.test(String(q.answer).trim())) {
+        const digits = new Set((qs.match(/\d+(?:\.\d+)?/g) || []).join('').replace(/\./g, '').split(''));
+        if (others.some(o => !digits.has(String(o).trim()))) note('digit question offers a digit not in the number', sub, show);
+      }
       if (!ABOUT_FORM.test(String(q.question))) {
         for (let i = 0; i < others.length; i++) for (let j = i + 1; j < others.length; j++)
           if (String(others[i]).trim().toLowerCase() === String(others[j]).trim().toLowerCase() || sameValue(others[i], others[j]))
