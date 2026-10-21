@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-21 — Jordan's Claude (lessons re-locked when a prerequisite needed review)
+- Reported: T3 Advanced Fractions and Decimals "don't open, I can't click to open the lesson at
+  all".
+- Cause: `isSkillUnlocked` (and the unlock pass `triggerDependentUnlocks`) only counted a
+  prerequisite as done when it was mastered or activated. A mastered skill that decays to
+  `needs_review` therefore re-locked every lesson after it. Meanwhile the lock message counts
+  `needs_review` as mastered, so the student saw every prerequisite ticked and still could not get
+  in. This affects any lesson whose prerequisite has faded, not just these two.
+- Fix: one rule, `prereqLearned`, which counts mastered, activated and needs_review. The 2D
+  `SkillTreeViewer.html` had the same split; the one check that left out `needs_review` now
+  includes it.
+- `tests/dojo-review-unlocks.test.js` holds it (3 of its 5 checks fail on the old page).
+
 ## 2026-10-21 — Jordan's Claude (Math Dojo: 15 duplicate skills merged)
 Jordan: "merge them and the progress can get merged into the new one where possible".
 - **Retired, with the skill that replaced each:**
