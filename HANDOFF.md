@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-21 — Jordan's Claude (notification "Go to" no longer blanks the portal)
+- Reported: a bug report in the admin notifications, "Go to it", ends in a blank screen.
+- Cause: the staff-queue notifications written by the database (bug reports, materials, parent
+  links, applications, bookings, system health) all link to `#admin`, which is not a page.
+  `showSection` hid every section and found none to show.
+- Fix, all in the portal: `notificationDestination` routes those by notification type to the page
+  that handles them (bug reports open Admin Settings with the list loaded and scrolled to), and
+  the button names that page ("Go to Bug Reports"). `showSection` now falls back to a real page for
+  any name that is not one: admin dashboard for admin-ish names, otherwise home.
+- Existing notification rows keep working as they are; nothing in the backend has to change. If
+  the backend ever writes a precise link, it should be a real section name.
+- `debug-tools/notification-goto-journey.py` walks it.
+
 ## 2026-10-20 — Jordan's Claude (Mathletics flashcards)
 
 - New **🃏 Flashcards** mode on the Mathletics menu: untimed, your weakest facts in range by default

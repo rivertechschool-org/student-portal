@@ -6364,6 +6364,9 @@
       }
 
       showSection(sectionName) {
+        // A name with no section (a notification's '#admin', an old bookmark)
+        // used to hide every section and show none: a blank screen.
+        if (!document.getElementById(sectionName + '-section')) sectionName = this.sectionFor(sectionName);
         // Update current section
         this.currentSection = sectionName;
         // Navigating out of Riven's fullscreen: you asked for this page, so the
@@ -15378,9 +15381,9 @@
               <button class="btn btn-secondary" onclick="app.deleteNotificationAndClose('${this.jsAttr(notification.id)}')" style="color: var(--danger);">
                 🗑️ Delete
               </button>
-              ${(() => { const safeLink = this.sanitizeLink(notification.link); return safeLink ? `
-                <button class="btn btn-secondary" onclick="app.closeModal('notification-detail-modal'); app.navigateToLink('${this.jsAttr(safeLink)}');">
-                  📍 Go to ${this.escapeHtml(safeLink.replace('#', ''))}
+              ${(() => { const dest = this.notificationDestination(notification); return dest ? `
+                <button class="btn btn-secondary" onclick="app.closeModal('notification-detail-modal'); app.goToNotification('${this.jsAttr(notification.id)}');">
+                  📍 Go to ${this.escapeHtml(dest.label)}
                 </button>
               ` : ''; })()}
               <button class="btn btn-primary" onclick="app.closeModal('notification-detail-modal')">
@@ -15397,12 +15400,67 @@
         this.closeModal('notification-detail-modal');
       }
 
+      // Where "Go to" takes a notification. The staff-queue alerts the database
+      // writes (bug reports, materials, parent links, applications, bookings,
+      // system health) all link to '#admin', which is not a page here:
+      // showSection hid every section and showed nothing, a blank screen.
+      // Those are routed by type to the page that handles them. The bug-report
+      // alert the page itself sends has no link, only metadata.alertType.
+      notificationDestination(notification) {
+        if (!notification) return null;
+        const type = notification.type === 'system' && notification.metadata && notification.metadata.alertType
+          ? notification.metadata.alertType : notification.type;
+        const byType = {
+          bug_report:             { section: 'admin-settings', label: 'Bug Reports', then: () => this.openBugReportsCard() },
+          material_request:       { section: 'materials-requests', label: 'Materials Requests' },
+          link_request:           { section: 'admin-dashboard', label: 'Parent Link Requests', then: () => this.showParentLinkRequests() },
+          enrollment_application: { section: 'admin-enrollment', label: 'Enrollment' },
+          facility_booking:       { section: 'admin-facilities', label: 'Facilities' },
+          system_health:          { section: 'admin-dashboard', label: 'Admin Dashboard' },
+        };
+        const admin = this.userInfo?.profile?.user_type === 'admin';
+        if (byType[type] && (admin || type === 'material_request')) return byType[type];
+        const safe = this.sanitizeLink(notification.link);
+        if (!safe) return null;
+        if (!safe.startsWith('#')) return { href: safe, label: safe };
+        const section = this.sectionFor(safe.substring(1));
+        return { section, label: section.replace(/-/g, ' ') };
+      }
+
+      goToNotification(notificationId) {
+        const dest = this.notificationDestination(this.notifications.find(n => n.id === notificationId));
+        if (!dest) return;
+        if (dest.href) { window.location.href = dest.href; return; }
+        this.showSection(dest.section);
+        if (dest.then) dest.then();
+      }
+
+      // A '#page' that exists, or the nearest one that does: '#admin' and any
+      // other admin-ish name go to the admin dashboard, anything else home.
+      sectionFor(name) {
+        if (name && document.getElementById(name + '-section')) return name;
+        return /^admin/.test(name || '') && this.userInfo?.profile?.user_type === 'admin' ? 'admin-dashboard' : 'home';
+      }
+
+      // Admin Settings draws the Bug Reports card asynchronously; wait for it,
+      // load the reports and bring the card into view.
+      async openBugReportsCard() {
+        for (let i = 0; i < 40; i++) {
+          const box = document.getElementById('bug-reports-container');
+          if (box) {
+            box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            await this.loadBugReports();
+            return;
+          }
+          await new Promise(r => setTimeout(r, 100));
+        }
+      }
+
       navigateToLink(link) {
         const safe = this.sanitizeLink(link);
         if (!safe) return;
         if (safe.startsWith('#')) {
-          const section = safe.substring(1);
-          this.showSection(section);
+          this.showSection(this.sectionFor(safe.substring(1)));
         } else {
           window.location.href = safe;
         }
