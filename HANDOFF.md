@@ -5409,3 +5409,21 @@ finished last, and misses marks the office made after the register opened). If t
 it only falls back to the loaded copy when that copy is of the same day; otherwise it changes nothing
 and says so. Painting the rows is now `_applyMasterToClassRows`; `tests/class-match-master.test.js`
 covers both halves.
+
+## 2026-10-21: Parent guide rewritten simple, and linked where parents land
+
+`/parents/` is rewritten for a parent skimming on a phone: four "start here" cards,
+then an "I want to…" table, then short numbered steps per task, then a help table.
+Same facts as before (checked label by label against the portal), half the words,
+US spelling. The long explanations of why things work as they do are gone; the
+admin guide still has those.
+
+A signed-in parent could only reach the guide from the Portal's Quick Actions. Now also:
+- the root dashboard: a **📖 Parent Guide** button under Quick Actions, and a
+  "How to link your child" link on the **No Children Linked** card (to `/parents/#link`);
+- the Portal home's own no-children message;
+- **👤 Profile → Account Actions → 📖 How-to Guide**, for every role (it opens
+  `guidePathForMe()`, so students get the student guide, and so on).
+
+The page-specific CSS for the start-here cards lives in `guides/guide.css` (the guides
+test forbids inline style blocks); its cache-buster is now `?v=2` on all five guides.
