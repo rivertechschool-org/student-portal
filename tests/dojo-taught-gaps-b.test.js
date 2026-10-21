@@ -207,10 +207,9 @@ const num = v => Number(v);
 }
 
 // ---- Series (tier 10) -----------------------------------------------------------------
+// Merged into T8 Series Convergence, 2026-10-21; the skill no longer exists.
 {
-  const qs = draw(10, 'Series', 1500);
-  ok('Series: alternating, ratio-test and integral-test items are gone',
-    !qs.some(q => /\(-1\)ⁿ|n!|ln n/.test(q.question)), qs.find(q => /\(-1\)ⁿ|n!|ln n/.test(q.question))?.question);
+  ok('Series (T10) is merged away', !generators[10]['Series']);
 }
 
 // ---- Advanced Polynomials: the de-duplicated candidate count -------------------------
@@ -264,14 +263,15 @@ const taught = [
   [10, 'Complex Analysis', null, /Cauchy–Riemann/],
   [10, 'Number Theory', null, /a \| b/], [10, 'Discrete Math', 'subsets', /proper subset/],
   [10, 'Linear Algebra', 'independence', /zero vector/],
-  [10, 'Series', 'convergence', /nth-term test/],
+  // T10 Series merged into T8 Series Convergence (2026-10-21); its nth-term
+  // test is pinned below under Series Convergence / harmonic.
   [8, 'Trig Functions', null, /Reference Angle \+ Sign/],
   [8, 'Unit Circle', 'coordinates', /Radians and the key points/],
   [8, 'Unit Circle', 'reference', /in radians/], [8, 'Unit Circle', 'special', /Which side faces which angle/],
   [8, 'Parametric Equations', null, /Eliminating the Parameter/], [8, 'Parametric Equations', null, /ellipse/],
   [8, 'Polar Coordinates', null, /r = constant/], [8, 'Normal Distribution', null, /z-scores/],
-  [8, 'Inverse Trig', 'evaluate', /Negative inputs/], [8, 'Advanced Functions', null, /Composition/],
-  [8, 'Advanced Functions', null, /Domain of a square root/],
+  [8, 'Inverse Trig', 'evaluate', /Negative inputs/],
+  // T8 Advanced Functions merged into T7 Composition of Functions (2026-10-21).
   [8, 'Series Convergence', 'harmonic', /The nth-term test/], [8, 'Series Convergence', 'comparison', /Constant multiples/],
   [8, 'Graphing Trig Functions', 'amplitude', /Midline and range/], [8, 'Radian Measure', 'arc_length', /Decimal answers/],
   [9, 'Applications', 'critical', /Increasing and decreasing/], [9, 'Applications', 'maxmin', /inflection/],

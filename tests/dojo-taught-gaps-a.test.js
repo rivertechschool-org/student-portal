@@ -255,7 +255,7 @@ const taught = [
   [2, 'Simplifying Fractions', /When it's a whole number/],
   [2, 'Line Plots', /The range/],
   [3, 'Square Roots', /Between two whole numbers/],
-  [3, 'Mean Median Mode', /RANGE/],
+  [3, 'Statistics Basics', /range/i],   // Mean Median Mode merged in, 2026-10-21
   [3, 'Data Collection', /Most, least and range/],
   [3, 'Comparing Distributions', /Comparing spread[\s\S]*Skewed right[\s\S]*Bimodal/],
   [3, 'Simple Probability', /P\(not A\) = 1 − P\(A\)/],

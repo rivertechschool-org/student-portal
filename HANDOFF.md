@@ -35,6 +35,52 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-21 — Jordan's Claude (Math Dojo: 15 duplicate skills merged)
+Jordan: "merge them and the progress can get merged into the new one where possible".
+- **Retired, with the skill that replaced each:**
+  - T4 Equations → T3 One-Step Equations
+  - T6 Area → T2 Area
+  - T6 Volume → T3 Volume
+  - T6 Transformations → T4 Transformations
+  - T7 Polynomials → T7 Advanced Polynomials
+  - T8 Complex Numbers → T7 Complex Numbers
+  - T8 Advanced Functions → T7 Composition of Functions
+  - T10 Matrices → T7 Determinants and Matrix Inverse
+  - T3 Mean Median Mode → T3 Statistics Basics
+  - T7 Quadratics → T5 Quadratics
+  - T7 Probability, T4 Probability Basics and T10 Probability Theory → T3 Simple Probability
+  - T10 Series → T8 Series Convergence
+  - T10 Investments & Growth → T7 Investments & Growth
+
+  In each case, everything the retired skill asked is taught by the survivor or by another
+  existing skill.
+- **Not merged after a closer look.** T4 Exponents (the exponent laws) and T3 Exponents
+  (evaluating powers) are different standards. T10 Eigenvalues and Linear Algebra, and T10
+  Vector Calculus and Multivariable Calculus, share only one question type each. The audit had
+  sampled them as a student who hadn't done the lessons, which hides later question types.
+- **Progress.** It is saved under a curriculum title.
+  - Seven retired skills already saved under the same title as their survivor (both Areas save
+    as "Area"), so their records were already shared.
+  - For the other eight, `foldRetiredSkills` in the Dojo carries a retired record into the
+    survivor wherever saved progress comes in: this browser, the server reply, and the 2D tree.
+    It takes the stronger state, the higher score, the later dates, and adds practice together.
+    It then drops the old key, so it is never posted back.
+  - Matrices and Series only covered part of their survivor. Their work counts, but at most as
+    in progress, never as mastered.
+- **Curriculum data.** The eight nodes were removed from `data/math_curriculum_v2.json` (recorded
+  under `merges`) and their prerequisites re-pointed. Graduation item 94A no longer lists
+  Advanced Functions. The graph was regenerated: Dojo graph, `master_graph.json`, and
+  `math_merged.json`. The 2D `SkillTreeViewer.html` tree was updated by hand.
+- **Hand step for Luke.** `student-portal-backend` has a new migration that does the same fold on
+  the stored progress, re-points Math skill homework, and removes the eight curriculum nodes. It
+  is committed but **not applied**.
+  - Apply the regenerated curriculum seed first, then the merge migration.
+  - It has a dry-run query, a verify query, and a local test (11 checks, passing).
+  - Until it is applied, the Dojo folds the old rows on each student's device, so students see
+    the right result either way.
+  - Homework on an old title only completes once the migration has been applied.
+- Tests: `tests/dojo-merged-skills.test.js` and `debug-tools/dojo-merged-skills-journey.py`.
+
 ## 2026-10-21 — Jordan's Claude (Math Dojo: three skills that were not maths)
 An audit of all 393 Dojo skills found three that broke the "only maths" rule. Rebuilt, lessons and
 practice together:
