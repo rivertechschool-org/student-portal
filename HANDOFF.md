@@ -35,6 +35,28 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-21 — Jordan's Claude (Math Dojo: three skills that were not maths)
+An audit of all 393 Dojo skills found three that broke the "only maths" rule. Rebuilt, lessons and
+practice together:
+- **Mass and Capacity** (T2, graduation core) asked "Which is heavier: a feather or an elephant?",
+  which is general knowledge. It now measures and calculates: compare two given amounts, how much
+  heavier or more, adding on a scale, equal groups, pouring out, how many buckets fill it. One unit
+  per question; g↔kg conversion is left to Unit Conversion. The sub-skill ids `compare_mass` and
+  `compare_capacity` are kept, so saved progress still applies.
+- **Positional Words** (T1) was a vocabulary quiz ("opposite of in front of"). It now reads
+  positions off a tower (above, below, top, bottom) or a row (next to, between) of shapes.
+- **Classifying Objects** (T1): "Is a bus big or small?" became sorting shapes by number of sides.
+- `.question-text` is now `white-space: pre-line`, so multi-line questions (towers, Picture
+  Graphs, Sampling Methods) keep their line breaks; before this, they ran together on one line.
+- `tests/dojo-generator-content.test.js` had a backspace character where `\b` belonged, so its
+  "no fruit/weather/body-part" check could never fail. Fixed.
+- Not done yet, and waiting on Jordan: whether the spreadsheet- and code-syntax questions (Business
+  and CS branches, and Spreadsheet Formulas in the core) should test the tool or only the maths,
+  and merging the duplicate skills (which needs a decision about progress already saved on them).
+- `tests/dojo-positional-words.test.js` was rewritten: it reads the drawing back out of the
+  question and checks every answer. `debug-tools/dojo-maths-only-journey.py` shows all three in a
+  browser.
+
 ## 2026-10-21 — Jordan's Claude (notification "Go to" no longer blanks the portal)
 - Reported: a bug report in the admin notifications, "Go to it", ends in a blank screen.
 - Cause: the staff-queue notifications written by the database (bug reports, materials, parent

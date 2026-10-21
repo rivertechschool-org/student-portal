@@ -124,10 +124,34 @@ const first = (arr, f) => { const x = arr.find(f); return x ? x.question + ' -> 
 
 // ---- Mass and Capacity -----------------------------------------------------
 {
+  // 2026-10-21: measuring and calculating, not "Which is heavier: a feather or
+  // an elephant?". Every number is in the question, and the answer is worked
+  // out from those numbers here, independently of the generator.
   const qs = draw('Mass and Capacity');
-  const pairs = qs.map(q => /\(~([\d.]+) (?:g|mL)\).*\(~([\d.]+) (?:g|mL)\)/.exec(q.explanation)).filter(Boolean);
-  ok('Mass/Capacity: compared items are at least 3x apart', pairs.length > 1000 && pairs.every(m => +m[1] >= 3 * +m[2]),
-    first(qs, q => { const m = /\(~([\d.]+) (?:g|mL)\).*\(~([\d.]+) (?:g|mL)\)/.exec(q.explanation); return m && +m[1] < 3 * +m[2]; }));
+  const nums = q => (q.question.match(/\d[\d,]*/g) || []).map(s => +s.replace(/,/g, ''));
+  const want = q => {
+    const n = nums(q), t = q.question;
+    if (/Which is heavier|Which holds more/.test(t)) {
+      const m = /^An? (.+?) (?:has a mass of|holds) [\d,]+ \w+\. An? (.+?) (?:has a mass of|holds)/.exec(t);
+      return n[0] > n[1] ? m[1] : m[2];
+    }
+    if (/You add/.test(t)) return n[0] + n[1];
+    if (/heavier is|more .* does the/.test(t)) return Math.abs(n[0] - n[1]);
+    if (/^Each /.test(t)) return n[0] * n[1];
+    if (/identical/.test(t)) return n[1] / n[0];
+    if (/glasses of/.test(t)) return n[0] - n[1] * n[2];
+    if (/full buckets/.test(t)) return n[0] / n[1];
+    return '(unrecognised)';
+  };
+  ok('Mass/Capacity: every answer follows from the numbers given', qs.every(q => String(want(q)) === String(q.answer)),
+    first(qs, q => String(want(q)) !== String(q.answer)));
+  ok('Mass/Capacity: no comparison without measurements', !qs.some(q => /Which/.test(q.question) && nums(q).length < 2),
+    first(qs, q => /Which/.test(q.question) && nums(q).length < 2));
+  ok('Mass/Capacity: numeric choices are all positive', qs.every(q => typeof q.answer !== 'number' || (q.options || []).every(o => o > 0)),
+    first(qs, q => typeof q.answer === 'number' && (q.options || []).some(o => !(o > 0))));
+  ok('Mass/Capacity: no "A <vowel>"', !qs.some(q => /\bA [aeiou]/.test(q.question)), first(qs, q => /\bA [aeiou]/.test(q.question)));
+  ok('Mass/Capacity: all seven question forms appear',
+    ['heavier is', 'Which is heavier', 'You add', 'Each ', 'identical', 'glasses of', 'full buckets', 'Which holds more', 'more .* does the'].every(s => qs.some(q => new RegExp(s).test(q.question))));
 }
 
 // ---- Classifying Objects / Estimation --------------------------------------
@@ -136,7 +160,13 @@ const first = (arr, f) => { const x = arr.find(f); return x ? x.question + ' -> 
   // Sorting is by shape, size, or number vs shape: colour, fruit, weather and
   // body parts were not maths.
   ok('Classifying: no colour questions', !qs.some(q => /colou?r/i.test(q.question)), first(qs, q => /colou?r/i.test(q.question)));
-  ok('Classifying: no fruit/weather/body-part odd-one-out', !qs.some(q => /(banana|mango|hail|elbow|scooter)/.test(q.question)));
+  ok('Classifying: no fruit/weather/body-part odd-one-out', !qs.some(q => /\b(banana|mango|hail|elbow|scooter)\b/.test(q.question)));
+  // 2026-10-21: "Is a bus big or small?" is general knowledge, and depends on what you compare it with. Sorting by number of sides replaced it.
+  ok('Classifying: no big/small questions', !qs.some(q => /\b(big|small)\b/.test(q.question + ' ' + (q.options || []).join(' '))),
+    first(qs, q => /\b(big|small)\b/.test(q.question + ' ' + (q.options || []).join(' '))));
+  const sides = { triangle: '3 sides', square: '4 sides', rectangle: '4 sides', circle: 'no sides (round)' };
+  const bySides = qs.filter(q => q.subType === 'by_sides');
+  ok('Classifying by_sides: the group matches the shape', bySides.length > 300 && bySides.every(q => sides[/the \S+ (\w+) go in/.exec(q.question)[1]] === q.answer));
   const counts = qs.filter(q => q.subType === 'count_sort');
   ok('Classifying count_sort: answer matches the shapes shown', counts.length > 500 && counts.every(q => {
     const row = /these shapes: (.+?)\. /.exec(q.question)[1].split(' ');

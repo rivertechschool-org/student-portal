@@ -245,7 +245,7 @@ const taught = [
   [2, 'Factors and Multiples', /What is a multiple\?[\s\S]*Greatest common factor/],
   [5, 'Literal Equations', /P = 2l \+ 2w[\s\S]*Clearing a fraction/],
   [1, 'Comparing Lengths', /Inches, feet and yards/],
-  [1, 'Positional Words', /On top of, underneath, inside[\s\S]*Next to and far from/],
+  [1, 'Positional Words', /A tower: top and bottom[\s\S]*A row: next to[\s\S]*Between/],
   [1, 'Picture Graphs', /How many in all\? How many more\?/],
   [1, 'Number Lines', /Jumping forward/],
   [2, 'Mixed Numbers', /improper → mixed[\s\S]*Adding mixed numbers/],
