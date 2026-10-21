@@ -57,6 +57,9 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 - Rule now: when a generator supplies its choices and every one appears in the question text (or is
   "equal"/"same"), the board is left exactly as the generator made it (`closedSet`). Computed-answer
   boards are still topped up and re-spaced as before.
+- Follow-up the same day: the rule also needs the question to be choosing ("which", "or", "digit").
+  Without that, a computed answer that happened to appear in the question ("What is 1/2 of 4?" with
+  [2, 4]; piecewise "Find f(1)" with [-1, 2, 1]; "10 + ? = 10") was left at two or three choices.
 - `debug-tools/dojo-distractor-sweep.js` gained checks 6 and 7 (a choice the question never shows; a
   digit not in the number). Against the old page they found 13 generator groups; now 0.
   `tests/dojo-closed-choice-set.test.js` holds the behaviour.

@@ -104,6 +104,16 @@ console.log('\n== a computed answer is still topped up ==\n');
   ok('"What is 5 + 7?" with two supplied choices still gets four', q.options.length === 4, JSON.stringify(q.options));
   ok('  and the answer is among them', q.options.map(String).includes('12'));
 }
+{
+  // The answer and the one choice supplied both happen to be in the question,
+  // but nothing is being chosen: still four.
+  const q = board({ question: 'What is 1/2 of 4?', answer: 2, options: [2, 4] });
+  ok('"What is 1/2 of 4?" with [2, 4] supplied still gets four', q.options.length === 4, JSON.stringify(q.options));
+}
+{
+  const q = board({ question: 'f(x) = {2x - 3 if x < -1, -x + 2 if x ≥ -1}. Find f(1).', answer: 1, options: [-1, 2, 1] });
+  ok('"Find f(1)" with values that appear in f still gets four', q.options.length === 4, JSON.stringify(q.options));
+}
 
 console.log('\n== the real generators ==\n');
 for (const [tier, domain, re] of [[1, 'Comparison', /Which is larger: (\d+) or (\d+)/],
