@@ -59,7 +59,9 @@ with sync_playwright() as p:
     pg.evaluate("window.mathletics.quickStart()"); pg.wait_for_timeout(500)
     answer(pg, 1, correct=False)
     first = pg.evaluate("() => { const f = window.mathletics.studentData.mastery_progress.facts; return Object.values(f).map(x => x.r.join('')); }")
-    ok('a wrong first try is recorded as not-yet', first == ['0'], str(first))
+    # -1, not 0: a wrong answer is kept apart from a slow right one so it shows
+    # red, not orange (factState, "a student typing wrong answers fast").
+    ok('a wrong first try is recorded as missed', first == ['-1'], str(first))
 
     answer(pg, 24)
     live = pg.inner_text('#facts-live')

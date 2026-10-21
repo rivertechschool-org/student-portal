@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-10-20 — Jordan's Claude (Mathletics flashcards)
+
+- New **🃏 Flashcards** mode on the Mathletics menu: untimed, your weakest facts in range by default
+  (deck of 10/15/20/30), or any facts picked on a times-table grid up to 20 × 20 (a square, a whole
+  table, or everything). A missed or revealed card comes back three cards later; a right one leaves.
+- Untimed answers never touch the medal record (`mastery_progress.facts` needs quick first tries).
+  They are kept beside it in `mastery_progress.cards` (last four first tries per fact) and feed
+  `factWeakness`, so "weakest" learns from cards. Same row, same column as before - no schema change.
+- Homework progress gets a session summary (first tries only); no BKT / GAME_SESSION_COMPLETE skill
+  report, so untimed practice does not move Multiplication mastery. Easy to add if wanted.
+- Journey: `debug-tools/mathletics-flashcards-journey.py`. The older progress journey had a stale
+  expectation (wrong first try stored as 0; it has been -1 since the red/orange fix) - corrected.
+
 ## 2026-10-20 — Jordan's Claude (Math Dojo: pick-from-the-set boards stay closed)
 
 - "Which is larger: 10 or 12?" offered 13 and 14; "what digit is in the tens place of 48" offered
