@@ -60,14 +60,18 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
   '_rivenParseClassSpec', '_rivenParseNewClassName', '_rivenParseClassRosterRef',
   '_rivenResolvedStudent', '_rivenNamesEachClass', '_rivenClassNamedBeyondCohort',
   '_rivenResolveAbsenceSpans', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers',
-  '_rivenDayCodes', '_rivenCollapseSpans', '_rivenParseWeekdays'];
+  '_rivenDayCodes', '_rivenCollapseSpans', '_rivenParseWeekdays',
+  '_rivenPlanFollowUp', '_rivenPlanTargets', '_rivenPlanInput', '_rivenRememberPlan'];
 const app = { _nlpContext: {} };
 for (const name of methods) {
   let fn;
   try { fn = extract(name); } catch (e) { continue; }
   app[name] = function (...a) { return fn.apply(app, a); };
 }
-const roster = [['Willow', 'Fenmore'], ['Clementine', 'Vasquez'], ['Noah', 'Williams'], ['Josephine', 'Wexler']];
+// Hazel Quint sorts ahead of Hazel Brennick on purpose: "Hazel and Otto
+// Brennick" must still mean Otto's sister.
+const roster = [['Willow', 'Fenmore'], ['Clementine', 'Vasquez'], ['Noah', 'Williams'], ['Josephine', 'Wexler'],
+  ['Hazel', 'Quint'], ['Hazel', 'Brennick'], ['Otto', 'Brennick']];
 app._terminalAllStudents = roster.map(([f, l], i) => ({
   full_name: `${f} ${l}`, first_name: f, last_name: l,
   rtc_balance: 100 + i, email: `${f.toLowerCase()}@x.com`, status: 'active', id: 'id' + i,
@@ -78,8 +82,9 @@ app._terminalAllClasses = [
 ];
 app._terminalAllGroups = [{ id: 'g1', name: 'Lower Middle School', studentIds: ['id0', 'id1'] }];
 
-function route(input) {
+function route(input, keepPlan) {
   app._nlpContext = {};
+  if (!keepPlan) app._rivenLastPlan = null;
   const normalized = app._normalizeInput(input);
   const resolved = app._resolvePronouns(normalized);
   const entities = app._extractEntities(resolved, input);
@@ -87,7 +92,8 @@ function route(input) {
   const intent = app._matchIntent(resolved, entities);
   const plan = app._rivenLateEarlyPlan(input);
   const day = plan ? app._rivenLateEarlyDate(input, plan.time) : null;
-  return { intent: (intent && (intent.intent || intent)) || 'NONE', plan, day: day && day.iso };
+  const people = app._rivenPlanTargets(entities).map(p => p.full_name);
+  return { intent: (intent && (intent.intent || intent)) || 'NONE', plan, day: day && day.iso, people, entities };
 }
 
 const N = 'Willow';
@@ -183,6 +189,84 @@ for (const [input, intent] of NOT_PLAN) {
   if (got.intent === 'PLAN_LATE_EARLY' || (intent && got.intent !== intent)) {
     fail++; failures.push(`  FAIL  "${input}"  wanted ${intent || 'not PLAN_LATE_EARLY'}  got ${got.intent}`);
   } else { pass++; if (process.env.VERBOSE) console.log(`  ok    "${input}" -> ${got.intent}`); }
+}
+
+// SEVERAL STUDENTS IN ONE SENTENCE: every one of them is in the plan, and a
+// lone first name takes the surname of the student it is paired with.
+const MANY = [
+  ['Hazel and Otto Brennick will be picked up at 11:15 today', ['Hazel Brennick', 'Otto Brennick'], 'PLAN_LATE_EARLY'],
+  ['Hazel Brennick and Otto Brennick are leaving at 1:45 friday', ['Hazel Brennick', 'Otto Brennick'], 'PLAN_LATE_EARLY'],
+  ['Otto and Hazel Brennick are arriving at 10:30 tomorrow', ['Otto Brennick', 'Hazel Brennick'], 'PLAN_LATE_EARLY'],
+  ['Willow and Noah are out monday', ['Willow Fenmore', 'Noah Williams'], 'PLAN_ABSENCE'],
+];
+for (const [input, want, intent] of MANY) {
+  const got = route(input);
+  const ok = got.intent === intent && JSON.stringify(got.people.slice().sort()) === JSON.stringify(want.slice().sort());
+  if (ok) { pass++; if (process.env.VERBOSE) console.log(`  ok    "${input}" -> ${got.people.join(', ')}`); }
+  else { fail++; failures.push(`  FAIL  "${input}"  wanted ${intent} for ${want.join(', ')}  got ${got.intent} for ${got.people.join(', ')}`); }
+}
+
+// FOLLOW-UPS: straight after a plan, a line that only names students repeats
+// the plan for them. Anything else is its own instruction.
+const after = (first, people) => {
+  route(first);
+  app._rivenRememberPlan(first.match(/out|away|absent/) ? 'PLAN_ABSENCE' : 'PLAN_LATE_EARLY', first,
+    app._terminalAllStudents.filter(s => people.includes(s.full_name)));
+};
+const FOLLOW = [
+  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'And Hazel Brennick', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
+  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'and Hazel', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
+  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'Hazel Brennick too', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
+  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'same for Willow', 'PLAN_LATE_EARLY', ['Willow Fenmore']],
+  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'also Willow and Noah', 'PLAN_LATE_EARLY', ['Willow Fenmore', 'Noah Williams']],
+  ['Willow is out monday', ['Willow Fenmore'], 'and Noah', 'PLAN_ABSENCE', ['Noah Williams']],
+  ['Willow is out monday', ['Willow Fenmore'], 'Noah as well', 'PLAN_ABSENCE', ['Noah Williams']],
+];
+for (const [first, firstPeople, next, intent, want] of FOLLOW) {
+  after(first, firstPeople);
+  const got = route(next, true);
+  const ok = got.intent === intent && JSON.stringify(got.people.slice().sort()) === JSON.stringify(want.slice().sort())
+    && got.entities._planFollowUp && got.entities._planFollowUp.raw === first;
+  if (ok) { pass++; if (process.env.VERBOSE) console.log(`  ok    "${first}" then "${next}"`); }
+  else { fail++; failures.push(`  FAIL  "${first}" then "${next}"  wanted ${intent} for ${want.join(', ')}  got ${got.intent} for ${got.people.join(', ')}`); }
+}
+// Not follow-ups: a new instruction, or nothing to follow.
+const NOT_FOLLOW = [
+  ['Otto Brennick will be picked up at 11:15 today', 'and Hazel is leaving at 2', 'PLAN_LATE_EARLY'],
+  ['Otto Brennick will be picked up at 11:15 today', 'and give Willow 5 rtc', null],
+  ['Otto Brennick will be picked up at 11:15 today', 'and what about Willow?', null],
+];
+for (const [first, next, okIntent] of NOT_FOLLOW) {
+  after(first, ['Otto Brennick']);
+  const got = route(next, true);
+  if (got.entities._planFollowUp) { fail++; failures.push(`  FAIL  "${first}" then "${next}" was taken as a follow-up`); }
+  else pass++;
+}
+{
+  const got = route('And Hazel Brennick');
+  if (got.entities._planFollowUp || /^PLAN_/.test(got.intent)) { fail++; failures.push('  FAIL  "And Hazel Brennick" with no plan before it planned something'); }
+  else pass++;
+}
+// Something else ran in between: the plan is forgotten (_executeIntent clears it).
+{
+  after('Otto Brennick will be picked up at 11:15 today', ['Otto Brennick']);
+  app._rivenLastPlan = null;
+  const got = route('and Hazel Brennick', true);
+  if (got.entities._planFollowUp) { fail++; failures.push('  FAIL  a forgotten plan was still followed'); } else pass++;
+}
+// A plan still waiting for a yes, set aside by the follow-up: its student
+// comes along, so the follow-up asks about both.
+{
+  after('Otto Brennick will be picked up at 11:15 today', ['Otto Brennick']);
+  app._rivenLastPlan.setAside = true;
+  const got = route('And Hazel Brennick', true);
+  const both = app._rivenPlanInput(got.entities).people.map(p => p.full_name).sort();
+  if (JSON.stringify(both) === JSON.stringify(['Hazel Brennick', 'Otto Brennick'])) pass++;
+  else { fail++; failures.push(`  FAIL  set-aside plan: wanted Hazel and Otto, got ${both.join(', ')}`); }
+  app._rivenLastPlan.setAside = false; app._rivenLastPlan.confirmed = true;
+  const only = app._rivenPlanInput(got.entities).people.map(p => p.full_name);
+  if (JSON.stringify(only) === JSON.stringify(['Hazel Brennick'])) pass++;
+  else { fail++; failures.push(`  FAIL  confirmed plan: wanted only Hazel, got ${only.join(', ')}`); }
 }
 
 failures.forEach(f => console.log(f));

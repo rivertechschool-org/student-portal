@@ -5427,3 +5427,25 @@ A signed-in parent could only reach the guide from the Portal's Quick Actions. N
 
 The page-specific CSS for the start-here cards lives in `guides/guide.css` (the guides
 test forbids inline style blocks); its cache-buster is now `?v=2` on all five guides.
+
+## 2026-10-22: Riven plans for several students, and "and <name>" follow-ups
+
+Two reports from one Riven session, both now work (build `2026-10-22·a`):
+
+- **"<first> and <first> <surname> will be picked up at 11:15 today"** planned
+  only the second child. Late-arrival / early-pickup and planned-absence plans
+  now take every student the sentence names: one question listing what each
+  child's classes are affected, one row each, one undo for the lot. A lone
+  first name paired with a full name borrows that surname, so it is the
+  sibling and not whichever student with that first name sorts first.
+- **"And <name>"** (also "<name> too", "same for <name>", "also <name>",
+  "<name> as well") straight after a plan repeats that plan for them: same
+  time, day and reason. Only names may follow the lead-in; a new time, verb
+  or day is its own instruction. The plan is forgotten as soon as any other
+  command runs, and after 15 minutes. If the earlier plan was still waiting
+  for a yes, the follow-up asks about both students together, so nobody is
+  dropped when the follow-up sets it aside.
+
+Grid cases are in `debug-tools/late-early-commands.js`; the executors and their
+writes are in `tests/riven-plan-several.test.js`. Seven harnesses gained
+`_rivenPlanFollowUp` in their method lists because `_matchIntent` calls it.
