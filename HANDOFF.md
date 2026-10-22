@@ -5518,3 +5518,16 @@ including after students had been paid at the old amount.
   2026-10-22 from the CLI.
 
 Journey: `debug-tools/assignment-rtc-lock-journey.py` (three cases, ALL OK).
+
+## 2026-10-22: Calculator Fluency writes the square key as [x²]
+
+Reported: a question asked what "4 + 3 x² =" gives, with numbers as answers,
+but that "can't be evaluated". It meant the keys 4, +, 3, then the x² (square)
+key, which gives 4 + 9 = 13. Written without anything marking it as a key,
+"3 x²" reads as the algebra 3x², which has no value while x is unknown.
+
+Every mention of the square key in Calculator Fluency (lesson, worked example,
+key points, mistakes, generator) is now **[x²]**, and any question that presses it
+says "[x²] is the square key". The algebra skills elsewhere keep x² as they are.
+`tests/dojo-calculator-keys.test.js` generates 3,000 questions and checks no
+bare x² key is left (4 of its 6 checks fail on the old page).
