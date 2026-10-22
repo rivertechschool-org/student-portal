@@ -5498,3 +5498,23 @@ already worked through the comma/and chain extractor; three did not, now fixed:
   5 rtc" on the first try).
 
 Cases are in `tests/riven-follow-up.test.js` (now 49).
+
+## 2026-10-22: an assignment's RTC reward is editable until the first grade, then locked
+
+It had not been fixed. The amount could not be changed from Edit Assignment at
+all (no field), and Riven's `/rt edit_assignment` could change it at any time,
+including after students had been paid at the old amount.
+
+- **Edit Assignment** now has the Max RTC Reward field (not for info posts). It
+  is editable until any submission is graded. After that it shows 🔒 with how
+  many students were already graded and paid, and is not sent on save. If the
+  count can't be read, it stays locked rather than guessing. If someone is
+  graded while the window is open, the save is refused, the field locks back at
+  the old amount, and pressing Save again keeps the other changes.
+- **`/rt edit_assignment`** refuses an `rtc_reward` change on a graded
+  assignment at the planning stage (`rtc_locked`).
+- **The database** refuses the change too: backend migration
+  `rtc_reward_locks_after_first_grade` (with a test). **Luke: apply it by hand**;
+  until then only the portal and Riven checks are in force.
+
+Journey: `debug-tools/assignment-rtc-lock-journey.py` (three cases, ALL OK).

@@ -24197,7 +24197,29 @@ Students you had withdrawn stay withdrawn.`)) {
       
           // Determine current grading type
           const isRubricGrading = assignment.grading_type === 'rubric';
-      
+
+          // The RTC reward is paid when a submission is first graded, at the
+          // amount set then. Changing it afterwards would pay the rest of the
+          // class a different amount for the same work, so it can be changed
+          // until the first grade and is locked from then on. The database
+          // refuses the change too; this is so the teacher sees why. If the
+          // count cannot be read, treat it as locked rather than guess.
+          const showRtc = assignment.assignment_type !== 'info';
+          let gradedCount = 0, rtcLocked = false;
+          if (showRtc) {
+            const { count, error: gErr } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_submissions')
+              .select('id', { count: 'exact', head: true })
+              .eq('assignment_id', assignmentId)
+              .eq('status', 'graded'));
+            gradedCount = count || 0;
+            rtcLocked = !!gErr || gradedCount > 0;
+          }
+          const rtcNow = Number(assignment.rtc_reward) || 0;
+          const rtcTiers = rtcNow > 0
+            ? `Tiers: 90%+ = ${rtcNow} | 80%+ = ${Math.floor(rtcNow * 2 / 3 / 5) * 5} | 70%+ = ${Math.floor(rtcNow / 3 / 5) * 5}`
+            : 'RTC rewards disabled for this assignment';
+
           // Escape quotes in title for safe HTML attribute insertion
           const escapedTitle = (assignment.title || '').replace(/"/g, '&quot;');
 
@@ -24228,6 +24250,20 @@ Students you had withdrawn stay withdrawn.`)) {
                 <input type="number" id="edit-assignment-max-submit-size" min="1" max="2048" value="${assignment.max_submit_size_mb || 1024}">
                 <small style="color: var(--muted); display: block; margin-top: 5px;">Maximum file upload size for student submissions (1-2048 MB)</small>
               </div>
+
+              ${showRtc ? `
+              <div class="form-group">
+                <label for="edit-assignment-rtc-reward">Max RTC Reward${rtcLocked ? ' 🔒' : ''}</label>
+                <input type="number" id="edit-assignment-rtc-reward" min="0" max="500" value="${rtcNow}"
+                       data-locked="${rtcLocked ? '1' : ''}" data-original="${rtcNow}" ${rtcLocked ? 'disabled' : ''}
+                       oninput="app.updateRtcTierPreview('edit-assignment')">
+                <small id="edit-assignment-rtc-tier-preview" style="color: var(--muted); display: block; margin-top: 5px;">${rtcTiers}</small>
+                ${rtcLocked ? `<small style="color: var(--warning); display: block; margin-top: 5px;">
+                  ${gradedCount > 0
+                    ? `Locked: ${gradedCount} student${gradedCount === 1 ? ' has' : 's have'} already been graded and paid at this amount, so the rest of the class gets the same.`
+                    : `Locked: couldn't check whether anyone has been graded yet, so the amount can't be changed right now.`}
+                </small>` : `<small style="color: var(--muted); display: block; margin-top: 5px;">Can be changed until the first student is graded.</small>`}
+              </div>` : ''}
 
               <div class="form-group">
                 <label for="edit-assignment-category">Category</label>
@@ -24454,12 +24490,36 @@ Students you had withdrawn stay withdrawn.`)) {
             updates.is_template = templateBox.checked;
           }
 
+          // RTC reward: only sent while it is unlocked (nobody graded yet).
+          const rtcBox = document.getElementById('edit-assignment-rtc-reward');
+          if (rtcBox && !rtcBox.dataset.locked) {
+            const rtc = parseInt(rtcBox.value);
+            if (!Number.isFinite(rtc) || rtc < 0 || rtc > 500) {
+              this.showNotification('Max RTC Reward must be a number from 0 to 500', 'error');
+              return;
+            }
+            updates.rtc_reward = rtc;
+          }
+
           // Update assignment
           const { error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
             .update(updates)
             .eq('id', assignmentId));
-      
+
+          // Somebody was graded while this window was open: the database
+          // refuses the new amount. Say so plainly rather than "error".
+          if (error && /rtc_reward_locked/.test(error.message || '')) {
+            // Lock the box at the old amount, so pressing Save again saves
+            // everything else.
+            if (rtcBox) {
+              rtcBox.value = rtcBox.dataset.original || rtcBox.value;
+              rtcBox.dataset.locked = '1';
+              rtcBox.disabled = true;
+            }
+            this.showNotification('The RTC reward just locked: a student was graded while you were editing, so the amount stays as it was. Nothing was saved yet. Press Save again to keep your other changes.', 'error');
+            return;
+          }
           if (error) throw error;
       
           // Handle student assignments if selective
@@ -57802,6 +57862,17 @@ Students you had withdrawn stay withdrawn.`)) {
           if (m.error) { fail(this._rtErr('bad_field', `Step ${idx}: ${m.error}`)); continue; }
           const keys = Object.keys(m.fields);
           if (!keys.length) { fail(this._rtErr('missing_field', `Step ${idx}: edit_assignment needs at least one field to change.`)); continue; }
+          // The RTC reward is locked once anyone has been graded: they were
+          // paid at the old amount (the database refuses it too).
+          if ('rtc_reward' in m.fields && Number(m.fields.rtc_reward) !== Number(found.row.rtc_reward || 0)) {
+            const { count, error: gErr } = await this.auth.supabase.from('assignment_submissions')
+              .select('id', { count: 'exact', head: true }).eq('assignment_id', found.row.id).eq('status', 'graded');
+            if (gErr || count > 0) {
+              fail(this._rtErr('rtc_locked', `Step ${idx}: the RTC reward on "${found.row.title}" is locked — ` +
+                (gErr ? `couldn't check whether anyone has been graded.` : `${count} student${count === 1 ? ' has' : 's have'} already been graded and paid at ${found.row.rtc_reward || 0} RTC.`)));
+              continue;
+            }
+          }
           const before = {}, after = {};
           keys.forEach(k => { before[k] = found.row[k]; after[k] = m.fields[k]; });
           steps.push({ step: idx, op: 'edit_assignment', assignment: found.row.title, id: found.row.id,
