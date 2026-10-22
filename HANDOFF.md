@@ -5478,3 +5478,23 @@ Riven build `2026-10-22·b`.
 
 Tests: `tests/riven-follow-up.test.js` (33). Still loose, and older than this
 change: "show the parents of Willow" goes to the student card even for one student.
+
+## 2026-10-22 (later still): a list of names, then the action
+
+"for Noah, Steve, James and Tina do x" (build `2026-10-22·c`). Most list shapes
+already worked through the comma/and chain extractor; three did not, now fixed:
+
+- **Plans with a list** ("for A, B, C and D: pickup at 1:45 today", "... out
+  monday"). The whole-sentence name lookup comes back ambiguous for a list, and
+  the late/early and absence gates refused an ambiguous student, so the plan
+  fell through. "A, B, C, D - picked up at 1:45 today" even fell to
+  MARK_PICKED_UP, which dismisses them now. Both gates now accept a resolved
+  list (`entities.students`).
+- **Names and an amount with no verb** ("Willow 5 rtc", "A, B, C: 5 rtc each",
+  "5 rtc each for A and B") went to the student card, even for one student. A
+  new ADD_RTC pattern takes that shape, but not when the sentence says what
+  someone has, needs, owes or spent, takes RTC away, or reports speech
+  (frontdoor-precision caught "dock ari 3 rtc" and "clementine says i gave her
+  5 rtc" on the first try).
+
+Cases are in `tests/riven-follow-up.test.js` (now 49).

@@ -182,6 +182,36 @@ fresh();
   ok('Hazel is Hazel Brennick, not Hazel Quint', same(a.people, ['Hazel Brennick', 'Otto Brennick']), a.people.join(', '));
 }
 
+console.log('\n== a list of names first, then the action ==\n');
+// Asked for 2026-10-22: "for Noah, Steve, James and Tina do x".
+const FOUR = ['Willow Fenmore', 'Noah Williams', 'Clementine Vasquez', 'Josephine Wexler'];
+for (const [line, intent, check] of [
+  ['for Willow, Noah, Clementine and Josephine give 5 rtc', 'ADD_RTC', e => e.amount === 5],
+  ['for Willow, Noah, Clementine and Josephine: give 5 rtc', 'ADD_RTC', e => e.amount === 5],
+  ['Willow, Noah, Clementine and Josephine: 5 rtc each', 'ADD_RTC', e => e.amount === 5],
+  ['give 5 rtc to Willow, Noah, Clementine and Josephine', 'ADD_RTC', e => e.amount === 5],
+  ['for Willow, Noah, Clementine and Josephine mark absent', 'MARK_ATTENDANCE', () => true],
+  ['for Willow, Noah, Clementine and Josephine do a strike for phones', 'ISSUE_STRIKE', () => true],
+  ['for Willow, Noah, Clementine and Josephine: out monday', 'PLAN_ABSENCE', () => true],
+  ['for Willow, Noah, Clementine, and Josephine: pickup at 1:45 today', 'PLAN_LATE_EARLY', () => true],
+  // Not "they were picked up just now": a time ahead is a plan.
+  ['Willow, Noah, Clementine, Josephine - picked up at 1:45 today', 'PLAN_LATE_EARLY', () => true],
+]) {
+  fresh();
+  const r = say(line);
+  ok(`"${line}"  ->  ${intent} for all four`, r.intent === intent && same(r.people, FOUR) && check(r.entities),
+    `got ${r.intent} for ${r.people.join(', ')}`);
+}
+// Names and an amount with no verb is an award; saying what someone has is not.
+for (const [line, intent] of [['Willow 5 rtc', 'ADD_RTC'], ['Willow: 5 rtc', 'ADD_RTC'], ['5 rtc each for Willow and Noah', 'ADD_RTC']]) {
+  fresh(); const r = say(line);
+  ok(`"${line}" is an award`, r.intent === intent && r.entities.amount === 5, String(r.intent));
+}
+for (const line of ['Willow has 5 rtc', 'does Willow have 5 rtc?', 'Willow needs 5 rtc', 'Willow only 5 rtc left']) {
+  fresh(); const r = say(line);
+  ok(`"${line}" is not an award`, r.intent !== 'ADD_RTC', String(r.intent));
+}
+
 console.log('\n== several students, an action about one: once each, one question, one undo ==\n');
 (async () => {
   // A stand-in executor: asks to confirm, and leaves an undo when it writes.
