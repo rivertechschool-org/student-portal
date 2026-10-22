@@ -56086,7 +56086,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-22·a';
+      const RIVEN_BUILD = '2026-10-22·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -57241,10 +57241,12 @@ Students you had withdrawn stay withdrawn.`)) {
             output.scrollTop = output.scrollHeight;
             return;
           }
-          // Anything else: set the pending action aside and continue. A plan
-          // set aside this way rides along if the next line follows it up
-          // ("and Hazel Brennick"), so its students are not silently dropped.
-          if (this._pendingAction.plan) this._pendingAction.plan.setAside = true;
+          // Anything else: set the pending action aside and continue. A
+          // command set aside this way rides along if the next line follows
+          // it up ("and Hazel Brennick"), so its students are not dropped.
+          if (this._rivenLastCommand && this._rivenLastCommand.pending === this._pendingAction) {
+            this._rivenLastCommand.setAside = true;
+          }
           this._pendingAction = null;
           this.terminalPrint('(I set the pending action aside — nothing was changed.)', '#97a2b0');
         }
@@ -58895,7 +58897,7 @@ Students you had withdrawn stay withdrawn.`)) {
       if (this._phi3State?.active && this._phi3State?.pipe && !opts?._fromPhi3) {
         const wordCount = normalized.trim().split(/\s+/).length;
         // "and Hazel Brennick" after a plan is a command with no verb of its own.
-        if (wordCount >= 3 && !this._hasCommandVerb(normalized) && !this._rivenPlanFollowUp(entities)) {
+        if (wordCount >= 3 && !this._hasCommandVerb(normalized) && !this._rivenFollowUpPeople(entities)) {
           // Social/congratulatory expressions → phi3.chat (skip interpret entirely)
           const isSocial = /^(congrats|congratulations|thanks|thank you|good job|nice work|well done|awesome job|great job|you'?re (great|amazing|awesome|the best|helpful)|good (morning|afternoon|evening)|hi there|hey there|hello|good day|morning|hey riven)\b/i.test(normalized.trim())
             || /\bare you (doing )?(working|okay|ok|alright|all right|fine|ready|well|good)\b/i.test(normalized)
@@ -58997,6 +58999,10 @@ Students you had withdrawn stay withdrawn.`)) {
       // "What about jordan?" / "and sawyer?" — repeat the previous question
       // for a different student instead of dumping the generic student card
       let intent = null;
+      // "and Hazel" / "Hazel too" / "same for Hazel" straight after a command
+      // about students: that command again, for them (_rivenTakeFollowUp).
+      intent = this._rivenTakeFollowUp(entities);
+      if (intent) this.terminalPrint(`↪️ Same again for ${this._rivenNamedPeople(entities).map(p => p.full_name).join(' and ')}`, '#97a2b0');
       const reusableIntents = ['VIEW_STUDENT', 'VIEW_ATTENDANCE', 'VIEW_HISTORY', 'BALANCE_AT',
         'VIEW_ENROLLMENTS', 'STUDENT_TENURE', 'VIEW_GRADES', 'VIEW_CONTACT', 'VIEW_NOTES', 'VIEW_HOMEWORK', 'STUDENT_PRACTICE'];
       const reuseSrc = (this._nlpContext?.lastIntent && reusableIntents.includes(this._nlpContext.lastIntent))
@@ -59009,7 +59015,7 @@ Students you had withdrawn stay withdrawn.`)) {
          'ADD_NOTE','MARK_ATTENDANCE','MARK_ATTENDANCE_GROUP','ENROLL_STUDENT',
          'UNENROLL_STUDENT','SEND_MESSAGE','GRANT_PRIVILEGE','REVOKE_PRIVILEGE',
          'BUY_ITEM','BUY_PRIVILEGE'].includes(this._nlpContext.lastIntent);
-      if ((/^\s*(what about|how about|and)\b/i.test(input)
+      if (!intent && (/^\s*(what about|how about|and)\b/i.test(input)
           || /^(same|do (it|that)|also)\s+(for|to|with)\b/i.test(input.trim())) && entities.student
           && reuseSrc && reusableIntents.includes(reuseSrc)
           && normalized.split(/\s+/).length <= 6
@@ -59100,6 +59106,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
       // Execute the matched intent
       await this._executeIntent(intent, entities);
+      this._rivenNoteLastCommand(intent, entities);
 
       // Phi-3 commentary: only for write intents (reads already show the data)
       // GROUP_RTC, MULTI_AWARD, MARK_ATTENDANCE_GROUP require user confirmation —
@@ -60618,15 +60625,6 @@ Students you had withdrawn stay withdrawn.`)) {
       // verb and a clock time, not in the past. Ahead of PLAN_ABSENCE (whose
       // words include "dentist" and "appointment") and of the bidding, where
       // "picked up" would dismiss the child now and "late" would mark them.
-      // "And Hazel Brennick" / "Otto too" straight after a late-or-early or
-      // absence plan: the same plan again for the student(s) just named. The
-      // time, day and reason come from the sentence it follows.
-      const planFollowUp = this._rivenPlanFollowUp(entities);
-      if (planFollowUp) {
-        entities._planFollowUp = this._rivenLastPlan;
-        return { intent: planFollowUp, confidence: 0.95 };
-      }
-
       if (!isQuestion && !blockSpeculativeWrite && this._rivenIsLateEarlyCommand(normalized, entities)) {
         return { intent: 'PLAN_LATE_EARLY', confidence: 0.96 };
       }
@@ -62589,8 +62587,9 @@ Students you had withdrawn stay withdrawn.`)) {
           intent: 'REGENERATE_PIN',
           w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
           patterns: [
-            /\b(new|reset|regenerate|change|reissue)\b[\s\S]{0,20}\b(games?\s+)?pin\b/,
-            /\bpin\b[\s\S]{0,16}\b(reset|regenerated|changed|reissued)\b/,
+            // "pins" too: "regenerate pins for Willow and Noah" is one per student.
+            /\b(new|reset|regenerate|change|reissue)\b[\s\S]{0,20}\b(games?\s+)?pins?\b/,
+            /\bpins?\b[\s\S]{0,16}\b(reset|regenerated|changed|reissued)\b/,
             /\b(forgot|lost|cannot remember|can't remember)\b[\s\S]{0,16}\bpin\b/,
           ]
         },
@@ -63141,11 +63140,178 @@ Students you had withdrawn stay withdrawn.`)) {
       return null;
     }
 
+    // ---- Several students, and "and <name>" follow-ups ---------------------
+    //
+    // Two things a teacher says without thinking about it:
+    //
+    //   "Hazel and Otto Brennick are being picked up at 11:15"
+    //       one action, several students
+    //   "and Hazel" / "Hazel too" / "same for Hazel" / "what about Hazel"
+    //       the last action again, for somebody else
+    //
+    // Both work for every action that is about a student. The ones that
+    // already take a list (RTC awards, attendance, enrolment, the plans, the
+    // student card, notes) get the list. The rest run once per student, and
+    // whatever they would have asked to confirm is gathered into one question
+    // with one undo (_rivenForEachStudent).
+
+    // Actions that read or change ONE student. Everything not here either
+    // ignores the student, or takes two people in different roles - a
+    // transfer, a comparison, a parent link, a rename - and is never run per
+    // student or repeated for somebody new.
+    _rivenPerStudentIntents() {
+      return new Set(['ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP', 'MOVE_GROUP',
+        'BALANCE_AT', 'BUY_ITEM', 'BUY_PRIVILEGE', 'GRANT_PRIVILEGE', 'REVOKE_PRIVILEGE', 'VIEW_STUDENT_PRIVILEGES',
+        'ENROLLMENT_TYPE', 'SET_ENROLLMENT_TYPE', 'SET_SCHEDULE', 'SET_GRADE_LEVEL', 'UPDATE_CONTACT', 'VIEW_CONTACT',
+        'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'VIEW_ATTENDANCE', 'VIEW_PLANNED_ABSENCES',
+        'GRADE_SUBMISSION', 'SET_GRADE', 'VIEW_GRADES', 'VIEW_HOMEWORK', 'HOMEWORK_RESULTS',
+        'REPORT_CARD', 'TRANSCRIPT', 'ISSUE_STRIKE', 'REMOVE_STRIKE', 'VIEW_STRIKES',
+        'MOVE_STUDENT', 'UNENROLL_STUDENT', 'WITHDRAW_STUDENT', 'REINSTATE_STUDENT',
+        'REGENERATE_PIN', 'REISSUE_PARENT_CODE', 'VIEW_PARENTS', 'VIEW_SCHEDULE', 'VIEW_HISTORY',
+        'STUDENT_BRIEFING', 'STUDENT_PRACTICE', 'STUDENT_TENURE', 'ADD_NOTE', 'SEND_MESSAGE']);
+    }
+    // Actions whose executor already acts on every student in entities.students.
+    _rivenManyStudentIntents() {
+      return new Set(['VIEW_STUDENT', 'ADD_RTC', 'SUBTRACT_RTC', 'VIEW_ENROLLMENTS', 'VIEW_NOTES',
+        'MARK_ATTENDANCE', 'ENROLL_STUDENT', 'ENROLL_BAND', 'PLAN_LATE_EARLY', 'PLAN_ABSENCE']);
+    }
+
+    // Everyone a command names: the list when there is one, else the student.
+    _rivenNamedPeople(entities) {
+      const many = (entities?.students?.length >= 2)
+        ? entities.students.map(w => w.student || w).filter(s => s?.id) : [];
+      if (many.length >= 2) return many;
+      const one = this._rivenResolvedStudent(entities);
+      return one ? [one] : [];
+    }
+
+    // After a command runs: remember it if it was about students, so the next
+    // line can follow it up. Anything else forgets it, because "and Hazel"
+    // means the last thing said, not something from three commands ago.
+    // Commands that only re-run another (REPEAT, RELAY_ACTION) and the
+    // clarifying question leave it as it is.
+    _rivenNoteLastCommand(intent, entities) {
+      const name = intent?.intent;
+      if (['REPEAT', 'RELAY_ACTION', 'CLARIFY_INTENT'].includes(name)) return;
+      const people = this._rivenNamedPeople(entities);
+      const scoped = this._rivenPerStudentIntents().has(name) || this._rivenManyStudentIntents().has(name);
+      this._rivenLastCommand = (scoped && people.length)
+        ? { intent: { intent: name, confidence: 0.95 }, entities, people, at: Date.now(),
+            pending: this._pendingAction || null, setAside: false }
+        : null;
+    }
+
+    // The students a follow-up line names, or null when the line is not a
+    // follow-up. A follow-up is a lead-in ("and", "also", "same for", "what
+    // about", "do it for", "...too", "...as well") and NOTHING BUT NAMES:
+    // every remaining word has to be part of a named student's name, so "and
+    // Hazel is leaving at 2" or "what about Hazel's grades" is a sentence of
+    // its own. Only straight after a command about students, within 15 min.
+    _rivenFollowUpPeople(entities) {
+      const last = this._rivenLastCommand;
+      if (!last || Date.now() - last.at > 15 * 60 * 1000) return null;
+      const raw = String(entities?._rawInput || entities?.original || '').trim();
+      const m = raw.match(/^(?:(?:oh,?\s+)?and(?:\s+(?:also|for|to|with))?|also(?:\s+for)?|plus|what\s+about|how\s+about|same\s+(?:for|with|to|goes\s+for)|(?:do|did)\s+(?:it|that|this|the\s+same)\s+(?:for|to|with)|ditto(?:\s+for)?)\s+(.+?)(?:,?\s+(?:too|as\s+well|also))?\s*[.!?]*$/i)
+        || raw.match(/^(.+?),?\s+(?:too|as\s+well)\s*[.!?]*$/i);
+      if (!m) return null;
+      const words = m[1].toLowerCase().replace(/['’]s\b/g, '').split(/[\s,&]+|\band\b/).filter(Boolean);
+      if (!words.length || words.length > 8) return null;
+      // A first name several students share: the one whose surname is
+      // somebody's in the last command ("and Hazel" after Otto Brennick).
+      const st = entities.student;
+      if (st?.ambiguous && Array.isArray(st.matches)) {
+        const ln = new Set(last.people.map(p => String(p.last_name || '').toLowerCase()));
+        const kin = st.matches.filter(s => ln.has(String(s.last_name || '').toLowerCase()));
+        if (kin.length === 1) entities.student = { student: kin[0], score: 0.9, ambiguous: false };
+      }
+      if (entities.student?.fromContext) return null;
+      const people = this._rivenNamedPeople(entities);
+      if (!people.length) return null;
+      const tokens = people.flatMap(p => String(p.full_name || '').toLowerCase().split(/\s+/));
+      const close = (w, t) => t.startsWith(w) || w.startsWith(t)
+        || (w.length >= 4 && typeof this._levenshteinDistance === 'function' && this._levenshteinDistance(w, t) <= 1);
+      if (!words.every(w => tokens.some(t => close(w, t)))) return null;
+      return people;
+    }
+
+    // Turn a follow-up line into the last command with its students swapped.
+    // The entities keep everything else the first sentence settled - amount,
+    // class, time, day, note text - and the sentence itself, for executors
+    // that read the details from it. If the last command was still waiting
+    // for a yes when this line set it aside, its students come along too.
+    // Returns the intent to run (entities is rewritten in place), or null.
+    _rivenTakeFollowUp(entities) {
+      const people = this._rivenFollowUpPeople(entities);
+      if (!people) return null;
+      const last = this._rivenLastCommand;
+      let all = people;
+      if (last.setAside) all = [...last.people.filter(p => !people.some(q => q.id === p.id)), ...people];
+      const next = { ...last.entities, _followUp: true };
+      delete next.students;
+      next.student = { student: all[all.length - 1], score: 0.95, ambiguous: false };
+      if (all.length >= 2) next.students = all.map(p => ({ student: p, score: 0.95 }));
+      for (const k of Object.keys(entities)) delete entities[k];
+      Object.assign(entities, next);
+      return { ...last.intent };
+    }
+
+    // An action about one student, said about several: run it for each. What
+    // each run would have asked to confirm is gathered into ONE question, and
+    // every undo it leaves - from the runs now, or from the confirmed writes
+    // later - is folded into ONE undo, because the teacher said it once.
+    async _rivenForEachStudent(intent, entities, people) {
+      const asks = [];
+      const undos = [];
+      this._rivenBatchAsks = asks;
+      this._rivenUndoCollect = undos;
+      try {
+        for (const p of people) {
+          const one = { ...entities, student: { student: p, score: 0.95, ambiguous: false }, _oneOfMany: true };
+          delete one.students;
+          await this._executeIntent(intent, one);
+        }
+      } finally {
+        this._rivenBatchAsks = null;
+        this._rivenUndoCollect = null;
+      }
+      this._rivenPushUndoGroup(undos);
+      if (!asks.length) return;
+      if (asks.length === 1) { this._requestConfirmation(asks[0].summary, asks[0].execute); return; }
+      this._requestConfirmation(
+        `<b>${asks.length} things, one for each student:</b>` +
+        asks.map(a => `<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(107,82,54,.25);">${a.summary}</div>`).join(''),
+        async () => {
+          const done = [];
+          this._rivenUndoCollect = done;
+          try {
+            for (const a of asks) await a.execute();
+          } finally {
+            this._rivenUndoCollect = null;
+            this._rivenPushUndoGroup(done);
+          }
+        });
+    }
+
+    // Several undo entries as one: reversed last-first. It survives a reload
+    // only when every part of it would have on its own.
+    _rivenPushUndoGroup(entries) {
+      if (!entries.length) return;
+      if (entries.length === 1) { const e = entries[0]; this._pushUndo(e.desc, e.fn, e.spec); return; }
+      const specs = entries.map(e => e.spec);
+      this._pushUndo(entries.map(e => e.desc).join(' and '), async () => {
+        for (const e of entries.slice().reverse()) await e.fn();
+      }, specs.every(Boolean) ? { kind: 'group', specs } : null);
+    }
+
     async _executeIntent(intent, entities) {
       // Phase 2: Extract student from wrapper object if needed
       const student = this._rivenResolvedStudent(entities);
-      // A plan stays followable ("and Hazel") only until anything else runs.
-      if (intent.intent !== 'PLAN_LATE_EARLY' && intent.intent !== 'PLAN_ABSENCE') this._rivenLastPlan = null;
+
+      // Several students named for an action about one: once for each.
+      if (!entities._oneOfMany && entities.students?.length >= 2 && this._rivenPerStudentIntents().has(intent.intent)) {
+        const people = this._rivenNamedPeople(entities);
+        if (people.length >= 2) return this._rivenForEachStudent(intent, entities, people);
+      }
 
       switch (intent.intent) {
         case 'CLARIFY_INTENT':
@@ -64592,6 +64758,11 @@ Students you had withdrawn stay withdrawn.`)) {
     // ---- Confirmation framework (sensitive writes pause here) ----
 
     _requestConfirmation(summaryHtml, executeFn) {
+      // Inside _rivenForEachStudent: gathered, then asked once for everyone.
+      if (this._rivenBatchAsks && !this._rivenAutoConfirm) {
+        this._rivenBatchAsks.push({ summary: summaryHtml, execute: executeFn });
+        return;
+      }
       // /admin said go. Still SHOW what is being done - the summary is the
       // only record of what was about to happen, and skipping the question is
       // not a reason to skip telling them.
@@ -64654,6 +64825,8 @@ Students you had withdrawn stay withdrawn.`)) {
     // pending Riven reversal the moment a teacher opened a class sheet.
     // Keep these two stacks separate.
     _pushUndo(desc, fn, spec = null) {
+      // Inside _rivenForEachStudent: gathered into one entry for the sentence.
+      if (this._rivenUndoCollect) { this._rivenUndoCollect.push({ desc, fn, spec }); return; }
       this._rivenUndoStack = this._rivenUndoStack || [];
       this._rivenUndoStack.push({ desc, fn, timestamp: Date.now(), spec });
       if (this._rivenUndoStack.length > 15) this._rivenUndoStack.shift();
@@ -64678,6 +64851,13 @@ Students you had withdrawn stay withdrawn.`)) {
 
     get _rivenUndoReversers() {
       return {
+        // Several reversals said as one sentence (_rivenPushUndoGroup).
+        group: async (s) => {
+          for (const sub of (s.specs || []).slice().reverse()) {
+            const fn = this._rivenUndoReversers[sub.kind];
+            if (fn) await fn.call(this, sub);
+          }
+        },
         // Reverse an RTC change. Stored as the REVERSING amount, so replaying it
         // needs no arithmetic and can't drift from the original.
         rtc: async (s) => {
@@ -67890,67 +68070,13 @@ Students you had withdrawn stay withdrawn.`)) {
       }
     }
 
-    // Everyone a plan is for: all the students the sentence named ("Hazel and
-    // Otto Brennick are being picked up at 11:15"), else the one student.
-    _rivenPlanTargets(entities) {
-      const many = (entities?.students?.length >= 2)
-        ? entities.students.map(w => w.student || w).filter(s => s?.id) : [];
-      if (many.length >= 2) return many;
-      const one = this._rivenResolvedStudent(entities);
-      return one ? [one] : [];
-    }
-
     // The people and the sentence a plan executor works from. A follow-up
-    // ("and Hazel") takes the sentence it follows, so the time, day and reason
-    // are the same; if that plan was still waiting for a yes when the
-    // follow-up set it aside, its students come along, so nobody is dropped.
+    // ("and Hazel") arrives as the earlier command's entities with the
+    // students swapped, so the sentence here is still the one that said the
+    // time, day and reason.
     _rivenPlanInput(entities) {
-      let people = this._rivenPlanTargets(entities);
-      const fu = entities?._planFollowUp;
-      if (fu) {
-        if (!fu.confirmed && fu.setAside) {
-          people = [...fu.people.filter(p => !people.some(q => q.id === p.id)), ...people];
-        }
-        return { people, raw: fu.raw };
-      }
-      return { people, raw: entities._rawInput || entities.original || entities.normalized || '' };
-    }
-
-    // Remember a plan as the last thing Riven was asked, so "and Hazel" or
-    // "Otto too" can repeat it. Returns the record the executor marks
-    // confirmed once the write lands.
-    _rivenRememberPlan(intent, raw, people) {
-      const rec = { intent, raw, people, at: Date.now(), confirmed: false, setAside: false };
-      this._rivenLastPlan = rec;
-      return rec;
-    }
-
-    // "and Hazel Brennick", "also Otto", "same for Hazel", "Otto too" right
-    // after a plan: the plan's intent, else null. Only names may follow the
-    // lead-in - a new time, day or verb is a new instruction, not "the same
-    // again" - and only while that plan is still the last thing asked
-    // (_executeIntent forgets it as soon as anything else runs).
-    _rivenPlanFollowUp(entities) {
-      const last = this._rivenLastPlan;
-      if (!last || Date.now() - last.at > 15 * 60 * 1000) return null;
-      const raw = String(entities?._rawInput || entities?.original || '').trim();
-      const m = raw.match(/^(?:(?:oh,?\s+)?and(?:\s+also)?|also|plus|same\s+(?:for|with|goes\s+for)|ditto(?:\s+for)?)\s+(.+?)(?:,?\s+(?:too|as\s+well|also))?\s*[.!?]*$/i)
-        || raw.match(/^(.+?),?\s+(?:too|as\s+well)\s*[.!?]*$/i);
-      if (!m) return null;
-      const rest = m[1].replace(/\b(?:and|&)\b|,/gi, ' ').replace(/\s+/g, ' ').trim();
-      if (!rest || /\d/.test(rest) || rest.split(' ').length > 8) return null;
-      if (/\b(?:is|are|was|were|will|be|has|have|give|mark|show|what|who|how|when|rtc|absent|late|early|out|away|picked|pick|leaving|arriving|today|tomorrow)\b/i.test(rest)) return null;
-      // A first name alone that several students share: the one with the
-      // surname of somebody in the plan ("and Hazel" after Otto Brennick).
-      const st = entities.student;
-      if (st?.ambiguous && Array.isArray(st.matches)) {
-        const ln = new Set(last.people.map(p => String(p.last_name || '').toLowerCase()));
-        const kin = st.matches.filter(s => ln.has(String(s.last_name || '').toLowerCase()));
-        if (kin.length === 1) entities.student = { student: kin[0], score: 0.9, ambiguous: false };
-      }
-      const named = (entities.students?.length >= 2)
-        || (entities.student && !entities.student.fromContext && !entities.student.ambiguous);
-      return named ? last.intent : null;
+      return { people: this._rivenNamedPeople(entities),
+               raw: entities._rawInput || entities.original || entities.normalized || '' };
     }
 
     async terminalPlanLateEarly(entities) {
@@ -67981,7 +68107,6 @@ Students you had withdrawn stay withdrawn.`)) {
         misses.length ? `misses ${misses.join(', ')}` : '',
       ].filter(Boolean).join('; ');
 
-      const rec = this._rivenRememberPlan('PLAN_LATE_EARLY', raw, people);
       this._requestConfirmation(
         `Note that <b>${this.escapeHtml(student.full_name)}</b> is expected to ` +
         `<b>${late ? `arrive at ${at}` : `leave at ${at}`}</b> <b>${this.escapeHtml(dayLabel)}</b>` +
@@ -68006,13 +68131,11 @@ Students you had withdrawn stay withdrawn.`)) {
               : await sb.from('planned_late_early').delete().eq('id', data.id);
             if (e) throw e;
           }, { kind: 'planned_late_early', ids: [data?.id] });
-          rec.confirmed = true;
           this._naturalSuccess([
             `Noted: ${student.full_name} ${late ? 'arrives' : 'leaves'} at ${at} ${dayLabel}. ${touches ? 'The registers will flag it.' : ''}`.trim(),
           ]);
           this.renderLateEarlyPanel?.().catch(() => {});
         });
-      if (this._pendingAction) this._pendingAction.plan = rec;
     }
 
     // terminalPlanLateEarly for two or more students: one question, one line
@@ -68048,7 +68171,6 @@ Students you had withdrawn stay withdrawn.`)) {
       const names = people.map(p => p.full_name);
       const nameList = names.length === 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 
-      const rec = this._rivenRememberPlan('PLAN_LATE_EARLY', raw, people);
       this._requestConfirmation(
         `Note that <b>${this.escapeHtml(nameList)}</b> are expected to ` +
         `<b>${late ? `arrive at ${at}` : `leave at ${at}`}</b> <b>${this.escapeHtml(dayLabel)}</b>` +
@@ -68076,13 +68198,11 @@ Students you had withdrawn stay withdrawn.`)) {
               if (e) throw e;
             }
           }, { kind: 'planned_late_early', ids: done.map(d => d.id) });
-          rec.confirmed = true;
           this._naturalSuccess([
             `Noted: ${nameList} ${late ? 'arrive' : 'leave'} at ${at} ${dayLabel}. ${anyTouched ? 'The registers will flag it.' : ''}`.trim(),
           ]);
           this.renderLateEarlyPanel?.().catch(() => {});
         });
-      if (this._pendingAction) this._pendingAction.plan = rec;
     }
 
     async terminalPlanAbsence(entities) {
@@ -68109,7 +68229,6 @@ Students you had withdrawn stay withdrawn.`)) {
       const dayCount = spans.reduce((n, sp) =>
         n + Math.round((new Date(sp.end + 'T12:00:00') - new Date(sp.start + 'T12:00:00')) / 86400000) + 1, 0);
 
-      const rec = this._rivenRememberPlan('PLAN_ABSENCE', raw, people);
       this._requestConfirmation(
         `Put <b>${this.escapeHtml(nameList)}</b> down as away <b>${this.escapeHtml(label)}</b>${reason ? ` (${this.escapeHtml(reason)})` : ''}? ` +
         `That's ${dayCount} day${dayCount === 1 ? '' : 's'}${spans.length > 1 ? ` across ${spans.length} stretches` : ''}${people.length > 1 ? ' each' : ''}. ` +
@@ -68129,7 +68248,6 @@ Students you had withdrawn stay withdrawn.`)) {
             const { error: e } = await this.auth.supabase.from('planned_absences').delete().in('id', ids);
             if (e) throw e;
           }, { kind: 'planned_absence', ids });
-          rec.confirmed = true;
           const are = people.length > 1 ? 'are' : 'is';
           this._naturalSuccess([
             `Noted \u2014 ${nameList} ${are} down as away ${label}. I'll fill it in on the day.`,
@@ -68137,7 +68255,6 @@ Students you had withdrawn stay withdrawn.`)) {
           ]);
           this.renderPlannedAbsencesPanel?.().catch(() => {});
         });
-      if (this._pendingAction) this._pendingAction.plan = rec;
     }
 
     // ---- Changing the student record ---------------------------------------

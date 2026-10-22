@@ -61,7 +61,8 @@ const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
   '_rivenResolvedStudent', '_rivenNamesEachClass', '_rivenClassNamedBeyondCohort',
   '_rivenResolveAbsenceSpans', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers',
   '_rivenDayCodes', '_rivenCollapseSpans', '_rivenParseWeekdays',
-  '_rivenPlanFollowUp', '_rivenPlanTargets', '_rivenPlanInput', '_rivenRememberPlan'];
+  '_rivenNamedPeople', '_rivenPlanInput', '_rivenFollowUpPeople', '_rivenTakeFollowUp',
+  '_rivenNoteLastCommand', '_rivenPerStudentIntents', '_rivenManyStudentIntents'];
 const app = { _nlpContext: {} };
 for (const name of methods) {
   let fn;
@@ -82,17 +83,20 @@ app._terminalAllClasses = [
 ];
 app._terminalAllGroups = [{ id: 'g1', name: 'Lower Middle School', studentIds: ['id0', 'id1'] }];
 
-function route(input, keepPlan) {
+// The main flow's order: a follow-up of the last command first, else the
+// matcher. keepLast leaves the last command in place for a follow-up line.
+function route(input, keepLast) {
   app._nlpContext = {};
-  if (!keepPlan) app._rivenLastPlan = null;
+  if (!keepLast) app._rivenLastCommand = null;
   const normalized = app._normalizeInput(input);
   const resolved = app._resolvePronouns(normalized);
   const entities = app._extractEntities(resolved, input);
   entities._rawInput = input;
-  const intent = app._matchIntent(resolved, entities);
+  const intent = app._rivenTakeFollowUp(entities) || app._matchIntent(resolved, entities);
+  app._rivenNoteLastCommand(intent, entities);
   const plan = app._rivenLateEarlyPlan(input);
   const day = plan ? app._rivenLateEarlyDate(input, plan.time) : null;
-  const people = app._rivenPlanTargets(entities).map(p => p.full_name);
+  const people = app._rivenNamedPeople(entities).map(p => p.full_name);
   return { intent: (intent && (intent.intent || intent)) || 'NONE', plan, day: day && day.iso, people, entities };
 }
 
@@ -207,66 +211,35 @@ for (const [input, want, intent] of MANY) {
 }
 
 // FOLLOW-UPS: straight after a plan, a line that only names students repeats
-// the plan for them. Anything else is its own instruction.
-const after = (first, people) => {
-  route(first);
-  app._rivenRememberPlan(first.match(/out|away|absent/) ? 'PLAN_ABSENCE' : 'PLAN_LATE_EARLY', first,
-    app._terminalAllStudents.filter(s => people.includes(s.full_name)));
-};
+// the plan for them, with the first sentence's time and day. The general
+// mechanism (any action) is tests/riven-follow-up.test.js; these are the plans.
 const FOLLOW = [
-  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'And Hazel Brennick', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
-  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'and Hazel', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
-  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'Hazel Brennick too', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
-  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'same for Willow', 'PLAN_LATE_EARLY', ['Willow Fenmore']],
-  ['Otto Brennick will be picked up at 11:15 today', ['Otto Brennick'], 'also Willow and Noah', 'PLAN_LATE_EARLY', ['Willow Fenmore', 'Noah Williams']],
-  ['Willow is out monday', ['Willow Fenmore'], 'and Noah', 'PLAN_ABSENCE', ['Noah Williams']],
-  ['Willow is out monday', ['Willow Fenmore'], 'Noah as well', 'PLAN_ABSENCE', ['Noah Williams']],
+  ['Otto Brennick will be picked up at 11:15 today', 'And Hazel Brennick', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
+  ['Otto Brennick will be picked up at 11:15 today', 'and Hazel', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
+  ['Otto Brennick will be picked up at 11:15 today', 'Hazel Brennick too', 'PLAN_LATE_EARLY', ['Hazel Brennick']],
+  ['Otto Brennick will be picked up at 11:15 today', 'same for Willow', 'PLAN_LATE_EARLY', ['Willow Fenmore']],
+  ['Otto Brennick will be picked up at 11:15 today', 'also Willow and Noah', 'PLAN_LATE_EARLY', ['Willow Fenmore', 'Noah Williams']],
+  ['Willow is out monday', 'and Noah', 'PLAN_ABSENCE', ['Noah Williams']],
+  ['Willow is out monday', 'Noah as well', 'PLAN_ABSENCE', ['Noah Williams']],
 ];
-for (const [first, firstPeople, next, intent, want] of FOLLOW) {
-  after(first, firstPeople);
+for (const [first, next, intent, want] of FOLLOW) {
+  route(first);
   const got = route(next, true);
   const ok = got.intent === intent && JSON.stringify(got.people.slice().sort()) === JSON.stringify(want.slice().sort())
-    && got.entities._planFollowUp && got.entities._planFollowUp.raw === first;
+    && got.entities._followUp && got.entities._rawInput === first;
   if (ok) { pass++; if (process.env.VERBOSE) console.log(`  ok    "${first}" then "${next}"`); }
   else { fail++; failures.push(`  FAIL  "${first}" then "${next}"  wanted ${intent} for ${want.join(', ')}  got ${got.intent} for ${got.people.join(', ')}`); }
 }
-// Not follow-ups: a new instruction, or nothing to follow.
-const NOT_FOLLOW = [
-  ['Otto Brennick will be picked up at 11:15 today', 'and Hazel is leaving at 2', 'PLAN_LATE_EARLY'],
-  ['Otto Brennick will be picked up at 11:15 today', 'and give Willow 5 rtc', null],
-  ['Otto Brennick will be picked up at 11:15 today', 'and what about Willow?', null],
-];
-for (const [first, next, okIntent] of NOT_FOLLOW) {
-  after(first, ['Otto Brennick']);
+// Not follow-ups: a sentence of its own.
+for (const next of ['and Hazel is leaving at 2', 'and give Willow 5 rtc', "what about Hazel's grades"]) {
+  route('Otto Brennick will be picked up at 11:15 today');
   const got = route(next, true);
-  if (got.entities._planFollowUp) { fail++; failures.push(`  FAIL  "${first}" then "${next}" was taken as a follow-up`); }
-  else pass++;
+  if (got.entities._followUp) { fail++; failures.push(`  FAIL  "${next}" was taken as a follow-up`); } else pass++;
 }
 {
   const got = route('And Hazel Brennick');
-  if (got.entities._planFollowUp || /^PLAN_/.test(got.intent)) { fail++; failures.push('  FAIL  "And Hazel Brennick" with no plan before it planned something'); }
+  if (got.entities._followUp || /^PLAN_/.test(got.intent)) { fail++; failures.push('  FAIL  "And Hazel Brennick" with nothing before it planned something'); }
   else pass++;
-}
-// Something else ran in between: the plan is forgotten (_executeIntent clears it).
-{
-  after('Otto Brennick will be picked up at 11:15 today', ['Otto Brennick']);
-  app._rivenLastPlan = null;
-  const got = route('and Hazel Brennick', true);
-  if (got.entities._planFollowUp) { fail++; failures.push('  FAIL  a forgotten plan was still followed'); } else pass++;
-}
-// A plan still waiting for a yes, set aside by the follow-up: its student
-// comes along, so the follow-up asks about both.
-{
-  after('Otto Brennick will be picked up at 11:15 today', ['Otto Brennick']);
-  app._rivenLastPlan.setAside = true;
-  const got = route('And Hazel Brennick', true);
-  const both = app._rivenPlanInput(got.entities).people.map(p => p.full_name).sort();
-  if (JSON.stringify(both) === JSON.stringify(['Hazel Brennick', 'Otto Brennick'])) pass++;
-  else { fail++; failures.push(`  FAIL  set-aside plan: wanted Hazel and Otto, got ${both.join(', ')}`); }
-  app._rivenLastPlan.setAside = false; app._rivenLastPlan.confirmed = true;
-  const only = app._rivenPlanInput(got.entities).people.map(p => p.full_name);
-  if (JSON.stringify(only) === JSON.stringify(['Hazel Brennick'])) pass++;
-  else { fail++; failures.push(`  FAIL  confirmed plan: wanted only Hazel, got ${only.join(', ')}`); }
 }
 
 failures.forEach(f => console.log(f));

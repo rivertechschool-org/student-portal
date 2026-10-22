@@ -5449,3 +5449,32 @@ Two reports from one Riven session, both now work (build `2026-10-22·a`):
 Grid cases are in `debug-tools/late-early-commands.js`; the executors and their
 writes are in `tests/riven-plan-several.test.js`. Seven harnesses gained
 `_rivenPlanFollowUp` in their method lists because `_matchIntent` calls it.
+
+## 2026-10-22 (later): follow-ups and several students, for every Riven action
+
+Generalises the entry above, which only covered the late/early and absence plans.
+Riven build `2026-10-22·b`.
+
+- **Follow-ups, any action about a student.** Right after such a command, a line
+  that is a lead-in plus names and nothing else ("and Noah", "Noah too", "same
+  for Noah", "also Noah", "what about Noah", "do the same for Noah", "Noah as
+  well") runs that command again for them. It reuses the first command's parsed
+  details (amount, class, time, day, note text) and only swaps the students
+  (`_rivenTakeFollowUp`). Chains work ("and Noah" then "and Clementine"). It is
+  forgotten as soon as anything else is asked, and after 15 minutes. Commands
+  with two people in different roles (transfers, comparisons, parent links,
+  renames) are never repeated this way. If the earlier command was still waiting
+  for a yes, the follow-up includes its students too.
+- **Several students, any action about one.** Actions whose executor takes one
+  student now run once per named student (`_rivenForEachStudent`). Whatever
+  each run would ask to confirm becomes ONE question, and their undos become ONE
+  undo, which survives a reload as a `group` entry when every part would.
+  Executors that already take a list keep doing so. The two lists are
+  `_rivenPerStudentIntents` and `_rivenManyStudentIntents`; a new student
+  action belongs in one of them.
+- The older "what about X" reuse for reads and RELAY_ACTION's text
+  substitution are still there as fallbacks when there is no recent command.
+- "regenerate pins for A and B" now reaches REGENERATE_PIN (plural "pins").
+
+Tests: `tests/riven-follow-up.test.js` (33). Still loose, and older than this
+change: "show the parents of Willow" goes to the student card even for one student.

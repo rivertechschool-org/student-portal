@@ -1,10 +1,9 @@
-// Riven plans for several students at once, and "and Hazel" follow-ups.
+// Riven plans for several students at once.
 //
 // Reported 2026-10-22: "<first> and <first> <surname> will be picked up at
-// 11:15 today" planned only the second child, and the follow-up "And <name>"
-// was read as "show me that student". Now a sentence naming several students
-// plans every one of them, in one question with one undo, and a line that
-// only names students straight after a plan repeats the plan for them.
+// 11:15 today" planned only the second child. Now a sentence naming several
+// students plans every one of them, in one question with one undo. Follow-ups
+// ("and <name>") for every action are in tests/riven-follow-up.test.js.
 //
 // The routing is covered by debug-tools/late-early-commands.js. This runs the
 // real executors against a stub database: who is asked about, what is
@@ -42,7 +41,7 @@ function extract(name) {
 
 const app = {};
 for (const n of ['terminalPlanLateEarly', '_rivenPlanLateEarlyMany', 'terminalPlanAbsence',
-  '_rivenPlanInput', '_rivenPlanTargets', '_rivenResolvedStudent', '_rivenRememberPlan',
+  '_rivenPlanInput', '_rivenNamedPeople', '_rivenResolvedStudent',
   '_rivenLateEarlyPlan', '_rivenClockTime', '_rivenLateEarlyDate']) {
   const fn = extract(n);
   app[n] = function (...a) { return fn.apply(app, a); };
@@ -109,7 +108,7 @@ const ok = (label, cond, detail = '') => {
   if (cond) { pass++; console.log(`pass  ${label}`); }
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
-const reset = () => { rows = []; asked = undo = said = null; app._pendingAction = null; app._rivenLastPlan = null; };
+const reset = () => { rows = []; asked = undo = said = null; app._pendingAction = null; };
 const both = { student: { student: OTTO }, students: [{ student: HAZEL }, { student: OTTO }] };
 
 (async () => {
@@ -127,26 +126,17 @@ const both = { student: { student: OTTO }, students: [{ student: HAZEL }, { stud
   await undo.fn();
   ok('one undo takes both back', rows.filter(r => r._t === 'planned_late_early').length === 0);
 
-  console.log('\n== a follow-up after a confirmed plan ==\n');
+  // A follow-up reaches the executor as the first command's entities with the
+  // student swapped (_rivenTakeFollowUp, tested in riven-follow-up.test.js).
+  console.log('\n== a follow-up: the first sentence, a new student ==\n');
   reset();
   await app.terminalPlanLateEarly({ student: { student: OTTO }, _rawInput: 'Otto Brennick will be picked up at 11:15 today' });
   await app._pendingAction.execute();
-  const first = app._rivenLastPlan;
-  ok('the plan is remembered, and marked done', first && first.confirmed && first.intent === 'PLAN_LATE_EARLY');
-  await app.terminalPlanLateEarly({ student: { student: HAZEL }, _rawInput: 'And Hazel Brennick', _planFollowUp: first });
+  await app.terminalPlanLateEarly({ student: { student: HAZEL }, _rawInput: 'Otto Brennick will be picked up at 11:15 today', _followUp: true });
   ok('the follow-up asks about Hazel only', /Hazel Brennick/.test(asked) && !/Otto/.test(asked), asked);
   ok('  at the same time and day', /leave at 11:15<\/b> <b>today/.test(asked), asked);
   await app._pendingAction.execute();
   ok('both are now down for 11:15', rows.filter(r => r._t === 'planned_late_early' && r.at_time === '11:15').length === 2);
-
-  console.log('\n== a follow-up that set an unconfirmed plan aside ==\n');
-  reset();
-  await app.terminalPlanLateEarly({ student: { student: OTTO }, _rawInput: 'Otto Brennick will be picked up at 11:15 today' });
-  app._rivenLastPlan.setAside = true; app._pendingAction = null;
-  await app.terminalPlanLateEarly({ student: { student: HAZEL }, _rawInput: 'And Hazel Brennick', _planFollowUp: app._rivenLastPlan });
-  ok('the question carries Otto along with Hazel', /Otto Brennick/.test(asked) && /Hazel Brennick/.test(asked), asked);
-  await app._pendingAction.execute();
-  ok('  and both are written', rows.filter(r => r._t === 'planned_late_early').length === 2);
 
   console.log('\n== absences: two students, then a follow-up ==\n');
   reset();
@@ -156,8 +146,7 @@ const both = { student: { student: OTTO }, students: [{ student: HAZEL }, { stud
   const ab = rows.filter(r => r._t === 'planned_absences');
   ok('a row each for Monday', ab.length === 2 && ab.every(r => r.start_date === '2026-10-05'), JSON.stringify(ab));
   ok('the reply says "are"', /Hazel Brennick and Otto Brennick are /.test(said), said);
-  const plan = app._rivenLastPlan;
-  await app.terminalPlanAbsence({ student: { student: kid('w', 'Willow', 'Fenmore') }, _rawInput: 'and Willow', _planFollowUp: plan });
+  await app.terminalPlanAbsence({ student: { student: kid('w', 'Willow', 'Fenmore') }, _rawInput: 'Hazel and Otto Brennick are out monday', _followUp: true });
   ok('the follow-up asks about Willow for Monday', /Willow Fenmore/.test(asked) && /Monday/.test(asked) && !/Hazel/.test(asked), asked);
 
   console.log(`\n${pass} passed, ${fail} failed`);
