@@ -5514,7 +5514,7 @@ including after students had been paid at the old amount.
 - **`/rt edit_assignment`** refuses an `rtc_reward` change on a graded
   assignment at the planning stage (`rtc_locked`).
 - **The database** refuses the change too: backend migration
-  `rtc_reward_locks_after_first_grade` (with a test). **Luke: apply it by hand**;
-  until then only the portal and Riven checks are in force.
+  `rtc_reward_locks_after_first_grade` (with a test), applied to Supabase
+  2026-10-22 from the CLI.
 
 Journey: `debug-tools/assignment-rtc-lock-journey.py` (three cases, ALL OK).
