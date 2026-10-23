@@ -5564,3 +5564,13 @@ unbracketed typings as well, so no student is marked down by the change.
 Left alone on purpose: the caret in Exponents and Scientific Notation (10^4) is
 unambiguous and is how students type it; Polynomials mixing x² and x^2; volume
 questions without a stated rounding (multiple choice, the right one is plain).
+
+## 2026-10-22: the skill-merge backend changes are applied
+
+Jordan approved, and both backend changes for the merged Math Dojo skills are now live:
+the regenerated curriculum seed (the portal skill tree now matches the graduation
+plan), then the merge of the eight retired skills. The progress rows saved under those
+eight old titles were folded into the skill that replaced each one (stronger state
+kept, practice added together). The retired skills are gone from the homework picker
+and class grid. Checked by totals only: no rows remain under the old titles, and the
+first-mastery reward was back on afterwards.
