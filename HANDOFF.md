@@ -5531,3 +5531,36 @@ key points, mistakes, generator) is now **[x²]**, and any question that presses
 says "[x²] is the square key". The algebra skills elsewhere keep x² as they are.
 `tests/dojo-calculator-keys.test.js` generates 3,000 questions and checks no
 bare x² key is left (4 of its 6 checks fail on the old page).
+
+## 2026-10-22: Math Dojo sweep for questions that read two ways
+
+After the [x²] report, every generator and lesson was swept for the same kind of
+problem: a scan of ~19,000 generated questions, then a read of ~8 questions plus the
+lesson for each of the 376 skills. Every marked answer checked out. These were real and
+are fixed:
+
+- **Two right answers:** Proportions (3 of 4 setups solved correctly), Types of Lines
+  ("intersecting" for a plus sign; now "intersecting (not at a right angle)"),
+  Shapes/Classifying Objects (rectangle offered against a square; the soccer-ball
+  patch), rounding ("9.420" beside "9.42"), Comparing Lengths (eraser vs paperclip).
+- **No direction or missing information:** the scale-factor questions in Similar
+  Figures and Similarity now say "from small to large"; the survey question says who
+  the survey is about; Arc Length and Sector Area say "π ≈ 3.14, nearest hundredth"
+  and round in whole hundredths (2.355 came out 2.35 in one and 2.36 in the other);
+  the tank question said "holds 80 L" with an answer above 80; the cylinder surface
+  area used the true π against "use 3.14".
+- **Notation:** "∫3^5 3x²" (now ∫₃^5), "7/2x^2" and "y = 3/2x" (now bracketed),
+  "d/dx(3x + 6)^4" (now d/dx[…]), "x − 4/(x + 4)" (fraction first), "log₍5₎(25)"
+  (now log₅), "3√(3x)" (now 3·√), "√x + 3" (now √(x) + 3), "6÷3 / 15÷3" in a lesson.
+- **Wording:** the cake "eat 2/4 of it" (of the whole), atan2 "returning" 2π, ε-δ
+  without "0 <", the levels-off questions (measured after the additions), "save -90
+  gold", the Composing Shapes goal problem, area vs perimeter "which NUMBER".
+- Floating-point junk in options (0.8699999999999999 and similar) in six skills.
+
+`tests/dojo-ambiguity.test.js` runs every generator 150 times and checks each class
+above (7 of its 8 checks fail on the old page). The checker accepts the old
+unbracketed typings as well, so no student is marked down by the change.
+
+Left alone on purpose: the caret in Exponents and Scientific Notation (10^4) is
+unambiguous and is how students type it; Polynomials mixing x² and x^2; volume
+questions without a stated rounding (multiple choice, the right one is plain).
