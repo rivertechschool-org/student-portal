@@ -5587,3 +5587,13 @@ ones seconds either side went through. Nothing retried it, so that one alert ema
 4 s later) before logging a failure and alerting admins. Any other error is a real answer
 from the sender and is not retried. Trade-off, chosen on purpose: if the request did arrive
 and only the reply was lost, someone may get the email twice.
+
+## 2026-10-23: attendance and grade emails are combined
+
+Attendance alerts and "assignment graded" emails now go through the same hold-and-combine
+queue that new-assignment emails already used: the first one waits 10 minutes, each new one
+in that time joins it and restarts the wait (capped at an hour from the first), and the
+person gets one email listing everything. Combined per recipient, whoever marked or graded
+it. If a student's status or a grade changes inside the hold, the email shows the final one.
+The change is in the backend email function (deployed); the portal now also sends the
+student's id with an attendance alert so two students with the same name stay two lines.
