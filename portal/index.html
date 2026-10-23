@@ -16034,9 +16034,21 @@
       // heard nothing about 8 assignments. Those would now be 'queued'.
       async sendEmailWithTracking(to, type, data, context = {}) {
         try {
-          const { data: result, error } = await this.auth.supabase.functions.invoke('send-notification-email', {
-            body: { to, type, data }
-          });
+          // A FunctionsFetchError means the request never got an answer back: the
+          // connection dropped, not the sender saying no. 2026-10-23: one attendance
+          // alert in a batch of nine failed this way while the sends either side of it,
+          // seconds apart, went through, and nothing ever retried it. Try twice more
+          // for that error only; every other error is a real answer and stands. The
+          // cost is that if the request did arrive and only the reply was lost, the
+          // person may get the email twice, which beats not getting it.
+          let result, error;
+          for (let attempt = 0; attempt < 3; attempt++) {
+            if (attempt) await new Promise(r => setTimeout(r, attempt * 2000));
+            ({ data: result, error } = await this.auth.supabase.functions.invoke('send-notification-email', {
+              body: { to, type, data }
+            }));
+            if (!error || error.name !== 'FunctionsFetchError') break;
+          }
 
           // Accepted but held. The sender owns it from here.
           if (!error && result && result.deferred) {

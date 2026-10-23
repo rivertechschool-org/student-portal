@@ -5574,3 +5574,16 @@ eight old titles were folded into the skill that replaced each one (stronger sta
 kept, practice added together). The retired skills are gone from the homework picker
 and class grid. Checked by totals only: no rows remain under the old titles, and the
 first-mastery reward was back on afterwards.
+
+## 2026-10-23: email sends retry when the connection drops
+
+An admin got "Failed to send attendance_alert email to … : Failed to send a request to the
+Edge Function". That message means the browser's request never got an answer back — a
+dropped connection, not the email sender refusing. It was one send in a batch of nine; the
+ones seconds either side went through. Nothing retried it, so that one alert email was lost
+(the in-app notification still arrived).
+
+`sendEmailWithTracking` in `portal/index.html` now tries that one error twice more (2 s, then
+4 s later) before logging a failure and alerting admins. Any other error is a real answer
+from the sender and is not retried. Trade-off, chosen on purpose: if the request did arrive
+and only the reply was lost, someone may get the email twice.
