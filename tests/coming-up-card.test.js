@@ -67,6 +67,15 @@ ok('never on a weekend', !/Saturday|Sunday/.test(t), t);
 ok('the trip appears exactly four times (Thu, Fri, Mon, Tue)', (t.match(/Pella Ostrander/g) || []).length === 4, t);
 ok('teachers get no Manage button', !host.innerHTML.includes('Manage'));
 
+// Today is shown; the rest of the fortnight is behind a button.
+const shown = host.innerHTML.split('<div style="display: none;">')[0];
+ok('only today is shown at first', /Quill Marrow/.test(shown) && !/Pella|Sable|Rook/.test(shown), shown.replace(/\s+/g, ' ').slice(0, 300));
+ok('the button counts what it hides (2 tomorrow + 4 trip days)', /Show the next two weeks \(6 more\)/.test(host.innerHTML), text());
+
+teacher._renderComingUpCard(today, until, [], le, names);
+ok('nothing today but things later: says so, and still offers the rest',
+  /Nobody is expected away, late or leaving early today/.test(text()) && /2 more/.test(text()), text());
+
 const admin = make('admin');
 admin._renderComingUpCard(today, until, absences, le, names);
 ok('admins get a Manage link to the Attendance screen', host.innerHTML.includes("showSection('admin-attendance')"));

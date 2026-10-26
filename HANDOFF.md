@@ -5625,3 +5625,9 @@ class only once the bell start of its earliest period today has passed. A class 
 the bell schedule can't give stays in the list (asked about once beats silently dropped).
 `_rivenClassesStarted`; covered in `tests/riven-briefing-today-plans.test.js`.
 RIVEN_BUILD 2026-10-26·b.
+
+## 2026-10-26: staff home card shows today only
+
+The away / late / early-pickup card on the staff home screen now shows today's entries only
+("Nobody is expected … today" when there are none), with a "Show the next two weeks (N more)"
+button that opens the rest in place. Admins keep the Manage button to the Attendance screen.
