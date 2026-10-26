@@ -56268,7 +56268,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-22·c';
+      const RIVEN_BUILD = '2026-10-26·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -74422,6 +74422,21 @@ Students you had withdrawn stay withdrawn.`)) {
         sections.push(`<div>💬 <b>${msgs.length} unread message${msgs.length === 1 ? '' : 's'}</b> — <span style="color: var(--accent); cursor: pointer; text-decoration: underline;" onclick="app.showSection('messaging')">open Messages</span> to read and reply.</div>`);
       }
 
+      // 1b. Today's attendance notes: who the office was told is away, arriving
+      // late or leaving early today. Your own classes' students, unless this is
+      // the school-wide briefing - same rule as the birthdays below.
+      try {
+        const mine = school ? null : new Set(enrollments.map(e => e.student_id));
+        const [abs, le] = await Promise.all([
+          sb.from('planned_absences').select('student_id, reason')
+            .lte('start_date', today).gte('end_date', today),
+          sb.from('planned_late_early').select('student_id, kind, at_time, reason')
+            .eq('date', today).order('at_time'),
+        ]);
+        const plans = this._rivenBriefingTodayPlans(abs.data || [], le.data || [], studentName, mine);
+        if (plans) sections.push(plans);
+      } catch (e) { console.warn('Riven briefing: planned attendance unavailable:', e); }
+
       // 2. End-of-quarter countdown (3 weeks or less)
       if (quarter?.end_date) {
         const daysLeft = Math.ceil((new Date(quarter.end_date + 'T23:59:59') - Date.now()) / 86400000);
@@ -74549,6 +74564,28 @@ Students you had withdrawn stay withdrawn.`)) {
       this._showRivenMessage(
         `<div style="font-weight: 700; margin-bottom: 8px;">📋 Here's what needs your attention (${scopeNote}):</div>` +
         sections.map(s => `<div style="margin: 10px 0;">${s}</div>`).join('') + offer, true);
+    }
+
+    // The briefing's "today's attendance notes" section, or null when there is
+    // nothing for this person. Away first, then arrivals and pickups in clock
+    // order, which is the order the day will happen in. `mine` is the set of
+    // student ids to keep, or null for everyone.
+    _rivenBriefingTodayPlans(absences, lateEarly, studentName, mine) {
+      const keep = r => !mine || mine.has(r.student_id);
+      const who = id => this.escapeHtml(studentName[id] || 'A student');
+      const why = r => r.reason ? ` <span style="color: #6b5236;">· ${this.escapeHtml(r.reason)}</span>` : '';
+      const seen = new Set();
+      const lines = [];
+      for (const r of absences.filter(keep)) {
+        if (seen.has(r.student_id)) continue;
+        seen.add(r.student_id);
+        lines.push(`• <b>${who(r.student_id)}</b> — away today${why(r)}`);
+      }
+      for (const r of lateEarly.filter(keep)) {
+        lines.push(`• <b>${who(r.student_id)}</b> — ${r.kind === 'late' ? '⏰ arriving' : '🚗 leaving'} at ${this._bellSay(r.at_time)}${why(r)}`);
+      }
+      if (!lines.length) return null;
+      return `<div>🗓️ <b>Today's attendance notes</b> (${lines.length}):<br><span style="font-size: 12px;">${this._briefingExpand(lines, 8, 'notes')}</span></div>`;
     }
 
     async _rivenMarkAllRead() {

@@ -5607,3 +5607,12 @@ the next two weeks, one list per school day, an absence repeated on every day it
 weekends skipped. Adding and removing still happens on the Attendance screen or through
 Riven; admins get a Manage button to it. No backend change - staff could already read both.
 Test: `tests/coming-up-card.test.js`.
+
+## 2026-10-26: Riven's briefing names today's attendance notes
+
+The briefing ("anything I should know?", the 📋 Briefing button, and the automatic one on
+opening Riven) now has a "Today's attendance notes" section near the top: who the office was
+told is away today, then late arrivals and early pickups in clock order, with the reason.
+A teacher's briefing lists only their own classes' students; the school-wide one lists
+everyone. Built from `_rivenBriefingTodayPlans`; test `tests/riven-briefing-today-plans.test.js`.
+RIVEN_BUILD 2026-10-26·a.
