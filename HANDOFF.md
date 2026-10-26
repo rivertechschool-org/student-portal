@@ -5597,3 +5597,13 @@ person gets one email listing everything. Combined per recipient, whoever marked
 it. If a student's status or a grade changes inside the hold, the email shows the final one.
 The change is in the backend email function (deployed); the portal now also sends the
 student's id with an attendance alert so two students with the same name stay two lines.
+
+## 2026-10-26: teachers can see who is away, late or leaving early
+
+Planned absences and planned late arrivals / early pickups were only listed on the admin
+Attendance screen, so teachers had no way to see them before the day's register flagged the
+student. The staff home screen (teachers and admins) now has a read-only "Coming up" card:
+the next two weeks, one list per school day, an absence repeated on every day it covers,
+weekends skipped. Adding and removing still happens on the Attendance screen or through
+Riven; admins get a Manage button to it. No backend change - staff could already read both.
+Test: `tests/coming-up-card.test.js`.

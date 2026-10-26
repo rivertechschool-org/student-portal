@@ -7391,9 +7391,12 @@
           // dashboard should wait on it: a duty card arriving a second late is
           // fine, a dashboard that will not render is not.
           this._loadTodaysDuties();
+          // Same deal: who is away, late or leaving early, drawn when it lands.
+          this._loadComingUp();
 
           const html = `
             <div id="today-duty-card"></div>
+            <div id="coming-up-card"></div>
             <div class="grid grid-2">
               <div class="card">
                 <h3>🎯 Quick Actions</h3>
@@ -49988,6 +49991,110 @@ Students you had withdrawn stay withdrawn.`)) {
     // question at 8am. This answers the one being asked, on the page already
     // open, and says nothing at all when the answer is nothing - an empty
     // "no duties today" card every morning trains people to stop reading it.
+    // ---- Coming up: planned absences, late arrivals, early pickups ---------
+    //
+    // 2026-10-26: these could only be seen on the admin Attendance screen, so a
+    // teacher had no way to know that a child would be gone Thursday or picked
+    // up at 1:45 until the register flagged it on the day. Teachers can already
+    // read both tables; this is the read-only view of the next two weeks on
+    // every staff home screen. Adding and removing stays on the Attendance
+    // screen (and with Riven), which admins reach from the link here.
+    async _loadComingUp() {
+      // No host check here: this starts before the dashboard HTML is in the
+      // page. The render looks for it once the reads are back.
+      try {
+        const today = this._localDateStr(new Date());
+        const end = new Date(); end.setDate(end.getDate() + 14);
+        const until = this._localDateStr(end);
+        const [absences, le] = await Promise.all([
+          this._fetchPlannedAbsences(),
+          this.auth.supabase.from('planned_late_early')
+            .select('id, student_id, date, kind, at_time, reason')
+            .gte('date', today).lte('date', until).order('date').order('at_time'),
+        ]);
+        if (le.error) throw le.error;
+        const leRows = le.data || [];
+        const ids = [...new Set(leRows.map(r => r.student_id))];
+        const nameOf = {};
+        if (ids.length) {
+          const { data: people } = await this.auth.supabase
+            .from('user_profiles').select('id, first_name, last_name').in('id', ids);
+          (people || []).forEach(p => { nameOf[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim(); });
+        }
+        this._renderComingUpCard(today, until, absences.filter(a => a.start_date <= until), leRows, nameOf);
+      } catch (_e) {
+        // Same as the duty card: a dashboard without this card still works.
+        const host = document.getElementById('coming-up-card');
+        if (host) host.innerHTML = '';
+      }
+    }
+
+    _renderComingUpCard(today, until, absences, leRows, nameOf) {
+      const host = document.getElementById('coming-up-card');
+      if (!host) return;
+      const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+      const isAdmin = this.userInfo?.profile?.user_type === 'admin';
+
+      // One list per school day. An absence spanning several days shows on
+      // each of them, because the question being answered is "who won't be
+      // here on Thursday", not "what was entered". Weekends are skipped: a
+      // trip running Friday to Monday is not news on Saturday.
+      const days = [];
+      for (let d = new Date(today + 'T12:00:00'); this._localDateStr(d) <= until; d.setDate(d.getDate() + 1)) {
+        const dow = d.getDay();
+        if (dow === 0 || dow === 6) continue;
+        const ds = this._localDateStr(d);
+        const lines = [];
+        for (const a of absences) {
+          if (a.start_date <= ds && a.end_date >= ds) {
+            lines.push({ sort: '0', who: a.student_name, what: 'Away all day', reason: a.reason });
+          }
+        }
+        for (const r of leRows) {
+          if (r.date !== ds) continue;
+          lines.push({
+            sort: '1' + this._bellTime(r.at_time),
+            who: nameOf[r.student_id] || 'Unknown student',
+            what: r.kind === 'late' ? `⏰ Arrives ${this._bellSay(r.at_time)}` : `🚗 Leaves ${this._bellSay(r.at_time)}`,
+            reason: r.reason,
+          });
+        }
+        if (lines.length) {
+          lines.sort((x, y) => x.sort.localeCompare(y.sort) || String(x.who).localeCompare(String(y.who)));
+          days.push({ ds, lines });
+        }
+      }
+
+      const tomorrow = (() => { const t = new Date(today + 'T12:00:00'); t.setDate(t.getDate() + 1); return this._localDateStr(t); })();
+      const label = (ds) => ds === today ? 'Today' : ds === tomorrow ? 'Tomorrow'
+        : new Date(ds + 'T12:00:00').toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' });
+      const manage = isAdmin
+        ? `<button class="btn btn-secondary small" onclick="app.showSection('admin-attendance')">Manage</button>`
+        : '';
+
+      host.innerHTML = `
+        <div class="card" style="margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px;">
+            <h3 style="margin: 0;">📅 Coming up: away, late &amp; early pickups</h3>
+            ${manage}
+          </div>
+          <div style="font-size: 12px; color: var(--muted); margin-bottom: 8px;">
+            What families have told the office about, for the next two weeks.
+          </div>
+          ${days.length ? days.map(day => `
+            <div style="margin-top: 10px;">
+              <div style="font-weight: 600; font-size: 13px; color: ${day.ds === today ? '#d97a3a' : 'var(--text)'};">${esc(label(day.ds))}</div>
+              ${day.lines.map(l => `
+                <div style="display: flex; gap: 10px; flex-wrap: wrap; padding: 5px 0 5px 10px; border-bottom: 1px solid var(--border); font-size: 13px;">
+                  <span style="font-weight: 600; flex: 0 1 180px; min-width: 0; overflow-wrap: anywhere;">${esc(l.who)}</span>
+                  <span>${esc(l.what)}</span>
+                  ${l.reason ? `<span style="color: var(--muted); overflow-wrap: anywhere;">· ${esc(l.reason)}</span>` : ''}
+                </div>`).join('')}
+            </div>`).join('')
+          : `<div style="color: var(--muted); font-size: 13px; padding: 6px 0;">Nobody is expected away, late or leaving early in the next two weeks.</div>`}
+        </div>`;
+    }
+
     async _loadTodaysDuties() {
       try {
         const [rota] = await Promise.all([
