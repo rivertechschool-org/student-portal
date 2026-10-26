@@ -10,7 +10,8 @@ const path = require('path');
 const html = fs.readFileSync(path.join(__dirname, '..', 'portal', 'index.html'), 'utf8');
 
 function method(name) {
-  const start = html.indexOf(`\n    ${name}(`);
+  let start = html.indexOf(`\n    ${name}(`);
+  if (start < 0) start = html.indexOf(`\n    async ${name}(`);
   if (start < 0) throw new Error('not found: ' + name);
   let i = html.indexOf('{', start), depth = 0;
   for (; i < html.length; i++) {
@@ -57,5 +58,27 @@ ok('a teacher sees only their own students', /Sable Finch/.test(m) && /Quill Mar
 ok('nothing for this person gives no section', app._rivenBriefingTodayPlans(absences, le, names, new Set(['zz'])) === null);
 ok('nothing at all gives no section', app._rivenBriefingTodayPlans([], [], names, null) === null);
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+// "Attendance not yet taken" lists only classes that have started.
+(async () => {
+  const s = eval(`({ ${method('_rivenClassesStarted')}, ${method('_bellTime')} })`);
+  const bells = { 1: '08:30:00', 4: '13:00:00' };
+  s._bellBlockFor = async (_d, p) => (p in bells ? { starts_at: bells[p] } : null);
+  const rows = [
+    { class_id: 'morning', period: 1 },
+    { class_id: 'afternoon', period: 4 },
+    { class_id: 'both', period: 4 }, { class_id: 'both', period: 1 },
+    { class_id: 'untimed', period: null },
+  ];
+  const at = (h, m) => { const d = new Date(2026, 9, 26, h, m); return d; };
+  const early = await s._rivenClassesStarted(rows, '2026-10-26', at(8, 0));
+  ok('8:00 - nothing timed has started; the untimed class stays in',
+    [...early].sort().join() === 'untimed', [...early].join());
+  const mid = await s._rivenClassesStarted(rows, '2026-10-26', at(10, 0));
+  ok('10:00 - the morning class, and the class that also meets in the morning',
+    [...mid].sort().join() === 'both,morning,untimed', [...mid].join());
+  const startMinute = await s._rivenClassesStarted(rows, '2026-10-26', at(13, 0));
+  ok('13:00 exactly - the afternoon class counts', startMinute.has('afternoon'));
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail ? 1 : 0);
+})();

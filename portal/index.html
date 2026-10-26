@@ -56268,7 +56268,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-26·a';
+      const RIVEN_BUILD = '2026-10-26·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -74389,7 +74389,7 @@ Students you had withdrawn stay withdrawn.`)) {
         classIds.length ? sb.from('class_enrollments').select('id, class_id, student_id').in('class_id', classIds).eq('status', 'active') : Promise.resolve({ data: [] }),
         Promise.resolve(null), // snapshots fetched after enrollments below
         (classIds.length && quarter) ? sb.from('assignments').select('id, title, class_id, due_date, assigned_to_all, graded_offline').in('class_id', classIds).eq('is_published', true).gte('due_date', quarter.start_date).lt('due_date', today) : Promise.resolve({ data: [] }),
-        classIds.length ? sb.from('class_schedule').select('class_id, day_of_week').in('class_id', classIds).eq('day_of_week', new Date().getDay()) : Promise.resolve({ data: [] }),
+        classIds.length ? sb.from('class_schedule').select('class_id, day_of_week, period').in('class_id', classIds).eq('day_of_week', new Date().getDay()) : Promise.resolve({ data: [] }),
         classIds.length ? sb.from('class_attendance_sessions').select('class_id').in('class_id', classIds).eq('date', today) : Promise.resolve({ data: [] }),
         sb.from('user_profiles').select('id, first_name, last_name, date_of_birth').eq('user_type', 'student').not('date_of_birth', 'is', null)
       ]);
@@ -74528,6 +74528,14 @@ Students you had withdrawn stay withdrawn.`)) {
         .filter(cid => !takenToday.has(cid))
         .map(cid => classById[cid])
         .filter(c => c && this._rivenCanManageClass(c, { attendance: true }));
+      // Only classes that have started. At 8am a 1pm class with no register
+      // is not late, it is the afternoon, and listing it buried the ones that
+      // really were missed. A class whose time the bell schedule cannot give
+      // stays in: better asked about once than silently dropped.
+      const startedIds = await this._rivenClassesStarted(schedRes.data || [], today);
+      for (let i = dueToday.length - 1; i >= 0; i--) {
+        if (!startedIds.has(dueToday[i].id)) dueToday.splice(i, 1);
+      }
       if (dueToday.length) {
         const lines = dueToday.map(c => `• ${this.escapeHtml(c.name)}${c.teacher_name ? ` <span style="color: #6b5236; font-size: 11px;">· ${this.escapeHtml(c.teacher_name)}</span>` : ''}`);
         sections.push(`<div>📅 <b>Attendance not yet taken today</b> (${dueToday.length} class${dueToday.length === 1 ? '' : 'es'}):<br><span style="font-size: 12px;">${this._briefingExpand(lines, 6, 'classes')}</span><br><span style="font-size: 12px; color: #6b5236;">Say "mark everyone in [class] present" and I'll handle it.</span></div>`);
@@ -74564,6 +74572,22 @@ Students you had withdrawn stay withdrawn.`)) {
       this._showRivenMessage(
         `<div style="font-weight: 700; margin-bottom: 8px;">📋 Here's what needs your attention (${scopeNote}):</div>` +
         sections.map(s => `<div style="margin: 10px 0;">${s}</div>`).join('') + offer, true);
+    }
+
+    // Ids of the classes on today's schedule that have started by now: the
+    // earliest of their periods today has a bell start at or before this
+    // minute. A class with no start time the schedule can give is counted as
+    // started (see the briefing's attendance section for why).
+    async _rivenClassesStarted(schedRows, today, now = new Date()) {
+      const nowHm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const first = {};
+      for (const r of schedRows) {
+        const block = await this._bellBlockFor(today, r.period);
+        const hm = block ? this._bellTime(block.starts_at) : '';
+        // '' sorts first, so an unknown time wins and the class counts as started.
+        if (!(r.class_id in first) || hm < first[r.class_id]) first[r.class_id] = hm;
+      }
+      return new Set(Object.keys(first).filter(id => first[id] <= nowHm));
     }
 
     // The briefing's "today's attendance notes" section, or null when there is

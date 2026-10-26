@@ -5616,3 +5616,12 @@ told is away today, then late arrivals and early pickups in clock order, with th
 A teacher's briefing lists only their own classes' students; the school-wide one lists
 everyone. Built from `_rivenBriefingTodayPlans`; test `tests/riven-briefing-today-plans.test.js`.
 RIVEN_BUILD 2026-10-26·a.
+
+## 2026-10-26: briefing only nags about registers for classes that have started
+
+"Attendance not yet taken today" in Riven's briefing used to list every class on today's
+schedule without a register, so at 8am it named the afternoon classes too. It now lists a
+class only once the bell start of its earliest period today has passed. A class whose time
+the bell schedule can't give stays in the list (asked about once beats silently dropped).
+`_rivenClassesStarted`; covered in `tests/riven-briefing-today-plans.test.js`.
+RIVEN_BUILD 2026-10-26·b.
