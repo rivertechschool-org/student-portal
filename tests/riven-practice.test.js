@@ -421,12 +421,13 @@ const ov = (s, extra = {}) => ({ id: s.id, first_name: s.first_name, last_name: 
       ov(S.brook, { last_active: null, classes: [{ id: 'c9', name: 'Not mine' }] }),
     ] }, { classIds: new Set(['c1', 'c2']) });
     const t = lines.map(text).join(' | ');
-    check('three lines: quiet, stuck, overdue', lines.length, 3);
-    ok('quiet: count and names, never-practised first', /2 students haven't practised in 7 days : Masterson Stucky, Gamelin Dorjo/.test(t));
+    check('two lines: stuck, overdue', lines.length, 2);
+    ok('no "not practised" count in the briefing (removed 2026-10-26)', !/practised in 7 days/.test(t));
     ok("a student outside the asker's classes is left out", !/Marlowe/.test(t));
     ok('stuck: count and the commonest skills', /2 students are stuck — most often on Long Division \(2\), Fractions \(1\)/.test(t));
     ok('overdue work grouped by assignment', /Multiplication Facts — 2 students/.test(t));
     check('nothing to say, nothing said', makeApp()._rivenBriefingPractice({ students: [ov(S.player, { last_active: ago(1) })] }, {}), []);
+    check('gone quiet alone says nothing now', makeApp()._rivenBriefingPractice({ students: [ov(S.player, { last_active: null })] }, {}), []);
   }
 
   // ── the homework answer: computed overdue, finished results ────────────

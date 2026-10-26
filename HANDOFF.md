@@ -5631,3 +5631,10 @@ RIVEN_BUILD 2026-10-26·b.
 The away / late / early-pickup card on the staff home screen now shows today's entries only
 ("Nobody is expected … today" when there are none), with a "Show the next two weeks (N more)"
 button that opens the rest in place. Admins keep the Manage button to the Attendance screen.
+
+## 2026-10-26: briefing no longer counts students who haven't practised
+
+Jordan asked for the "💤 N students haven't practised in 7 days" line to come out of Riven's
+briefing. Removed from `_rivenBriefingPractice` only: the class briefing ("how is my class
+doing") still shows it, and "who hasn't practised this week" still answers it. Tests updated
+(`tests/riven-practice.test.js`, `debug-tools/riven-practice-journey.py`). RIVEN_BUILD 2026-10-26·c.

@@ -157,7 +157,7 @@ JOURNEY = [
      ['Overdue', 'Done · 88%', '1 overdue · 1 finished in the last 2 weeks',
       'Multiplication Facts Due ' + _due(2)], []),
     ('briefing',
-     ["2 students haven't practised in 7 days", '3 students are stuck', 'Overdue game/skill work: Multiplication Facts — 2 students'], []),
+     ['3 students are stuck', 'Overdue game/skill work: Multiplication Facts — 2 students'], ["haven't practised in 7 days"]),
 ]
 
 
