@@ -5638,3 +5638,26 @@ Jordan asked for the "💤 N students haven't practised in 7 days" line to come 
 briefing. Removed from `_rivenBriefingPractice` only: the class briefing ("how is my class
 doing") still shows it, and "who hasn't practised this week" still answers it. Tests updated
 (`tests/riven-practice.test.js`, `debug-tools/riven-practice-journey.py`). RIVEN_BUILD 2026-10-26·c.
+
+## 2026-10-26: Workbook Pages assignments (auto-graded)
+
+New assignment type in Create Assignment: **📖 Workbook Pages (auto-graded)**. The teacher sets
+each student's pages; the student turns in the pages they did ("Pgs 27-30") and the grade is
+given the moment they turn it in.
+
+- **Per student, carried on.** "Carries on from" defaults to the class's latest Pages
+  assignment. Each student starts one page after that assignment's last *target* page (not
+  what they turned in), so a student who fell behind is still measured against where they
+  should be. Their page count carries on too, and every start and count can be changed for
+  this assignment. A student new to the series is left blank and must be filled in.
+- **Grading:** how many of the student's pages are missing from what they typed. 0 = A+,
+  1 = B, 2 = C, 3 = D, 4+ = F. Late (by the student's own due date, on the server's clock) is
+  one letter lower: A+ to B+, B to C, C to D, D to F. The student's feedback says which pages
+  were due, what they turned in and what is missing.
+- **Teacher override:** grade it on the grading screen as usual. Anything the reader cannot
+  understand ("finished them all", a backwards range) is left ungraded for the teacher.
+- **Changing one student's pages later:** the existing "Adjust for <student>" editor now has
+  First page / Pages fields on a Pages assignment. It does not regrade a turn-in already graded.
+- Students see their pages as a 📖 badge and in the turn-in box, and get their grade in the
+  confirmation. The database side is in the backend repo (Workbook Pages migration, with a
+  test). Portal test: `tests/workbook-pages.test.js`.

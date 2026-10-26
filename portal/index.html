@@ -23285,6 +23285,9 @@ Students you had withdrawn stay withdrawn.`)) {
         // Kept for applyAssignmentTemplate, which maps a template from another
         // class onto this class's categories by name.
         this.createAssignmentCategories = categories || [];
+        // Kept for the Workbook Pages table, which needs the class and its
+        // students once the type is switched to Pages.
+        this._pagesCtx = { classId, students: studentProfiles, loaded: false };
 
         const modalContent = `
           <form id="create-assignment-form">
@@ -23305,10 +23308,37 @@ Students you had withdrawn stay withdrawn.`)) {
                 <option value="info">📢 Information Only</option>
                 <option value="game">🎮 Game Practice</option>
                 <option value="skill_mastery">🎯 Skill Mastery</option>
+                <option value="pages">📖 Workbook Pages (auto-graded)</option>
               </select>
               <small style="color: var(--muted); display: block; margin-top: 5px;">
                 Information Only is for announcements or resources - no submission or grading required.
               </small>
+            </div>
+
+            <!-- Workbook Pages (hidden by default). Each student gets their own
+                 pages, carried on from the previous Pages assignment, and the
+                 turn-in ("Pgs 27-30") is graded on the way in. -->
+            <div id="pages-assignment-section" style="display: none; background: rgba(47, 107, 109, 0.08); border: 1px solid #2f6b6d; padding: 15px; border-radius: 8px; margin-bottom: 15px;">
+              <h4 style="margin: 0 0 8px 0; color: #2f6b6d;">📖 Workbook Pages</h4>
+              <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">
+                Students turn in the pages they did (e.g. "Pgs 27-30") and it is graded straight away:
+                all their pages A+, 1 missing B, 2 C, 3 D, 4 or more F, and one letter lower if late.
+                You can change any grade.
+              </p>
+              <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: end;">
+                <div class="form-group" style="flex: 2 1 220px; margin: 0;">
+                  <label for="pages-continues-from">Carries on from</label>
+                  <select id="pages-continues-from" onchange="app._pagesFillFromPrevious()">
+                    <option value="">Loading…</option>
+                  </select>
+                </div>
+                <div class="form-group" style="flex: 1 1 120px; margin: 0;">
+                  <label for="pages-default-count">Pages each</label>
+                  <input type="number" id="pages-default-count" min="1" max="200" value="4">
+                </div>
+                <button type="button" class="btn btn-secondary small" onclick="app._pagesApplyCount()">Set everyone to this</button>
+              </div>
+              <div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
             </div>
 
             <!-- Game Selection Section (hidden by default) -->
@@ -23670,7 +23700,7 @@ Students you had withdrawn stay withdrawn.`)) {
           const desc = plain(t.description);
           const kind = t.assignment_type === 'info'
             ? 'Information only'
-            : `${t.max_points ?? 100} pts · ${t.grading_type === 'rubric' ? 'Rubric' : 'Points'}${t.graded_offline ? ' · Offline' : ''}`;
+            : `${t.max_points ?? 100} pts · ${t.grading_type === 'rubric' ? 'Rubric' : t.grading_type === 'pages' ? 'Workbook Pages' : 'Points'}${t.graded_offline ? ' · Offline' : ''}`;
           return `
             <div class="card" style="margin: 0 0 8px 0; padding: 12px; cursor: pointer;" onclick="app.applyAssignmentTemplate('${t.id}')">
               <div style="font-weight: 600;">${this.escapeHtml(t.title)}</div>
@@ -23701,7 +23731,7 @@ Students you had withdrawn stay withdrawn.`)) {
         // info-only is a regular assignment in this form.
         const typeSelect = document.getElementById('assignment-type');
         if (typeSelect) {
-          typeSelect.value = t.assignment_type === 'info' ? 'info' : 'regular';
+          typeSelect.value = t.assignment_type === 'info' ? 'info' : t.grading_type === 'pages' ? 'pages' : 'regular';
           this.toggleAssignmentType();
         }
 
@@ -23744,7 +23774,7 @@ Students you had withdrawn stay withdrawn.`)) {
         // Grading last: switching to rubric reloads the rubric list, which
         // resets the selection to the default, so the template's rubric is
         // chosen after that finishes.
-        if (t.assignment_type !== 'info') {
+        if (t.assignment_type !== 'info' && t.grading_type !== 'pages') {
           const gradingSelect = document.getElementById('grading-type');
           if (gradingSelect) {
             gradingSelect.value = t.grading_type === 'rubric' ? 'rubric' : 'points';
@@ -23903,6 +23933,31 @@ Students you had withdrawn stay withdrawn.`)) {
           assignmentData.is_template = true;
         }
 
+        // Workbook Pages: a regular assignment graded by pages. Every student
+        // it goes to needs their pages, checked here before anything is
+        // written, so a half-made assignment is never left behind.
+        let pageTargets = null;
+        if (assignmentType === 'pages') {
+          assignmentData.grading_type = 'pages';
+          assignmentData.rubric_id = null;
+          assignmentData.graded_offline = false;
+          assignmentData.pages_continues_from = document.getElementById('pages-continues-from')?.value || null;
+          const chosen = assignToSpecific
+            ? new Set(Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value))
+            : null;
+          const read = this._pagesReadTargets();
+          pageTargets = read.targets.filter(t => !chosen || chosen.has(t.student_id));
+          const blank = read.blank.filter(n => !chosen || chosen.has(n.id));
+          if (blank.length) {
+            this.showNotification(`Set the pages for ${blank.map(b => b.name).join(', ')}`, 'error');
+            return;
+          }
+          if (!pageTargets.length) {
+            this.showNotification('Set the pages for at least one student', 'error');
+            return;
+          }
+        }
+
       if (!assignmentData.title) {
         this.showNotification('Please fill in required fields', 'error');
         return;
@@ -23917,6 +23972,19 @@ Students you had withdrawn stay withdrawn.`)) {
           .single());
 
         if (assignmentError) throw assignmentError;
+
+        // Each student's pages, as their version of the assignment. If this
+        // fails the assignment would grade nobody, so it is taken back out.
+        if (pageTargets) {
+          const { error: pagesError } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignment_student_versions')
+            .upsert(pageTargets.map(t => ({ ...t, assignment_id: newAssignment.id })),
+              { onConflict: 'assignment_id,student_id' }));
+          if (pagesError) {
+            await this.supabaseQuery(() => this.auth.supabase.from('assignments').delete().eq('id', newAssignment.id));
+            throw pagesError;
+          }
+        }
 
         // If assigning to specific students, create assignment_students records
         if (!assignmentData.assigned_to_all) {
@@ -25945,8 +26013,14 @@ Students you had withdrawn stay withdrawn.`)) {
         if (v.due_date) bits.push('due date');
         if (v.points_possible != null) bits.push('points');
         if (v.description != null) bits.push('instructions');
+        // A Workbook Pages assignment gives every student a version just to
+        // hold their pages. That is not an adjustment, so it shows the pages.
+        const pages = v.page_end != null
+          ? `<span title="The pages this assignment is for" style="background: #2f6b6d; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; white-space: nowrap;">📖 ${v.page_start === v.page_end ? 'Page ' + v.page_start : 'Pages ' + v.page_start + '–' + v.page_end}</span>`
+          : '';
+        if (!bits.length && pages) return pages;
         const tip = `Changed for ${who}: ${bits.join(', ') || 'no changes'}`;
-        return `<span title="${this.escapeHtml(tip)}" style="background: var(--accent); color: #000; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; white-space: nowrap;">✏️ Adjusted for ${this.escapeHtml(who)}</span>`;
+        return pages + `<span title="${this.escapeHtml(tip)}" style="background: var(--accent); color: #000; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; white-space: nowrap;">✏️ Adjusted for ${this.escapeHtml(who)}</span>`;
       }
 
       // datetime-local value for an ISO time, in the viewer's local time.
@@ -25968,7 +26042,7 @@ Students you had withdrawn stay withdrawn.`)) {
           const sb = this.auth.supabase;
           const [aRes, vRes, sRes] = await Promise.all([
             this.supabaseQuery(() => sb.from('assignments')
-              .select('id, title, description, due_date, max_points').eq('id', assignmentId).single()),
+              .select('id, title, description, due_date, max_points, grading_type').eq('id', assignmentId).single()),
             this.supabaseQuery(() => sb.from('assignment_student_versions')
               .select('*').eq('assignment_id', assignmentId).eq('student_id', studentId).maybeSingle()),
             this.supabaseQuery(() => sb.from('user_profiles')
@@ -26006,6 +26080,19 @@ Students you had withdrawn stay withdrawn.`)) {
                     value="${v?.points_possible ?? a.max_points ?? 100}">
                   <small style="color: var(--muted); display: block; margin-top: 5px;">Class: ${a.max_points ?? 100}</small>
                 </div>
+                ${a.grading_type === 'pages' ? `
+                <div class="form-group">
+                  <label for="student-version-page-start">First page</label>
+                  <input type="number" id="student-version-page-start" min="0" step="1" value="${v?.page_start ?? ''}">
+                </div>
+                <div class="form-group">
+                  <label for="student-version-page-count">Pages</label>
+                  <input type="number" id="student-version-page-count" min="1" max="200" step="1"
+                    value="${v?.page_end != null ? v.page_end - v.page_start + 1 : ''}">
+                  <small style="color: var(--muted); display: block; margin-top: 5px;">
+                    Changes the pages from here on. A grade already given is not recalculated; change it on the grading screen.
+                  </small>
+                </div>` : ''}
               </div>
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
                 <button class="btn btn-secondary" onclick="app.closeModal('student-version'); app.viewSubmissions('${assignmentId}')">Cancel</button>
@@ -26071,6 +26158,26 @@ Students you had withdrawn stay withdrawn.`)) {
             }
             if (description !== null || due_date !== null || points_possible !== null) {
               row = { assignment_id: a.id, student_id: studentId, description, due_date, points_possible };
+            }
+          }
+
+          // Workbook Pages: the pages live on this same row, so they are kept
+          // whatever else is reset to the class - without them the student
+          // cannot be graded.
+          if (a.grading_type === 'pages') {
+            let page_start = ctx.version?.page_start ?? null, page_end = ctx.version?.page_end ?? null;
+            const sRaw = document.getElementById('student-version-page-start')?.value.trim() ?? '';
+            const cRaw = document.getElementById('student-version-page-count')?.value.trim() ?? '';
+            if (!useClass && (sRaw !== '' || cRaw !== '')) {
+              const st = Number(sRaw), ct = Number(cRaw);
+              if (!Number.isInteger(st) || st < 0 || !Number.isInteger(ct) || ct < 1) {
+                this.showNotification('Pages need a first page and a number of pages', 'error'); return;
+              }
+              page_start = st; page_end = st + ct - 1;
+            }
+            if (page_end != null) {
+              row = row || { assignment_id: a.id, student_id: studentId, description: null, due_date: null, points_possible: null };
+              row.page_start = page_start; row.page_end = page_end;
             }
           }
 
@@ -27012,12 +27119,25 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
       
                 <form id="submission-form">
+                  ${assignment.grading_type === 'pages' ? (() => {
+                    // Workbook Pages: say which pages, and how to write them so
+                    // the grade can be worked out the moment it is turned in.
+                    const v = assignment.student_version || {};
+                    const mine = v.page_end != null
+                      ? (v.page_start === v.page_end ? `page ${v.page_start}` : `pages ${v.page_start}–${v.page_end}`)
+                      : null;
+                    return `<div style="padding: 12px; background: rgba(47, 107, 109, 0.1); border-left: 3px solid #2f6b6d; border-radius: 8px; margin-bottom: 12px; font-size: 14px;">
+                      📖 ${mine ? `Your pages: <strong>${mine}</strong>.` : 'Workbook pages.'}
+                      Type the pages you did, like <strong>Pgs ${v.page_end != null ? v.page_start + '-' + v.page_end : '27-30'}</strong>.
+                      It is graded as soon as you turn it in.
+                    </div>`;
+                  })() : ''}
                   <div class="form-group">
-                    <label for="submission-content">Your Response (Text/Link)</label>
-                    <textarea 
-                      id="submission-content" 
-                      rows="6" 
-                      placeholder="Type your response, paste links, or add notes about your submission..."
+                    <label for="submission-content">${assignment.grading_type === 'pages' ? 'Pages you did' : 'Your Response (Text/Link)'}</label>
+                    <textarea
+                      id="submission-content"
+                      rows="${assignment.grading_type === 'pages' ? 2 : 6}"
+                      placeholder="${assignment.grading_type === 'pages' ? 'Pgs 27-30' : 'Type your response, paste links, or add notes about your submission...'}"
                       style="font-family: inherit;"
                     ></textarea>
                     <small style="color: var(--muted); display: block; margin-top: 5px;">
@@ -27269,7 +27389,8 @@ Students you had withdrawn stay withdrawn.`)) {
           }
 
 
-          this.showNotification('Assignment submitted successfully!', 'success');
+          const pagesMsg = this._pagesGradedMessage(submitResult?.[0]);
+          this.showNotification(pagesMsg || 'Assignment submitted successfully!', 'success');
           this.closeModal('submit-assignment');
           
           // Update local state immediately without full reload
@@ -27278,7 +27399,9 @@ Students you had withdrawn stay withdrawn.`)) {
             if (cls.assignments) {
               const assignmentToUpdate = cls.assignments.find(a => a.id === assignmentId);
               if (assignmentToUpdate) {
-                assignmentToUpdate.student_submission = submissionData;
+                // The row as saved, so an auto-graded Pages turn-in shows its
+                // grade rather than "submitted".
+                assignmentToUpdate.student_submission = submitResult?.[0] || submissionData;
                 break;
               }
             }
@@ -27321,6 +27444,13 @@ Students you had withdrawn stay withdrawn.`)) {
             window.portalLoading.hide('submit');
           }
         }
+      }
+
+      // What a student is told after turning in a Workbook Pages assignment
+      // that the database graded on the way in, or null for anything else.
+      _pagesGradedMessage(row) {
+        if (!row || row.status !== 'graded' || !row.grade || !/^Pages \d/.test(row.feedback || '')) return null;
+        return `Turned in - graded ${row.grade}. ${String(row.feedback).replace(/ Grade: .*$/, '')}`;
       }
 
       async resubmitAssignment(assignmentId) {
@@ -27547,15 +27677,18 @@ Students you had withdrawn stay withdrawn.`)) {
               console.warn('Could not remove the replaced Drive file:', e));
           }
 
-          // Update submission
-          const { error } = await this.supabaseQuery(() => this.auth.supabase
+          // Update submission. .select() so a Workbook Pages grade, given by
+          // the database as the row is written, can be shown straight away.
+          const { data: updatedRows, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignment_submissions')
             .update(updateData)
-            .eq('id', submissionId));
+            .eq('id', submissionId)
+            .select());
       
           if (error) throw error;
 
-          this.showNotification('Submission updated successfully!', 'success');
+          const pagesMsg = this._pagesGradedMessage(updatedRows?.[0]);
+          this.showNotification(pagesMsg || 'Submission updated successfully!', 'success');
           this.closeModal('resubmit-assignment');
           
           // Refresh the assignments view with updated submission status
@@ -28749,6 +28882,8 @@ Students you had withdrawn stay withdrawn.`)) {
         // Hide all special sections first
         if (gameSection) gameSection.style.display = 'none';
         if (skillSection) skillSection.style.display = 'none';
+        const pagesSection = document.getElementById('pages-assignment-section');
+        if (pagesSection) pagesSection.style.display = 'none';
 
         // Game and skill assignments are written to homework_assignments, which
         // has no template flag - only regular and info assignments can be one.
@@ -28806,6 +28941,23 @@ Students you had withdrawn stay withdrawn.`)) {
           if (categorySection) categorySection.style.display = 'none';
           if (studentSelectionCard) studentSelectionCard.style.display = 'none';
           if (dueDateSection) dueDateSection.style.display = 'none';
+        } else if (assignmentType === 'pages') {
+          // A regular assignment underneath, graded by pages instead of a
+          // rubric, so there is no grading method to choose and nothing offline.
+          if (pagesSection) pagesSection.style.display = 'block';
+          if (regularSection) regularSection.style.display = 'block';
+          if (pointsSection) pointsSection.style.display = 'block';
+          if (rtcRewardSection) rtcRewardSection.style.display = 'block';
+          if (submitSizeSection) submitSizeSection.style.display = 'block';
+          if (gradingSection) gradingSection.style.display = 'none';
+          if (rubricSection) rubricSection.style.display = 'none';
+          if (offlineSection) offlineSection.style.display = 'none';
+          if (categorySection) categorySection.style.display = 'block';
+          if (studentSelectionCard) studentSelectionCard.style.display = 'block';
+          if (dueDateSection) dueDateSection.style.display = 'block';
+          const offline = document.getElementById('graded-offline');
+          if (offline) offline.checked = false;
+          this._pagesInit();
         } else {
           // Regular assignment
           if (regularSection) regularSection.style.display = 'block';
@@ -28819,6 +28971,135 @@ Students you had withdrawn stay withdrawn.`)) {
           if (dueDateSection) dueDateSection.style.display = 'block';
           this.toggleGradingMethod();
         }
+      }
+
+      // ---- Workbook Pages: the per-student page table ---------------------
+      //
+      // 2026-10-26. Each student's pages carry on from the Pages assignment
+      // chosen in "Carries on from": they start one page after that
+      // assignment's LAST TARGET page (not after what they turned in), so the
+      // plan compounds and a student who fell behind is still measured against
+      // where they should be. Their page count carries on too, and every
+      // number in the table can be changed for this assignment alone.
+
+      // The rows for the table. Pure, so it can be tested: students
+      // [{id, first_name, last_name}], prev Map(studentId -> {page_start,
+      // page_end}) from the earlier assignment, and the default count.
+      _pagesPlan(students, prev, defaultCount) {
+        return (students || []).map(s => {
+          const p = prev && prev.get(s.id);
+          const had = p && p.page_end != null;
+          return {
+            id: s.id,
+            name: `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Student',
+            start: had ? p.page_end + 1 : '',
+            count: had ? (p.page_end - p.page_start + 1) : defaultCount,
+          };
+        });
+      }
+
+      async _pagesInit() {
+        const ctx = this._pagesCtx;
+        if (!ctx || ctx.loaded) return;
+        ctx.loaded = true;
+        const sel = document.getElementById('pages-continues-from');
+        let prior = [];
+        try {
+          const { data } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignments').select('id, title, due_date')
+            .eq('class_id', ctx.classId).eq('grading_type', 'pages')
+            .order('due_date', { ascending: false }).limit(30));
+          prior = data || [];
+        } catch (_) { prior = []; }
+        if (sel) {
+          // The most recent is the default: that is the one this carries on from
+          // nearly every time.
+          sel.innerHTML = prior.map((a, i) => `<option value="${this.jsAttr(a.id)}"${i === 0 ? ' selected' : ''}>${this.escapeHtml(a.title || 'Untitled')}${a.due_date ? ' · due ' + this.escapeHtml(new Date(a.due_date).toLocaleDateString()) : ''}</option>`).join('')
+            + `<option value=""${prior.length ? '' : ' selected'}>Start fresh (type each student's first page)</option>`;
+        }
+        await this._pagesFillFromPrevious();
+      }
+
+      async _pagesFillFromPrevious() {
+        const ctx = this._pagesCtx;
+        if (!ctx) return;
+        const prevId = document.getElementById('pages-continues-from')?.value || '';
+        const count = parseInt(document.getElementById('pages-default-count')?.value) || 4;
+        let prev = new Map();
+        if (prevId) {
+          const versions = await this.loadStudentVersions([prevId]);
+          prev = versions.get(prevId) || new Map();
+        }
+        ctx.rows = this._pagesPlan(ctx.students, prev, count);
+        this._pagesRenderTable();
+      }
+
+      _pagesApplyCount() {
+        const ctx = this._pagesCtx;
+        if (!ctx?.rows) return;
+        const count = parseInt(document.getElementById('pages-default-count')?.value) || 4;
+        this._pagesSyncFromInputs();
+        ctx.rows.forEach(r => { r.count = count; });
+        this._pagesRenderTable();
+      }
+
+      _pagesSyncFromInputs() {
+        const ctx = this._pagesCtx;
+        (ctx?.rows || []).forEach(r => {
+          const s = document.querySelector(`.pages-start[data-id="${r.id}"]`);
+          const c = document.querySelector(`.pages-count[data-id="${r.id}"]`);
+          if (s) r.start = s.value === '' ? '' : parseInt(s.value);
+          if (c) r.count = c.value === '' ? '' : parseInt(c.value);
+        });
+      }
+
+      _pagesEndText(start, count) {
+        if (!Number.isInteger(start) || !Number.isInteger(count) || count < 1) return '—';
+        return count === 1 ? `p. ${start}` : `pp. ${start}–${start + count - 1}`;
+      }
+
+      _pagesRenderTable() {
+        const host = document.getElementById('pages-targets');
+        const rows = this._pagesCtx?.rows || [];
+        if (!host) return;
+        if (!rows.length) { host.innerHTML = `<div style="color: var(--muted); font-size: 13px;">No students in this class yet.</div>`; return; }
+        const cell = 'padding: 6px 8px; border-bottom: 1px solid var(--border);';
+        const input = 'width: 80px; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);';
+        host.innerHTML = `
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead><tr style="text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase;">
+              <th style="${cell}">Student</th><th style="${cell}">First page</th><th style="${cell}">Pages</th><th style="${cell}">Their pages</th>
+            </tr></thead>
+            <tbody>${rows.map(r => `
+              <tr>
+                <td style="${cell} font-weight: 600;">${this.escapeHtml(r.name)}</td>
+                <td style="${cell}"><input type="number" min="0" class="pages-start" data-id="${this.jsAttr(r.id)}" value="${r.start}" style="${input}" oninput="app._pagesRowChanged('${this.jsAttr(r.id)}')"></td>
+                <td style="${cell}"><input type="number" min="1" max="200" class="pages-count" data-id="${this.jsAttr(r.id)}" value="${r.count}" style="${input}" oninput="app._pagesRowChanged('${this.jsAttr(r.id)}')"></td>
+                <td style="${cell}" class="pages-end" data-id="${this.jsAttr(r.id)}">${this.escapeHtml(this._pagesEndText(r.start, r.count))}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>`;
+      }
+
+      _pagesRowChanged(id) {
+        this._pagesSyncFromInputs();
+        const r = (this._pagesCtx?.rows || []).find(x => x.id === id);
+        const out = document.querySelector(`.pages-end[data-id="${id}"]`);
+        if (r && out) out.textContent = this._pagesEndText(r.start, r.count);
+      }
+
+      // {targets: [{student_id, page_start, page_end}], blank: [{id, name}]}
+      _pagesReadTargets() {
+        this._pagesSyncFromInputs();
+        const targets = [], blank = [];
+        for (const r of this._pagesCtx?.rows || []) {
+          if (!Number.isInteger(r.start) || r.start < 0 || !Number.isInteger(r.count) || r.count < 1) {
+            blank.push({ id: r.id, name: r.name });
+            continue;
+          }
+          targets.push({ student_id: r.id, page_start: r.start, page_end: r.start + r.count - 1 });
+        }
+        return { targets, blank };
       }
 
       // Curriculum subjects whose skills a game saves under this subject. The
