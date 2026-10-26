@@ -5661,3 +5661,14 @@ given the moment they turn it in.
 - Students see their pages as a 📖 badge and in the turn-in box, and get their grade in the
   confirmation. The database side is in the backend repo (Workbook Pages migration, with a
   test). Portal test: `tests/workbook-pages.test.js`.
+
+## 2026-10-26: Riven sets a student's workbook pages
+
+"set noah's pages to 31-34", "noah does 5 pages", "noah starts on page 40", optionally naming
+the assignment ("... on workbook week 9"). With no assignment named it uses the student's newest
+Pages assignment in a class you teach, and the confirmation names it (and the class) so a wrong
+pick shows before anything changes. Whatever the sentence leaves out comes from the student's
+current pages there, or for a student with none yet, from where they finished on the assignment
+it carries on from. A grade already given is left alone and the confirmation says so. Undo puts
+the old pages back. Writes the same per-student row as the Adjust editor. RIVEN_BUILD
+`2026-10-26·d`. Test: `tests/riven-set-pages.test.js`; phrasings in `debug-tools/nlp-stress.js`.

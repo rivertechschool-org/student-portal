@@ -56562,7 +56562,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-26·c';
+      const RIVEN_BUILD = '2026-10-26·d';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -61131,7 +61131,7 @@ Students you had withdrawn stay withdrawn.`)) {
         'WITHDRAW_STUDENT', 'REINSTATE_STUDENT', 'REGENERATE_PIN', 'REISSUE_PARENT_CODE',
         'EXCUSE_ABSENCE', 'MARK_PICKED_UP', 'CANCEL_CLASS', 'UNCANCEL_CLASS',
         'SET_CLASS_TEACHER', 'REOPEN_CLASS', 'SET_CURRENT_QUARTER', 'CANCEL_DAY',
-        'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT',
+        'DELETE_ASSIGNMENT', 'EDIT_ASSIGNMENT', 'SET_PAGES',
         'CREATE_GROUP', 'DELETE_GROUP', 'SET_GROUP_DAYS', 'ADD_TO_GROUP', 'REMOVE_FROM_GROUP',
         'MOVE_GROUP',
         'GRADE_SUBMISSION', 'APPROVE_APPLICATION', 'DENY_APPLICATION', 'WAITLIST_APPLICATION',
@@ -62861,6 +62861,17 @@ Students you had withdrawn stay withdrawn.`)) {
             /\b(publish|unpublish|hide|unhide)\b[\s\S]{0,32}\b(assignment|homework)\b/,
           ]
         },
+        // One student's pages on a Workbook Pages assignment: "set noah's
+        // pages to 31-34", "noah does 5 pages", "clementine starts on page 40".
+        // Never a sentence about marks - "noah's pages are a B" is grading.
+        {
+          intent: 'SET_PAGES',
+          w: 9, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true, notIfCurrency: true,
+          patterns: [
+            /^(?!.*\b(grade|graded|grading|marks?|score|scored|turned in|turn in)\b)[\s\S]*\b(pages?|pgs?|pp)\b[\s\S]{0,30}\b\d{1,4}\b/,
+            /^(?!.*\b(grade|graded|grading|marks?|score|scored|turned in|turn in)\b)[\s\S]*\b\d{1,3}\s*(pages?|pgs?)\b/,
+          ]
+        },
         // ---- Classes and the calendar ------------------------------------
         //
         // Who teaches a class and which quarter the school is in are both
@@ -64332,6 +64343,8 @@ Students you had withdrawn stay withdrawn.`)) {
           return await this.terminalDeleteAssignment(entities);
         case 'EDIT_ASSIGNMENT':
           return await this.terminalEditAssignment(entities);
+        case 'SET_PAGES':
+          return await this.terminalSetPages(entities);
         case 'SET_CLASS_TEACHER':
           return await this.terminalSetClassTeacher(entities);
         case 'REOPEN_CLASS':
@@ -65496,6 +65509,7 @@ Students you had withdrawn stay withdrawn.`)) {
         MOVE_GROUP: 'move a student between groups',
         DELETE_ASSIGNMENT: 'delete an assignment',
         EDIT_ASSIGNMENT: 'change an assignment\'s due date or points',
+        SET_PAGES: 'set a student\'s workbook pages',
         SET_CLASS_TEACHER: 'change who teaches a class',
         REOPEN_CLASS: 'reopen a closed class',
         SET_CURRENT_QUARTER: 'change the current quarter',
@@ -70277,6 +70291,147 @@ Students you had withdrawn stay withdrawn.`)) {
             if (r) throw r;
           });
           this._naturalSuccess([`${a.title} updated.`]);
+        });
+    }
+
+    // What a "set pages" sentence asks for, before anything is looked up.
+    //
+    // A range says it all ("31-34", "31 to 34"). Otherwise the pieces: a count
+    // ("5 pages"), a first page ("starts on page 31", "from 31") or one page
+    // ("page 31"). Whatever is missing comes from the student's current pages
+    // in terminalSetPages, so "noah does 5 pages" keeps his first page.
+    _rivenPagesSpec(raw) {
+      const t = String(raw || '').toLowerCase().replace(/[–—−]/g, '-');
+      const range = t.match(/\b(\d{1,4})\s*(?:-|to|through|thru)\s*(\d{1,4})\b/);
+      if (range) return { start: +range[1], end: +range[2] };
+      const spec = {};
+      const count = t.match(/\b(\d{1,3})\s*(?:pages?|pgs?)\b/);
+      if (count) spec.count = +count[1];
+      const start = t.match(/\b(?:start(?:s|ing)?|begin(?:s|ning)?|from)\s+(?:at\s+|on\s+|with\s+|from\s+)?(?:page\s+|pg\.?\s+|p\.?\s*)?(\d{1,4})\b/)
+        || (!count && t.match(/\b(?:page|pg\.?|p\.)\s*(\d{1,4})\b/));
+      if (start) spec.start = +start[1];
+      // "page 31" alone is that one page.
+      if (spec.start != null && spec.count == null && !/\b(?:start|begin|from)/.test(t)) spec.count = 1;
+      return spec;
+    }
+
+    // "set noah's pages to 31-34", "clementine does 5 pages", "noah starts on
+    // page 40 for workbook week 9".
+    //
+    // Writes the same per-student row the Adjust editor and the create form
+    // write, so the student sees the new pages at once. The assignment is the
+    // one named, or the student's most recent Pages assignment in a class this
+    // person teaches - named in the confirmation, so a wrong pick is visible
+    // before anything changes. A grade already given is not touched: it says
+    // so, and the teacher changes it on the grading screen if they want to.
+    async terminalSetPages(entities) {
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Whose pages? Try "set noah\'s pages to 31-34".'); return; }
+
+      const raw = entities.original || entities._rawInput || '';
+      const esc = (t) => this.escapeHtml(String(t));
+      const sb = this.auth.supabase;
+      const first = (student.full_name || '').split(' ')[0].toLowerCase();
+
+      const mine = (this._terminalAllClasses || []).filter(c => this._rivenCanManageClass(c));
+      if (!mine.length) { this.terminalPrintError('You do not have any classes I can look in.'); return; }
+
+      const { data: asg, error } = await sb.from('assignments')
+        .select('id, title, class_id, due_date, created_at, pages_continues_from')
+        .eq('grading_type', 'pages').in('class_id', mine.map(c => c.id));
+      if (error) { this.terminalPrintError('Could not read the assignments: ' + error.message); return; }
+      if (!(asg || []).length) {
+        this.terminalPrintError('None of your classes has a Workbook Pages assignment yet. Create one first, and pick "Workbook Pages" as its type.');
+        return;
+      }
+
+      const ids = asg.map(a => a.id);
+      const { data: vers, error: vErr } = await sb.from('assignment_student_versions')
+        .select('id, assignment_id, page_start, page_end')
+        .eq('student_id', student.id).in('assignment_id', ids);
+      if (vErr) { this.terminalPrintError('Could not read the pages: ' + vErr.message); return; }
+      const verOf = new Map((vers || []).map(v => [v.assignment_id, v]));
+
+      // Named by title: longest title in the sentence wins, as in
+      // _rivenFindAssignment. Otherwise the newest one the student is on.
+      const lower = raw.toLowerCase();
+      const named = asg.filter(a => (a.title || '').length >= 3 && lower.includes(a.title.toLowerCase()))
+        .sort((x, y) => y.title.length - x.title.length);
+      let a = named[0] || null;
+      if (!a) {
+        const on = asg.filter(x => verOf.get(x.id)?.page_end != null);
+        const when = x => x.due_date || x.created_at || '';
+        on.sort((x, y) => when(y).localeCompare(when(x)));
+        a = on[0] || null;
+        if (!a) {
+          this.terminalPrintError(`${student.full_name} has no pages on any Workbook Pages assignment yet. ` +
+            `Say which one, e.g. "set ${first}'s pages on ${asg[0].title} to 31-34".`);
+          return;
+        }
+      }
+      const cls = mine.find(c => c.id === a.class_id);
+      const cur = verOf.get(a.id) || null;
+
+      // Fill in what the sentence left out from the current pages, or, for a
+      // student with none here yet, from where they finished last time.
+      const spec = this._rivenPagesSpec(raw.replace(new RegExp(a.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), ' '));
+      let start = spec.start, end = spec.end;
+      if (end == null) {
+        let count = spec.count;
+        if (count == null && cur?.page_end != null) count = cur.page_end - cur.page_start + 1;
+        if (start == null && cur?.page_start != null) start = cur.page_start;
+        if (start == null && a.pages_continues_from) {
+          const { data: prev } = await sb.from('assignment_student_versions').select('page_end')
+            .eq('assignment_id', a.pages_continues_from).eq('student_id', student.id).maybeSingle();
+          if (prev?.page_end != null) start = prev.page_end + 1;
+        }
+        if (start == null || count == null) {
+          this.terminalPrintError(`${student.full_name} has no pages on ${a.title} yet, so I need both: ` +
+            `e.g. "set ${first}'s pages to 31-34" or "${first} does 4 pages starting at 31".`);
+          return;
+        }
+        end = start + count - 1;
+      }
+      if (!(start >= 0) || !(end >= start) || end - start > 200 || end > 5000) {
+        this.terminalPrintError(`Pages ${start}–${end} is not a range I can set. Say the first page, then the last, e.g. 31-34.`);
+        return;
+      }
+      if (cur && cur.page_start === start && cur.page_end === end) {
+        this._showRivenMessage(`${esc(student.full_name)} is already on ${esc(this._pagesEndText(start, end - start + 1))} for ${esc(a.title)}.`, true);
+        return;
+      }
+
+      const { data: subs } = await sb.from('assignment_submissions').select('status, grade')
+        .eq('assignment_id', a.id).eq('student_id', student.id).limit(1);
+      const sub = (subs || [])[0];
+      const n = end - start + 1;
+      const was = cur?.page_end != null ? this._pagesEndText(cur.page_start, cur.page_end - cur.page_start + 1) : 'no pages';
+      const note = sub?.grade
+        ? `They already have a <b>${esc(sub.grade)}</b> on it, which stays as it is - change it on the grading screen if it should follow.`
+        : sub ? 'They have turned it in and it is waiting for you to grade.' : '';
+
+      this._requestConfirmation(
+        `Set <b>${esc(student.full_name)}</b>'s pages on <b>${esc(a.title)}</b>${cls ? ` (${esc(cls.name)})` : ''}?<br>` +
+        `${esc(was)} → <b>${esc(this._pagesEndText(start, n))}</b> (${n} page${n === 1 ? '' : 's'})` +
+        (note ? `<br><span style="font-size: 12px;">${note}</span>` : ''),
+        async () => {
+          let error;
+          if (cur) {
+            ({ error } = await sb.from('assignment_student_versions')
+              .update({ page_start: start, page_end: end }).eq('id', cur.id));
+          } else {
+            ({ error } = await sb.from('assignment_student_versions')
+              .insert({ assignment_id: a.id, student_id: student.id, page_start: start, page_end: end }));
+          }
+          if (error) throw this._rivenPolicyError(error);
+          this._pushUndo(`${student.full_name}'s pages on ${a.title}`, async () => {
+            const q = sb.from('assignment_student_versions');
+            const { error: r } = cur
+              ? await q.update({ page_start: cur.page_start, page_end: cur.page_end }).eq('id', cur.id)
+              : await q.delete().eq('assignment_id', a.id).eq('student_id', student.id);
+            if (r) throw r;
+          });
+          this._naturalSuccess([`${student.full_name} is on ${this._pagesEndText(start, n)} for ${a.title}.`]);
         });
     }
 

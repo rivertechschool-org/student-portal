@@ -484,6 +484,13 @@ const T6 = [
   ['chapter 4 is worth 50 points', 'EDIT_ASSIGNMENT', null, true],
   ['unpublish the chapter 4 assignment', 'EDIT_ASSIGNMENT', null, true],
   ['assign chapter 5 to math due friday', 'CREATE_ASSIGNMENT', null, true],
+  // One student's workbook pages. The line that must hold: marking pages is
+  // still grading, and setting the work for a class is still CREATE.
+  ["set noah's pages to 31-34", 'SET_PAGES', 'Noah Williams', true],
+  ['give noah pages 31 to 34', 'SET_PAGES', 'Noah Williams', true],
+  ['clementine does 5 pages', 'SET_PAGES', 'Clementine Vasquez', true],
+  ['noah starts on page 40', 'SET_PAGES', 'Noah Williams', true],
+  ['set clementine to 3 pages', 'SET_PAGES', 'Clementine Vasquez', true],
   // Student groups. The cohort IS the morning register at this school, so
   // these are admin commands. The line that must hold: adding a cohort to a
   // CLASS is still ENROLL_GROUP, not a new group being made.
