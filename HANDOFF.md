@@ -5672,3 +5672,15 @@ current pages there, or for a student with none yet, from where they finished on
 it carries on from. A grade already given is left alone and the confirmation says so. Undo puts
 the old pages back. Writes the same per-student row as the Adjust editor. RIVEN_BUILD
 `2026-10-26·d`. Test: `tests/riven-set-pages.test.js`; phrasings in `debug-tools/nlp-stress.js`.
+
+## 2026-10-27: real coin pictures in Math Dojo and Wasteland
+
+The Money lessons (counting coins, making change) and Wasteland's coin puzzle drew coins as
+coloured discs with "1¢" printed on them. They now use real photos of US coins and the dollar
+bill, in `games/img/money/`, at real relative sizes. With labels on, the value sits under the
+coin; with them off, the student only has the coin. All public domain, sources in
+`games/img/money/CREDITS.md`. The nickel is the 2004 Jefferson design: the current nickel's
+photo is fair use, not free.
+
+Local preview gotcha: Python's http.server on Windows serves `.webp` as text/html, so the
+images don't load there. GitHub Pages serves them correctly.
