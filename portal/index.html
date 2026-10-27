@@ -26300,7 +26300,10 @@ Students you had withdrawn stay withdrawn.`)) {
           submissions?.forEach(s => {
             submissionMap[s.student_id] = s;
           });
-      
+          // For "Fill in grades", which works from this same list.
+          this._submissionsCtx = { assignment, students: students || [], submissionMap, versions };
+          const fillPlan = this._fillGradesPlan(students, submissionMap, true);
+
           // Calculate statistics
           const totalStudents = students?.length || 0;
           const submittedCount = submissions?.length || 0;
@@ -26441,7 +26444,10 @@ Students you had withdrawn stay withdrawn.`)) {
                               ${isExcused ?
                                 '<span style="color: var(--muted);">Excused</span>' :
                                 hasSubmitted ?
-                                  `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}` :
+                                  (submission.submitted_at
+                                    ? `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+                                    // A grade typed or filled in with nothing handed in.
+                                    : '<span style="color: var(--muted);">Graded with no submission</span>') :
                                   (assignment?.assignment_type === 'test' ? '<span style="color: var(--muted);">🧪 Has not taken the test</span>'
                                     : isOffline ? '<span style="color: var(--accent);">📋 Offline Assignment</span>' : '<span style="color: var(--danger);">Not submitted</span>')
                               }
@@ -26491,7 +26497,11 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>
             </div>
       
-            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
+              ${fillPlan.targets.length ? `
+              <button class="btn btn-secondary" title="Give every student who has no grade yet the same grade" onclick="app.fillInGrades('${assignmentId}')">
+                🖊️ Fill in grades (${fillPlan.targets.length})
+              </button>` : ''}
               <button class="btn btn-secondary" onclick="app.downloadSubmissionsReport('${assignmentId}')">
                 📥 Download Report
               </button>
@@ -28251,6 +28261,168 @@ Students you had withdrawn stay withdrawn.`)) {
         } catch (error) {
           console.error('Error saving grade:', error);
           this.showNotification('Error: ' + error.message, 'error');
+        }
+      }
+
+      // "Fill in grades" (Jordan, 2026-10-27): every student this assignment
+      // has no grade for yet gets one grade, F unless the teacher picks
+      // another. Students with no row at all are always filled. Work that was
+      // turned in but not graded yet is only filled when the teacher ticks
+      // the box - an F on handed-in work nobody has looked at is not what
+      // filling in the blanks means. Graded and excused rows are never touched.
+      //
+      // submissionMap is keyed by student_id, which may be a profile id or an
+      // auth uid (split-id students), so both are looked up, as the list does.
+      _fillGradesPlan(students, submissionMap, includeUngraded) {
+        const missing = [], ungraded = [];
+        for (const s of students || []) {
+          const sub = submissionMap[s.id] || submissionMap[s.auth_user_id];
+          if (!sub) missing.push({ student: s });
+          else if (sub.status !== 'graded' && sub.status !== 'excused' && sub.grade == null) ungraded.push({ student: s, submission: sub });
+        }
+        return { missing, ungraded, targets: includeUngraded ? missing.concat(ungraded) : missing };
+      }
+
+      // Points for a filled-in letter, out of this student's own maximum.
+      // F is 0, as on a single missing assignment; any other letter is the
+      // middle of its band, so the letter the points give back is the same.
+      _fillGradePoints(letter, maxPoints) {
+        const mid = { 'A+': 98.5, 'A': 95, 'A-': 91.5, 'B+': 88.5, 'B': 85, 'B-': 81.5,
+                      'C+': 78.5, 'C': 75, 'C-': 71.5, 'D': 65, 'F': 0 };
+        const max = maxPoints > 0 ? maxPoints : 100;
+        return Math.round(max * (mid[letter] ?? 0)) / 100;
+      }
+
+      fillInGrades(assignmentId) {
+        const ctx = this._submissionsCtx;
+        if (!ctx || ctx.assignment?.id !== assignmentId) { this.viewSubmissions(assignmentId); return; }
+        const plan = this._fillGradesPlan(ctx.students, ctx.submissionMap, true);
+        const name = s => this.escapeHtml(`${s.first_name || ''} ${s.last_name || ''}`.trim());
+        const letters = ['F', 'D', 'C-', 'C', 'C+', 'B-', 'B', 'B+', 'A-', 'A', 'A+'];
+
+        const modalContent = `
+          <div>
+            <h3>${this.escapeHtml(ctx.assignment.title || 'Assignment')}</h3>
+            <div class="form-group">
+              <label for="fill-grade-letter">Grade to give</label>
+              <select id="fill-grade-letter">
+                ${letters.map(l => `<option value="${l}"${l === 'F' ? ' selected' : ''}>${l}</option>`).join('')}
+              </select>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">F is 0 points. Other letters are the middle of their range, out of each student's own points.</div>
+            </div>
+            ${plan.missing.length ? `
+            <p style="margin: 12px 0 4px;"><strong>No submission (${plan.missing.length}):</strong></p>
+            <p style="color: var(--muted); font-size: 13px;">${plan.missing.map(t => name(t.student)).join(', ')}</p>` : ''}
+            ${plan.ungraded.length ? `
+            <label style="display: flex; gap: 8px; align-items: flex-start; margin-top: 12px; cursor: pointer;">
+              <input type="checkbox" id="fill-include-ungraded" onchange="app._fillGradesCount()">
+              <span>Also grade the ${plan.ungraded.length} turned in but not graded yet:
+                <span style="color: var(--muted); font-size: 13px;">${plan.ungraded.map(t => name(t.student)).join(', ')}</span></span>
+            </label>` : ''}
+            <label style="display: flex; gap: 8px; align-items: center; margin-top: 12px; cursor: pointer;">
+              <input type="checkbox" id="fill-notify" checked>
+              <span>Notify students and parents, as grading one by one does</span>
+            </label>
+            <p style="font-size: 12px; color: var(--muted); margin-top: 12px;">Students already graded or excused are left as they are.</p>
+          </div>
+          <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+            <button class="btn btn-secondary" onclick="app.closeModal('fill-grades')">Cancel</button>
+            <button class="btn btn-primary" id="fill-grades-go" onclick="app.submitFillInGrades('${assignmentId}')"></button>
+          </div>
+        `;
+        this.showModal('fill-grades', '🖊️ Fill in grades', modalContent, true);
+        this._fillGradesCount();
+      }
+
+      // The button says how many it will grade, following the checkbox.
+      _fillGradesCount() {
+        const ctx = this._submissionsCtx;
+        const btn = document.getElementById('fill-grades-go');
+        if (!ctx || !btn) return;
+        const n = this._fillGradesPlan(ctx.students, ctx.submissionMap,
+          !!document.getElementById('fill-include-ungraded')?.checked).targets.length;
+        btn.textContent = `Fill in ${n} grade${n === 1 ? '' : 's'}`;
+        btn.disabled = n === 0;
+      }
+
+      async submitFillInGrades(assignmentId) {
+        const ctx = this._submissionsCtx;
+        if (!ctx || ctx.assignment?.id !== assignmentId) return;
+        const letter = document.getElementById('fill-grade-letter')?.value || 'F';
+        const includeUngraded = !!document.getElementById('fill-include-ungraded')?.checked;
+        const notify = !!document.getElementById('fill-notify')?.checked;
+        const btn = document.getElementById('fill-grades-go');
+        if (btn) { btn.disabled = true; btn.textContent = 'Filling in…'; }
+
+        try {
+          // Planned again from the rows as they are now: a student may have
+          // turned in, or another teacher graded someone, since the list loaded.
+          const { data: fresh, error: readError } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignment_submissions')
+            .select('id, student_id, status, grade')
+            .eq('assignment_id', assignmentId));
+          if (readError) throw readError;
+          const map = {};
+          (fresh || []).forEach(s => { map[s.student_id] = s; });
+          const plan = this._fillGradesPlan(ctx.students, map, includeUngraded);
+
+          const now = new Date().toISOString();
+          const done = [];
+          let skipped = 0, failed = 0;
+          for (const { student, submission } of plan.targets) {
+            const mine = this.withStudentVersion(ctx.assignment,
+              this.studentVersionOf(ctx.versions, assignmentId, [student.id, student.auth_user_id]));
+            const maxPoints = mine?.max_points || 100;
+            const graded = { status: 'graded', grade: letter, points_earned: this._fillGradePoints(letter, maxPoints),
+                             graded_at: now, grade_override: false };
+            let res;
+            if (!submission) {
+              // Insert, never upsert: a row that appeared since is not ours to
+              // overwrite, and the unique key turns it into a skip. No
+              // submitted_at - nothing was handed in (see the Gradebook).
+              res = await this.supabaseQuery(() => this.auth.supabase
+                .from('assignment_submissions')
+                .insert({ assignment_id: assignmentId, student_id: student.id, feedback: 'Assignment not submitted', ...graded })
+                .select('id'));
+            } else {
+              // Only while it is still ungraded.
+              res = await this.supabaseQuery(() => this.auth.supabase
+                .from('assignment_submissions')
+                .update(graded)
+                .eq('id', submission.id)
+                .is('grade', null)
+                .neq('status', 'excused')
+                .select('id'));
+            }
+            if (res.error) {
+              if (res.error.code === '23505') skipped++;
+              else { failed++; console.error('Fill in grades:', student.id, res.error); }
+            } else if (!res.data?.length) skipped++;
+            else done.push({ student, maxPoints, points: graded.points_earned });
+          }
+
+          this.closeModal('fill-grades');
+          this.showNotification(`${done.length} grade${done.length === 1 ? '' : 's'} filled in as ${letter}`
+            + (skipped ? ` • ${skipped} skipped (graded since)` : '')
+            + (failed ? ` • ${failed} could not be saved` : ''), failed ? 'error' : 'success');
+
+          // After the writes, and not waited on: one student's notification
+          // failing should not hold up or undo the rest.
+          if (notify) {
+            (async () => {
+              for (const d of done) {
+                try { await this.sendGradeNotifications(d.student.id, ctx.assignment.title, letter, d.points, d.maxPoints); }
+                catch (e) { console.error('Error sending grade notifications:', e); }
+              }
+            })();
+          }
+
+          await this.viewSubmissions(assignmentId);
+        } catch (error) {
+          console.error('Error filling in grades:', error);
+          this.showNotification('Error: ' + error.message, 'error');
+          if (btn) btn.disabled = false;
+          this._fillGradesCount();
         }
       }
 

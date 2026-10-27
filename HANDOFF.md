@@ -5695,3 +5695,14 @@ pyramid is no longer a real-world answer at all (no everyday object without "pyr
 name). This covered the 3D Shapes, Shapes and Classifying Objects skills.
 `debug-tools/dojo-distractor-sweep.js` now flags any "shaped like / looks most like / shape
 group" question whose object contains its answer.
+
+## 2026-10-27: "Fill in grades" on an assignment
+
+The submissions list (📋 View Submissions) has a 🖊️ Fill in grades button when anyone still has
+no grade. It gives every student with nothing at all the same grade, F by default. Students
+who turned work in that hasn't been graded are only included if the teacher ticks the box.
+Graded and excused students are never changed. F is 0 points; any other letter is the middle
+of its band, out of that student's own points. Rows are written like a Gradebook-typed grade
+(no made-up hand-in time), so the list now says "Graded with no submission" for a row that
+has no `submitted_at` instead of showing a 1970 date. Students and parents are notified as
+for one-by-one grading, unless that box is unticked. Test: `tests/fill-in-grades.test.js`.
