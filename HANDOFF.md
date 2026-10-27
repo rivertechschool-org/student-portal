@@ -5684,3 +5684,14 @@ photo is fair use, not free.
 
 Local preview gotcha: Python's http.server on Windows serves `.webp` as text/html, so the
 images don't load there. GitHub Pages serves them correctly.
+
+## 2026-10-27: Math Dojo shape questions no longer answer themselves
+
+"A pyramid in Egypt is shaped like a...?" (answer: square pyramid) named its own answer, and so
+did "ice cream cone", "traffic cone", "Rubik's cube", "square of a checkerboard", "square
+cracker" and "triangle ruler". Items that are not really the shape went too: water bottle,
+funnel, teepee, rooftop, tissue box, candle, umbrella top, pencil end, ring, brick. Square
+pyramid is no longer a real-world answer at all (no everyday object without "pyramid" in its
+name). This covered the 3D Shapes, Shapes and Classifying Objects skills.
+`debug-tools/dojo-distractor-sweep.js` now flags any "shaped like / looks most like / shape
+group" question whose object contains its answer.

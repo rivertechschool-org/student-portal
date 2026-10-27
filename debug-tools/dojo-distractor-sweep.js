@@ -26,6 +26,7 @@
 //      "mutually exclusive". Reported 2026-10-20; the cause was the board
 //      being topped up to four after the generator chose its set.
 //   7. "what digit is in the tens place" offering a digit not in the number
+//   8. "A pyramid in Egypt is shaped like a...?": the object names its answer
 //
 // Yes/no and three-way comparisons are allowed fewer than four choices.
 //
@@ -188,6 +189,13 @@ for (const tier of Object.keys(generators)) {
       if (/\bdigit\b/i.test(qs) && /^\d$/.test(String(q.answer).trim())) {
         const digits = new Set((qs.match(/\d+(?:\.\d+)?/g) || []).join('').replace(/\./g, '').split(''));
         if (others.some(o => !digits.has(String(o).trim()))) note('digit question offers a digit not in the number', sub, show);
+      }
+      // 8. "A pyramid in Egypt is shaped like a...?" -> square pyramid: an
+      // object question that names its own answer (reported 2026-10-27).
+      // Words of 4+ letters, so "a" and "of" are not counted.
+      if (/shaped like|looks most like|shape group/i.test(qs)) {
+        const words = String(q.answer).toLowerCase().split(/\s+/).filter(w => w.length >= 4);
+        if (words.some(w => new RegExp('\\b' + w, 'i').test(qs))) note('the object names its own answer', sub, show);
       }
       if (!ABOUT_FORM.test(String(q.question))) {
         for (let i = 0; i < others.length; i++) for (let j = i + 1; j < others.length; j++)
