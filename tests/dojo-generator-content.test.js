@@ -99,6 +99,15 @@ const first = (arr, f) => { const x = arr.find(f); return x ? x.question + ' -> 
     !combine.some(twin), first(combine, twin));
   ok('Composing combine: every piece set is arranged (side by side / block / meet / cut)',
     combine.every(q => /side by side|2-by-2|meet in the middle|corner to corner/.test(q.question)));
+  // The halves of a square make a square, a bigger triangle or a parallelogram
+  // depending on which sides meet (2026-10-28), so those questions must say.
+  const halves = combine.filter(q => /corner to corner/.test(q.question));
+  ok('Composing combine: halves of a square always say which sides are joined', halves.length > 100 &&
+    halves.every(q => /along the cut|on a short side/.test(q.question)), first(halves, q => !/along the cut|on a short side/.test(q.question)));
+  ok('Composing combine: both arrangements are asked, each with its own answer',
+    halves.some(q => /along the cut/.test(q.question) && q.answer === 'square')
+    && halves.some(q => /on a short side/.test(q.question) && q.answer === 'triangle')
+    && halves.every(q => /along the cut/.test(q.question) ? q.answer === 'square' : q.answer === 'triangle'));
   const counts = qs.filter(q => q.subType === 'count_pieces');
   ok('Composing count: never the bare "how many triangles make a square"', counts.length > 500 &&
     !counts.some(q => /how many triangles (make|in) a square/i.test(q.question)));

@@ -5718,3 +5718,13 @@ which the teacher sees on the submissions list in place of "Submitted late". It 
 Workbook Pages from dropping a letter for lateness. Each assignment has "Late passes allowed"
 (new and edit forms), ticked by default. The rules for when a pass can be spent live in the
 backend repo, which has its own test. Here: `tests/late-pass.test.js`.
+
+## 2026-10-28: Math Dojo "halves of a square" question has one answer again
+
+Composing Shapes asked what the 2 triangles from a square cut corner to corner make when "put
+back together". The answer was square, with "triangle" offered as wrong, but the two halves
+also make a bigger triangle (or a parallelogram) depending on which sides meet. The question
+now says "along the cut" (square). A second question joins them "on a short side with their
+square corners side by side (◢◣)" (triangle). The lesson shows all three arrangements.
+`tests/dojo-generator-content.test.js` checks that these questions always say which sides are
+joined.
