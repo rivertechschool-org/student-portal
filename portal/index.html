@@ -22799,7 +22799,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   // Parents see "Submitted late" as students do: the same rule
                   // (_submittedLate), so the two views cannot disagree.
                   const lateChip = (isGraded || isSubmitted) && this._submittedLate(submission, assignment)
-                    ? ' ' + this._lateBadge() : '';
+                    ? ' ' + this._lateBadge(submission) : '';
 
                   const v = assignment.student_version;
                   return `
@@ -22921,7 +22921,7 @@ Students you had withdrawn stay withdrawn.`)) {
                       <div style="text-align: right;">
                         ${statusBadge}
                         ${/* Late was computed for staff only; the student never saw it. */''}
-                        ${this._submittedLate(submission, assignment) ? `<div style="margin-top: 6px;">${this._lateBadge()}</div>` : ''}
+                        ${this._submittedLate(submission, assignment) ? `<div style="margin-top: 6px;">${this._lateBadge(submission)}</div>` : ''}
                         <button class="btn btn-primary small" onclick="app.submitAssignment('${assignment.id}')" style="margin-top: 10px;">
                           ${isGraded || isExcused ? '👁️ View Grade' : (isSubmitted ? '👁️ View Submission' : '👁️ View Assignment')}
                         </button>
@@ -23542,7 +23542,19 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
               </label>
             </div>
-      
+
+            <div class="form-group">
+              <label style="display: flex; align-items: center; gap: 10px;">
+                <input type="checkbox" id="assignment-late-pass-allowed" checked>
+                <div>
+                  <strong>🎟️ Late passes allowed</strong>
+                  <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                    A student can spend a late pass from the RTC Store to hand this in late with no late penalty. Untick for work that must be on time.
+                  </div>
+                </div>
+              </label>
+            </div>
+
             <!-- Student Selection Section -->
             <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
               <div class="form-group" style="margin: 0;">
@@ -23636,7 +23648,7 @@ Students you had withdrawn stay withdrawn.`)) {
       async showAssignmentTemplatePicker(classId) {
         const { data: templates, error } = await this.supabaseQuery(() => this.auth.supabase
           .from('assignments')
-          .select('id, class_id, title, description, assignment_type, max_points, grading_type, rubric_id, category_id, graded_offline, rtc_reward, max_submit_size_mb, updated_at, classes(name)')
+          .select('id, class_id, title, description, assignment_type, max_points, grading_type, rubric_id, category_id, graded_offline, late_pass_allowed, rtc_reward, max_submit_size_mb, updated_at, classes(name)')
           .eq('is_template', true)
           .order('updated_at', { ascending: false })
           .limit(1000));
@@ -23746,6 +23758,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
         const offline = document.getElementById('graded-offline');
         if (offline) offline.checked = !!t.graded_offline;
+        const latePass = document.getElementById('assignment-late-pass-allowed');
+        if (latePass) latePass.checked = t.late_pass_allowed !== false;
 
         // Categories belong to a class. Same class: use it directly. Another
         // class: pick this class's category with the same name, if any, and
@@ -23931,6 +23945,10 @@ Students you had withdrawn stay withdrawn.`)) {
         // out keeps ordinary creates working on a database without it.
         if (document.getElementById('assignment-is-template')?.checked) {
           assignmentData.is_template = true;
+        }
+        // Late passes: on by default in the database too, so only "off" is sent.
+        if (document.getElementById('assignment-late-pass-allowed')?.checked === false) {
+          assignmentData.late_pass_allowed = false;
         }
 
         // Workbook Pages: a regular assignment graded by pages. Every student
@@ -24422,6 +24440,18 @@ Students you had withdrawn stay withdrawn.`)) {
                 </label>
               </div>
 
+              <div class="form-group">
+                <label style="display: flex; align-items: center; gap: 10px;">
+                  <input type="checkbox" id="edit-assignment-late-pass-allowed" ${assignment.late_pass_allowed !== false ? 'checked' : ''}>
+                  <div>
+                    <strong>🎟️ Late passes allowed</strong>
+                    <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
+                      A student can spend a late pass to hand this in late with no late penalty. Passes already spent stay spent.
+                    </div>
+                  </div>
+                </label>
+              </div>
+
               <!-- Student Selection Section -->
               <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
                 <div class="form-group" style="margin: 0;">
@@ -24575,6 +24605,8 @@ Students you had withdrawn stay withdrawn.`)) {
           if (templateBox && (templateBox.checked || templateBox.dataset.hasColumn)) {
             updates.is_template = templateBox.checked;
           }
+          const latePassBox = document.getElementById('edit-assignment-late-pass-allowed');
+          if (latePassBox) updates.late_pass_allowed = latePassBox.checked;
 
           // RTC reward: only sent while it is unlocked (nobody graded yet).
           const rtcBox = document.getElementById('edit-assignment-rtc-reward');
@@ -25305,8 +25337,13 @@ Students you had withdrawn stay withdrawn.`)) {
         return at > due;
       }
 
-      // The small "Submitted late" chip shown on a student's own views.
-      _lateBadge() {
+      // The small "Submitted late" chip shown on a student's own views. Late
+      // work a late pass was spent on says so instead (late_pass_used_at is
+      // set by the database, never by the page).
+      _lateBadge(submission) {
+        if (submission?.late_pass_used_at) {
+          return '<span class="late-badge" title="A late pass was used on this assignment" style="background: #9b59b6; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">🎟️ Late pass used</span>';
+        }
         return '<span class="late-badge" style="background: var(--warning); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">Submitted late</span>';
       }
 
@@ -26447,7 +26484,8 @@ Students you had withdrawn stay withdrawn.`)) {
                                   (submission.submitted_at
                                     ? `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
                                     // A grade typed or filled in with nothing handed in.
-                                    : '<span style="color: var(--muted);">Graded with no submission</span>') :
+                                    : '<span style="color: var(--muted);">Graded with no submission</span>')
+                                  + (submission.late_pass_used_at ? ' • ' + this._lateBadge(submission) : '') :
                                   (assignment?.assignment_type === 'test' ? '<span style="color: var(--muted);">🧪 Has not taken the test</span>'
                                     : isOffline ? '<span style="color: var(--accent);">📋 Offline Assignment</span>' : '<span style="color: var(--danger);">Not submitted</span>')
                               }
@@ -27037,7 +27075,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <p style="color: var(--muted); font-size: 14px;">
                   <strong>Due:</strong> ${new Date(assignment.due_date).toLocaleDateString()} •
                   <strong>Graded:</strong> ${new Date(existingSubmission.graded_at).toLocaleDateString()}
-                  ${this._submittedLate(existingSubmission, assignment) ? ' • ' + this._lateBadge() : ''}
+                  ${this._submittedLate(existingSubmission, assignment) ? ' • ' + this._lateBadge(existingSubmission) : ''}
                 </p>
               </div>
           
@@ -27057,7 +27095,9 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div class="card" style="background: rgba(106, 169, 255, 0.1); border: 2px solid var(--accent); padding: 20px; margin: 15px 0;">
                   <h4 style="color: var(--accent); margin-bottom: 10px;">✓ Submitted - Awaiting Grade</h4>
                   <p style="color: var(--muted);">Your teacher will review and grade your submission soon.</p>
-                  ${this._submittedLate(existingSubmission, assignment) ? `<p style="margin-top: 8px;">${this._lateBadge()} <span style="color: var(--muted); font-size: 13px;">It arrived after the due date.</span></p>` : ''}
+                  ${this._submittedLate(existingSubmission, assignment) ? `<p style="margin-top: 8px;">${this._lateBadge(existingSubmission)} <span style="color: var(--muted); font-size: 13px;">It arrived after the due date.</span></p>` : ''}
+                  ${this._submittedLate(existingSubmission, assignment) && !existingSubmission.late_pass_used_at
+                    ? await this._latePassOffer(assignment, 'button') : ''}
                 </div>
           
                 ${existingSubmission.content || existingSubmission.file_url ? `
@@ -27103,7 +27143,8 @@ Students you had withdrawn stay withdrawn.`)) {
             const dueDate = new Date(assignment.due_date);
             const now = new Date();
             const isOverdue = dueDate < now;
-      
+            const latePass = isOverdue ? await this._latePassOffer(assignment, 'checkbox') : '';
+
             modalContent = `
               <div>
                 <h3>${assignment.title}${this.studentVersionBadge(assignment)}</h3>
@@ -27116,6 +27157,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <div style="padding: 15px; background: rgba(255, 107, 107, 0.1); border-radius: 8px; border-left: 3px solid var(--danger); margin: 15px 0;">
                     <strong style="color: var(--danger);">⚠️ This assignment is overdue</strong>
                     <p style="margin-top: 5px; font-size: 14px;">You can still submit it, but it may receive a late penalty.</p>
+                    ${latePass}
                   </div>
                 ` : ''}
                 
@@ -27294,7 +27336,21 @@ Students you had withdrawn stay withdrawn.`)) {
           if (window.portalLoading) {
             window.portalLoading.show('submit', 'Submitting assignment...');
           }
-      
+
+          // A late pass is spent first, before any upload: if it is refused
+          // (none left, not allowed here) nothing has been handed in yet and
+          // the student can untick it and try again. Once spent it stays
+          // spent on this assignment, so a failed upload below retried later
+          // is still covered - the database flags the row on its way in.
+          let usedLatePass = false;
+          if (document.getElementById('use-late-pass')?.checked) {
+            const { data: lp, error: lpError } = await this.supabaseQuery(() =>
+              this.auth.supabase.rpc('rtc_use_late_pass', { p_assignment_id: assignmentId }));
+            if (lpError) throw lpError;
+            if (!lp?.success) throw new Error(lp?.error || 'The late pass could not be used.');
+            usedLatePass = true;
+          }
+
           // The Drive file this submission points at right now. Resubmitting
           // overwrites drive_file_id, and without this the old file stays in
           // the assignment folder forever - the teacher opens it, finds two
@@ -27400,7 +27456,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
 
           const pagesMsg = this._pagesGradedMessage(submitResult?.[0]);
-          this.showNotification(pagesMsg || 'Assignment submitted successfully!', 'success');
+          this.showNotification((pagesMsg || 'Assignment submitted successfully!')
+            + (usedLatePass ? ' 🎟️ Late pass used.' : ''), 'success');
           this.closeModal('submit-assignment');
           
           // Update local state immediately without full reload
@@ -27453,6 +27510,62 @@ Students you had withdrawn stay withdrawn.`)) {
           if (window.portalLoading) {
             window.portalLoading.hide('submit');
           }
+        }
+      }
+
+      // Late passes (Jordan, 2026-10-28): bought in the RTC store, held until
+      // spent on one late assignment. Spending one flags the submission and
+      // keeps the Workbook Pages grader from dropping a letter; the database
+      // does both (rtc_use_late_pass). The teacher can turn passes off per
+      // assignment (late_pass_allowed, on by default).
+      //
+      // What the student sees about passes on a late assignment: a box to
+      // tick before handing in ('checkbox'), or a button for work already
+      // handed in late ('button'). A pass count that cannot be read shows
+      // nothing rather than a wrong number.
+      async _latePassOffer(assignment, mode) {
+        if (assignment.late_pass_allowed === false) {
+          return mode === 'checkbox'
+            ? '<p style="margin-top: 8px; font-size: 13px; color: var(--muted);">Late passes cannot be used on this assignment.</p>'
+            : '';
+        }
+        let held = null;
+        try {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase.rpc('rtc_my_late_passes'));
+          if (!error) held = Number(data) || 0;
+        } catch (_) { /* leave it unsaid */ }
+        if (held == null) return '';
+        if (held === 0) {
+          return mode === 'checkbox'
+            ? '<p style="margin-top: 8px; font-size: 13px; color: var(--muted);">🎟️ A late pass from the RTC Store lets you hand in late work with no late penalty.</p>'
+            : '';
+        }
+        const has = `you have ${held}`;
+        if (mode === 'checkbox') {
+          return `<label style="display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; cursor: pointer; font-size: 14px;">
+              <input type="checkbox" id="use-late-pass" style="margin-top: 3px;">
+              <span><strong>🎟️ Use a late pass</strong> (${has}). No late penalty, and your teacher sees you used one.</span>
+            </label>`;
+        }
+        return `<button class="btn btn-secondary small" style="margin-top: 10px;" onclick="app.useLatePassOn('${assignment.id}')">
+            🎟️ Use a late pass on this (${has})
+          </button>`;
+      }
+
+      // Spending a pass on work already handed in late.
+      async useLatePassOn(assignmentId) {
+        if (!confirm('Use one of your late passes on this assignment?')) return;
+        try {
+          const { data, error } = await this.supabaseQuery(() =>
+            this.auth.supabase.rpc('rtc_use_late_pass', { p_assignment_id: assignmentId }));
+          if (error) throw error;
+          if (!data?.success) throw new Error(data?.error || 'The late pass could not be used.');
+          this.showNotification(`🎟️ Late pass used. ${data.passes_left} left.`, 'success');
+          this.closeModal('submit-assignment');
+          this.submitAssignment(assignmentId);
+          this.loadStudentData().catch(err => console.warn('Background refresh failed:', err));
+        } catch (err) {
+          this.showNotification(err.message, 'error');
         }
       }
 
@@ -32523,7 +32636,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div class="list-item-meta">
                       Due: ${new Date(assignment.due_date).toLocaleDateString()}
                       ${isExcused ? ' • <span style="color: var(--warning);">Excused from this assignment</span>' : ''}
-                      ${this._submittedLate(submission, assignment) ? ' • ' + this._lateBadge() : ''}
+                      ${this._submittedLate(submission, assignment) ? ' • ' + this._lateBadge(submission) : ''}
                     </div>
                   </div>
                   <div style="text-align: right;">
@@ -53715,6 +53828,9 @@ Students you had withdrawn stay withdrawn.`)) {
               <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Description</label>
               <input type="text" id="priv-new-desc" placeholder="Skip one homework assignment" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
             </div>
+            <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; cursor: pointer;" title="Kept until the student spends it on one late assignment; students can hold several">
+              <input type="checkbox" id="priv-new-late-pass"> 🎟️ Late pass
+            </label>
             <button class="btn btn-primary" style="padding: 6px 16px; white-space: nowrap;" onclick="app.addRTCPrivilege()">+ Add</button>
           </div>
         </div>
@@ -53745,6 +53861,8 @@ Students you had withdrawn stay withdrawn.`)) {
             price,
             duration_days: duration,
             description: description || null,
+            // A late pass ignores the duration: it is held until spent.
+            is_late_pass: !!document.getElementById('priv-new-late-pass')?.checked,
             created_by: this.userInfo?.profile?.id
           });
         if (error) throw error;
@@ -53820,6 +53938,10 @@ Students you had withdrawn stay withdrawn.`)) {
                 <label style="font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px;">Description</label>
                 <input type="text" id="priv-edit-desc" value="${(priv.description || '').replace(/"/g, '&quot;')}" style="width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;">
               </div>
+              <label style="display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer;">
+                <input type="checkbox" id="priv-edit-late-pass" ${priv.is_late_pass ? 'checked' : ''} style="margin-top: 2px;">
+                <span>🎟️ <strong>Late pass</strong> <span style="color: var(--muted);">- kept until the student spends it on one late assignment (the duration is ignored), and students can hold several.</span></span>
+              </label>
               <button class="btn btn-primary" style="padding: 8px 16px; margin-top: 6px;" onclick="app.saveRTCPrivilege('${priv.id}')">Save Changes</button>
             </div>
           </div>
@@ -53853,6 +53975,7 @@ Students you had withdrawn stay withdrawn.`)) {
             duration_days: duration,
             sort_order: sortOrder,
             description: description || null,
+            is_late_pass: !!document.getElementById('priv-edit-late-pass')?.checked,
             updated_at: new Date().toISOString()
           })
           .eq('id', id);
@@ -54711,7 +54834,11 @@ Students you had withdrawn stay withdrawn.`)) {
       if (data.grants && data.grants.length > 0) {
         grantsHtml = data.grants.map(g => {
           let timeText, timeColor, expiryLine = '';
-          if (g.is_permanent) {
+          if (g.is_late_pass) {
+              // A late pass is kept until spent on a late assignment.
+              timeText = 'Use it when you turn in late work';
+              timeColor = '#9b59b6';
+          } else if (g.is_permanent) {
             timeText = 'Permanent';
             timeColor = '#2980b9';
           } else {
@@ -54758,7 +54885,7 @@ Students you had withdrawn stay withdrawn.`)) {
       let catalogHtml = '';
       if (data.catalog && data.catalog.length > 0) {
         catalogHtml = data.catalog.map(p => {
-          const isOwned = activeGrantIds.includes(p.id);
+          const isOwned = !p.is_late_pass && activeGrantIds.includes(p.id);  // late passes stack
           const canAfford = data.wallet_balance >= p.price;
           let buttonHtml;
           if (isOwned) {
@@ -54775,7 +54902,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <div style="flex: 1;">
                 <div style="font-weight: 600;">${p.name}</div>
                 ${p.description ? `<div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${p.description}</div>` : ''}
-                <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">Lasts ${p.duration_days} day${p.duration_days > 1 ? 's' : ''}</div>
+                <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${p.is_late_pass ? `Kept until you use it · you have ${(data.grants || []).filter(g => g.privilege_id === p.id).length}` : `Lasts ${p.duration_days} day${p.duration_days > 1 ? 's' : ''}`}</div>
               </div>
               <div style="text-align: right;">
                 <div style="font-weight: bold; color: #9b59b6; margin-bottom: 4px;">${p.price} RTC</div>
@@ -78301,7 +78428,7 @@ Students you had withdrawn stay withdrawn.`)) {
       try {
         const { data, error } = await this.auth.supabase
           .from('rtc_privileges')
-          .select('id, name, description, price, duration_days, icon, is_active, created_at')
+          .select('id, name, description, price, duration_days, icon, is_active, is_late_pass, created_at')
           .order('sort_order', { ascending: true })
           .order('name', { ascending: true });
         if (error) throw error;
@@ -78501,7 +78628,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const isAdmin = this.userInfo?.profile?.user_type === 'admin';
       let html = `<div style="font-size:14px;font-weight:600;margin-bottom:10px;">🎖️ Privilege Catalog (${privileges.length} active)</div>`;
       for (const priv of privileges) {
-        const durLabel = priv.duration_days ? `${priv.duration_days}d` : '∞';
+        const durLabel = priv.is_late_pass ? 'until used' : priv.duration_days ? `${priv.duration_days}d` : '∞';
         html += `<div style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid rgba(128,128,128,0.15);">
           <span style="font-size:16px;">${priv.icon || '🎖️'}</span>
           <div style="flex:1;">
@@ -78717,7 +78844,9 @@ Students you had withdrawn stay withdrawn.`)) {
 
       const price = entities.amount || matchedPriv.price;
       const newBal = (student.rtc_balance || 0) - price;
-      const durLabel = matchedPriv.duration_days ? `for ${matchedPriv.duration_days} days` : '(permanent)';
+      // A late pass is held until spent, whatever its duration says.
+      const durLabel = matchedPriv.is_late_pass ? '(held until used on a late assignment)'
+        : matchedPriv.duration_days ? `for ${matchedPriv.duration_days} days` : '(permanent)';
 
       const doIt = async () => {
         let result, grantId;
@@ -78807,7 +78936,8 @@ Students you had withdrawn stay withdrawn.`)) {
         return;
       }
 
-      const durLabel = isPermanent ? 'permanently' : `for ${effectiveDuration} days`;
+      const durLabel = matchedPriv?.is_late_pass ? '(held until used on a late assignment)'
+        : isPermanent ? 'permanently' : `for ${effectiveDuration} days`;
 
       const doIt = async () => {
         const { data, error } = await this.auth.supabase.rpc('rtc_grant_privilege', {

@@ -5706,3 +5706,15 @@ of its band, out of that student's own points. Rows are written like a Gradebook
 (no made-up hand-in time), so the list now says "Graded with no submission" for a row that
 has no `submitted_at` instead of showing a 1970 date. Students and parents are notified as
 for one-by-one grading, unless that box is unticked. Test: `tests/fill-in-grades.test.js`.
+
+## 2026-10-28: late passes can be spent on an assignment
+
+A privilege can now be marked as a 🎟️ **late pass** in the RTC privileges catalog (the
+existing Flexible Due Date Pass is one). A late pass doesn't expire after a day: it is kept
+until the student spends it, and students can hold several. On an overdue assignment the
+turn-in screen offers "Use a late pass (you have N)". Work already handed in late gets a
+"Use a late pass on this" button. Spending one marks the submission "🎟️ Late pass used",
+which the teacher sees on the submissions list in place of "Submitted late". It also stops
+Workbook Pages from dropping a letter for lateness. Each assignment has "Late passes allowed"
+(new and edit forms), ticked by default. The rules for when a pass can be spent live in the
+backend repo, which has its own test. Here: `tests/late-pass.test.js`.
