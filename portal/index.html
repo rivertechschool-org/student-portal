@@ -25347,6 +25347,31 @@ Students you had withdrawn stay withdrawn.`)) {
         return '<span class="late-badge" style="background: var(--warning); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">Submitted late</span>';
       }
 
+      // Resubmissions. resubmitted_at / resubmit_count are set by the database
+      // when a student changes work already on their row, never by the page.
+      // 'review': changed after the teacher graded it - the grade shown is for
+      // the earlier work, and grading again (which moves graded_at) answers
+      // it. 'resubmitted': changed before grading, which needs nothing extra.
+      _resubmitState(submission) {
+        if (!submission?.resubmitted_at) return null;
+        if (submission.status === 'graded'
+            && (!submission.graded_at || new Date(submission.resubmitted_at) > new Date(submission.graded_at))) return 'review';
+        return 'resubmitted';
+      }
+
+      // The teacher's chip for it.
+      _resubmitBadge(submission) {
+        const state = this._resubmitState(submission);
+        if (!state) return '';
+        const when = new Date(submission.resubmitted_at);
+        const at = `${when.toLocaleDateString()} ${when.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}`;
+        const times = submission.resubmit_count > 1 ? ` (${submission.resubmit_count} times)` : '';
+        if (state === 'review') {
+          return `<span class="resubmit-badge" title="Handed in again ${at}, after it was graded. The grade is for the earlier work." style="background: var(--warning); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">🔁 Resubmitted - review grade</span>`;
+        }
+        return `<span class="resubmit-badge" title="Last changed ${at}${times}" style="background: rgba(106, 169, 255, 0.2); color: var(--accent); padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">🔁 Resubmitted</span>`;
+      }
+
       renderUpcomingAssignments(assignments) {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
@@ -26346,6 +26371,7 @@ Students you had withdrawn stay withdrawn.`)) {
           const submittedCount = submissions?.length || 0;
           const gradedCount = submissions?.filter(s => s.status === 'graded').length || 0;
           const excusedCount = submissions?.filter(s => s.status === 'excused').length || 0;
+          const reviewCount = submissions?.filter(s => this._resubmitState(s) === 'review').length || 0;
           const submissionRate = totalStudents > 0 ? ((submittedCount / totalStudents) * 100).toFixed(0) : 0;
       
           // Load category info
@@ -26433,9 +26459,15 @@ Students you had withdrawn stay withdrawn.`)) {
                   Graded (${gradedCount})
                 </label>
                 ${excusedCount > 0 ? `
-                  <label>
+                  <label style="margin-right: 15px;">
                     <input type="radio" name="submission-filter" value="excused" onchange="app.filterSubmissionsList('excused', '${assignmentId}')">
                     Excused (${excusedCount})
+                  </label>
+                ` : ''}
+                ${reviewCount > 0 ? `
+                  <label style="color: var(--warning); font-weight: 600;">
+                    <input type="radio" name="submission-filter" value="resubmitted" onchange="app.filterSubmissionsList('resubmitted', '${assignmentId}')">
+                    🔁 Resubmitted - review grade (${reviewCount})
                   </label>
                 ` : ''}
               </div>
@@ -26464,6 +26496,7 @@ Students you had withdrawn stay withdrawn.`)) {
                       return `
                         <div class="list-item submission-item"
                              data-status="${isExcused ? 'excused' : (hasSubmitted ? (isGraded ? 'graded' : 'submitted') : 'not-submitted')}"
+                             data-resubmit="${this._resubmitState(submission) || ''}"
                              style="border-left: 4px solid ${statusColor};">
                           <div class="list-item-content">
                             <div class="list-item-title">
@@ -26485,7 +26518,8 @@ Students you had withdrawn stay withdrawn.`)) {
                                     ? `Submitted: ${new Date(submission.submitted_at).toLocaleDateString()} at ${new Date(submission.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
                                     // A grade typed or filled in with nothing handed in.
                                     : '<span style="color: var(--muted);">Graded with no submission</span>')
-                                  + (submission.late_pass_used_at ? ' • ' + this._lateBadge(submission) : '') :
+                                  + (submission.late_pass_used_at ? ' • ' + this._lateBadge(submission) : '')
+                                  + (this._resubmitState(submission) ? ' • ' + this._resubmitBadge(submission) : '') :
                                   (assignment?.assignment_type === 'test' ? '<span style="color: var(--muted);">🧪 Has not taken the test</span>'
                                     : isOffline ? '<span style="color: var(--accent);">📋 Offline Assignment</span>' : '<span style="color: var(--danger);">Not submitted</span>')
                               }
@@ -26583,6 +26617,12 @@ Students you had withdrawn stay withdrawn.`)) {
               <h3>${student?.first_name} ${student?.last_name}'s Submission</h3>
               <p style="color: var(--muted);">Assignment: ${assignment?.title}</p>
               <p style="color: var(--muted);">Submitted: ${new Date(submission.submitted_at).toLocaleString()}</p>
+              ${this._resubmitState(submission) === 'review' ? `
+                <div class="card" style="background: rgba(255, 193, 7, 0.12); border-left: 3px solid var(--warning); padding: 10px; margin: 10px 0;">
+                  <strong>🔁 Resubmitted after grading</strong> on ${new Date(submission.resubmitted_at).toLocaleString()}.
+                  The grade below (${this.escapeHtml(submission.grade || 'none')}) is for the earlier work. Grade it again to update it.
+                </div>
+              ` : ''}
               
               <div class="card" style="margin: 20px 0;">
                 <h4>Submission Content</h4>
@@ -26823,6 +26863,8 @@ Students you had withdrawn stay withdrawn.`)) {
             item.style.display = status === 'graded' ? 'flex' : 'none';
           } else if (filter === 'excused') {
             item.style.display = status === 'excused' ? 'flex' : 'none';
+          } else if (filter === 'resubmitted') {
+            item.style.display = item.getAttribute('data-resubmit') === 'review' ? 'flex' : 'none';
           }
         });
       }
@@ -27077,10 +27119,20 @@ Students you had withdrawn stay withdrawn.`)) {
                   <strong>Graded:</strong> ${new Date(existingSubmission.graded_at).toLocaleDateString()}
                   ${this._submittedLate(existingSubmission, assignment) ? ' • ' + this._lateBadge(existingSubmission) : ''}
                 </p>
+                ${this._resubmitState(existingSubmission) === 'review' ? `
+                  <p style="margin-top: 8px; padding: 10px; border-radius: 8px; background: rgba(106, 169, 255, 0.1);">
+                    🔁 You handed this in again on ${new Date(existingSubmission.resubmitted_at).toLocaleString()}.
+                    Your teacher will look at the new work and may change your grade.
+                  </p>
+                ` : ''}
               </div>
           
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
                 <button class="btn btn-secondary" onclick="app.closeModal('submit-assignment')">Close</button>
+                ${this._canResubmitGraded(assignment) ? `
+                <button class="btn btn-primary" title="Your grade stays until your teacher reviews the new work" onclick="app.resubmitAssignment('${assignmentId}')">
+                  ${existingSubmission.submitted_at ? '🔁 Resubmit' : '📤 Turn in work'}
+                </button>` : ''}
               </div>
             `;
           } else if (isSubmitted) {
@@ -27576,6 +27628,12 @@ Students you had withdrawn stay withdrawn.`)) {
         return `Turned in - graded ${row.grade}. ${String(row.feedback).replace(/ Grade: .*$/, '')}`;
       }
 
+      // Graded work a student may hand in again. Tests are retaken in the
+      // Testing Center, and offline assignments have nothing to hand in here.
+      _canResubmitGraded(assignment) {
+        return !!assignment && assignment.assignment_type !== 'test' && !assignment.graded_offline;
+      }
+
       async resubmitAssignment(assignmentId) {
         try {
           // Load existing submission
@@ -27610,6 +27668,9 @@ Students you had withdrawn stay withdrawn.`)) {
               <div style="padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; margin: 15px 0;">
                 <strong style="color: var(--accent);">📝 Editing Your Submission</strong>
                 <p style="margin-top: 5px; font-size: 14px;">Make changes to your work below and resubmit.</p>
+                ${submission.status === 'graded' ? `
+                  <p style="margin-top: 5px; font-size: 14px;">Your grade (${this.escapeHtml(submission.grade || 'none')}) stays until your teacher looks at the new work. They will see that you resubmitted.</p>
+                ` : ''}
               </div>
       
               ${submission.file_name && submission.file_url ? `
@@ -27722,6 +27783,12 @@ Students you had withdrawn stay withdrawn.`)) {
             feedback: null,
             graded_at: null
           };
+          // Graded work handed in again keeps its grade until the teacher
+          // grades it again; the database flags the row for them
+          // (resubmitted_at), so nothing here says it was resubmitted.
+          if (existingSubmission?.status === 'graded') {
+            updateData = { content: content || '', submitted_at: new Date().toISOString() };
+          }
       
           // If new file is uploaded, upload to teacher's Drive via Edge Function
           if (newFile) {
@@ -27811,7 +27878,9 @@ Students you had withdrawn stay withdrawn.`)) {
           if (error) throw error;
 
           const pagesMsg = this._pagesGradedMessage(updatedRows?.[0]);
-          this.showNotification(pagesMsg || 'Submission updated successfully!', 'success');
+          this.showNotification(pagesMsg || (existingSubmission?.status === 'graded'
+            ? 'Handed in again. Your teacher will review it and may change your grade.'
+            : 'Submission updated successfully!'), 'success');
           this.closeModal('resubmit-assignment');
           
           // Refresh the assignments view with updated submission status
@@ -27921,6 +27990,12 @@ Students you had withdrawn stay withdrawn.`)) {
                   <strong>Max Points:</strong> ${assignment.max_points}
                   ${isRubricGrading ? `<br><strong>Rubric:</strong> ${rubricInfo?.name || 'Default'}` : ''}
                 </div>
+              ${this._resubmitState(submission) === 'review' ? `
+                <div class="card" style="background: rgba(255, 193, 7, 0.12); border-left: 3px solid var(--warning); padding: 10px; margin: 10px 0;">
+                  <strong>🔁 Resubmitted after grading</strong> on ${new Date(submission.resubmitted_at).toLocaleString()}.
+                  The current grade (${this.escapeHtml(submission.grade || 'none')}) is for the earlier work. Grade it again to update it.
+                </div>
+              ` : ''}
       
               <!-- Student Submission -->
               <div class="card" style="margin-bottom: 20px;">

@@ -5728,3 +5728,14 @@ now says "along the cut" (square). A second question joins them "on a short side
 square corners side by side (◢◣)" (triangle). The lesson shows all three arrangements.
 `tests/dojo-generator-content.test.js` checks that these questions always say which sides are
 joined.
+
+## 2026-10-28: Resubmissions are flagged for the teacher
+
+Students can now hand in graded work again ("🔁 Resubmit" on the graded view, or "📤 Turn in
+work" on a grade given with nothing handed in, such as a Fill in grades F). The old grade stays
+until the teacher grades it again. On the teacher's submissions list the row shows
+"🔁 Resubmitted - review grade", and there is a filter for those rows. The View and Grade
+dialogs say the current grade is for the earlier work. Grading it again clears the flag. Tests
+and offline assignments don't offer Resubmit. The database records when a student resubmitted,
+and the page never sets it; that change is in the backend repo with its own test. Here:
+`tests/resubmit-flag.test.js`.
