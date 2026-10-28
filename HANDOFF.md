@@ -5739,3 +5739,18 @@ dialogs say the current grade is for the earlier work. Grading it again clears t
 and offline assignments don't offer Resubmit. The database records when a student resubmitted,
 and the page never sets it; that change is in the backend repo with its own test. Here:
 `tests/resubmit-flag.test.js`.
+
+## 2026-10-28: Riven announces to targeted groups
+
+"announce" now takes an audience as well as a class:
+- **Who:** students (the default), parents, families (students and parents), staff, teachers, everyone.
+- **Where:** one class, "all Math classes" or "English and math", a year group ("young middle parents"), grades ("7th grade", "grades 6-8"), "my students" (every class you teach), or the whole school.
+- **Email:** "email all parents: …" or "… and email it" sends an email too. The confirmation says how many addresses, and that emails can't be unsent.
+
+It also understands "tell the 7th grade parents that…" and "let the staff know…". Teachers can reach the students and parents of their own classes. Year groups, grades, staff and the whole school are admin only. Grade targeting only finds students whose profile has a grade level set.
+
+Two fixes came with this:
+- **Parent targeting works now.** The 📢 Send Announcement tool's "All Parents" with a grade or class filter, and Riven's "message Ari's parents", read a table that doesn't exist, so they never found a parent. Both use the real parent links now. The 📢 tool and Riven share one sender.
+- **Riven's "undo" really pulls an announcement back.** A plain delete by the sender removed nothing and gave no error. Undo now goes through the database (backend repo) for the sender's own announcements from the last day, and says so if nothing could be removed.
+
+Tests: `tests/riven-announce.test.js`. New phrasings are in `debug-tools/frontdoor-precision.js`.

@@ -16313,6 +16313,87 @@
         document.body.appendChild(modal);
       }
 
+      // Parents linked to these students, as profile ids. One lookup for every
+      // announcement path: the 📢 tool and Riven used to read a table that
+      // does not exist (parent_student_links), so "parents" reached nobody.
+      async _parentIdsOf(studentIds) {
+        const ids = [...new Set((studentIds || []).filter(Boolean))];
+        const parents = new Set();
+        for (let i = 0; i < ids.length; i += 300) {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('parent_child_links')
+            .select('parent_id')
+            .eq('status', 'active')
+            .in('child_id', ids.slice(i, i + 300)));
+          if (error) throw error;
+          (data || []).forEach(l => parents.add(l.parent_id));
+        }
+        return [...parents];
+      }
+
+      // Active profiles for a list of ids, with what sending needs. Chunked so
+      // a school-sized list stays under the URL and row limits.
+      async _announceProfiles(ids) {
+        const list = [...new Set((ids || []).filter(Boolean))];
+        const out = [];
+        for (let i = 0; i < list.length; i += 300) {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles')
+            .select('id, email, first_name, user_type, account_status')
+            .or('account_status.eq.active,account_status.is.null')
+            .in('id', list.slice(i, i + 300)));
+          if (error) throw error;
+          out.push(...(data || []));
+        }
+        return out;
+      }
+
+      // Send one announcement: a bell notification to every user, and an email
+      // too when asked. Shared by the 📢 tool and Riven so the two cannot drift
+      // apart. Returns the notification ids (for unsending) and the email tally.
+      async _sendAnnouncement({ users, title, message, sendEmail = false, via = null }) {
+        const meta = { broadcast: true, from_admin: this.userInfo.user.id, emailSent: !!sendEmail };
+        if (via) meta.via = via;
+        const ids = [];
+        for (let i = 0; i < users.length; i += 500) {
+          const rows = users.slice(i, i + 500).map(u => ({
+            user_id: u.id, type: 'system', title, message, link: null, metadata: meta,
+          }));
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notifications').insert(rows).select('id'));
+          if (error) throw error;
+          (data || []).forEach(r => ids.push(r.id));
+        }
+        let emailsSent = 0, emailErrors = 0;
+        if (sendEmail) {
+          for (const user of users) {
+            if (!user.email) continue;
+            const result = await this.sendEmailWithTracking(
+              user.email,
+              'broadcast_announcement',
+              { title, message },
+              { notificationType: 'broadcast', title }
+            );
+            if (result?.success) emailsSent++;
+            else emailErrors++;
+          }
+        }
+        return { ids, emailsSent, emailErrors };
+      }
+
+      // Pull an announcement back. Notifications can only be deleted by the
+      // person they were sent to, so a plain delete from the sender matched
+      // nothing and said nothing; the database does it for the sender, for
+      // their own announcements sent in the last day. Throws when none could
+      // be removed, so an undo never claims a success it did not have.
+      async _unsendAnnouncement(ids) {
+        if (!ids?.length) return 0;
+        const { data, error } = await this.auth.supabase.rpc('rt_unsend_announcement', { p_ids: ids });
+        if (error) throw error;
+        if (!data) throw new Error('It could not be pulled back. Announcements can only be unsent for a day after sending.');
+        return data;
+      }
+
       async sendBroadcast() {
         const audience = document.getElementById('broadcast-audience').value;
         const title = document.getElementById('broadcast-title').value.trim();
@@ -16348,11 +16429,7 @@
 
             if (audience === 'parent') {
               // Find parents linked to these students
-              const { data: links } = await this.auth.supabase
-                .from('parent_student_links')
-                .select('parent_id')
-                .in('student_id', [...studentIds]);
-              targetUserIds = new Set((links || []).map(l => l.parent_id));
+              targetUserIds = new Set(await this._parentIdsOf([...studentIds]));
             } else {
               targetUserIds = studentIds;
             }
@@ -16369,11 +16446,7 @@
             const classStudentIds = new Set((enrollments || []).map(e => e.student_id));
 
             if (audience === 'parent') {
-              const { data: links } = await this.auth.supabase
-                .from('parent_student_links')
-                .select('parent_id')
-                .in('student_id', [...classStudentIds]);
-              const classParentIds = new Set((links || []).map(l => l.parent_id));
+              const classParentIds = new Set(await this._parentIdsOf([...classStudentIds]));
 
               // Intersect with grade filter if both are set
               if (targetUserIds) {
@@ -16423,45 +16496,8 @@
             return;
           }
 
-          // Create notifications for all users
-          const notifications = users.map(user => ({
-            user_id: user.id,
-            type: 'system',
-            title: title,
-            message: message,
-            link: null,
-            metadata: { broadcast: true, from_admin: this.userInfo.user.id, emailSent: sendEmail }
-          }));
-
-          const { error: insertError } = await this.auth.supabase
-            .from('notifications')
-            .insert(notifications);
-
-          if (insertError) throw insertError;
-
-          // Send emails if checkbox was checked
-          let emailsSent = 0;
-          let emailErrors = 0;
-          if (sendEmail) {
-            for (const user of users) {
-              if (!user.email) continue;
-
-              const result = await this.sendEmailWithTracking(
-                user.email,
-                'broadcast_announcement',
-                {
-                  title: title,
-                  message: message
-                },
-                { notificationType: 'broadcast', title }
-              );
-              if (result.success) {
-                emailsSent++;
-              } else {
-                emailErrors++;
-              }
-            }
-          }
+          // Notifications for all users, and emails if the box was ticked
+          const { emailsSent, emailErrors } = await this._sendAnnouncement({ users, title, message, sendEmail });
 
           let successMessage = `Announcement sent to ${users.length} users!`;
           if (sendEmail) {
@@ -56936,7 +56972,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-26·d';
+      const RIVEN_BUILD = '2026-10-28·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -61649,6 +61685,22 @@ Students you had withdrawn stay withdrawn.`)) {
             { re: /\bsend\s+(out\s+)?(an?\s+)?(announcement|notice|bulletin)\b/, w: 8 }
           ]
         },
+        // ANNOUNCE to a named group of people without the word "announce":
+        // "tell the 7th grade parents that…", "let the staff know…",
+        // "email all parents: …". The audience is a plural group, so one
+        // child's parents ("tell ari's parents that…" - the possessive is
+        // gone by now, hence notIfStudent) stay a message to that family.
+        // email/message only with a colon: "message the 7th grade parents
+        // about picture day" has no announcement in it yet.
+        {
+          intent: 'ANNOUNCE',
+          w: 7, notIfNoteCommand: true, notIfCurrency: true, notIfQuestion: true,
+          notIfReadQuery: true, notIfStudent: true,
+          patterns: [
+            { re: /\b(tell|let|notify|remind|inform)\s+(all\s+(of\s+)?)?(the\s+|my\s+|our\s+)?([a-z0-9-]+\s+){0,3}?(parents|families|staff|teachers|faculty|students|kids|graders)\s+(that|know|about)\b/, w: 8 },
+            { re: /^(e-?mail|message|msg|text|notify)\s+(all\s+(of\s+)?)?(the\s+|my\s+|our\s+)?([a-z0-9-]+\s+){0,3}?(parents|families|staff|teachers|faculty|students|kids|graders)\b[^:]*:/, w: 8 }
+          ]
+        },
         // RTC with NO explicit amount — "dock jordan some gold", "hook jordan
         // up with some rtc". The executor asks for the number; routing these to
         // a student card (which is what happened before) loses the request.
@@ -65765,8 +65817,7 @@ Students you had withdrawn stay withdrawn.`)) {
           if (error) throw error;
         },
         notifications: async (s) => {
-          const { error } = await this.auth.supabase.from('notifications').delete().in('id', s.ids || []);
-          if (error) throw error;
+          await this._unsendAnnouncement(s.ids || []);
         },
       };
     }
@@ -72192,11 +72243,66 @@ Students you had withdrawn stay withdrawn.`)) {
         doIt);
     }
 
+    // Who an announcement is for, read from the words that name the audience:
+    // the part before the colon ("announce to 7th grade parents: …"), else
+    // before "that"/"know" ("tell the staff that …"). Riven's class and cohort
+    // matchers say WHICH class or group; this says who in it, and which grades.
+    //   who    'students' | 'parents' | 'families' (students and their
+    //          parents) | 'staff' (teachers and admins) | 'teachers' |
+    //          'everyone' | null (not said)
+    //   grades ['7'] for "7th grade", ['6','7','8'] for "grades 6-8"; grade
+    //          levels are stored as text
+    //   email  "email all parents: …", "announce by email", "… and email it"
+    //   message the text with a trailing "and email it" taken off
+    _rivenAnnounceAudience(raw, message) {
+      const text = String(raw || '');
+      const colon = text.indexOf(':');
+      let head = colon >= 0 ? text.slice(0, colon) : text;
+      if (colon < 0) {
+        const cut = head.search(/\b(that|know|about)\b/i);
+        if (cut > 0) head = head.slice(0, cut);
+      }
+      const h = ' ' + head.toLowerCase().replace(/[^a-z0-9&+\s-]/g, ' ').replace(/\s+/g, ' ') + ' ';
+
+      let who = null;
+      if (/\bfamil(y|ies)\b/.test(h)
+          || /\b(students|kids)\s+(and|&|\+)\s+(their\s+|the\s+)?parents\b/.test(h)
+          || /\bparents\s+(and|&|\+)\s+(the\s+|their\s+)?(students|kids)\b/.test(h)) who = 'families';
+      else if (/\b(parents?|moms?|dads?|guardians?)\b/.test(h)) who = 'parents';
+      else if (/\bstaff\b/.test(h) || /\bteachers\s+(and|&|\+)\s+admins?\b/.test(h)) who = 'staff';
+      else if (/\b(teachers|faculty)\b/.test(h)) who = 'teachers';
+      else if (/\b(everyone|everybody|whole school|all users)\b/.test(h)) who = 'everyone';
+      else if (/\b(students|kids|class|classes|graders)\b/.test(h)) who = 'students';
+
+      const grades = new Set();
+      const ordinal = /\b(\d{1,2})(?:st|nd|rd|th)(?:\s*(?:,|and|&|or)\s*(\d{1,2})(?:st|nd|rd|th))*\s+grade/g;
+      let m;
+      while ((m = ordinal.exec(h))) m[0].match(/\d{1,2}/g).forEach(g => grades.add(g));
+      const range = h.match(/\bgrades?\s+(\d{1,2})\s*(?:-|to|through|thru)\s*(\d{1,2})\b/);
+      if (range) {
+        const a = +range[1], b = +range[2];
+        for (let g = Math.min(a, b); g <= Math.max(a, b) && g <= 12; g++) grades.add(String(g));
+      } else {
+        const list = h.match(/\bgrades?\s+(\d{1,2}(?:\s*(?:,|and|&|or)\s*\d{1,2})*)\b/);
+        if (list) list[1].match(/\d{1,2}/g).forEach(g => grades.add(g));
+      }
+      [...grades].forEach(g => { if (+g < 1 || +g > 12) grades.delete(g); });
+
+      // A trailing "and email it" is an instruction, not part of the message.
+      // An email mentioned INSIDE the message ("check your email for the
+      // slip") is left alone.
+      let msg = String(message || '');
+      const tail = /[\s,;.]*(?:and\s+|also\s+|then\s+|plus\s+)*(?:e-?mail\s+(?:it|this|that|them)(?:\s+out)?(?:\s+(?:too|as\s+well))?|(?:send\s+it\s+)?(?:by|via|over)\s+e-?mail(?:\s+too)?|(?:an?\s+)?e-?mail\s+(?:too|as\s+well))\s*[.!]?\s*$/i;
+      let email = /\be-?mail(ed)?\b/.test(h);
+      if (tail.test(msg)) { email = true; msg = msg.replace(tail, '').trim(); }
+
+      return { who, grades: [...grades].sort((a, b) => a - b), email, message: msg, saysClass: /\bclass(es)?\b/.test(h),
+               mine: /\bmy\s+(?:[a-z-]+\s+)?(students|kids|class|classes|parents|families)\b/.test(h) };
+    }
+
     async terminalAnnounce(entities) {
       const raw = entities._rawInput || entities.original || '';
       const isAdmin = this.userInfo?.profile?.user_type === 'admin';
-      const wantsEveryone = /\b(everyone|everybody|the whole school|the school|all staff|all parents|all students)\b/i.test(raw)
-        && !entities.classMatch;
 
       // Message text: after a colon, else after "that", else whatever survives
       // stripping the announce verb and the audience phrase.
@@ -72204,11 +72310,11 @@ Students you had withdrawn stay withdrawn.`)) {
       const colon = raw.match(/:\s*(.+)$/);
       if (colon) message = colon[1].trim();
       else {
-        const that = raw.match(/\bthat\s+(.+)$/i);
+        const that = raw.match(/\b(?:that|know)\s+(.+)$/i);
         if (that) message = that[1].trim();
         else {
           message = raw
-            .replace(/^\s*(please\s+)?(announce|broadcast|send\s+(out\s+)?(an?\s+)?(announcement|notice|bulletin)|tell|let|notify|remind)\b/i, '')
+            .replace(/^\s*(please\s+)?(announce|broadcast|send\s+(out\s+)?(an?\s+)?(announcement|notice|bulletin)|tell|let|notify|remind|e-?mail|message)\b/i, '')
             .replace(/^\s*(to\s+|for\s+)?(everyone|everybody|the whole school|the school|all staff|all parents|all students|the (whole )?class|know)\b/i, '')
             .replace(/^\s*(to|for)\s+(the\s+)?[\w\s-]{2,30}?\s+class\b/i, '')
             .trim();
@@ -72222,71 +72328,172 @@ Students you had withdrawn stay withdrawn.`)) {
           message = message.replace(/^\s*(know|that)\b\s*/i, '').replace(/^[\s,:-]+/, '').trim();
         }
       }
+      const aud = this._rivenAnnounceAudience(raw, message);
+      message = aud.message;
       if (message.length < 3) {
-        this.terminalPrintError(`What should the announcement say? Try "announce to Math: no class on Friday".`);
+        this.terminalPrintError(`What should the announcement say? Try "announce to Math: no class on Friday" or "announce to 7th grade parents: picture day is Friday".`);
         return;
       }
 
-      // Resolve recipients
-      let recipients = [], scopeLabel = '';
-      if (wantsEveryone) {
-        if (!isAdmin) {
-          this.terminalPrintError(`Only an admin can announce to the whole school. Name one of your classes and I'll send it there — "announce to Math: …".`);
-          return;
-        }
-        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
-          .from('user_profiles').select('id')
-          .or('account_status.eq.active,account_status.is.null'));
-        if (error) { this.terminalPrintError('Could not load recipients: ' + error.message); return; }
-        recipients = (data || []).map(u => u.id);
-        scopeLabel = 'everyone in the school';
-      } else {
-        const { row, asked } = await this._rivenRequireClass(entities);
-        if (asked) return;
-        if (!row) {
-          this.terminalPrintError(`Which class should I announce to? Try "announce to Math: no class on Friday".`);
-          return;
-        }
-        if (!this._rivenCanManageClass(row)) {
-          this.terminalPrintError(`You're not the teacher for ${row.name}, so I can't announce to it.`);
-          return;
-        }
-        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
-          .from('class_enrollments').select('student_id').eq('class_id', row.id).eq('status', 'active'));
-        if (error) { this.terminalPrintError('Could not load the roster: ' + error.message); return; }
-        recipients = [...new Set((data || []).map(e => e.student_id))];
-        scopeLabel = `${row.name} (${recipients.length} student${recipients.length === 1 ? '' : 's'})`;
-      }
-
-      if (!recipients.length) {
-        this.terminalPrintError(`There's nobody to send that to — ${scopeLabel} has no active members.`);
+      // ---- WHERE: grades, a cohort, classes, or the whole school ----
+      // A cohort wins over a class only when the sentence did not point at a
+      // class (same test the cohort commands use), so "young middle parents"
+      // is the group and "young middle math" is the class.
+      const g = entities.groupMatch;
+      const groupNamed = g && !/\bclass(es)?\b/i.test(raw)
+        && !(entities.classMatch && this._rivenClassNamedBeyondCohort(entities.classMatch));
+      let scope;
+      if (aud.grades.length) scope = 'grades';
+      else if (groupNamed) scope = 'group';
+      else if (entities.classMatch) scope = 'classes';
+      // "remind my students that…" - the classes the speaker teaches.
+      else if (aud.mine) scope = 'mine';
+      // "the class" with no class recognised is a class we could not find,
+      // not the whole school.
+      else if (aud.who && !aud.saysClass) scope = 'school';
+      else {
+        this.terminalPrintError(aud.saysClass ? `Which class should I announce to? Try "announce to Math: no class on Friday".` : `Who should it go to? Name a class, a year group, a grade, or "parents", "staff", "everyone" — "announce to Math parents: …".`);
         return;
       }
+      // "everyone in Math" has always meant the class.
+      let who = aud.who || 'students';
+      if (scope !== 'school' && who === 'everyone') who = 'students';
+
+      // Teachers announce to their own classes (students, parents or both).
+      // Everything wider is an admin's call.
+      if (!isAdmin && (!['classes', 'mine'].includes(scope) || who === 'staff' || who === 'teachers')) {
+        this.terminalPrintError(`Only an admin can announce to ${scope === 'classes' ? 'staff' : scope === 'school' ? 'the whole school' : scope === 'group' ? 'a year group' : 'a grade'}. Name one of your classes and I'll send it there — "announce to Math parents: …".`);
+        return;
+      }
+
+      // ---- the students in scope, and a label for each part ----
+      let studentIds = [], where = '', staffIds = null;
+      try {
+        if (scope === 'grades') {
+          const rows = await this.fetchAllRows((from, to) => this.auth.supabase
+            .from('user_profiles').select('id')
+            .eq('user_type', 'student')
+            .in('grade_level', aud.grades)
+            .or('account_status.eq.active,account_status.is.null')
+            .range(from, to));
+          studentIds = (rows || []).map(r => r.id);
+          where = aud.grades.length === 1 ? `grade ${aud.grades[0]}` : `grades ${aud.grades.join(', ')}`;
+        } else if (scope === 'group') {
+          const one = this._rivenRequireOneGroup(entities, 'Which group?');
+          if (!one) return;   // the picker is up
+          studentIds = [...(one.studentIds || one.row?.studentIds || [])];
+          where = one.name;
+        } else if (scope === 'classes' || scope === 'mine') {
+          let rows, asked = false;
+          if (scope === 'mine') {
+            const myId = this.userInfo?.user?.id;
+            rows = (this._terminalAllClasses || []).filter(c => this._rivenClassIsOpen(c)
+              && (c.teacher_id === myId || c.secondary_teacher_id === myId));
+            // "my class", said by someone with several, is a question.
+            if (rows.length > 1 && /\bmy\s+class\b/i.test(raw) && !/\bmy\s+classes\b/i.test(raw)) {
+              this._showClassPicker(rows, raw);
+              return;
+            }
+          } else {
+            ({ rows, asked } = await this._rivenRequireClasses(entities));
+          }
+          if (asked) return;
+          if (!rows.length) {
+            this.terminalPrintError(`Which class should I announce to? Try "announce to Math: no class on Friday".`);
+            return;
+          }
+          const notMine = rows.filter(r => !this._rivenCanManageClass(r));
+          if (notMine.length) {
+            this.terminalPrintError(`You're not the teacher for ${notMine.map(r => r.name).join(', ')}, so I can't announce to ${notMine.length === 1 ? 'it' : 'them'}.`);
+            return;
+          }
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments').select('student_id')
+            .in('class_id', rows.map(r => r.id)).eq('status', 'active'));
+          if (error) throw error;
+          studentIds = [...new Set((data || []).map(e => e.student_id))];
+          staffIds = [...new Set(rows.flatMap(r => [r.teacher_id, r.secondary_teacher_id]).filter(Boolean))];
+          where = rows.length === 1 ? rows[0].name : `${scope === 'mine' ? 'your ' : ''}${rows.length} classes (${rows.map(r => r.name).join(', ')})`;
+        } else {
+          where = 'the whole school';
+        }
+      } catch (err) {
+        this.terminalPrintError('Could not load who to send it to: ' + err.message);
+        return;
+      }
+
+      // ---- WHO: turn the scope into the people it goes to ----
+      let users = [];
+      try {
+        if (scope === 'school') {
+          const types = { everyone: null, staff: ['teacher', 'admin'], teachers: ['teacher'],
+                          students: ['student'], parents: ['parent'], families: ['student', 'parent'] }[who];
+          users = await this.fetchAllRows((from, to) => {
+            let q = this.auth.supabase.from('user_profiles')
+              .select('id, email, first_name, user_type, account_status')
+              .or('account_status.eq.active,account_status.is.null')
+              .range(from, to);
+            if (types) q = q.in('user_type', types);
+            return q;
+          });
+        } else if (who === 'staff' || who === 'teachers') {
+          users = (await this._announceProfiles(staffIds || []))
+            .filter(u => who === 'staff' ? ['teacher', 'admin'].includes(u.user_type) : u.user_type === 'teacher');
+        } else {
+          const ids = who === 'students' ? studentIds
+            : who === 'parents' ? await this._parentIdsOf(studentIds)
+            : [...studentIds, ...(await this._parentIdsOf(studentIds))];
+          users = await this._announceProfiles(ids);
+        }
+      } catch (err) {
+        this.terminalPrintError('Could not load who to send it to: ' + err.message);
+        return;
+      }
+
+      const whoLabel = { students: 'students', parents: 'parents', families: 'students and parents',
+                         staff: 'staff', teachers: 'teachers', everyone: 'everyone' }[who];
+      const scopeLabel = scope === 'school'
+        ? (who === 'everyone' ? 'everyone in the school' : `all ${whoLabel}`)
+        : (scope !== 'grades' && scope !== 'group' && (who === 'staff' || who === 'teachers') ? `the teachers of ${where}` : `${whoLabel} in ${where}`);
+
+      if (!users.length) {
+        const why = who === 'parents' || who === 'families' ? ' (no linked parent accounts)'
+          : scope === 'grades' ? ' (only students with that grade level set on their profile count)' : '';
+        this.terminalPrintError(`There's nobody to send that to: ${scopeLabel} has no active accounts${why}.`);
+        return;
+      }
+
+      const counts = {};
+      users.forEach(u => { counts[u.user_type] = (counts[u.user_type] || 0) + 1; });
+      const breakdown = Object.entries(counts).map(([t, n]) => `${n} ${t}${n === 1 ? '' : 's'}`).join(', ');
+      const withEmail = users.filter(u => u.email).length;
+      const sendEmail = aud.email;
 
       const esc = (s) => this.escapeHtml(s);
       const title = `Announcement from ${this.userInfo?.profile?.first_name || 'your teacher'}`;
       const doIt = async () => {
-        const rows = recipients.map(id => ({
-          user_id: id, type: 'system', title, message, link: null,
-          metadata: { broadcast: true, from_admin: this.userInfo.user.id, emailSent: false, via: 'riven' },
-        }));
-        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
-          .from('notifications').insert(rows).select('id'));
-        if (error) { this.terminalPrintError('Could not send the announcement: ' + error.message); return; }
-        const ids = (data || []).map(r => r.id);
+        let sent;
+        try {
+          sent = await this._sendAnnouncement({ users, title, message, sendEmail, via: 'riven' });
+        } catch (error) {
+          this.terminalPrintError('Could not send the announcement: ' + error.message);
+          return;
+        }
+        const ids = sent.ids;
         this._pushUndo(`the announcement to ${scopeLabel}`, async () => {
-          const { error: delErr } = await this.auth.supabase.from('notifications').delete().in('id', ids);
-          if (delErr) throw delErr;
+          await this._unsendAnnouncement(ids);
         }, { kind: 'notifications', ids });
+        const mailed = sendEmail ? ` Emailed ${sent.emailsSent}${sent.emailErrors ? ` (${sent.emailErrors} failed)` : ''}.` : '';
         this._naturalSuccess([
-          `Sent to ${scopeLabel}: "${message.length > 80 ? message.slice(0, 80) + '…' : message}"`,
-          `Announced to ${scopeLabel}. Say "undo" to pull it back.`,
+          `Sent to ${scopeLabel} (${users.length}): "${message.length > 80 ? message.slice(0, 80) + '…' : message}".${mailed}`,
+          `Announced to ${scopeLabel}.${mailed} Say "undo" to pull it back${sendEmail ? ' from the bell (emails stay sent)' : ''}.`,
         ]);
       };
 
       this._requestConfirmation(
         `Send to <b>${esc(scopeLabel)}</b>:<br><span style="font-size:13px;">“${esc(message)}”</span>
-         <div style="font-size:11px;color:var(--muted);margin-top:6px;">${recipients.length} notification${recipients.length === 1 ? '' : 's'} — they'll see it immediately.</div>`,
+         <div style="font-size:11px;color:var(--muted);margin-top:6px;">${users.length} notification${users.length === 1 ? '' : 's'} (${esc(breakdown)}) — they'll see it immediately.${
+           sendEmail ? ` Also emailed to ${withEmail} address${withEmail === 1 ? '' : 'es'}; emails can't be unsent.` : ''}</div>`,
         doIt);
     }
 
@@ -75950,11 +76157,11 @@ Students you had withdrawn stay withdrawn.`)) {
 
       // Parent path: student entity + parent keyword
       if (student && isParent) {
-        const { data: links } = await this.auth.supabase
-          .from('parent_student_links')
-          .select('parent_id, user_profiles!parent_student_links_parent_id_fkey(id, first_name, last_name)')
-          .eq('student_id', student.id).limit(1);
-        const parent = links?.[0]?.user_profiles;
+        const parentIds = await this._parentIdsOf([student.id]).catch(() => []);
+        const { data: parentRows } = parentIds.length
+          ? await this.auth.supabase.from('user_profiles').select('id, first_name, last_name').in('id', parentIds).limit(1)
+          : { data: [] };
+        const parent = parentRows?.[0];
         if (parent) {
           recipientId = parent.id;
           recipientName = `${parent.first_name} ${parent.last_name}`;

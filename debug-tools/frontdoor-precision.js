@@ -358,6 +358,11 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['assign "Volcano poster" to math due in 3 days', 'WRITE', 'CREATE_ASSIGNMENT'],
   ['announce to math: no class on friday', 'WRITE', 'ANNOUNCE', 'blast radius'],
   ['tell the math class that there is no class friday', 'WRITE', 'ANNOUNCE', 'blast radius'],
+  ['announce to 7th grade parents: picture day is friday', 'WRITE', 'ANNOUNCE', 'blast radius: a grade'],
+  ['tell the 7th grade parents that picture day is friday', 'WRITE', 'ANNOUNCE', 'blast radius: a grade, no "announce"'],
+  ['let the staff know the meeting moved to 3', 'WRITE', 'ANNOUNCE', 'blast radius: staff'],
+  ['email all parents: school is closed tomorrow', 'WRITE', 'ANNOUNCE', 'blast radius: parents, by email'],
+  ['remind my students that the test is friday', 'WRITE', 'ANNOUNCE', 'blast radius: my classes'],
   ['add ari to chess club', 'WRITE', 'ACTIVITY_ENROLL'],
   ['sign clementine up for the robotics club', 'WRITE', 'ACTIVITY_ENROLL'],
   ['remove noah from chess club', 'WRITE', 'ACTIVITY_UNENROLL', 'destructive'],
@@ -398,6 +403,10 @@ const BUCKET_B = [ // reads and out-of-scope — must not write
 ];
 
 const BUCKET_C = [ // ADVERSARIAL: looks like a command, is not one
+  // — one family, not a group: "tell ari's parents that…" is a message to them —
+  ["tell ari's parents that he did great today", 'SAFE', null, 'one family, not an announcement'],
+  ['message the 7th grade parents about picture day', 'SAFE', null, 'no announcement text yet'],
+  ['should i tell the 7th grade parents that picture day moved', 'SAFE', null, 'hypothetical announcement'],
   // — hypothetical / deliberative —
   ['should i give clementine 5 rtc for this', 'SAFE', 'SPECULATIVE_WRITE', 'hypothetical -> explains'],
   ['would it be fair to give noah 10 rtc', 'SAFE', null, 'hypothetical'],
