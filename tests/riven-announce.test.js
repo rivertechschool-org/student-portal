@@ -39,7 +39,7 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const names = ['_rivenAnnounceAudience', 'terminalAnnounce', '_sendAnnouncement', '_parentIdsOf',
+const names = ['_rivenAnnounceLead', '_rivenAnnounceAudience', 'terminalAnnounce', '_sendAnnouncement', '_parentIdsOf',
   '_announceProfiles', '_unsendAnnouncement'];
 const app = eval(`({ ${names.map(method).join(',\n')} })`);
 
@@ -205,6 +205,12 @@ const cohort = { groupMatch: { id: 'g1', name: 'Full Young Middle', studentIds: 
   ok('teacher: their own class\'s parents', r.to === 'p1', r.to);
   r = await run('remind my students that the test is friday');
   ok('teacher: "my students" is their classes', r.to === 's1,s2', r.to);
+  r = await run('tell my students the test is friday');
+  ok('teacher: "tell my students" without "that"', r.to === 's1,s2' && inserted[0]?.message === 'the test is friday', r.to + ' / ' + inserted[0]?.message);
+  r = await run('tell my parents the trip is friday');
+  ok('teacher: "tell my parents" without "that"', r.to === 'p1' && inserted[0]?.message === 'the trip is friday', r.to + ' / ' + inserted[0]?.message);
+  r = await run('remind my students the 7th grade trip is friday');
+  ok('teacher: a grade inside the message is not the audience', r.to === 's1,s2' && inserted[0]?.message === 'the 7th grade trip is friday', r.to + ' / ' + inserted[0]?.message);
   for (const [raw, ents, what] of [
     ['announce to staff: meeting', {}, 'staff'],
     ['announce to everyone: closed', {}, 'the whole school'],
