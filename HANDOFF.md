@@ -5777,3 +5777,11 @@ found nobody: the 📢 tool said "No users found" and Riven said "There's nobody
 Nothing had gone out through either since April. Both now send to every account that is not
 "inactive". The announce test's database stub applies the page's real filter with the real status
 values, so a mismatch like this fails the test.
+
+## 2026-10-29: Sending an announcement no longer fails with a security error
+
+The shared announcement sender asked for the new notifications back after inserting them, to keep
+their ids for undo. A sender may create other people's notifications but not read them, so the
+whole send failed with "new row violates row-level security policy". The page now makes the ids
+itself and doesn't read anything back. The test stub behaves the same way, so asking for the rows
+back fails the test.

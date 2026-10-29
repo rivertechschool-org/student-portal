@@ -116,10 +116,17 @@ function query(table) {
       return q;
     },
     range() { return q; },
+    // Like the database: a sender may insert other people's notifications
+    // but not read them, so asking for the rows back fails the insert.
     insert(rs) {
-      const out = rs.map((r, i) => ({ ...r, id: 'n' + (inserted.length + i) }));
-      inserted.push(...out);
-      return { select: () => Promise.resolve({ data: out.map(r => ({ id: r.id })), error: null }) };
+      const rls = { data: null, error: { message: 'new row violates row-level security policy for table "notifications"' } };
+      return {
+        select: () => Promise.resolve(rls),
+        then(res, rej) {
+          inserted.push(...rs.map((r, i) => ({ ...r, id: r.id || 'n' + (inserted.length + i) })));
+          return Promise.resolve({ data: null, error: null }).then(res, rej);
+        },
+      };
     },
     then(res, rej) { return Promise.resolve({ data: rows, error: null }).then(res, rej); },
   };
