@@ -5754,3 +5754,17 @@ Two fixes came with this:
 - **Riven's "undo" really pulls an announcement back.** A plain delete by the sender removed nothing and gave no error. Undo now goes through the database (backend repo) for the sender's own announcements from the last day, and says so if nothing could be removed.
 
 Tests: `tests/riven-announce.test.js`. New phrasings are in `debug-tools/frontdoor-precision.js`.
+
+## 2026-10-29: An announcement's message is no longer read as a command
+
+"Tell my students that you can also purchase late passes…" was routed to buying an item, because
+Riven read the whole sentence, message included. Now a sentence that opens like an announcement
+("tell my students that…", "let the staff know…", "announce to Math: …", "email all parents: …",
+"tell my students the test is Friday") goes straight to the announcement command, and only the
+part before the message is searched for classes, groups and names. So "announce to everyone: Math
+is cancelled" goes to everyone, not the Math class, and a time like "3:15" in the message is not
+taken for a colon. It still asks for confirmation with the count before sending.
+
+The split is `_rivenAnnounceSplit`. The harnesses that copy Riven's methods out of the page list it
+next to `_extractEntities`. Tests: `tests/riven-announce.test.js`, with the routing cases in
+`debug-tools/frontdoor-precision.js`.

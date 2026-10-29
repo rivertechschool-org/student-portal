@@ -45,7 +45,7 @@ function extract(name) {
 }
 // absence-command-matrix's call graph, plus the follow-up and batch helpers.
 const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
-  '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
+  '_rivenAnnounceSplit', '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
   '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates',
   '_rivenAttendanceQuestion',
   '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',

@@ -118,7 +118,7 @@ function extract(name) {
 }
 
 const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
-  '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',
+  '_rivenAnnounceSplit', '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex', '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',
   '_rivenClassNamedBeyondCohort',
   '_levenshteinDistance', '_rivenAttendanceQuestion', '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates', '_matchIntent', '_rivenIsFutureAbsenceCommand', '_rivenIsLateEarlyCommand', '_rivenLateEarlyPlan', '_rivenClockTime', '_rivenLateEarlyDate', '_rivenMonthDayDates', '_rivenMonthIndex', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers', '_rivenResolveAbsenceSpans', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers', '_rivenDayCodes', '_rivenCollapseSpans', '_matchSmalltalk', '_isAggregateQuery',
   '_rivenMatchClass', '_rivenBandFromText', '_rivenBandLabel', '_rivenClassIsOpen', '_rivenCanManageClass', '_preferOwnedClasses', '_isoDaysAgo',
@@ -363,6 +363,11 @@ const BUCKET_A = [ // in-scope commands — these SHOULD write
   ['let the staff know the meeting moved to 3', 'WRITE', 'ANNOUNCE', 'blast radius: staff'],
   ['email all parents: school is closed tomorrow', 'WRITE', 'ANNOUNCE', 'blast radius: parents, by email'],
   ['remind my students that the test is friday', 'WRITE', 'ANNOUNCE', 'blast radius: my classes'],
+  ['tell my students that you can now resubmit graded work. you can also purchase late assignment passes and use them on a late assignment', 'WRITE', 'ANNOUNCE', 'the message mentions buying: still an announcement'],
+  ['tell my students that they should give ari 5 rtc', 'WRITE', 'ANNOUNCE', 'the message reads like an award'],
+  ['tell my students that they should never give up', 'WRITE', 'ANNOUNCE', 'the message reads like a refusal'],
+  ['tell my students that the bus leaves at 3:15', 'WRITE', 'ANNOUNCE', 'a colon inside the message'],
+  ['let the staff know that ari is out sick', 'WRITE', 'ANNOUNCE', 'a name inside the message'],
   ['tell my students the test is friday', 'WRITE', 'ANNOUNCE', 'blast radius: my classes, no "that"'],
   ['tell the math parents the trip is friday', 'WRITE', 'ANNOUNCE', 'blast radius: no "that"'],
   ['remind my class the test is friday', 'WRITE', 'ANNOUNCE', 'blast radius: no "that"'],

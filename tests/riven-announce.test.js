@@ -39,9 +39,20 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const names = ['_rivenAnnounceLead', '_rivenAnnounceAudience', 'terminalAnnounce', '_sendAnnouncement', '_parentIdsOf',
+const names = ['_rivenAnnounceSplit', '_rivenAnnounceAudience', 'terminalAnnounce', '_sendAnnouncement', '_parentIdsOf',
   '_announceProfiles', '_unsendAnnouncement'];
 const app = eval(`({ ${names.map(method).join(',\n')} })`);
+
+// ---- where the audience ends and the message begins ----
+{ const sp = app._rivenAnnounceSplit('tell my students that you can buy a late pass'); ok('split: "that"', sp?.head === 'tell my students' && sp?.body === 'you can buy a late pass', JSON.stringify(sp)); }
+{ const sp = app._rivenAnnounceSplit('announce to everyone: math is cancelled'); ok('split: a class named in the message is not the audience', sp?.head === 'announce to everyone' && sp?.body === 'math is cancelled', JSON.stringify(sp)); }
+{ const sp = app._rivenAnnounceSplit('tell my students that the bus leaves at 3:15'); ok('split: a colon inside the message', sp?.head === 'tell my students' && sp?.body === 'the bus leaves at 3:15', JSON.stringify(sp)); }
+{ const sp = app._rivenAnnounceSplit('let the staff know that ari is out sick'); ok('split: "let … know"', sp?.head === 'let the staff' && sp?.body === 'ari is out sick', JSON.stringify(sp)); }
+{ const sp = app._rivenAnnounceSplit('tell my students the test is friday'); ok('split: no separator', sp?.head === 'tell my students' && sp?.body === 'the test is friday', JSON.stringify(sp)); }
+ok('not split: one family', app._rivenAnnounceSplit('tell ari parents that he did great') === null, JSON.stringify(app._rivenAnnounceSplit('tell ari parents that he did great')));
+ok('not split: a read', app._rivenAnnounceSplit('tell all the kids names in math') === null, JSON.stringify(app._rivenAnnounceSplit('tell all the kids names in math')));
+ok('not split: a student message', app._rivenAnnounceSplit('message ari: great work today') === null, JSON.stringify(app._rivenAnnounceSplit('message ari: great work today')));
+ok('not split: the parents of one child', app._rivenAnnounceSplit('tell the parents of ari the trip is friday') === null, JSON.stringify(app._rivenAnnounceSplit('tell the parents of ari the trip is friday')));
 
 // ---- reading the audience ----
 const A = (raw, msg = '') => app._rivenAnnounceAudience(raw, msg);

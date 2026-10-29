@@ -64,7 +64,7 @@ function extract(name) {
 // The same call graph nlp-stress uses, so this harness and that one cannot
 // disagree about what the page does.
 const methods = ['_normalizeInput', '_resolvePronouns', '_isFollowUpCommand',
-  '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
+  '_rivenAnnounceSplit', '_extractEntities', '_parseTimeframe', '_rivenPastDate', '_rivenMonthIndex',
   '_rivenPointsForward', '_rivenForwardWindow', '_rivenMonthDayDates',
   '_rivenAttendanceQuestion',
   '_fuzzyFindStudent', '_rivenIsMyStudent', '_rivenOwnRank', '_calculateSimilarity',

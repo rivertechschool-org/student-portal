@@ -56972,7 +56972,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-29·a';
+      const RIVEN_BUILD = '2026-10-29·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -60274,6 +60274,15 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _extractEntities(normalized, original) {
+      // An announcement: only the audience part names classes, groups or
+      // people. "announce to everyone: Math is cancelled" is not the Math
+      // class, and a name in the message is not the student it is about.
+      const announce = this._rivenAnnounceSplit(normalized);
+      if (announce) {
+        const e = this._extractEntities(announce.head, announce.head);
+        return Object.assign(e, { original, normalized, announceHead: announce.head });
+      }
+
       const entities = {
         student: null,
         amount: null,
@@ -61399,6 +61408,10 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _matchIntent(normalized, entities) {
+      // An announcement's message is the teacher's text, not a command: see
+      // _rivenAnnounceSplit. It still confirms with the count before sending.
+      if (entities?.announceHead != null) return { intent: 'ANNOUNCE', confidence: 0.95 };
+
       // The attendance question is decided before anything bids on it. See
       // _rivenAttendanceQuestion: the phrasings are a cross product and the
       // pattern lists were a list, so the lists lost. Only interrogative
@@ -61698,8 +61711,6 @@ Students you had withdrawn stay withdrawn.`)) {
           notIfReadQuery: true, notIfStudent: true,
           patterns: [
             { re: /\b(tell|let|notify|remind|inform)\s+(all\s+(of\s+)?)?(the\s+|my\s+|our\s+)?([a-z0-9-]+\s+){0,3}?(parents|families|staff|teachers|faculty|students|kids|graders)\s+(that|know|about)\b/, w: 8 },
-            // The same without "that": "tell my students the test is friday".
-            { re: /^\s*(please\s+)?(tell|remind|notify|inform)\s+(all\s+(of\s+)?)?(the|my|our|all)\s+([a-z0-9-]+\s+){0,3}?(parents|families|staff|teachers|faculty|students|kids|graders|class|classes)\s+(?!(of|in|for|from|who|whose|with|at|to|and|that|know|about|names?|grades?|scores?|roster|list|attendance|progress|apart|marks)\b)\S+(\s+\S+)+/, w: 8 },
             { re: /^(e-?mail|message|msg|text|notify)\s+(all\s+(of\s+)?)?(the\s+|my\s+|our\s+)?([a-z0-9-]+\s+){0,3}?(parents|families|staff|teachers|faculty|students|kids|graders)\b[^:]*:/, w: 8 }
           ]
         },
@@ -72256,25 +72267,65 @@ Students you had withdrawn stay withdrawn.`)) {
     //          levels are stored as text
     //   email  "email all parents: …", "announce by email", "… and email it"
     //   message the text with a trailing "and email it" taken off
-    // "tell my students", "remind the 7th grade parents": the verb and the
-    // audience at the front of an announcement that has no colon or "that".
-    _rivenAnnounceLead() {
-      return /^\s*(?:please\s+)?(?:tell|remind|notify|inform)\s+(?:all\s+(?:of\s+)?)?(?:the|my|our|all)\s+(?:[a-z0-9-]+\s+){0,3}?(?:parents|families|staff|teachers|faculty|students|kids|graders|class|classes)\b/i;
+    // An announcement that OPENS like one, split into who it is for and what
+    // it says: "tell my students that …", "let the staff know …", "announce
+    // to Math: …", "email all parents: …", "tell my students the test is
+    // friday". Returns { head, body } or null.
+    //
+    // Everything after the split is the teacher's text, not a command. Read
+    // as a command, "you can also purchase late passes" bid as a purchase,
+    // "give ari 5 rtc" as an award, and a class named in the message became
+    // the audience. So the router sends these straight to ANNOUNCE and only
+    // the head is searched for classes, groups and names.
+    //
+    // A determiner is required before a plural audience ("the", "my", "our",
+    // "all"), or the audience comes straight after the verb: "tell ari's
+    // parents that…" (possessive gone: "tell ari parents") is one family's
+    // message, not an announcement. When several shapes match, the shortest
+    // head wins, so a colon inside the message ("at 3:15") is not a split.
+    _rivenAnnounceSplit(text) {
+      const t = String(text || '');
+      const aud = '(?:parents|families|staff|teachers|faculty|students|kids|graders|class|classes|school)';
+      const who = '(?:(?:(?:all\\s+(?:of\\s+)?)?(?:the|my|our|all)\\s+(?:[a-z0-9-]+\\s+){0,3}?)?' + aud
+        + '|everyone|everybody)';
+      const shapes = [
+        // "tell my students that …", "remind the math parents that …"
+        new RegExp('^\\s*(?:please\\s+)?(?:tell|notify|remind|inform)\\s+' + who + '\\s+(that)\\b\\s*', 'i'),
+        // "let the staff know (that) …"
+        new RegExp('^\\s*(?:please\\s+)?let\\s+' + who + '\\s+(know)\\b(?:\\s+that\\b)?\\s*', 'i'),
+        // "announce to math: …", "send an announcement to staff: …"
+        /^\s*(?:please\s+)?(?:announce|broadcast|post|send\s+(?:out\s+)?(?:an?\s+)?(?:announcement|notice|bulletin))\b[^:]{0,80}?(:)\s*/i,
+        // "announce to math that …"
+        /^\s*(?:please\s+)?(?:announce|broadcast)\b[^:]{0,80}?\s(that)\b\s*/i,
+        // "email all parents: …", "tell the staff: …"
+        new RegExp('^\\s*(?:please\\s+)?(?:e-?mail|message|msg|text|notify|tell|remind)\\s+' + who + '\\b[^:]{0,40}?(:)\\s*', 'i'),
+        // "tell my students the test is friday" - no separator at all, so a
+        // determiner is required and a preposition or a read noun after the
+        // audience means it is something else ("the parents of ari…", "the
+        // kids names in math").
+        new RegExp('^\\s*(?:please\\s+)?(?:tell|remind|notify|inform)\\s+(?:all\\s+(?:of\\s+)?)?(?:the|my|our|all)\\s+(?:[a-z0-9-]+\\s+){0,3}?'
+          + aud + '\\s+()(?!(?:of|in|for|from|who|whose|with|at|to|and|that|know|about|names?|grades?|scores?|roster|list|attendance|progress|apart|marks)\\b)(?=\\S+\\s+\\S)', 'i'),
+      ];
+      let best = null;
+      for (const re of shapes) {
+        const m = t.match(re);
+        if (!m) continue;
+        const body = t.slice(m[0].length).trim();
+        if (!body) continue;
+        const head = t.slice(0, m.index + m[0].lastIndexOf(m[1])).trim();
+        if (!best || head.length < best.head.length) best = { head, body };
+      }
+      return best;
     }
 
     _rivenAnnounceAudience(raw, message) {
       const text = String(raw || '');
+      const split = this._rivenAnnounceSplit(text);
       const colon = text.indexOf(':');
-      let head = colon >= 0 ? text.slice(0, colon) : text;
-      if (colon < 0) {
+      let head = split ? split.head : colon >= 0 ? text.slice(0, colon) : text;
+      if (!split && colon < 0) {
         const cut = head.search(/\b(that|know|about)\b/i);
         if (cut > 0) head = head.slice(0, cut);
-        else {
-          // Otherwise the message would be read as part of the audience:
-          // "tell my students the 7th grade trip..." is not a grade.
-          const lead = head.match(this._rivenAnnounceLead());
-          if (lead) head = lead[0];
-        }
       }
       const h = ' ' + head.toLowerCase().replace(/[^a-z0-9&+\s-]/g, ' ').replace(/\s+/g, ' ') + ' ';
 
@@ -72321,14 +72372,14 @@ Students you had withdrawn stay withdrawn.`)) {
       // Message text: after a colon, else after "that", else whatever survives
       // stripping the announce verb and the audience phrase.
       let message = '';
+      const split = this._rivenAnnounceSplit(raw);
       const colon = raw.match(/:\s*(.+)$/);
-      if (colon) message = colon[1].trim();
+      if (split) message = split.body;
+      else if (colon) message = colon[1].trim();
       else {
         const that = raw.match(/\b(?:that|know)\s+(.+)$/i);
         if (that) message = that[1].trim();
-        else if (this._rivenAnnounceLead().test(raw)) {
-          message = raw.replace(this._rivenAnnounceLead(), '').trim();
-        } else {
+        else {
           message = raw
             .replace(/^\s*(please\s+)?(announce|broadcast|send\s+(out\s+)?(an?\s+)?(announcement|notice|bulletin)|tell|let|notify|remind|e-?mail|message)\b/i, '')
             .replace(/^\s*(to\s+|for\s+)?(everyone|everybody|the whole school|the school|all staff|all parents|all students|the (whole )?class|know)\b/i, '')
