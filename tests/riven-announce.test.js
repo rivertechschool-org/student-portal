@@ -80,7 +80,7 @@ ok('"my students"', A('remind my students that the test is friday').mine === tru
 // ---- the stand-in database ----
 // Two Math classes, a cohort, grade levels, parents (one linked to two
 // children), staff, and one deactivated parent who must not be reached.
-const P = (id, user_type, extra = {}) => ({ id, user_type, email: id + '@example.test', first_name: id, account_status: 'active', ...extra });
+const P = (id, user_type, extra = {}) => ({ id, user_type, email: id + '@example.test', first_name: id, account_status: 'activated', ...extra });
 const people = [
   P('s1', 'student', { grade_level: '7' }), P('s2', 'student', { grade_level: '7' }),
   P('s3', 'student', { grade_level: '8' }), P('s4', 'student', { grade_level: null }),
@@ -106,7 +106,13 @@ function query(table) {
     eq(k, v) { rows = rows.filter(r => r[k] === v); return q; },
     in(k, vs) { rows = rows.filter(r => vs.includes(r[k])); return q; },
     or(expr) {
-      if (/account_status/.test(expr)) rows = rows.filter(r => r.account_status === 'active' || r.account_status == null);
+      // Apply the page's own filter, so a wrong status value fails here. The
+      // portal stores 'activated' and 'inactive'; there is no 'active'.
+      if (/account_status/.test(expr)) {
+        const parts = expr.split(',').map(x => x.split('.'));
+        rows = rows.filter(r => parts.some(([, op, v]) => op === 'is' ? r.account_status == null
+          : op === 'eq' ? r.account_status === v : op === 'neq' ? r.account_status != null && r.account_status !== v : false));
+      }
       return q;
     },
     range() { return q; },

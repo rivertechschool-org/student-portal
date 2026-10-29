@@ -5768,3 +5768,12 @@ taken for a colon. It still asks for confirmation with the count before sending.
 The split is `_rivenAnnounceSplit`. The harnesses that copy Riven's methods out of the page list it
 next to `_extractEntities`. Tests: `tests/riven-announce.test.js`, with the routing cases in
 `debug-tools/frontdoor-precision.js`.
+
+## 2026-10-29: Announcements reach "activated" accounts again
+
+Both the 📢 Send Announcement tool and Riven's announce only sent to accounts whose status was
+"active". The portal marks working accounts "activated" (or "inactive"), so every announcement
+found nobody: the 📢 tool said "No users found" and Riven said "There's nobody to send that to".
+Nothing had gone out through either since April. Both now send to every account that is not
+"inactive". The announce test's database stub applies the page's real filter with the real status
+values, so a mismatch like this fails the test.
