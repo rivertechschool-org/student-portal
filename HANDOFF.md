@@ -5785,3 +5785,18 @@ their ids for undo. A sender may create other people's notifications but not rea
 whole send failed with "new row violates row-level security policy". The page now makes the ids
 itself and doesn't read anything back. The test stub behaves the same way, so asking for the rows
 back fails the test.
+
+## 2026-10-29: Students see when a class is canceled
+
+When a teacher cancels a session (the register's Cancel, or Riven's "cancel math today"), the
+student now sees it:
+- **Home:** a "🚫 Class canceled" card at the top lists their classes canceled from today through
+  the next week, with the teacher's reason and the period when there is one. With nothing canceled
+  there is no card.
+- **Class cards:** a "CANCELED TODAY" badge when it is today, and a "🚫 Canceled Mon, Nov 2 ·
+  reason" line for any day this week.
+
+Putting the class back on removes it. Students whose profile was created before they had a login
+couldn't read their classes' cancellations at all; that was fixed in the backend repo, with its
+own test. Parents can now read them too, but no parent page shows them yet. Here:
+`tests/student-cancellations.test.js`.

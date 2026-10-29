@@ -6682,6 +6682,9 @@
           cls.enrollment_status = enrollment ? enrollment.status : null;
         });
 
+        // Canceled sessions this week, for the class cards and Home.
+        await this.loadStudentCancellations();
+
         // Load assignments for these classes with selective assignment support
         if (this.classes.length > 0) {
           // Build query with date filter for current quarter
@@ -7972,6 +7975,83 @@
         }
       }
 
+      // Sessions of the student's own classes that a teacher has canceled,
+      // today through the next week. A cancellation is an attendance session
+      // with status 'canceled' (the register's Cancel, or Riven's "cancel math
+      // today"); putting the class back on deletes it, so it drops off here.
+      // Never throws: if it fails, nothing is shown, as before.
+      async loadStudentCancellations() {
+        const ids = (this.classes || [])
+          .filter(c => c.enrollment_status === 'active' && c.status !== 'closed')
+          .map(c => c.id);
+        this._studentCanceled = [];
+        if (!ids.length) return this._studentCanceled;
+        const end = new Date();
+        end.setDate(end.getDate() + 7);
+        try {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_attendance_sessions')
+            .select('class_id, date, period, cancel_reason')
+            .in('class_id', ids)
+            .eq('status', 'canceled')
+            .gte('date', this._localDateStr(new Date()))
+            .lte('date', this._localDateStr(end))
+            .order('date'));
+          if (error) throw error;
+          this._studentCanceled = data || [];
+        } catch (e) {
+          console.warn('Could not load class cancellations:', e?.message || e);
+        }
+        return this._studentCanceled;
+      }
+
+      // "today", "tomorrow", "Mon, Nov 2". Session dates are plain dates, so
+      // they are read as local days, not UTC midnight.
+      _canceledDayText(dateStr) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateStr || ''));
+        if (!m) return String(dateStr || '');
+        const d = new Date(+m[1], +m[2] - 1, +m[3]);
+        const days = this._calendarDaysUntil(d);
+        if (days === 0) return 'today';
+        if (days === 1) return 'tomorrow';
+        return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      }
+
+      // One line per canceled session: "Math is canceled today (period 3)"
+      // and the teacher's reason underneath when they gave one.
+      _canceledLines(list) {
+        const e = (t) => this.escapeHtml(String(t));
+        return (list || []).map(x => {
+          const cls = (this.classes || []).find(c => c.id === x.class_id);
+          const period = x.period !== null && x.period !== undefined ? ` (period ${e(x.period)})` : '';
+          return {
+            date: x.date,
+            name: cls?.name || 'A class',
+            html: `<b>${e(cls?.name || 'A class')}</b> is canceled ${e(this._canceledDayText(x.date))}${period}`,
+            reason: x.cancel_reason ? e(x.cancel_reason) : '',
+          };
+        });
+      }
+
+      // The Home card. Nothing at all when no class is canceled this week.
+      renderStudentCanceledCard(list) {
+        const lines = this._canceledLines(list);
+        if (!lines.length) return '';
+        return `
+          <div class="card" id="student-canceled-card" style="padding: 14px 16px; border-left: 4px solid var(--danger);">
+            <h3 style="margin: 0 0 8px 0;">🚫 Class canceled</h3>
+            <div class="list">
+              ${lines.map(l => `
+                <div class="list-item" style="padding-left: 4px;">
+                  <div class="list-item-content" style="min-width: 0;">
+                    <div class="list-item-title" style="overflow-wrap: anywhere;">${l.html}</div>
+                    ${l.reason ? `<div class="list-item-meta" style="overflow-wrap: anywhere;">${l.reason}</div>` : ''}
+                  </div>
+                </div>`).join('')}
+            </div>
+          </div>`;
+      }
+
       // "due today", "due tomorrow", "due Thu, Oct 8", "was due Mon, Sep 28".
       _dueText(dueAt) {
         if (!dueAt) return '';
@@ -8253,6 +8333,15 @@
         // Feeds the Do-this-next card and the skill items' current mastery.
         // Never blocks the page: if it fails, the card says so and the rest
         // of Home is drawn from its own queries exactly as before.
+        // Canceled classes this week, above everything else on Home.
+        this.loadStudentCancellations().then(list => {
+          const el = document.getElementById('student-canceled-container');
+          if (!el) return;
+          const html = this.renderStudentCanceledCard(list);
+          el.innerHTML = html;
+          el.style.marginBottom = html ? '20px' : '0';
+        });
+
         const overviewP = this.loadStudentOverview();
         overviewP.then(ov => {
           const el = document.getElementById('student-next-container');
@@ -8312,6 +8401,9 @@
         });
 
         return `
+          <!-- Classes a teacher has canceled, today through the next week. -->
+          <div id="student-canceled-container"></div>
+
           <!-- Do this next + attendance this quarter (rt_student_overview).
                First, because it is the answer to "what do I do now". -->
           <div id="student-next-container" style="margin-bottom: 20px;"></div>
@@ -18762,6 +18854,11 @@
         // Full cards appear only where a class has no weekday ("No day set").
         const isHidden = isTeacher && this._hiddenClasses && this._isHiddenInstance(cls.id, 'none');
         const dimCard = isClosed || showWithdrawnBadge || isHidden;
+        // A student's class canceled this week: a badge when it is today,
+        // and the day (and reason) on the card either way.
+        const canceled = isStudent && !isWithdrawn
+          ? this._canceledLines((this._studentCanceled || []).filter(x => x.class_id === cls.id)) : [];
+        const canceledToday = canceled.some(l => l.date === this._localDateStr(new Date()));
 
         return `
           <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${dimCard ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
@@ -18776,6 +18873,7 @@
             ` : ''}
             ${showWithdrawnBadge ? `<span style="background: #e67e22; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">WITHDRAWN</span>` : ''}
             ${showClosedBadge ? `<span style="background: var(--muted); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; position: absolute; top: 10px; left: 10px;">CLOSED</span>` : ''}
+            ${canceledToday && !showClosedBadge ? `<div style="margin-bottom: 6px;"><span style="background: var(--danger); color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;">CANCELED TODAY</span></div>` : ''}
             <h3 ${isTeacher ? 'style="padding-right: 165px;"' : ''}>${cls.name}</h3>
             ${this.classDescription(cls.description)}
             <div class="class-stats">
@@ -18798,6 +18896,10 @@
                 <span>👦 ${enrolledChildrenText}</span>
               </div>
             ` : ''}
+            ${canceled.map(l => `
+              <div class="class-stats" style="margin-top: 8px;">
+                <span style="background: rgba(0, 0, 0, 0.3); color: #fff; padding: 3px 8px; border-radius: 4px; font-weight: 600;">🚫 Canceled ${this.escapeHtml(this._canceledDayText(l.date))}${l.reason ? ` · ${l.reason}` : ''}</span>
+              </div>`).join('')}
           </div>
         `;
       }
