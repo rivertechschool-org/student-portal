@@ -176,6 +176,10 @@ const cohort = { groupMatch: { id: 'g1', name: 'Full Young Middle', studentIds: 
   ok('all parents (active)', r.to === 'p1,p2', r.to);
   r = await run('announce to everyone: closed tomorrow');
   ok('everyone (active)', r.to.split(',').length === 9, r.to);
+  r = await run('announce to all students: closed tomorrow');
+  ok('all students (active)', r.to === 's1,s2,s3,s4', r.to);
+  r = await run('tell all students that school is closed tomorrow');
+  ok('"tell all students that ..."', r.to === 's1,s2,s3,s4' && inserted[0]?.message === 'school is closed tomorrow', r.to);
 
   // Email
   r = await run('announce to math parents: field trip friday and email it', mathA);
