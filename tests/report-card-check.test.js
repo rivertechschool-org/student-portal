@@ -164,6 +164,16 @@ function makeApp(role = 'admin') {
   ok('a link across subjects is reported', /linked into Writing Lab, but they are different subjects/.test(texts('BadLink')), texts('BadLink'));
   ok('a renamed class with nothing linked in is reported', /"Ghost Course" has nothing linked into it/.test(texts('BadLink')));
   ok('the running quarter is not a missing grade', !who('NoQ2Yet'), texts('NoQ2Yet'));
+  {
+    // A quarter is due from its last day, not the day after.
+    const save = Q2.end_date;
+    Q2.end_date = day(0);
+    reset();
+    const lastDay = await app.checkReportCards();
+    ok("on the quarter's last day its blanks count as missing", lastDay.students.some(x => x.name === 'NoQ2Yet Test'));
+    Q2.end_date = save;
+    reset();
+  }
   ok('  but is counted apart as not entered yet', r.inProgress.some(c => c.className === 'Earth Science' && c.students.length === 1));
 
   const math = r.byClass.find(c => c.className === 'Pre-Algebra');

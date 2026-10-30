@@ -5833,8 +5833,8 @@ enrolled student's card with the same code that prints it, then lists:
 
 - **Missing grades, by class and teacher.** A quarter that has ended with a blank cell on the card.
   A class is expected to have a grade from the quarter the student joined it, up to the card's
-  quarter; a class they have since left, only up to its last graded quarter. The quarter still
-  running is listed apart as "not entered yet", since that is normal.
+  quarter; a class they have since left, only up to its last graded quarter. A quarter counts as
+  due from its last day. Before that it is listed apart as "not entered yet", since that is normal.
 - **Cards that print wrong:** no birthday or grade level, a class on the record twice, a class
   left with no grades at all, or the admin's report card setup no longer fitting (a link to a class
   they are no longer in, a link across subjects, a renamed class with nothing linked into it).
