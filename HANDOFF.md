@@ -5800,3 +5800,12 @@ Putting the class back on removes it. Students whose profile was created before 
 couldn't read their classes' cancellations at all; that was fixed in the backend repo, with its
 own test. Parents can now read them too, but no parent page shows them yet. Here:
 `tests/student-cancellations.test.js`.
+
+### 2026-10-29 · Date of birth is edited on the Student Hub's Profile tab
+
+Admins couldn't find where to change a student's birthday: it was only under Records → Contact
+Info, not with the name and grade level. It is now on Profile, next to grade level, and like those
+fields it is editable by admins and shown but locked for teachers. Records → Contact Info still
+shows it, read-only, with a pointer to Profile, and that form no longer saves it, so there is one
+place to change it. Riven's "set his date of birth to …" is unchanged. Here:
+`tests/student-hub-record-gate.test.js`.

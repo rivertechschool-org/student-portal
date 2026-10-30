@@ -130,6 +130,7 @@ function makeApp(role, { fields = {} } = {}) {
     ok('an admin gets an editable name', !/id="hub-first-name"[^>]*disabled/.test(app.html));
     ok('  an editable grade level', !/id="hub-grade-level"[^>]*disabled/.test(app.html));
     ok('  an editable enrolment type', !/id="hub-enrollment-type"[^>]*disabled/.test(app.html));
+    ok('  and an editable date of birth, on this tab', /id="hub-dob"/.test(app.html) && !/id="hub-dob"[^>]*disabled/.test(app.html));
     ok('  and no notice about the office', !/set by the office/.test(app.html));
   }
 
@@ -140,6 +141,7 @@ function makeApp(role, { fields = {} } = {}) {
     ok('  nor the last name', /id="hub-last-name"[^>]*disabled/.test(app.html));
     ok('  nor the grade level', /id="hub-grade-level"[^>]*disabled/.test(app.html));
     ok('  nor the enrolment type', /id="hub-enrollment-type"[^>]*disabled/.test(app.html));
+    ok('  nor the date of birth', /id="hub-dob"[^>]*disabled/.test(app.html));
     // The point of the split: they still have the field they actually use.
     ok('but the email stays theirs to fix', !/id="hub-email"[^>]*disabled/.test(app.html));
     ok('and the form says who does set the rest', /set by the office/.test(app.html));
@@ -151,11 +153,12 @@ function makeApp(role, { fields = {} } = {}) {
   {
     const app = makeApp('admin', { fields: {
       'hub-first-name': 'Bartholomew', 'hub-last-name': 'Smithe', 'hub-email': 'j@example.com',
-      'hub-grade-level': '8', 'hub-enrollment-type': 'homeschool',
+      'hub-grade-level': '8', 'hub-enrollment-type': 'homeschool', 'hub-dob': '2013-05-02',
     } });
     await app.saveStudentHubProfile.call(app);
     check('an admin sends the whole record', Object.keys(app.writes[0]).sort(),
-      ['email', 'enrollment_type', 'first_name', 'grade_level', 'last_name']);
+      ['date_of_birth', 'email', 'enrollment_type', 'first_name', 'grade_level', 'last_name']);
+    check('  with the new date of birth', app.writes[0].date_of_birth, '2013-05-02');
   }
 
   {
@@ -163,7 +166,7 @@ function makeApp(role, { fields = {} } = {}) {
     // protected columns back. Sending them at all is what the database judges.
     const app = makeApp('teacher', { fields: {
       'hub-first-name': 'Bartholomew', 'hub-last-name': 'Smith', 'hub-email': 'new@example.com',
-      'hub-grade-level': '7', 'hub-enrollment-type': 'full-time',
+      'hub-grade-level': '7', 'hub-enrollment-type': 'full-time', 'hub-dob': '2001-01-01',
     } });
     await app.saveStudentHubProfile.call(app);
     check('a teacher sends only the email', Object.keys(app.writes[0]), ['email']);
@@ -175,6 +178,14 @@ function makeApp(role, { fields = {} } = {}) {
     const app = makeApp('teacher', { fields: { 'hub-first-name': '', 'hub-last-name': 'Smith' } });
     await app.saveStudentHubProfile.call(app);
     check('an empty name is still refused before anything is sent', app.writes, []);
+  }
+
+  {
+    // The Records tab's contact form is saved by teachers too, so it shows the
+    // birthday but no longer sends it: one place to change it, on Profile.
+    const save = html.slice(html.indexOf('async saveStudentContactInfo'), html.indexOf('async saveStudentMedicalInfo'));
+    ok('the contact form does not save the date of birth', !/date_of_birth/.test(save));
+    ok('  and shows it read-only, pointing at Profile', /id="student-dob"[^>]*readonly/.test(html) && /change it on the Profile tab/.test(html));
   }
 
   console.log('\n== the attendance tab ==\n');
