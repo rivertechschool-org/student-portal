@@ -34782,8 +34782,11 @@ Students you had withdrawn stay withdrawn.`)) {
             });
           }
 
-          // Restore the saved (browser-wide) report card column checkboxes.
+          // Restore the saved report card column checkboxes.
           this.loadReportCardColumnPrefs();
+          // Options set up before they were saved to the database lived only in
+          // this browser. Copy them up once so every card can use them.
+          this.migrateLocalReportCardOptions();
 
         } catch (error) {
           console.error('Error loading report filters:', error);
@@ -34858,8 +34861,11 @@ Students you had withdrawn stay withdrawn.`)) {
             return;
           }
 
-          // Load saved options for this student (excluded class IDs + class links).
-          const saved = this.loadReportCardOptionsFromStorage(studentId);
+          // Load saved options for this student (excluded class IDs + class
+          // links). The database copy is the one every report card uses; the
+          // browser copy only covers a save that has not reached it.
+          const saved = (await this.loadReportCardSavedOptions(studentId))
+            || this.loadReportCardOptionsFromStorage(studentId);
           const savedExcluded = new Set((saved && Array.isArray(saved.excludedClassIds)) ? saved.excludedClassIds : []);
           // Restore per-student empty ("virtual") classes — placeholder rows
           // whose only purpose is to be link targets (merge a real class in →
@@ -34984,10 +34990,81 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
+      // The admin's report card choices for one student, as saved to the
+      // database: { excludedClassIds, classLinks, virtualClasses }, or null when
+      // there are none. Every report card reads these - the admin's, the
+      // student's, a parent's, a teacher's - so they all print the same card.
+      // Never throws: on a failure the card prints without them, as before.
+      async loadReportCardSavedOptions(studentId) {
+        if (!studentId) return null;
+        try {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('report_card_options')
+            .select('excluded_class_ids, class_links, virtual_classes')
+            .eq('student_id', studentId)
+            .maybeSingle());
+          if (error) throw error;
+          if (!data) return null;
+          const arr = (v) => (Array.isArray(v) ? v : []);
+          return {
+            excludedClassIds: arr(data.excluded_class_ids),
+            classLinks: arr(data.class_links),
+            virtualClasses: arr(data.virtual_classes),
+          };
+        } catch (e) {
+          console.warn('Could not load report card options:', e?.message || e);
+          return null;
+        }
+      }
+
+      _reportCardOptionsRow(studentId, opts) {
+        return {
+          student_id: studentId,
+          excluded_class_ids: opts.excludedClassIds || [],
+          class_links: opts.classLinks || [],
+          virtual_classes: opts.virtualClasses || [],
+          updated_by: this.userInfo?.user?.id || null,
+          updated_at: new Date().toISOString(),
+        };
+      }
+
+      // One-time lift of options saved in this browser before they went to the
+      // database. ignoreDuplicates: a row already there is newer than anything
+      // local, so it is never overwritten from here.
+      async migrateLocalReportCardOptions() {
+        if (this.userInfo?.profile?.user_type !== 'admin') return;
+        const rows = [];
+        try {
+          const prefix = 'report_card_options_';
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (!key || !key.startsWith(prefix)) continue;
+            const studentId = key.slice(prefix.length);
+            const opts = this.loadReportCardOptionsFromStorage(studentId);
+            if (!opts) continue;
+            const has = (opts.excludedClassIds || []).length || (opts.classLinks || []).length
+              || (opts.virtualClasses || []).length;
+            if (has) rows.push(this._reportCardOptionsRow(studentId, opts));
+          }
+        } catch (e) {
+          return;
+        }
+        if (!rows.length) return;
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('report_card_options')
+            .upsert(rows, { onConflict: 'student_id', ignoreDuplicates: true }));
+          if (error) throw error;
+        } catch (e) {
+          console.warn('Could not copy report card options up:', e?.message || e);
+        }
+      }
+
       // Snapshot the current options panel (excluded classes + class links)
       // into localStorage, keyed by the student currently loaded. Called on
       // every checkbox toggle and link add/remove so changes persist
-      // immediately — no "save" button to forget.
+      // immediately — no "save" button to forget. The database copy is what
+      // every other report card reads, so it is written each time as well.
       saveReportCardOptions() {
         const studentId = this.reportCardCurrentStudentId
           || document.getElementById('report-student')?.value;
@@ -35004,14 +35081,24 @@ Students you had withdrawn stay withdrawn.`)) {
             savedAt: Date.now()
           };
           localStorage.setItem(`report_card_options_${studentId}`, JSON.stringify(payload));
+          // Chained, so quick toggles reach the database in the order made.
+          const row = this._reportCardOptionsRow(studentId, payload);
+          this._rcOptionsSave = (this._rcOptionsSave || Promise.resolve()).then(async () => {
+            const { error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('report_card_options').upsert(row, { onConflict: 'student_id' }));
+            if (error) {
+              this.showNotification('Report card options were not saved for other users: ' + error.message, 'error');
+            }
+          }).catch(() => {});
         } catch (e) {
           console.warn('Failed to save report card options:', e);
         }
       }
 
-      // Report Card Columns are remembered browser-wide (NOT per student),
-      // so the chosen column set persists between sessions. Restores saved
-      // state and wires a save-on-change listener (once).
+      // Report Card Columns are school-wide (NOT per student): saved to the
+      // 'report_card_columns' school setting, which every report card reads,
+      // and mirrored in this browser. Restores saved state and wires a
+      // save-on-change listener (once).
       loadReportCardColumnPrefs() {
         const cols = [
           ['rc-col-credits', 'credits'],
@@ -35035,6 +35122,29 @@ Students you had withdrawn stay withdrawn.`)) {
             cb._rcColListenerAttached = true;
           }
         });
+        // Then the school setting, which wins: it is what students see.
+        this.supabaseQuery(() => this.auth.supabase
+          .from('school_settings').select('value').eq('key', 'report_card_columns').maybeSingle())
+          .then(({ data }) => {
+            const cols2 = this._parseReportCardColumns(data?.value);
+            if (!cols2) return;
+            cols.forEach(([elId, key]) => {
+              const cb = document.getElementById(elId);
+              if (cb) cb.checked = cols2[key];
+            });
+          })
+          .catch(() => {});
+      }
+
+      // The 'report_card_columns' setting as { credits, finals, hc, gp, wtgp },
+      // or null when unset or unreadable. A missing key means shown.
+      _parseReportCardColumns(raw) {
+        let v = null;
+        try { v = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+        if (!v || typeof v !== 'object') return null;
+        const out = {};
+        ['credits', 'finals', 'hc', 'gp', 'wtgp'].forEach(k => { out[k] = v[k] !== false; });
+        return out;
       }
 
       saveReportCardColumnPrefs() {
@@ -35047,6 +35157,12 @@ Students you had withdrawn stay withdrawn.`)) {
             wtgp: document.getElementById('rc-col-wtgp')?.checked !== false
           };
           localStorage.setItem('report_card_columns', JSON.stringify(payload));
+          this.supabaseQuery(() => this.auth.supabase.from('school_settings').upsert({
+            key: 'report_card_columns', value: JSON.stringify(payload),
+            updated_by: this.userInfo?.user?.id || null, updated_at: new Date().toISOString(),
+          }, { onConflict: 'key' })).then(({ error }) => {
+            if (error) this.showNotification('Report card columns were not saved for other users: ' + error.message, 'error');
+          }).catch(() => {});
         } catch (e) {
           console.warn('Failed to save report card column prefs:', e);
         }
@@ -35780,6 +35896,19 @@ Students you had withdrawn stay withdrawn.`)) {
 
           const settingsMap = {};
           (settings || []).forEach(s => settingsMap[s.key] = s.value);
+
+          // Every Report Card button lands here, but only the admin's report
+          // panel passes options. Everyone else - the student, a parent, the
+          // Student Hub, Riven - gets the admin's saved choices for this
+          // student and the school's columns, so they all print the same card.
+          if (!options.columnVisibility) {
+            const cols = this._parseReportCardColumns(settingsMap['report_card_columns']);
+            if (cols) options = { ...options, columnVisibility: cols };
+          }
+          if (options.excludedClassIds === undefined) {
+            const saved = await this.loadReportCardSavedOptions(studentId);
+            if (saved) options = { ...saved, ...options };
+          }
 
           // Determine current school year - prefer admin settings, then quarter data, then derive from date
           const currentSchoolYear = settingsMap['current_school_year'] || currentQuarter?.school_year || this.determineSchoolYear(new Date());

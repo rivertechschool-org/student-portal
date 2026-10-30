@@ -5809,3 +5809,19 @@ fields it is editable by admins and shown but locked for teachers. Records → C
 shows it, read-only, with a pointer to Profile, and that form no longer saves it, so there is one
 place to change it. Riven's "set his date of birth to …" is unchanged. Here:
 `tests/student-hub-record-gate.test.js`.
+
+### 2026-10-30 · Report cards are the same card whoever prints them
+
+Every Report Card button (admin Reports, the student's dashboard, a parent's, the Student Hub,
+Riven) already ran the same code, but two things made the result depend on who pressed it:
+
+- **The admin's setup for a student** (classes left off, classes linked or renamed for a mid-year
+  switch) and **the column choice** were remembered only in the admin's own browser. They are now
+  saved for the school, so every card for that student uses them. Options set up earlier in an
+  admin's browser are copied up the next time that admin opens Reports; anything already saved
+  wins.
+- **Closed classes** carrying earlier quarters' grades dropped off students' and parents' cards
+  while the admin's card showed them. Fixed in the backend repo, with its own test.
+
+Here: `tests/report-card-same-for-everyone.test.js` prints one invented student's card from the
+admin panel and from the other buttons and checks they match.
