@@ -488,6 +488,7 @@
                             <select class="form-select" id="testStatus">
                                 <option value="draft">Draft</option>
                                 <option value="active">Active</option>
+                                <option value="archived">Archived (hidden)</option>
                             </select>
                         </div>
                     </div>
@@ -1698,6 +1699,17 @@
             updateStats();
         }
 
+        // Tests from an earlier school year, or put away by hand, are archived:
+        // hidden from the list (and from students), submissions and grades
+        // kept, and one click to bring back or reuse. The school year starts
+        // on 1 August.
+        let showArchivedTests = false;
+
+        function schoolYearStart(now = new Date()) {
+            const y = now.getMonth() >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+            return new Date(y, 7, 1);
+        }
+
         function renderTeacherTests() {
             const grid = document.getElementById('teacherTestsGrid');
             if (testsDatabase.length === 0) {
@@ -1705,7 +1717,116 @@
                 return;
             }
 
-            grid.innerHTML = testsDatabase.map((test, index) => {
+            const current = testsDatabase.filter(t => t.status !== 'archived');
+            const archived = testsDatabase.filter(t => t.status === 'archived');
+            const yearStart = schoolYearStart();
+            const lastYears = current.filter(t => t.createdAt && new Date(t.createdAt) < yearStart);
+
+            let head = '';
+            if (lastYears.length) {
+                head += `<div style="grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border-color); border-radius: 12px; background: var(--bg-card);">
+                    <span>📦 <b>${lastYears.length}</b> test${lastYears.length === 1 ? ' is' : 's are'} from an earlier school year. Archiving hides them here and from students; their grades are kept, and any of them can be reused.</span>
+                    <button class="btn btn-secondary btn-sm" onclick="archiveOldTests()">Archive ${lastYears.length === 1 ? 'it' : 'them'}</button>
+                </div>`;
+            }
+            if (!current.length) {
+                head += `<div class="empty-state" style="grid-column: 1 / -1;"><div class="empty-icon">📝</div><h3>No current tests</h3><p>Create one, or reuse an archived test below</p></div>`;
+            }
+            let tail = '';
+            if (archived.length) {
+                tail = `<div style="grid-column: 1 / -1; margin-top: 8px;">
+                    <button class="btn btn-secondary btn-sm" onclick="toggleArchivedTests()">${showArchivedTests ? 'Hide' : 'Show'} archived tests (${archived.length})</button>
+                </div>` + (showArchivedTests ? archived.map((t, i) => renderTeacherTestCard(t, i, true)).join('') : '');
+            }
+            grid.innerHTML = head + current.map((t, i) => renderTeacherTestCard(t, i, false)).join('') + tail;
+        }
+
+        function toggleArchivedTests() {
+            showArchivedTests = !showArchivedTests;
+            renderTeacherTests();
+        }
+
+        async function setTestArchived(testId, archived) {
+            const test = testsDatabase.find(t => t.id === testId);
+            if (!test) return;
+            // Unarchiving brings it back as a draft: a test from last year
+            // should not go straight back in front of students.
+            const status = archived ? 'archived' : 'draft';
+            try {
+                if (authReady && supabaseClient) {
+                    const { error } = await supabaseClient.from('tests')
+                        .update({ status, updated_at: new Date().toISOString() }).eq('id', testId);
+                    if (error) throw error;
+                }
+                test.status = status;
+                renderTests();
+                showToast(archived ? `Archived "${test.title}"` : `"${test.title}" is back, as a draft`);
+            } catch (error) {
+                console.error('Error archiving test:', error);
+                showToast('Could not change the test: ' + (error?.message || error));
+            }
+        }
+
+        async function archiveOldTests() {
+            const yearStart = schoolYearStart();
+            const old = testsDatabase.filter(t => t.status !== 'archived' && t.createdAt && new Date(t.createdAt) < yearStart);
+            if (!old.length) return;
+            if (!confirm(`Archive ${old.length} test${old.length === 1 ? '' : 's'} from an earlier school year?\n\nThey are hidden here and from students. Submissions and grades are kept, and you can unarchive or reuse any of them.`)) return;
+            try {
+                if (authReady && supabaseClient) {
+                    const { error } = await supabaseClient.from('tests')
+                        .update({ status: 'archived', updated_at: new Date().toISOString() })
+                        .in('id', old.map(t => t.id));
+                    if (error) throw error;
+                }
+                old.forEach(t => { t.status = 'archived'; });
+                renderTests();
+                showToast(`Archived ${old.length} test${old.length === 1 ? '' : 's'}`);
+            } catch (error) {
+                console.error('Error archiving tests:', error);
+                showToast('Could not archive them: ' + (error?.message || error));
+            }
+        }
+
+        // A new test with the same questions, answers and points, and nothing
+        // else: no students, no submissions, a draft until it is assigned.
+        // Opens in the editor so it can be renamed and adjusted first.
+        async function reuseTest(testId) {
+            const test = testsDatabase.find(t => t.id === testId);
+            if (!test) return;
+            const copy = {
+                id: null,
+                title: `${test.title} (copy)`,
+                subject: test.subject,
+                description: test.description,
+                timeLimit: test.timeLimit,
+                status: 'draft',
+                questions: test.questions.map(q => ({
+                    type: q.type, text: q.text, options: q.options ? [...q.options] : [],
+                    correctAnswer: q.correctAnswer, maxPoints: q.maxPoints || 1,
+                })),
+            };
+            try {
+                let newId;
+                if (authReady && supabaseClient) {
+                    newId = await saveTestToDatabase(copy);
+                    if (!newId) throw new Error('the copy was not saved');
+                    await loadTests();
+                } else {
+                    newId = 'test-' + Date.now();
+                    testsDatabase.push({ ...copy, id: newId, createdAt: new Date().toISOString(), assignedClasses: [], assignedStudents: [] });
+                }
+                renderTests();
+                showToast(`Copied. Rename it if you like, then Assign it.`);
+                await editTest(newId);
+            } catch (error) {
+                console.error('Error reusing test:', error);
+                showToast('Could not copy the test: ' + (error?.message || error));
+            }
+        }
+
+        function renderTeacherTestCard(test, index, isArchived) {
+            return [test].map(test => {
                 const assignedCount = getAssignedStudents(test).length;
                 const submissionCount = Object.keys(submissionsDatabase).filter(k => k.startsWith(`${test.id}_`)).length;
                 const pendingCount = Object.values(submissionsDatabase).filter(s => s.testId === test.id && s.status === 'pending_review').length;
@@ -1727,10 +1848,14 @@
                             ${pendingCount > 0 ? `<span style="color: var(--accent-warning);">⏳ ${pendingCount} pending</span>` : ''}
                         </div>
                         <div class="test-actions">
-                            <button class="btn btn-secondary btn-sm" onclick="editTest('${test.id}')">Edit</button>
-                            <button class="btn btn-secondary btn-sm" onclick="openAssignModal('${test.id}')">Assign</button>
+                            ${isArchived ? '' : `<button class="btn btn-secondary btn-sm" onclick="editTest('${test.id}')">Edit</button>
+                            <button class="btn btn-secondary btn-sm" onclick="openAssignModal('${test.id}')">Assign</button>`}
                             ${submissionCount > 0 ? `<button class="btn btn-warning btn-sm" onclick="viewSubmissions('${test.id}')">Grade (${pendingCount})</button>` : ''}
                             ${submissionCount > 0 ? `<button class="btn btn-info btn-sm" onclick="viewAnalytics('${test.id}')">Analytics</button>` : ''}
+                            <button class="btn btn-secondary btn-sm" onclick="reuseTest('${test.id}')" title="A new copy with the same questions, ready to assign">Reuse</button>
+                            ${isArchived
+                                ? `<button class="btn btn-secondary btn-sm" onclick="setTestArchived('${test.id}', false)">Unarchive</button>`
+                                : `<button class="btn btn-secondary btn-sm" onclick="setTestArchived('${test.id}', true)" title="Hide it here and from students; grades are kept">Archive</button>`}
                             <button class="btn btn-danger btn-sm" onclick="deleteTest('${test.id}')">Delete</button>
                         </div>
                     </div>

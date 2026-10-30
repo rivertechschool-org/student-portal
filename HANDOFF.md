@@ -5874,3 +5874,14 @@ for after it, so "assigned" went to 0 too. The dashboard now loads only what it 
 quarter of a second), tries twice and says so if it still fails, asks for the classes regardless,
 and the grading form refuses to open on a submission whose answers never loaded.
 `tests/testing-center-load.test.js`.
+
+### 2026-10-30 · Testing Center: archive and reuse tests
+
+Each test card now has **Archive** and **Reuse**. Archiving hides a test from the teacher's list and
+from students (who only ever see active tests); its submissions and grades are kept, and archived
+tests sit behind "Show archived tests (N)" with **Unarchive** (back as a draft) and **Reuse**. When
+a teacher has tests from before this school year (1 August), a banner offers to archive them all
+at once. **Reuse** makes a new draft with the same questions, answers and points - no students, no
+submissions - and opens it in the editor to rename and then Assign. The editor's Status menu has
+"Archived" too, so editing an archived test no longer flips it to Draft.
+`tests/testing-center-archive.test.js`.
