@@ -147,6 +147,15 @@ global.window = {};
   ok('a name that looks like a formula is defused', bram[1] === "'=cmd");
   ok('the button is in Manage Grades, exporting the quarter on screen',
     /app\.exportClassGrades\(teacherGrades\.currentClassId, teacherGrades\.currentQuarterId\)[^>]*>📊 Export grades</.test(html));
+  {
+    // Switching quarter in Manage Grades reopens it on that quarter and sets
+    // currentQuarterId, which is what the Export button reads.
+    const tg = html.slice(html.indexOf('class TeacherGradeManagement'), html.indexOf('class GradebookView'));
+    ok('switching quarter reloads Manage Grades on the chosen quarter',
+      /async switchQuarter\(quarterId\)[\s\S]{0,700}this\.showGradeManagementModal\(this\.currentClassId, quarterId\)/.test(tg));
+    ok('  which becomes the quarter Export uses',
+      /if \(selectedQuarterId\) \{\s*quarter = quarters\.find\(q => q\.id === selectedQuarterId\);[\s\S]{0,200}this\.currentQuarterId = quarter\.id;/.test(tg));
+  }
   ok('the teacher is told what was exported', notes.some(n => /^success:Exported Literature - HS: 3 students, 3 assignments/.test(n)), JSON.stringify(notes));
 
   console.log(`\n${pass} passed, ${fail} failed`);
