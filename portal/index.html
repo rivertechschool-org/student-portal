@@ -33256,6 +33256,97 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
+      // Calculates and saves each enrolment's grade for a quarter, a few at a
+      // time. It used to fire every enrolment at once - 1,884 requests from one
+      // phone - and about a quarter of them were dropped on the way, with no
+      // way to tell which. Every one of them succeeds on the server when sent
+      // at a sane rate, so: six in flight, and anything that fails is tried
+      // twice more before it is reported, with its error.
+      async _runQuarterSnapshot(enrollments, quarterId, onProgress) {
+        const calc = (e) => this.auth.supabase.rpc('calculate_quarter_grades',
+          { p_enrollment_id: e.id, p_quarter_id: quarterId });
+        let succeeded = 0;
+        let done = 0;
+        let pending = enrollments.slice();
+        let failures = [];
+        for (let pass = 0; pass < 3 && pending.length; pass++) {
+          if (pass) await new Promise(r => setTimeout(r, 1500 * pass));
+          failures = [];
+          const queue = pending.slice();
+          const worker = async () => {
+            while (queue.length) {
+              const e = queue.shift();
+              let error = null;
+              try {
+                const res = await calc(e);
+                error = res.error;
+              } catch (err) {
+                error = err;
+              }
+              if (error) failures.push({ ...e, error: error.message || String(error) });
+              else { succeeded++; done++; if (onProgress && done % 25 === 0) onProgress(done); }
+            }
+          };
+          await Promise.all(Array.from({ length: 6 }, worker));
+          pending = failures.map(({ error, ...e }) => e);
+        }
+        return { succeeded, failures };
+      }
+
+      // The ones that would not save, by class and student, with the reason
+      // the database gave, and a button to try just those again.
+      async _showSnapshotFailures(quarterId, quarterName, failures, succeeded) {
+        const esc = (t) => this.escapeHtml(String(t ?? ''));
+        const sb = this.auth.supabase;
+        const classIds = [...new Set(failures.map(f => f.class_id))];
+        const studentIds = [...new Set(failures.map(f => f.student_id))];
+        const [{ data: classes }, { data: students }] = await Promise.all([
+          sb.from('classes').select('id, name').in('id', classIds.slice(0, 300)),
+          sb.from('user_profiles').select('id, first_name, last_name').in('id', studentIds.slice(0, 300)),
+        ]);
+        const className = Object.fromEntries((classes || []).map(c => [c.id, c.name]));
+        const studentName = Object.fromEntries((students || []).map(p => [p.id, `${p.first_name || ''} ${p.last_name || ''}`.trim()]));
+        const byReason = {};
+        failures.forEach(f => { (byReason[f.error] = byReason[f.error] || []).push(f); });
+        this._snapshotRetry = { quarterId, quarterName, failures };
+        const html = `
+          <p style="margin-top: 0;">${succeeded} saved. These ${failures.length} did not save, even after trying three times.
+            Nothing else was changed, and saving again never replaces a grade a teacher set by hand.</p>
+          ${Object.entries(byReason).map(([reason, list]) => `
+            <details style="margin-bottom: 8px;" ${Object.keys(byReason).length === 1 ? 'open' : ''}>
+              <summary style="cursor: pointer;"><b>${list.length}</b>: ${esc(reason)}</summary>
+              <ul style="margin: 6px 0 0 18px; font-size: 13px; max-height: 240px; overflow: auto;">
+                ${list.map(f => `<li>${esc(className[f.class_id] || 'A class')} · ${esc(studentName[f.student_id] || 'a student')}</li>`).join('')}
+              </ul>
+            </details>`).join('')}
+          <p style="font-size: 12px; color: var(--muted);">A dropped connection or "Failed to fetch" means the request never
+            reached the database: try again on a steadier connection. Anything else is the database's own reason; send it on if it repeats.</p>
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
+            <button class="btn btn-secondary" onclick="app.closeModal('snapshot-failures')">Close</button>
+            <button class="btn btn-primary" onclick="app.closeModal('snapshot-failures'); app.retrySnapshotFailures()">Try these ${failures.length} again</button>
+          </div>`;
+        this.showModal('snapshot-failures', `📸 ${esc(quarterName)}: ${failures.length} not saved`, html);
+      }
+
+      async retrySnapshotFailures() {
+        const r = this._snapshotRetry;
+        if (!r || !r.failures.length) return;
+        if (window.portalLoading) window.portalLoading.show('snapshot', `Trying ${r.failures.length} again...`);
+        try {
+          const { succeeded, failures } = await this._runQuarterSnapshot(
+            r.failures.map(({ error, ...e }) => e), r.quarterId);
+          if (failures.length) {
+            this.showNotification(`${succeeded} more saved, ${failures.length} still failing.`, 'warning');
+            await this._showSnapshotFailures(r.quarterId, r.quarterName, failures, succeeded);
+          } else {
+            this._snapshotRetry = null;
+            this.showNotification(`All ${succeeded} saved for ${r.quarterName}.`, 'success');
+          }
+        } finally {
+          if (window.portalLoading) window.portalLoading.hide('snapshot');
+        }
+      }
+
       async snapshotQuarterGrades(quarterId, quarterName) {
         if (!confirm(`Snapshot all grades for ${quarterName}? This will calculate and store academic, participation, and class grades for every active enrollment in this quarter.`)) {
           return;
@@ -33268,8 +33359,9 @@ Students you had withdrawn stay withdrawn.`)) {
 
           const activeEnrollments = await this.fetchAllRows((from, to) => this.auth.supabase
             .from('class_enrollments')
-            .select('id')
+            .select('id, student_id, class_id')
             .eq('status', 'active')
+            .order('id')
             .range(from, to));
 
           if (!activeEnrollments || activeEnrollments.length === 0) {
@@ -33277,25 +33369,15 @@ Students you had withdrawn stay withdrawn.`)) {
             return;
           }
 
-          let succeeded = 0;
-          let failed = 0;
-          const results = await Promise.allSettled(activeEnrollments.map(enrollment =>
-            this.auth.supabase.rpc('calculate_quarter_grades', {
-              p_enrollment_id: enrollment.id,
-              p_quarter_id: quarterId
-            })
-          ));
-
-          for (const result of results) {
-            if (result.status === 'fulfilled' && !result.value.error) {
-              succeeded++;
-            } else {
-              failed++;
+          const { succeeded, failures } = await this._runQuarterSnapshot(activeEnrollments, quarterId, (done) => {
+            if (window.portalLoading) {
+              window.portalLoading.show('snapshot', `Snapshotting grades for ${quarterName}... ${done} of ${activeEnrollments.length}`);
             }
-          }
+          });
 
-          if (failed > 0) {
-            this.showNotification(`Snapshot complete: ${succeeded} saved, ${failed} failed.`, 'warning');
+          if (failures.length) {
+            this.showNotification(`Snapshot complete: ${succeeded} saved, ${failures.length} failed.`, 'warning');
+            await this._showSnapshotFailures(quarterId, quarterName, failures, succeeded);
           } else {
             this.showNotification(`Snapshot complete: ${succeeded} enrollment grades saved for ${quarterName}.`, 'success');
           }

@@ -5856,3 +5856,11 @@ grades teachers had already saved for it (often with blanks). Fixed in the backe
 own test: a saved grade is never replaced now, only gaps are filled. Worth knowing for the end of
 a quarter: the 📸 Snapshot button on a quarter calculates every enrolment's grade from graded work;
 run it, then the report card check, then switch.
+
+### 2026-10-30 · A quarter's Snapshot button says what failed
+
+It sent every enrolment's grade calculation at once (about 1,900 requests), roughly a quarter were
+dropped on the way, and it only said "534 failed". Every one succeeds on the server when sent at a
+normal rate. It now sends six at a time, retries anything that fails twice more, and lists what is
+still left by class, student and reason, with a button to try just those again.
+`tests/quarter-snapshot.test.js`.
