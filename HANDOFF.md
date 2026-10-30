@@ -5848,3 +5848,11 @@ To make the check use the printing code, `generateReportCard` was split into
 `_loadReportCardYear`, `_loadReportCardInputs` and `_buildReportCardData`; the card itself is
 unchanged. Tests: `tests/report-card-check.test.js`, with the Riven phrasings in
 `debug-tools/nlp-stress.js`.
+
+### 2026-10-30 · Switching quarters keeps the grades already saved
+
+Setting a new current quarter used to save the outgoing quarter's grades in a way that replaced
+grades teachers had already saved for it (often with blanks). Fixed in the backend repo, with its
+own test: a saved grade is never replaced now, only gaps are filled. Worth knowing for the end of
+a quarter: the 📸 Snapshot button on a quarter calculates every enrolment's grade from graded work;
+run it, then the report card check, then switch.
