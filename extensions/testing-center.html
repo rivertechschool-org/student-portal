@@ -812,20 +812,33 @@
                 return;
             }
 
+            // The class lists are asked for whatever happens below: they used
+            // to be requested only after the submissions loaded, so a failed
+            // load also showed every test as "0 assigned".
+            if (currentRole === 'teacher' && isEmbedded) {
+                window.parent.postMessage({ type: 'TESTING_CENTER_REQUEST_CLASSES' }, PARENT_ORIGIN);
+            }
+
             try {
-                // Load tests
                 await loadTests();
-
-                // Load submissions
-                await loadSubmissions();
-
-                // Request classes from portal (for teachers)
-                if (currentRole === 'teacher' && isEmbedded) {
-                    window.parent.postMessage({ type: 'TESTING_CENTER_REQUEST_CLASSES' }, PARENT_ORIGIN);
-                }
             } catch (error) {
-                console.error('Error loading data:', error);
-                showToast('Error loading data');
+                console.error('Error loading tests:', error);
+                showToast('Could not load tests: ' + (error?.message || error));
+                return;
+            }
+
+            // Tried twice: a slow moment on the database should not leave the
+            // page saying nobody has submitted anything.
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                try {
+                    await loadSubmissions();
+                    return;
+                } catch (error) {
+                    console.error('Error loading submissions (attempt ' + attempt + '):', error);
+                    if (attempt === 2) {
+                        showToast('Could not load submissions, so the counts below may be wrong. Reload to try again. (' + (error?.message || error) + ')');
+                    }
+                }
             }
         }
 
@@ -925,12 +938,20 @@
 
         async function loadSubmissions() {
             try {
+                // Students load their own submissions in full: their results
+                // screen shows the answers and the marks. A teacher's dashboard
+                // only counts and scores, so it loads just those columns; the
+                // answers and question grades for a test are fetched when it is
+                // opened to grade (viewSubmissions). Loading every answer and
+                // question grade for every test at once took about 4 of the
+                // database's 8 seconds for a teacher with 24 tests, and on a
+                // busy moment went over - the whole load failed and every test
+                // showed 0 submitted and 0 assigned.
                 let query = supabaseClient
                     .from('test_submissions')
-                    .select(`
-                        *,
-                        test_question_grades (*)
-                    `);
+                    .select(currentRole === 'student'
+                        ? '*, test_question_grades (*)'
+                        : 'id, test_id, student_id, status, auto_score, final_score, submitted_at, linked_submission_id, test_assignment_id');
 
                 if (currentRole === 'student') {
                     // Students see only their submissions
@@ -976,7 +997,9 @@
                         submittedAt: s.submitted_at,
                         status: s.status === 'graded' ? 'graded' : 'pending_review',
                         linkedSubmissionId: s.linked_submission_id,
-                        testAssignmentId: s.test_assignment_id
+                        testAssignmentId: s.test_assignment_id,
+                        // A teacher's dashboard loads no answers (see above).
+                        full: currentRole === 'student'
                     };
                 });
 
@@ -1991,7 +2014,8 @@
                             submittedAt: s.submitted_at,
                             status: s.status === 'graded' ? 'graded' : 'pending_review',
                             linkedSubmissionId: s.linked_submission_id,
-                            testAssignmentId: s.test_assignment_id
+                            testAssignmentId: s.test_assignment_id,
+                        full: true
                         };
                     });
                 }
@@ -2151,6 +2175,13 @@
         function openGradeModal(testId, studentId) {
             gradingSubmissionKey = `${testId}_${studentId}`;
             const submission = submissionsDatabase[gradingSubmissionKey];
+            // Without its answers the form would be blank, and saving it would
+            // mark every write-in zero. viewSubmissions fetches them; if that
+            // fetch failed, say so rather than open an empty form.
+            if (submission && !submission.full) {
+                showToast("This student's answers did not load. Close this and press Grade on the test again.");
+                return;
+            }
             const test = testsDatabase.find(t => t.id === testId);
             // Try viewSubmissionsData first, then fall back to studentsDatabase
             const studentName = viewSubmissionsData.studentProfiles[studentId] ||

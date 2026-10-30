@@ -5864,3 +5864,13 @@ dropped on the way, and it only said "534 failed". Every one succeeds on the ser
 normal rate. It now sends six at a time, retries anything that fails twice more, and lists what is
 still left by class, student and reason, with a button to try just those again.
 `tests/quarter-snapshot.test.js`.
+
+### 2026-10-30 · Testing Center: a teacher's tests showed 0 submitted
+
+A teacher's test showed "0 assigned, 0 submitted" with all 18 submissions safe in the database. The
+dashboard loaded every answer and question grade of every test at once (about 4 of the database's 8
+seconds for 24 tests), and on a busy moment the whole load failed; the class lists were only asked
+for after it, so "assigned" went to 0 too. The dashboard now loads only what it counts (about a
+quarter of a second), tries twice and says so if it still fails, asks for the classes regardless,
+and the grading form refuses to open on a submission whose answers never loaded.
+`tests/testing-center-load.test.js`.
