@@ -5885,3 +5885,12 @@ at once. **Reuse** makes a new draft with the same questions, answers and points
 submissions - and opens it in the editor to rename and then Assign. The editor's Status menu has
 "Archived" too, so editing an archived test no longer flips it to Draft.
 `tests/testing-center-archive.test.js`.
+
+### 2026-10-30 · Export a class's grades (Manage Grades)
+
+Manage Grades has a **📊 Export grades** button by the close button. It downloads a spreadsheet
+(CSV) of the quarter on screen: one row per student in the class, one column per assignment due
+in that quarter (points, "8 / 10" for a student's own version, Excused, Turned in, Missing, or
+blank if not due yet), then the saved academic, participation and class grade and the letter -
+the same quarter grade the report card prints. "Export Class Data" on the class page is the raw
+table dump and is unchanged. `tests/class-grades-export.test.js`.

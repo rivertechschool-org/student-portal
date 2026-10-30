@@ -34432,6 +34432,156 @@ Students you had withdrawn stay withdrawn.`)) {
         URL.revokeObjectURL(url);
       }
 
+      // ==================== CLASS GRADES EXPORT ====================
+      //
+      // A class's grades as a spreadsheet: one row per student, one column per
+      // assignment due in the quarter, then the quarter's academic,
+      // participation and class grade and its letter. "Export Class Data" is a
+      // dump of the tables (students and assignments by id); this is the
+      // gradebook a teacher or the office would actually open.
+      //
+      // Cells say what the gradebook means: the points earned ("8 / 10" when a
+      // student's own version is worth something else), Excused, Turned in
+      // (not graded yet), Missing (past due, nothing handed in), or blank (not
+      // due yet). The quarter grade is the saved one - what the report card
+      // prints - so a blank there is a grade not saved yet.
+      async exportClassGrades(classId, quarterId = null) {
+        const sb = this.auth.supabase;
+        try {
+          if (window.portalLoading) window.portalLoading.show('grades-export', 'Building the grade sheet...');
+          const { data: cls, error: ce } = await this.supabaseQuery(() => sb.from('classes')
+            .select('id, name, subject, teacher_id').eq('id', classId).single());
+          if (ce) throw ce;
+
+          let quarter = null;
+          if (quarterId) {
+            ({ data: quarter } = await this.supabaseQuery(() => sb.from('quarters').select('*').eq('id', quarterId).maybeSingle()));
+          }
+          if (!quarter) {
+            ({ data: quarter } = await this.supabaseQuery(() => sb.from('quarters').select('*').eq('is_current', true).limit(1).maybeSingle()));
+          }
+          if (!quarter) throw new Error('there is no current quarter to export');
+
+          const { data: enrollments, error: ee } = await this.supabaseQuery(() => sb.from('class_enrollments')
+            .select('id, student_id').eq('class_id', classId).eq('status', 'active'));
+          if (ee) throw ee;
+          const studentIds = (enrollments || []).map(e => e.student_id);
+          if (!studentIds.length) {
+            this.showNotification(`${cls.name} has no students to export.`, 'info');
+            return;
+          }
+
+          const [{ data: profiles }, { data: assignments, error: ae }, { data: snapshots }, { data: teacher }] = await Promise.all([
+            this.supabaseQuery(() => sb.from('user_profiles').select('id, first_name, last_name').in('id', studentIds)),
+            this.supabaseQuery(() => sb.from('assignments')
+              .select('id, title, due_date, max_points, points_possible, is_template, created_at')
+              .eq('class_id', classId)),
+            this.supabaseQuery(() => sb.from('quarter_grade_snapshots')
+              .select('enrollment_id, academic_grade, participation_grade, class_grade')
+              .eq('quarter_id', quarter.id).in('enrollment_id', enrollments.map(e => e.id))),
+            cls.teacher_id
+              ? this.supabaseQuery(() => sb.from('user_profiles').select('first_name, last_name').eq('id', cls.teacher_id).maybeSingle())
+              : Promise.resolve({ data: null }),
+          ]);
+          if (ae) throw ae;
+
+          const inQuarter = (a) => {
+            if (a.is_template) return false;
+            const d = this._localDateStr(new Date(a.due_date || a.created_at));
+            return (!quarter.start_date || d >= quarter.start_date) && (!quarter.end_date || d <= quarter.end_date);
+          };
+          const cols = (assignments || []).filter(inQuarter)
+            .sort((a, b) => String(a.due_date || a.created_at).localeCompare(String(b.due_date || b.created_at)));
+          const colIds = cols.map(a => a.id);
+
+          let subs = [], versions = [];
+          if (colIds.length) {
+            subs = await this.fetchAllRows((from, to) => sb.from('assignment_submissions')
+              .select('assignment_id, student_id, points_earned, status, excused_at, submitted_at')
+              .in('assignment_id', colIds).order('id').range(from, to));
+            // A student's own version can be worth different points.
+            const { data: v } = await this.supabaseQuery(() => sb.from('assignment_student_versions')
+              .select('assignment_id, student_id, points_possible').in('assignment_id', colIds));
+            versions = v || [];
+          }
+
+          const csv = this._classGradesCsv({
+            cls, quarter, teacher, enrollments, profiles: profiles || [], cols, subs, versions,
+            snapshots: snapshots || [], now: new Date(),
+          });
+          const safe = (t) => String(t || '').replace(/[^\w\-]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+          const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = `${safe(cls.name)}_${safe(quarter.name)}_grades_${this._localDateStr(new Date())}.csv`;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          this.showNotification(`Exported ${cls.name}: ${studentIds.length} students, ${cols.length} assignments.`, 'success');
+        } catch (error) {
+          console.error('Error exporting grades:', error);
+          this.showNotification('Could not export grades: ' + (error?.message || error), 'error');
+        } finally {
+          if (window.portalLoading) window.portalLoading.hide('grades-export');
+        }
+      }
+
+      // The sheet itself, from loaded rows. No database calls, so it is tested
+      // on its own.
+      _classGradesCsv({ cls, quarter, teacher, enrollments, profiles, cols, subs, versions, snapshots, now }) {
+        const cell = (v) => {
+          const t = v === null || v === undefined ? '' : String(v);
+          // A leading = + - @ would run as a formula in a spreadsheet.
+          const safe = /^[=+\-@]/.test(t) && !/^-?\d+(\.\d+)?$/.test(t) ? "'" + t : t;
+          return /[",\n\r]/.test(safe) ? '"' + safe.replace(/"/g, '""') + '"' : safe;
+        };
+        const row = (list) => list.map(cell).join(',');
+        const num = (v) => (v === null || v === undefined || v === 0 ? '' : Math.round(Number(v) * 10) / 10);
+        // (0 is "no grade saved" for academic and class grades: the floor is 55.)
+        const nameOf = Object.fromEntries(profiles.map(p => [p.id, { first: p.first_name || '', last: p.last_name || '' }]));
+        const sub = {};
+        subs.forEach(x => { sub[`${x.assignment_id}_${x.student_id}`] = x; });
+        const ver = {};
+        versions.forEach(x => { if (x.points_possible != null) ver[`${x.assignment_id}_${x.student_id}`] = x.points_possible; });
+        const snap = Object.fromEntries(snapshots.map(x => [x.enrollment_id, x]));
+        const maxOf = (a) => a.max_points ?? a.points_possible ?? '';
+
+        const lines = [];
+        lines.push(row(['Class', cls.name]));
+        if (teacher) lines.push(row(['Teacher', `${teacher.first_name || ''} ${teacher.last_name || ''}`.trim()]));
+        lines.push(row(['Quarter', `${quarter.name}${quarter.start_date ? ` (${quarter.start_date} to ${quarter.end_date || ''})` : ''}`]));
+        lines.push(row(['Exported', this._localDateStr(now)]));
+        lines.push('');
+        lines.push(row(['Last name', 'First name',
+          ...cols.map(a => `${a.title} (${maxOf(a)} pts${a.due_date ? ', due ' + this._localDateStr(new Date(a.due_date)) : ''})`),
+          'Academic %', 'Participation %', 'Class grade %', 'Letter']));
+
+        const ordered = enrollments.slice().sort((a, b) => {
+          const A = nameOf[a.student_id] || { first: '', last: '' }, B = nameOf[b.student_id] || { first: '', last: '' };
+          return (A.last + ' ' + A.first).localeCompare(B.last + ' ' + B.first);
+        });
+        for (const e of ordered) {
+          const n = nameOf[e.student_id] || { first: '', last: '(unknown student)' };
+          const cells = cols.map(a => {
+            const x = sub[`${a.id}_${e.student_id}`];
+            if (x?.excused_at) return 'Excused';
+            if (x && x.points_earned !== null && x.points_earned !== undefined) {
+              const own = ver[`${a.id}_${e.student_id}`];
+              return own != null && own !== maxOf(a) ? `${x.points_earned} / ${own}` : x.points_earned;
+            }
+            if (x && (x.submitted_at || x.status === 'submitted')) return 'Turned in';
+            return a.due_date && new Date(a.due_date) < now ? 'Missing' : '';
+          });
+          const g = snap[e.id] || {};
+          const cg = num(g.class_grade);
+          lines.push(row([n.last, n.first, ...cells, num(g.academic_grade), g.participation_grade == null ? "" : Math.round(Number(g.participation_grade) * 10) / 10, cg,
+            cg === '' ? '' : this.percentageToLetter(Number(cg))]));
+        }
+        return lines.join('\r\n') + '\r\n';
+      }
+
       async generateReport(classId) {
         try {
           const classData = this.classes.find(c => c.id === classId);
@@ -82379,7 +82529,10 @@ OK to discard and continue, Cancel to go back and save.`)) {
           <h2 id="grade-modal-title">Student Grades</h2>
           <p id="grade-modal-subtitle" style="color: var(--muted-color); margin-top: 5px;"></p>
         </div>
-        <button class="btn btn-secondary" onclick="teacherGrades.closeGradeModal()" style="font-size: 20px;">✕</button>
+        <div style="display: flex; gap: 8px; align-items: center;">
+          <button class="btn btn-secondary" onclick="app.exportClassGrades(teacherGrades.currentClassId, teacherGrades.currentQuarterId)" title="Download this class's grades for the quarter shown, as a spreadsheet">📊 Export grades</button>
+          <button class="btn btn-secondary" onclick="teacherGrades.closeGradeModal()" style="font-size: 20px;">✕</button>
+        </div>
       </div>
       
       <div id="grade-modal-content">
