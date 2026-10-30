@@ -460,6 +460,19 @@ const T6 = [
   ['cancel math today', 'CANCEL_CLASS', null, true],
   ['math is back on today', 'UNCANCEL_CLASS', null, true],
   ['report card for noah', 'REPORT_CARD', 'Noah Williams', true],
+  // The report card check: what is missing from cards, school-wide or for
+  // one student. Asking for a card is still REPORT_CARD.
+  ['check report cards', 'REPORT_CARD_CHECK', null, true],
+  ['are report cards ready', 'REPORT_CARD_CHECK', null, true],
+  ['what grades are missing', 'REPORT_CARD_CHECK', null, true],
+  ['any missing grades before report cards go out?', 'REPORT_CARD_CHECK', null, true],
+  ['check for broken reports', 'REPORT_CARD_CHECK', null, true],
+  ["is anything missing from noah's report card", 'REPORT_CARD_CHECK', 'Noah Williams', true],
+  ['missing grades for clementine', 'REPORT_CARD_CHECK', 'Clementine Vasquez', true],
+  ["print noah's report card", 'REPORT_CARD', 'Noah Williams', true],
+  ["what is missing from noah's report card", 'REPORT_CARD_CHECK', 'Noah Williams', true],
+  ["is noah's report card missing anything", 'REPORT_CARD_CHECK', 'Noah Williams', true],
+  ['anything missing on noah report card', 'REPORT_CARD_CHECK', 'Noah Williams', true],
   ['transcript for clementine', 'TRANSCRIPT', 'Clementine Vasquez', true],
   // And the line none of them may cross: marking the register today is
   // still MARK_ATTENDANCE, not an excuse and not a pickup.

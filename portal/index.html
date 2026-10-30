@@ -34625,6 +34625,11 @@ Students you had withdrawn stay withdrawn.`)) {
                 <button id="report-card-btn" class="btn btn-secondary" onclick="app.generateReportCardFromFilter()" disabled title="Select a specific student to generate report card">
                   📄 Report Card
                 </button>
+                <!-- Every student's card, built and checked for missing grades
+                     and setup that no longer fits, before they go home. -->
+                <button class="btn btn-secondary" onclick="app.openReportCardCheck()" title="Find missing grades and cards that would print wrong, for every student">
+                  🩺 Check report cards
+                </button>
               </div>
               <!-- Report Card Options (shown when a student is selected) -->
               <div id="report-card-options" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border);">
@@ -35865,42 +35870,8 @@ Students you had withdrawn stay withdrawn.`)) {
         this.showNotification('Generating report card...', 'info');
 
         try {
-          // Load student profile
-          const { data: student, error: studentError } = await this.auth.supabase
-            .from('user_profiles')
-            .select('*')
-            .eq('id', studentId)
-            .single();
-
-          if (studentError) throw studentError;
-
-          // Load current quarter
-          const { data: currentQuarter } = await this.auth.supabase
-            .from('quarters')
-            .select('*')
-            .eq('is_current', true)
-            .single();
-
-          // If a specific "up to" quarter is selected, load it
-          let targetQuarter = currentQuarter;
-          if (upToQuarterId) {
-            const { data: selectedQuarter } = await this.auth.supabase
-              .from('quarters')
-              .select('*')
-              .eq('id', upToQuarterId)
-              .single();
-            if (selectedQuarter) {
-              targetQuarter = selectedQuarter;
-            }
-          }
-
-          // Load school settings
-          const { data: settings } = await this.auth.supabase
-            .from('school_settings')
-            .select('key, value');
-
-          const settingsMap = {};
-          (settings || []).forEach(s => settingsMap[s.key] = s.value);
+          const inputs = await this._loadReportCardInputs(studentId, upToQuarterId);
+          const settingsMap = inputs.settingsMap;
 
           // Every Report Card button lands here, but only the admin's report
           // panel passes options. Everyone else - the student, a parent, the
@@ -35915,367 +35886,7 @@ Students you had withdrawn stay withdrawn.`)) {
             if (saved) options = { ...saved, ...options };
           }
 
-          // Determine current school year - prefer admin settings, then quarter data, then derive from date
-          const currentSchoolYear = settingsMap['current_school_year'] || currentQuarter?.school_year || this.determineSchoolYear(new Date());
-
-          // Load all quarters for this school year to get grades
-          const [startYear, endYear] = currentSchoolYear.split('-').map(Number);
-          const schoolYearStart = `${startYear}-08-01`;
-          const schoolYearEnd = `${endYear}-07-31`;
-
-          const { data: quarters } = await this.auth.supabase
-            .from('quarters')
-            .select('*')
-            .gte('start_date', schoolYearStart)
-            .lte('start_date', schoolYearEnd)
-            .order('start_date', { ascending: true });
-
-          // Load student's enrollments with class info (include archived for past students)
-          const { data: enrollments } = await this.auth.supabase
-            .from('class_enrollments')
-            .select('*, classes(*)')
-            .eq('student_id', studentId)
-            .in('status', ['active', 'archived']);
-
-          // Load past quarter snapshots for this student's enrollments
-          const enrollmentIds = (enrollments || []).map(e => e.id);
-          let snapshots = [];
-          if (enrollmentIds.length > 0) {
-            const { data: snapshotData } = await this.auth.supabase
-              .from('quarter_grade_snapshots')
-              .select('*')
-              .in('enrollment_id', enrollmentIds);
-            snapshots = snapshotData || [];
-          }
-
-          // Build a map of snapshots by enrollment_id and quarter_id
-          const snapshotMap = {};
-          for (const snapshot of snapshots) {
-            const key = `${snapshot.enrollment_id}_${snapshot.quarter_id}`;
-            snapshotMap[key] = snapshot;
-          }
-
-          // Build a map of quarter_id to quarter number
-          const quarterNumMap = {};
-          const targetQuarterNum = this.getQuarterNumber(targetQuarter);
-          for (const q of (quarters || [])) {
-            const qNum = this.getQuarterNumber(q);
-            if (qNum) quarterNumMap[q.id] = qNum;
-          }
-
-          // Determine which quarters to include (all quarters from Q1 up to target quarter)
-          const activeQuarters = [];
-          for (const q of (quarters || [])) {
-            const qNum = quarterNumMap[q.id];
-            if (qNum && qNum <= targetQuarterNum) {
-              activeQuarters.push(`Q${qNum}`);
-            }
-          }
-          // Sort to ensure Q1, Q2, etc. order
-          activeQuarters.sort();
-
-          // Filter excluded classes
-          let filteredEnrollments = enrollments || [];
-          if (options.excludedClassIds && options.excludedClassIds.length > 0) {
-            filteredEnrollments = filteredEnrollments.filter(e => !options.excludedClassIds.includes(e.class_id));
-          }
-
-          // Group classes by subject
-          const subjectGroups = {};
-          const subjectOrder = ['Math', 'English', 'Science', 'Science & Tech', 'Social Studies', 'Humanities', 'Health', 'Health & PE', 'PE', 'Electives', 'Other'];
-
-          for (const enrollment of filteredEnrollments) {
-            const cls = enrollment.classes;
-            if (!cls) continue;
-
-            const subject = this.normalizeReportCardSubject(cls.subject);
-
-            if (!subjectGroups[subject]) {
-              subjectGroups[subject] = {
-                name: subject,
-                unitsLabel: '',
-                courses: []
-              };
-            }
-
-            // Build quarter grades (only for active quarters - past and current, not future)
-            const quarterGrades = {};
-
-            // Load past quarter grades from snapshots
-            for (const q of (quarters || [])) {
-              const qNum = quarterNumMap[q.id];
-              if (!qNum || qNum > targetQuarterNum) continue;  // Skip quarters beyond target
-
-              const snapshotKey = `${enrollment.id}_${q.id}`;
-              const snapshot = snapshotMap[snapshotKey];
-
-              if (snapshot) {
-                // class_grade=0 means no real data (grade rounding floor is 55).
-                // This is caused by DB bug where COALESCE(NULL,0) forced no-data classes to 0.
-                const effectiveGrade = snapshot.class_grade === 0 ? null : snapshot.class_grade;
-                quarterGrades[`Q${qNum}`] = {
-                  skill: this.percentageToLetter(snapshot.academic_grade === 0 ? null : snapshot.academic_grade),
-                  part: this.percentageToLetter(snapshot.participation_grade),
-                  total: this.percentageToLetter(effectiveGrade),
-                  rawTotal: effectiveGrade,
-                  isAtRisk: effectiveGrade !== null && effectiveGrade < 70
-                };
-              }
-            }
-
-            // Current quarter: only use enrollment live data as FALLBACK if no snapshot exists.
-            // After quarter switches the enrollment's live grades may be stale/from a different quarter,
-            // so snapshots are the authoritative source and must not be overwritten.
-            const currentQuarterNum = this.getQuarterNumber(currentQuarter);
-            if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && !quarterGrades[`Q${currentQuarterNum}`]) {
-              // No snapshot for current quarter - fall back to enrollment live data
-              const effectiveCurrentGrade = enrollment.class_grade === 0 ? null : enrollment.class_grade;
-              if (effectiveCurrentGrade !== null) {
-                const letter = this.percentageToLetter(effectiveCurrentGrade);
-                quarterGrades[`Q${currentQuarterNum}`] = {
-                  skill: this.percentageToLetter(enrollment.academic_grade === 0 ? null : enrollment.academic_grade),
-                  part: this.percentageToLetter(enrollment.participation_grade),
-                  total: letter,
-                  rawTotal: effectiveCurrentGrade,
-                  isAtRisk: effectiveCurrentGrade < 70
-                };
-              }
-            }
-
-            // Calculate GPA: convert each quarter's percentage to GPA first, then weighted average
-            // This prevents a low quarter from tanking the percentage average below a grade boundary
-            // (e.g. Q1=A Q2=B Q3=F should average GPAs 4.0/3.0/0.0, not percentages 95/85/0→57%→0.0 GPA)
-            let gpaWeightedSum = 0;
-            let gpaTotalWeight = 0;
-            for (const [q, data] of Object.entries(quarterGrades)) {
-              if (data.rawTotal != null) {
-                const qNum = parseInt(q.replace('Q', ''));
-                const weight = this.quarterWeights[qNum] || 0.25;
-                const qGPA = this.percentageToGPA(data.rawTotal);
-                if (qGPA !== null) {
-                  gpaWeightedSum += qGPA * weight;
-                  gpaTotalWeight += weight;
-                }
-              }
-            }
-            const baseGPA = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
-            const modifier = this.getCourseWeightModifier(cls.course_weight);
-            const weightedGPA = baseGPA !== null ? Math.min(baseGPA + modifier, 5.0) : null;
-
-            // Determine H/C label
-            let honorsCollege = 'N/A';
-            if (cls.course_weight === 'honors') honorsCollege = 'H';
-            else if (cls.course_weight === 'ap') honorsCollege = 'AP';
-            else if (cls.course_weight === 'dual_credit') honorsCollege = 'C';
-
-            // Check for purple flags (significant grade shift between consecutive quarters)
-            const qKeys = Object.keys(quarterGrades).sort(); // Q1, Q2, Q3, Q4
-            for (let i = 1; i < qKeys.length; i++) {
-              const prev = quarterGrades[qKeys[i - 1]];
-              const curr = quarterGrades[qKeys[i]];
-              if (prev.rawTotal !== null && prev.rawTotal !== undefined &&
-                  curr.rawTotal !== null && curr.rawTotal !== undefined) {
-                const shift = Math.abs(curr.rawTotal - prev.rawTotal);
-                curr.isSignificantChange = shift >= 10;
-              }
-            }
-
-            // Finals: weighted average of whatever quarter grades are present.
-            // Derived from the weighted base GPA (Option A) so it agrees with the
-            // GP column rather than re-averaging raw percentages. The quarter
-            // weights are renormalized over the present quarters inside baseGPA,
-            // so a partial year still produces a meaningful letter.
-            const finalGradeLetter = baseGPA !== null ? this.gpaToLetter(baseGPA) : '';
-
-            subjectGroups[subject].courses.push({
-              courseName: cls.name,
-              credits: enrollment.credits_override ?? cls.credits ?? 1,
-              quarters: quarterGrades,
-              finalGradeLetter: finalGradeLetter,
-              honorsCollege: honorsCollege,
-              gradePoints: baseGPA,
-              weightedGP: weightedGPA,
-              _classId: cls.id  // For class-link merging below
-            });
-          }
-
-          // ============================================================
-          // Inject per-student empty ("virtual") classes as placeholder
-          // courses so they can be link targets. When a real class is linked
-          // INTO one, the merge below keeps the empty class's NAME but takes
-          // the real class's grades — "old grades, new name". The empty class
-          // inherits the source class's subject/credits/honors so the only
-          // visible change is the name.
-          // ============================================================
-          const virtualClasses = (options.virtualClasses || []);
-          const excludedSet = new Set(options.excludedClassIds || []);
-          for (const vc of virtualClasses) {
-            if (!vc || !vc.id || excludedSet.has(vc.id)) continue;
-            // The real class being merged into this empty class — used to place
-            // it in the right subject and inherit metadata. With nothing linked
-            // in, the empty class has no purpose on the report, so skip it.
-            const incoming = (options.classLinks || []).find(l => l.intoClassId === vc.id);
-            if (!incoming) continue;
-            const fromEnr = filteredEnrollments.find(e => e.class_id === incoming.fromClassId);
-            if (!fromEnr || !fromEnr.classes) continue;
-            const subject = this.normalizeReportCardSubject(fromEnr.classes.subject);
-            const credits = fromEnr.credits_override ?? fromEnr.classes.credits ?? 1;
-            const cw = fromEnr.classes.course_weight;
-            const honorsCollege = cw === 'honors' ? 'H' : cw === 'ap' ? 'AP' : cw === 'dual_credit' ? 'C' : 'N/A';
-            if (!subjectGroups[subject]) {
-              subjectGroups[subject] = { name: subject, unitsLabel: '', courses: [] };
-            }
-            subjectGroups[subject].courses.push({
-              courseName: vc.name || 'New Class',
-              credits,
-              quarters: {},
-              finalGradeLetter: '',
-              honorsCollege,
-              gradePoints: null,
-              weightedGP: null,
-              _classId: vc.id
-            });
-          }
-
-          // ============================================================
-          // Apply transient class links — merge pairs of courses the admin
-          // marked as the same continuing course. Linked pairs collapse to
-          // one row; quarter columns combine (the "into" class wins when
-          // both have a grade for the same quarter — admin chose the
-          // direction so this is unambiguous).
-          // ============================================================
-          const classLinks = (options.classLinks || []);
-          if (classLinks.length > 0) {
-            // Build the from→into rewrite map
-            const linkMap = {};
-            for (const l of classLinks) linkMap[l.fromClassId] = l.intoClassId;
-
-            for (const subjectName of Object.keys(subjectGroups)) {
-              const group = subjectGroups[subjectName];
-              // Bucket courses by their effective (post-link) class id
-              const byEffectiveId = new Map();
-              for (const course of group.courses) {
-                const effectiveId = linkMap[course._classId] || course._classId;
-                if (!byEffectiveId.has(effectiveId)) byEffectiveId.set(effectiveId, []);
-                byEffectiveId.get(effectiveId).push({ course, originalId: course._classId, effectiveId });
-              }
-              // For each bucket with more than one course, merge
-              const mergedCourses = [];
-              for (const [effectiveId, entries] of byEffectiveId) {
-                if (entries.length === 1) {
-                  mergedCourses.push(entries[0].course);
-                  continue;
-                }
-                // The "into" course (the target of the link) keeps its
-                // metadata (name, credits, honors marker). Fall back to
-                // the first entry if no exact match (shouldn't happen
-                // given how the bucket was built, but be defensive).
-                const intoEntry = entries.find(e => e.originalId === effectiveId) || entries[0];
-                const base = intoEntry.course;
-                const merged = {
-                  courseName: base.courseName,
-                  credits: base.credits,
-                  quarters: {},
-                  finalGradeLetter: base.finalGradeLetter,
-                  honorsCollege: base.honorsCollege,
-                  gradePoints: null,
-                  weightedGP: null,
-                  _classId: base._classId,
-                  _mergedFromClassIds: entries.filter(e => e.originalId !== effectiveId).map(e => e.originalId)
-                };
-                // Quarter-by-quarter combine. The "into" course wins for any
-                // quarter where it has an actual grade; if the into-side is
-                // empty for a shared quarter (rawTotal null — covers class_grade=0
-                // and "no snapshot" cases), fall through to the from-side
-                // instead of letting the blank cell override real data.
-                const hasGrade = (q) => q && q.rawTotal != null;
-                for (const entry of entries) {
-                  const isInto = entry.originalId === effectiveId;
-                  for (const [qKey, qData] of Object.entries(entry.course.quarters || {})) {
-                    const existing = merged.quarters[qKey];
-                    if (!existing) {
-                      // First entry to claim this quarter — take it regardless.
-                      merged.quarters[qKey] = qData;
-                    } else if (isInto && hasGrade(qData)) {
-                      // Into-side overrides existing only when it has real data.
-                      merged.quarters[qKey] = qData;
-                    } else if (!hasGrade(existing) && hasGrade(qData)) {
-                      // Existing slot is empty; this entry has data — fill the gap.
-                      merged.quarters[qKey] = qData;
-                    }
-                    // Otherwise keep what we already have.
-                  }
-                }
-                // Recompute GPA from the merged quarters using the same
-                // weighting the per-course loop above used.
-                let gpaWeightedSum = 0, gpaTotalWeight = 0;
-                for (const [q, data] of Object.entries(merged.quarters)) {
-                  if (data.rawTotal != null) {
-                    const qNum = parseInt(q.replace('Q', ''));
-                    const weight = this.quarterWeights[qNum] || 0.25;
-                    const qGPA = this.percentageToGPA(data.rawTotal);
-                    if (qGPA !== null) {
-                      gpaWeightedSum += qGPA * weight;
-                      gpaTotalWeight += weight;
-                    }
-                  }
-                }
-                merged.gradePoints = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
-                const modifier = this.getCourseWeightModifier(base.honorsCollege === 'H' ? 'honors' : base.honorsCollege === 'AP' ? 'ap' : base.honorsCollege === 'C' ? 'dual_credit' : null);
-                merged.weightedGP = merged.gradePoints !== null ? Math.min(merged.gradePoints + modifier, 5.0) : null;
-                // Recompute Finals from the merged quarters (base.finalGradeLetter
-                // is stale after combining): weighted average of whatever quarters
-                // are present, same as the per-course path above.
-                merged.finalGradeLetter = merged.gradePoints !== null ? this.gpaToLetter(merged.gradePoints) : '';
-                mergedCourses.push(merged);
-              }
-              group.courses = mergedCourses;
-            }
-          }
-
-          // Sort subject groups by standard order
-          const sortedGroups = [];
-          for (const subjectName of subjectOrder) {
-            if (subjectGroups[subjectName]) {
-              sortedGroups.push(subjectGroups[subjectName]);
-              delete subjectGroups[subjectName];
-            }
-          }
-          // Add any remaining subjects
-          for (const key of Object.keys(subjectGroups)) {
-            sortedGroups.push(subjectGroups[key]);
-          }
-
-          // Calculate GPA from the per-course weighted GPs (already scoped to selected quarters)
-          // This ensures the header GPA matches the table GPA and respects the quarter selection
-          let totalWGP = 0, courseCount = 0;
-          for (const group of sortedGroups) {
-            for (const course of group.courses) {
-              if (course.weightedGP != null) { totalWGP += course.weightedGP; courseCount++; }
-            }
-          }
-          let currentGPA = courseCount > 0 ? totalWGP / courseCount : null;
-
-          // Build report card data structure
-          const reportCardData = {
-            student: {
-              first_name: student.first_name,
-              last_name: student.last_name,
-              dob: student.dob || student.date_of_birth,
-              grade_level: student.grade_level
-            },
-            currentSchoolYear: currentSchoolYear,
-            currentQuarter: targetQuarter, // The quarter shown on the report card (may be selected end quarter)
-            currentGPA: currentGPA,
-            gpaHistory: {}, // TODO: Load historical GPA from archived years
-            approxCredits: `${filteredEnrollments.reduce((sum, e) => sum + (e.credits_override ?? e.classes?.credits ?? 1), 0)} earned`,
-            subjectGroups: sortedGroups,
-            activeQuarters: activeQuarters, // Only includes quarters from Q1 up to target quarter
-            columnVisibility: options.columnVisibility || { credits: true, finals: true, hc: true, gp: true, wtgp: true },
-            config: {
-              schoolFoundingYear: 2021 // River Tech started 2021-2022, so 2025-2026 = Y5
-            }
-          };
+          const reportCardData = this._buildReportCardData(inputs, options);
 
           // Store data in sessionStorage and open report card
           sessionStorage.setItem('reportCardData', JSON.stringify(reportCardData));
@@ -36285,6 +35896,709 @@ Students you had withdrawn stay withdrawn.`)) {
           console.error('Error generating report card:', error);
           this.showNotification('Error generating report card: ' + error.message, 'error');
         }
+      }
+
+      // The school-wide half of what a report card reads: the current and
+      // "up to" quarter, the school settings, the school year and its quarters.
+      // Shared by the report card and the report card check, which loads it
+      // once for every student.
+      async _loadReportCardYear(upToQuarterId = null) {
+        // Load current quarter
+        const { data: currentQuarter } = await this.auth.supabase
+          .from('quarters')
+          .select('*')
+          .eq('is_current', true)
+          .single();
+
+        // If a specific "up to" quarter is selected, load it
+        let targetQuarter = currentQuarter;
+        if (upToQuarterId) {
+          const { data: selectedQuarter } = await this.auth.supabase
+            .from('quarters')
+            .select('*')
+            .eq('id', upToQuarterId)
+            .single();
+          if (selectedQuarter) {
+            targetQuarter = selectedQuarter;
+          }
+        }
+
+        // Load school settings
+        const { data: settings } = await this.auth.supabase
+          .from('school_settings')
+          .select('key, value');
+
+        const settingsMap = {};
+        (settings || []).forEach(s => settingsMap[s.key] = s.value);
+
+        // Determine current school year - prefer admin settings, then quarter data, then derive from date
+        const currentSchoolYear = settingsMap['current_school_year'] || currentQuarter?.school_year || this.determineSchoolYear(new Date());
+
+        // Load all quarters for this school year to get grades
+        const [startYear, endYear] = currentSchoolYear.split('-').map(Number);
+        const schoolYearStart = `${startYear}-08-01`;
+        const schoolYearEnd = `${endYear}-07-31`;
+
+        const { data: quarters } = await this.auth.supabase
+          .from('quarters')
+          .select('*')
+          .gte('start_date', schoolYearStart)
+          .lte('start_date', schoolYearEnd)
+          .order('start_date', { ascending: true });
+
+        return { currentQuarter, targetQuarter, settingsMap, currentSchoolYear, quarters: quarters || [] };
+      }
+
+      // Everything one student's report card is built from. Throws if the
+      // student cannot be read.
+      async _loadReportCardInputs(studentId, upToQuarterId = null) {
+        // Load student profile
+        const { data: student, error: studentError } = await this.auth.supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', studentId)
+          .single();
+
+        if (studentError) throw studentError;
+
+        const year = await this._loadReportCardYear(upToQuarterId);
+        const { currentSchoolYear } = year;
+
+        // Load student's enrollments with class info (include archived for past students)
+        const { data: enrollments } = await this.auth.supabase
+          .from('class_enrollments')
+          .select('*, classes(*)')
+          .eq('student_id', studentId)
+          .in('status', ['active', 'archived']);
+
+        // Load past quarter snapshots for this student's enrollments
+        const enrollmentIds = (enrollments || []).map(e => e.id);
+        let snapshots = [];
+        if (enrollmentIds.length > 0) {
+          const { data: snapshotData } = await this.auth.supabase
+            .from('quarter_grade_snapshots')
+            .select('*')
+            .in('enrollment_id', enrollmentIds);
+          snapshots = snapshotData || [];
+        }
+
+        return { ...year, student, enrollments: enrollments || [], snapshots };
+      }
+
+      // The report card itself, from loaded inputs. No database calls, so the
+      // report card check builds every student's card with exactly this code
+      // and looks for holes in what would print.
+      _buildReportCardData(inputs, options = {}) {
+        const { student, currentQuarter, targetQuarter, currentSchoolYear, enrollments, snapshots } = inputs;
+        const quarters = inputs.quarters;
+
+        // Build a map of snapshots by enrollment_id and quarter_id
+        const snapshotMap = {};
+        for (const snapshot of snapshots) {
+          const key = `${snapshot.enrollment_id}_${snapshot.quarter_id}`;
+          snapshotMap[key] = snapshot;
+        }
+
+        // Build a map of quarter_id to quarter number
+        const quarterNumMap = {};
+        const targetQuarterNum = this.getQuarterNumber(targetQuarter);
+        for (const q of (quarters || [])) {
+          const qNum = this.getQuarterNumber(q);
+          if (qNum) quarterNumMap[q.id] = qNum;
+        }
+
+        // Determine which quarters to include (all quarters from Q1 up to target quarter)
+        const activeQuarters = [];
+        for (const q of (quarters || [])) {
+          const qNum = quarterNumMap[q.id];
+          if (qNum && qNum <= targetQuarterNum) {
+            activeQuarters.push(`Q${qNum}`);
+          }
+        }
+        // Sort to ensure Q1, Q2, etc. order
+        activeQuarters.sort();
+
+        // Filter excluded classes
+        let filteredEnrollments = enrollments || [];
+        if (options.excludedClassIds && options.excludedClassIds.length > 0) {
+          filteredEnrollments = filteredEnrollments.filter(e => !options.excludedClassIds.includes(e.class_id));
+        }
+
+        // Group classes by subject
+        const subjectGroups = {};
+        const subjectOrder = ['Math', 'English', 'Science', 'Science & Tech', 'Social Studies', 'Humanities', 'Health', 'Health & PE', 'PE', 'Electives', 'Other'];
+
+        for (const enrollment of filteredEnrollments) {
+          const cls = enrollment.classes;
+          if (!cls) continue;
+
+          const subject = this.normalizeReportCardSubject(cls.subject);
+
+          if (!subjectGroups[subject]) {
+            subjectGroups[subject] = {
+              name: subject,
+              unitsLabel: '',
+              courses: []
+            };
+          }
+
+          // Build quarter grades (only for active quarters - past and current, not future)
+          const quarterGrades = {};
+
+          // Load past quarter grades from snapshots
+          for (const q of (quarters || [])) {
+            const qNum = quarterNumMap[q.id];
+            if (!qNum || qNum > targetQuarterNum) continue;  // Skip quarters beyond target
+
+            const snapshotKey = `${enrollment.id}_${q.id}`;
+            const snapshot = snapshotMap[snapshotKey];
+
+            if (snapshot) {
+              // class_grade=0 means no real data (grade rounding floor is 55).
+              // This is caused by DB bug where COALESCE(NULL,0) forced no-data classes to 0.
+              const effectiveGrade = snapshot.class_grade === 0 ? null : snapshot.class_grade;
+              quarterGrades[`Q${qNum}`] = {
+                skill: this.percentageToLetter(snapshot.academic_grade === 0 ? null : snapshot.academic_grade),
+                part: this.percentageToLetter(snapshot.participation_grade),
+                total: this.percentageToLetter(effectiveGrade),
+                rawTotal: effectiveGrade,
+                isAtRisk: effectiveGrade !== null && effectiveGrade < 70
+              };
+            }
+          }
+
+          // Current quarter: only use enrollment live data as FALLBACK if no snapshot exists.
+          // After quarter switches the enrollment's live grades may be stale/from a different quarter,
+          // so snapshots are the authoritative source and must not be overwritten.
+          const currentQuarterNum = this.getQuarterNumber(currentQuarter);
+          if (currentQuarterNum && currentQuarterNum <= targetQuarterNum && !quarterGrades[`Q${currentQuarterNum}`]) {
+            // No snapshot for current quarter - fall back to enrollment live data
+            const effectiveCurrentGrade = enrollment.class_grade === 0 ? null : enrollment.class_grade;
+            if (effectiveCurrentGrade !== null) {
+              const letter = this.percentageToLetter(effectiveCurrentGrade);
+              quarterGrades[`Q${currentQuarterNum}`] = {
+                skill: this.percentageToLetter(enrollment.academic_grade === 0 ? null : enrollment.academic_grade),
+                part: this.percentageToLetter(enrollment.participation_grade),
+                total: letter,
+                rawTotal: effectiveCurrentGrade,
+                isAtRisk: effectiveCurrentGrade < 70
+              };
+            }
+          }
+
+          // Calculate GPA: convert each quarter's percentage to GPA first, then weighted average
+          // This prevents a low quarter from tanking the percentage average below a grade boundary
+          // (e.g. Q1=A Q2=B Q3=F should average GPAs 4.0/3.0/0.0, not percentages 95/85/0→57%→0.0 GPA)
+          let gpaWeightedSum = 0;
+          let gpaTotalWeight = 0;
+          for (const [q, data] of Object.entries(quarterGrades)) {
+            if (data.rawTotal != null) {
+              const qNum = parseInt(q.replace('Q', ''));
+              const weight = this.quarterWeights[qNum] || 0.25;
+              const qGPA = this.percentageToGPA(data.rawTotal);
+              if (qGPA !== null) {
+                gpaWeightedSum += qGPA * weight;
+                gpaTotalWeight += weight;
+              }
+            }
+          }
+          const baseGPA = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
+          const modifier = this.getCourseWeightModifier(cls.course_weight);
+          const weightedGPA = baseGPA !== null ? Math.min(baseGPA + modifier, 5.0) : null;
+
+          // Determine H/C label
+          let honorsCollege = 'N/A';
+          if (cls.course_weight === 'honors') honorsCollege = 'H';
+          else if (cls.course_weight === 'ap') honorsCollege = 'AP';
+          else if (cls.course_weight === 'dual_credit') honorsCollege = 'C';
+
+          // Check for purple flags (significant grade shift between consecutive quarters)
+          const qKeys = Object.keys(quarterGrades).sort(); // Q1, Q2, Q3, Q4
+          for (let i = 1; i < qKeys.length; i++) {
+            const prev = quarterGrades[qKeys[i - 1]];
+            const curr = quarterGrades[qKeys[i]];
+            if (prev.rawTotal !== null && prev.rawTotal !== undefined &&
+                curr.rawTotal !== null && curr.rawTotal !== undefined) {
+              const shift = Math.abs(curr.rawTotal - prev.rawTotal);
+              curr.isSignificantChange = shift >= 10;
+            }
+          }
+
+          // Finals: weighted average of whatever quarter grades are present.
+          // Derived from the weighted base GPA (Option A) so it agrees with the
+          // GP column rather than re-averaging raw percentages. The quarter
+          // weights are renormalized over the present quarters inside baseGPA,
+          // so a partial year still produces a meaningful letter.
+          const finalGradeLetter = baseGPA !== null ? this.gpaToLetter(baseGPA) : '';
+
+          subjectGroups[subject].courses.push({
+            courseName: cls.name,
+            credits: enrollment.credits_override ?? cls.credits ?? 1,
+            quarters: quarterGrades,
+            finalGradeLetter: finalGradeLetter,
+            honorsCollege: honorsCollege,
+            gradePoints: baseGPA,
+            weightedGP: weightedGPA,
+            _classId: cls.id  // For class-link merging below
+          });
+        }
+
+        // ============================================================
+        // Inject per-student empty ("virtual") classes as placeholder
+        // courses so they can be link targets. When a real class is linked
+        // INTO one, the merge below keeps the empty class's NAME but takes
+        // the real class's grades — "old grades, new name". The empty class
+        // inherits the source class's subject/credits/honors so the only
+        // visible change is the name.
+        // ============================================================
+        const virtualClasses = (options.virtualClasses || []);
+        const excludedSet = new Set(options.excludedClassIds || []);
+        for (const vc of virtualClasses) {
+          if (!vc || !vc.id || excludedSet.has(vc.id)) continue;
+          // The real class being merged into this empty class — used to place
+          // it in the right subject and inherit metadata. With nothing linked
+          // in, the empty class has no purpose on the report, so skip it.
+          const incoming = (options.classLinks || []).find(l => l.intoClassId === vc.id);
+          if (!incoming) continue;
+          const fromEnr = filteredEnrollments.find(e => e.class_id === incoming.fromClassId);
+          if (!fromEnr || !fromEnr.classes) continue;
+          const subject = this.normalizeReportCardSubject(fromEnr.classes.subject);
+          const credits = fromEnr.credits_override ?? fromEnr.classes.credits ?? 1;
+          const cw = fromEnr.classes.course_weight;
+          const honorsCollege = cw === 'honors' ? 'H' : cw === 'ap' ? 'AP' : cw === 'dual_credit' ? 'C' : 'N/A';
+          if (!subjectGroups[subject]) {
+            subjectGroups[subject] = { name: subject, unitsLabel: '', courses: [] };
+          }
+          subjectGroups[subject].courses.push({
+            courseName: vc.name || 'New Class',
+            credits,
+            quarters: {},
+            finalGradeLetter: '',
+            honorsCollege,
+            gradePoints: null,
+            weightedGP: null,
+            _classId: vc.id
+          });
+        }
+
+        // ============================================================
+        // Apply transient class links — merge pairs of courses the admin
+        // marked as the same continuing course. Linked pairs collapse to
+        // one row; quarter columns combine (the "into" class wins when
+        // both have a grade for the same quarter — admin chose the
+        // direction so this is unambiguous).
+        // ============================================================
+        const classLinks = (options.classLinks || []);
+        if (classLinks.length > 0) {
+          // Build the from→into rewrite map
+          const linkMap = {};
+          for (const l of classLinks) linkMap[l.fromClassId] = l.intoClassId;
+
+          for (const subjectName of Object.keys(subjectGroups)) {
+            const group = subjectGroups[subjectName];
+            // Bucket courses by their effective (post-link) class id
+            const byEffectiveId = new Map();
+            for (const course of group.courses) {
+              const effectiveId = linkMap[course._classId] || course._classId;
+              if (!byEffectiveId.has(effectiveId)) byEffectiveId.set(effectiveId, []);
+              byEffectiveId.get(effectiveId).push({ course, originalId: course._classId, effectiveId });
+            }
+            // For each bucket with more than one course, merge
+            const mergedCourses = [];
+            for (const [effectiveId, entries] of byEffectiveId) {
+              if (entries.length === 1) {
+                mergedCourses.push(entries[0].course);
+                continue;
+              }
+              // The "into" course (the target of the link) keeps its
+              // metadata (name, credits, honors marker). Fall back to
+              // the first entry if no exact match (shouldn't happen
+              // given how the bucket was built, but be defensive).
+              const intoEntry = entries.find(e => e.originalId === effectiveId) || entries[0];
+              const base = intoEntry.course;
+              const merged = {
+                courseName: base.courseName,
+                credits: base.credits,
+                quarters: {},
+                finalGradeLetter: base.finalGradeLetter,
+                honorsCollege: base.honorsCollege,
+                gradePoints: null,
+                weightedGP: null,
+                _classId: base._classId,
+                _mergedFromClassIds: entries.filter(e => e.originalId !== effectiveId).map(e => e.originalId)
+              };
+              // Quarter-by-quarter combine. The "into" course wins for any
+              // quarter where it has an actual grade; if the into-side is
+              // empty for a shared quarter (rawTotal null — covers class_grade=0
+              // and "no snapshot" cases), fall through to the from-side
+              // instead of letting the blank cell override real data.
+              const hasGrade = (q) => q && q.rawTotal != null;
+              for (const entry of entries) {
+                const isInto = entry.originalId === effectiveId;
+                for (const [qKey, qData] of Object.entries(entry.course.quarters || {})) {
+                  const existing = merged.quarters[qKey];
+                  if (!existing) {
+                    // First entry to claim this quarter — take it regardless.
+                    merged.quarters[qKey] = qData;
+                  } else if (isInto && hasGrade(qData)) {
+                    // Into-side overrides existing only when it has real data.
+                    merged.quarters[qKey] = qData;
+                  } else if (!hasGrade(existing) && hasGrade(qData)) {
+                    // Existing slot is empty; this entry has data — fill the gap.
+                    merged.quarters[qKey] = qData;
+                  }
+                  // Otherwise keep what we already have.
+                }
+              }
+              // Recompute GPA from the merged quarters using the same
+              // weighting the per-course loop above used.
+              let gpaWeightedSum = 0, gpaTotalWeight = 0;
+              for (const [q, data] of Object.entries(merged.quarters)) {
+                if (data.rawTotal != null) {
+                  const qNum = parseInt(q.replace('Q', ''));
+                  const weight = this.quarterWeights[qNum] || 0.25;
+                  const qGPA = this.percentageToGPA(data.rawTotal);
+                  if (qGPA !== null) {
+                    gpaWeightedSum += qGPA * weight;
+                    gpaTotalWeight += weight;
+                  }
+                }
+              }
+              merged.gradePoints = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
+              const modifier = this.getCourseWeightModifier(base.honorsCollege === 'H' ? 'honors' : base.honorsCollege === 'AP' ? 'ap' : base.honorsCollege === 'C' ? 'dual_credit' : null);
+              merged.weightedGP = merged.gradePoints !== null ? Math.min(merged.gradePoints + modifier, 5.0) : null;
+              // Recompute Finals from the merged quarters (base.finalGradeLetter
+              // is stale after combining): weighted average of whatever quarters
+              // are present, same as the per-course path above.
+              merged.finalGradeLetter = merged.gradePoints !== null ? this.gpaToLetter(merged.gradePoints) : '';
+              mergedCourses.push(merged);
+            }
+            group.courses = mergedCourses;
+          }
+        }
+
+        // Sort subject groups by standard order
+        const sortedGroups = [];
+        for (const subjectName of subjectOrder) {
+          if (subjectGroups[subjectName]) {
+            sortedGroups.push(subjectGroups[subjectName]);
+            delete subjectGroups[subjectName];
+          }
+        }
+        // Add any remaining subjects
+        for (const key of Object.keys(subjectGroups)) {
+          sortedGroups.push(subjectGroups[key]);
+        }
+
+        // Calculate GPA from the per-course weighted GPs (already scoped to selected quarters)
+        // This ensures the header GPA matches the table GPA and respects the quarter selection
+        let totalWGP = 0, courseCount = 0;
+        for (const group of sortedGroups) {
+          for (const course of group.courses) {
+            if (course.weightedGP != null) { totalWGP += course.weightedGP; courseCount++; }
+          }
+        }
+        let currentGPA = courseCount > 0 ? totalWGP / courseCount : null;
+
+        // Build report card data structure
+        const reportCardData = {
+          student: {
+            first_name: student.first_name,
+            last_name: student.last_name,
+            dob: student.dob || student.date_of_birth,
+            grade_level: student.grade_level
+          },
+          currentSchoolYear: currentSchoolYear,
+          currentQuarter: targetQuarter, // The quarter shown on the report card (may be selected end quarter)
+          currentGPA: currentGPA,
+          gpaHistory: {}, // TODO: Load historical GPA from archived years
+          approxCredits: `${filteredEnrollments.reduce((sum, e) => sum + (e.credits_override ?? e.classes?.credits ?? 1), 0)} earned`,
+          subjectGroups: sortedGroups,
+          activeQuarters: activeQuarters, // Only includes quarters from Q1 up to target quarter
+          columnVisibility: options.columnVisibility || { credits: true, finals: true, hc: true, gp: true, wtgp: true },
+          config: {
+            schoolFoundingYear: 2021 // River Tech started 2021-2022, so 2025-2026 = Y5
+          }
+        };
+
+        return reportCardData;
+      }
+
+      // ==================== REPORT CARD CHECK ====================
+      //
+      // Builds every enrolled student's report card with _buildReportCardData -
+      // the code that prints them - and lists what would print blank or wrong,
+      // so it can be fixed before cards go home. Admin-only. Riven's "check
+      // report cards" runs the same thing.
+      //
+      // A grade is MISSING when a quarter has ended and the card's cell for it
+      // is blank. A class is expected to have a grade for every quarter from
+      // the one the student joined it in, up to the card's quarter; a class
+      // they have since left (archived) only up to the last quarter it has a
+      // grade for. The current quarter, while it is still running, is listed
+      // apart as "no grade yet", because that is normal, not a fault.
+      async checkReportCards({ studentId = null, upToQuarterId = null } = {}) {
+        const sb = this.auth.supabase;
+        const year = await this._loadReportCardYear(upToQuarterId);
+        const today = this._localDateStr(new Date());
+        const school = this._reportCardYearProblems(year);
+
+        const students = await this.fetchAllRows((from, to) => {
+          let q = sb.from('user_profiles')
+            .select('id, first_name, last_name, date_of_birth, grade_level, student_status')
+            .eq('user_type', 'student');
+          // One named student is checked whether or not they are still here.
+          q = studentId ? q.eq('id', studentId) : q.or('student_status.is.null,student_status.neq.past');
+          return q.order('id').range(from, to);
+        });
+        const enrollments = await this.fetchAllRows((from, to) => {
+          let q = sb.from('class_enrollments')
+            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, classes(id, name, subject, credits, course_weight, teacher_id)')
+            .in('status', ['active', 'archived']);
+          if (studentId) q = q.eq('student_id', studentId);
+          return q.order('id').range(from, to);
+        });
+        const quarterIds = year.quarters.map(q => q.id);
+        const snapshots = quarterIds.length ? await this.fetchAllRows((from, to) => {
+          let q = sb.from('quarter_grade_snapshots')
+            .select('enrollment_id, quarter_id, class_grade, academic_grade, participation_grade')
+            .in('quarter_id', quarterIds);
+          if (studentId) q = q.in('enrollment_id', enrollments.map(e => e.id).concat(['00000000-0000-0000-0000-000000000000']));
+          return q.order('enrollment_id').range(from, to);
+        }) : [];
+        const optionRows = await this.fetchAllRows((from, to) => {
+          let q = sb.from('report_card_options').select('student_id, excluded_class_ids, class_links, virtual_classes');
+          if (studentId) q = q.eq('student_id', studentId);
+          return q.order('student_id').range(from, to);
+        });
+
+        const teacherIds = [...new Set(enrollments.map(e => e.classes?.teacher_id).filter(Boolean))];
+        const teacherName = {};
+        if (teacherIds.length) {
+          const { data: teachers } = await this.supabaseQuery(() => sb.from('user_profiles')
+            .select('id, first_name, last_name').in('id', teacherIds));
+          (teachers || []).forEach(t => { teacherName[t.id] = `${t.first_name || ''} ${t.last_name || ''}`.trim(); });
+        }
+
+        const group = (rows, key) => rows.reduce((m, r) => ((m[r[key]] = m[r[key]] || []).push(r), m), {});
+        const enrBy = group(enrollments, 'student_id');
+        const enrIds = new Set(enrollments.map(e => e.id));
+        const snapByEnr = group(snapshots.filter(x => enrIds.has(x.enrollment_id)), 'enrollment_id');
+        const arr = (v) => (Array.isArray(v) ? v : []);
+        const optsBy = {};
+        optionRows.forEach(r => {
+          optsBy[r.student_id] = { excludedClassIds: arr(r.excluded_class_ids), classLinks: arr(r.class_links), virtualClasses: arr(r.virtual_classes) };
+        });
+
+        const result = {
+          quarter: year.targetQuarter?.name || '', school, checked: 0, students: [], byClass: [], inProgress: [],
+        };
+        const byClass = {};
+        const inProgress = {};
+        for (const st of students) {
+          const mine = enrBy[st.id] || [];
+          if (!mine.length) continue;  // no classes, no card
+          result.checked++;
+          const inputs = { ...year, student: st, enrollments: mine, snapshots: mine.flatMap(e => snapByEnr[e.id] || []) };
+          const options = optsBy[st.id] || {};
+          const card = this._buildReportCardData(inputs, options);
+          const issues = this._reportCardGaps(inputs, card, options, today);
+          const name = `${st.first_name || ''} ${st.last_name || ''}`.trim();
+          for (const i of issues) {
+            if (i.kind !== 'missing' && i.kind !== 'not_yet') continue;
+            const bucket = i.kind === 'missing' ? byClass : inProgress;
+            const k = i.classId || i.className;
+            bucket[k] = bucket[k] || { classId: i.classId, className: i.className, teacher: teacherName[i.teacherId] || '', students: [] };
+            bucket[k].students.push({ id: st.id, name, quarter: i.quarter, why: i.why });
+          }
+          const shown = issues.filter(i => i.kind !== 'not_yet');
+          if (shown.length) result.students.push({ id: st.id, name, issues: shown });
+        }
+        const order = (o) => Object.values(o).sort((a, b) => b.students.length - a.students.length || a.className.localeCompare(b.className));
+        result.byClass = order(byClass);
+        result.inProgress = order(inProgress);
+        result.students.sort((a, b) => a.name.localeCompare(b.name));
+        result.missingCount = result.byClass.reduce((n, c) => n + c.students.length, 0);
+        result.brokenCount = result.students.filter(x => x.issues.some(i => i.kind !== 'missing')).length;
+        return result;
+      }
+
+      // Problems with the school year itself, which would spoil every card.
+      _reportCardYearProblems(year) {
+        const out = [];
+        const { currentQuarter, quarters, currentSchoolYear } = year;
+        if (!currentQuarter) out.push('No quarter is marked as the current one, so cards cannot tell which quarters to print.');
+        const seen = {};
+        for (const q of quarters) {
+          const n = this.getQuarterNumber(q);
+          if (!n) out.push(`The quarter "${q.name}" does not read as Q1 to Q4, so its grades are left off every card.`);
+          else if (seen[n]) out.push(`"${seen[n]}" and "${q.name}" both read as Q${n}, so one of them overwrites the other on the cards.`);
+          else seen[n] = q.name;
+          if (!q.end_date) out.push(`The quarter "${q.name}" has no end date, so the check cannot tell whether its grades are due.`);
+        }
+        if (currentQuarter && !quarters.some(q => q.id === currentQuarter.id)) {
+          out.push(`The current quarter "${currentQuarter.name}" is not in the ${currentSchoolYear} school year from settings, so cards look at the wrong year.`);
+        }
+        return out;
+      }
+
+      // What is wrong with one student's built card. Pure: the inputs, the card
+      // _buildReportCardData made from them, the options it was made with, and
+      // today's date (YYYY-MM-DD).
+      _reportCardGaps(inputs, card, options = {}, today) {
+        const issues = [];
+        const { student, enrollments, snapshots, quarters, targetQuarter, currentQuarter } = inputs;
+        const targetNum = this.getQuarterNumber(targetQuarter);
+        const currentNum = this.getQuarterNumber(currentQuarter);
+        const qByNum = {};
+        for (const q of quarters) {
+          const n = this.getQuarterNumber(q);
+          if (n && targetNum && n <= targetNum && !qByNum[n]) qByNum[n] = q;
+        }
+        const nums = Object.keys(qByNum).map(Number).sort();
+        const snap = {};
+        snapshots.forEach(x => { snap[`${x.enrollment_id}_${x.quarter_id}`] = x; });
+        const real = (g) => g !== null && g !== undefined && g !== 0;
+        const excluded = new Set(options.excludedClassIds || []);
+        const enrByClass = {};
+        enrollments.forEach(e => { (enrByClass[e.class_id] = enrByClass[e.class_id] || []).push(e); });
+        const nameOf = (id) => enrByClass[id]?.[0]?.classes?.name
+          || (options.virtualClasses || []).find(v => v.id === id)?.name || 'a class';
+
+        if (!student.date_of_birth && !student.dob) issues.push({ kind: 'profile', text: 'No date of birth on file, so the card prints it blank.' });
+        if (!student.grade_level) issues.push({ kind: 'profile', text: 'No grade level on file, so the card prints it blank.' });
+
+        for (const [cid, list] of Object.entries(enrByClass)) {
+          if (excluded.has(cid)) continue;
+          if (!list[0].classes) issues.push({ kind: 'broken', text: 'A class on their record could not be read, so it is left off the card.' });
+          else if (list.length > 1) issues.push({ kind: 'broken', text: `${list[0].classes.name} is on their record twice, so it prints twice.` });
+        }
+
+        const expectedFor = (e) => {
+          const since = e.enrolled_at ? String(e.enrolled_at).slice(0, 10) : null;
+          let out = nums.filter(n => !since || !qByNum[n].end_date || qByNum[n].end_date >= since);
+          if (e.status === 'archived') {
+            const graded = nums.filter(n => real(snap[`${e.id}_${qByNum[n].id}`]?.class_grade));
+            const last = graded.length ? Math.max(...graded) : 0;
+            out = out.filter(n => n <= last);
+          }
+          return out;
+        };
+
+        for (const g of card.subjectGroups || []) {
+          for (const c of g.courses) {
+            const ids = [c._classId, ...(c._mergedFromClassIds || [])];
+            const enrs = ids.flatMap(id => enrByClass[id] || []);
+            if (!enrs.length) continue;
+            const hasAny = Object.values(c.quarters || {}).some(q => q && q.rawTotal != null);
+            const expected = [...new Set(enrs.flatMap(expectedFor))].sort();
+            if (!expected.length && !hasAny) {
+              issues.push({ kind: 'empty', className: c.courseName,
+                text: `${c.courseName} prints with no grades at all (they left it). Untick it in Reports or add its grades.` });
+              continue;
+            }
+            for (const n of expected) {
+              const cell = c.quarters?.[`Q${n}`];
+              if (cell && cell.rawTotal != null) continue;
+              const q = qByNum[n];
+              // The enrolment this quarter's grade should have come from.
+              const owner = enrs.find(e => expectedFor(e).includes(n)) || enrs[0];
+              const s0 = snap[`${owner.id}_${q.id}`];
+              const ended = !!(q.end_date && q.end_date < today);
+              const why = s0 ? 'the saved grade is blank'
+                : n === currentNum ? 'no grade entered' : 'no grade was saved when the quarter closed';
+              issues.push({
+                kind: ended ? 'missing' : 'not_yet', quarter: `Q${n}`, why,
+                className: c.courseName, classId: owner.class_id, teacherId: owner.classes?.teacher_id || null,
+                text: `${c.courseName}: no Q${n} grade (${why}).`,
+              });
+            }
+          }
+        }
+
+        // The admin's setup for this student, where it no longer fits.
+        const valid = new Set(Object.keys(enrByClass));
+        (options.virtualClasses || []).forEach(v => valid.add(v.id));
+        const links = options.classLinks || [];
+        for (const l of links) {
+          if (!l || !valid.has(l.fromClassId) || !valid.has(l.intoClassId)) {
+            issues.push({ kind: 'broken', text: 'A saved class link points at a class no longer on their record, so it is ignored.' });
+            continue;
+          }
+          const a = enrByClass[l.fromClassId]?.[0]?.classes, b = enrByClass[l.intoClassId]?.[0]?.classes;
+          if (a && b && this.normalizeReportCardSubject(a.subject) !== this.normalizeReportCardSubject(b.subject)) {
+            issues.push({ kind: 'broken', text: `${a.name} is linked into ${b.name}, but they are different subjects, so they still print as two rows.` });
+          }
+        }
+        for (const v of options.virtualClasses || []) {
+          if (!v || excluded.has(v.id)) continue;
+          if (!links.some(l => l && l.intoClassId === v.id && enrByClass[l.fromClassId])) {
+            issues.push({ kind: 'broken', text: `The renamed class "${v.name}" has nothing linked into it, so it does not print.` });
+          }
+        }
+        return issues;
+      }
+
+      // The admin action: Reports > Check report cards.
+      async openReportCardCheck() {
+        if (this.userInfo?.profile?.user_type !== 'admin') {
+          this.showNotification('Checking report cards is admin-only', 'info');
+          return;
+        }
+        const sel = document.getElementById('report-card-quarter');
+        const upToQuarterId = sel && sel.value !== 'current' ? sel.value : null;
+        this.showModal('report-card-check', '🩺 Report card check',
+          `<div style="padding: 20px; text-align: center; color: var(--muted);">Building every student's report card\u2026</div>`);
+        try {
+          const result = await this.checkReportCards({ upToQuarterId });
+          this._reportCardCheck = result;
+          const body = document.querySelector('#modal-report-card-check .modal-content');
+          if (body) {
+            body.innerHTML = `<h3 style="margin-bottom: 12px; color: var(--text);">🩺 Report card check</h3>`
+              + this._renderReportCardCheck(result)
+              + `<div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+                   <button class="btn btn-secondary" onclick="app.openReportCardCheck()">↻ Check again</button>
+                   <button class="btn btn-primary" onclick="app.closeModal('report-card-check')">Close</button>
+                 </div>`;
+          }
+        } catch (e) {
+          const body = document.querySelector('#modal-report-card-check .modal-content');
+          if (body) body.innerHTML = `<div style="color: var(--danger);">Could not check report cards: ${this.escapeHtml(e?.message || String(e))}</div>
+            <div style="text-align: right; margin-top: 12px;"><button class="btn btn-primary" onclick="app.closeModal('report-card-check')">Close</button></div>`;
+        }
+      }
+
+      _renderReportCardCheck(r) {
+        const esc = (t) => this.escapeHtml(String(t ?? ''));
+        const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+        const ready = r.checked - r.students.length;
+        const parts = [];
+        parts.push(`<div style="margin-bottom: 14px;">Checked <b>${plural(r.checked, 'student')}</b>${r.quarter ? ` up to <b>${esc(r.quarter)}</b>` : ''}.
+          ${r.students.length ? `✅ ${ready} ready · ⚠️ <b>${r.students.length}</b> need attention` : '✅ Every card is complete.'}</div>`);
+        if (r.school.length) {
+          parts.push(`<div style="border-left: 4px solid var(--danger); padding: 8px 12px; margin-bottom: 14px; background: rgba(255,80,80,.08);">
+            <b>School year problems</b> (these affect every card)<ul style="margin: 6px 0 0 18px;">${r.school.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>`);
+        }
+        const studentBtns = (id) => `<button class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px;" onclick="app.generateReportCard('${this.jsAttr(id)}')">📄 Card</button>
+          <button class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px;" onclick="app.closeModal('report-card-check'); app.viewStudentDetails('${this.jsAttr(id)}')">Student Hub</button>`;
+        if (r.byClass.length) {
+          parts.push(`<h4 style="margin: 14px 0 6px;">Missing grades by class (${plural(r.missingCount, 'grade')})</h4>`
+            + r.byClass.map(c => `<details style="margin-bottom: 6px;"><summary style="cursor: pointer;"><b>${esc(c.className)}</b>${c.teacher ? ` · ${esc(c.teacher)}` : ''} · ${plural(c.students.length, 'grade')} missing</summary>
+                <ul style="margin: 6px 0 0 18px; font-size: 13px;">${c.students.map(x => `<li>${esc(x.name)} · ${esc(x.quarter)} <span style="color: var(--muted);">(${esc(x.why)})</span></li>`).join('')}</ul></details>`).join(''));
+        }
+        const broken = r.students.filter(x => x.issues.some(i => i.kind !== 'missing'));
+        if (broken.length) {
+          parts.push(`<h4 style="margin: 14px 0 6px;">Cards that print wrong or incomplete (${broken.length})</h4>`
+            + broken.map(x => `<div style="padding: 6px 0; border-bottom: 1px solid var(--border);">
+                <div style="display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap;"><b>${esc(x.name)}</b><span>${studentBtns(x.id)}</span></div>
+                <ul style="margin: 4px 0 0 18px; font-size: 13px;">${x.issues.filter(i => i.kind !== 'missing').map(i => `<li>${esc(i.text)}</li>`).join('')}</ul></div>`).join(''));
+        }
+        if (r.inProgress.length) {
+          const n = r.inProgress.reduce((t, c) => t + c.students.length, 0);
+          parts.push(`<details style="margin-top: 14px;"><summary style="cursor: pointer; color: var(--muted);">Quarter still running: ${plural(n, 'grade')} not entered yet, in ${r.inProgress.length} class${r.inProgress.length === 1 ? '' : 'es'}</summary>
+            <ul style="margin: 6px 0 0 18px; font-size: 13px;">${r.inProgress.map(c => `<li>${esc(c.className)}${c.teacher ? ` · ${esc(c.teacher)}` : ''} · ${c.students.length}</li>`).join('')}</ul></details>`);
+        }
+        return parts.join('');
       }
 
       async generateTranscript(studentId) {
@@ -57221,7 +57535,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-29·d';
+      const RIVEN_BUILD = '2026-10-30·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -60921,6 +61235,9 @@ Students you had withdrawn stay withdrawn.`)) {
       // "all here except zephyr" is a full register being taken, not read.
       if (/\b(?:all|everyone|everybody)\b[\s\S]{0,12}\b(?:here|present|in)\b/.test(q)) return null;
       if (/\bexcept\b/.test(q)) return null;
+      // "is anything missing from noah's report card", "missing grades": a
+      // grade is what is missing, not the child.
+      if (/\b(?:grades?|report\s*cards?)\b/.test(q)) return null;
       if (entities && entities.groupMatch) return null;
 
       // WHO IS BEING ASKED ABOUT.
@@ -61162,6 +61479,9 @@ Students you had withdrawn stay withdrawn.`)) {
         // name, and treating them as one is always wrong.
         'quarter','quarters','semester','term','grade','grades','class','classes',
         'roster','register','report','reports','schedule','period','periods',
+        // "check for broken reports" checked one student: "broken" is close
+        // enough to a surname to resolve to it.
+        'card','cards','broken','blank',
         'chapter','chapters','assignment','assignments','homework','lesson','lessons',
         'points','page','pages','unit','units','quiz','test','tests','exam','exams',
         // TIME AND ATTENDANCE, the other half of the same lesson.
@@ -62722,9 +63042,10 @@ Students you had withdrawn stay withdrawn.`)) {
           // way of reporting an absence in the moment would quietly become a
           // plan and the day would go unmarked.
           patterns: [
-            // Not "is NOT absent", and not "missing assignments/work" - those
-            // share the words and are not an absence.
-            /^(?!.*\b(today|right now|just now|this morning|this afternoon)\b)(?!.*\b(?:is|are|isnt|arent)\s+not\b)(?!.*\bmissing\s+(?:work|assignments?|homework|grades?|tests?|quizz?(?:es)?|scores?)\b)[\s\S]*\b(is|are|will be|wont be|will not be|is going to be|are going to be)\b.{0,20}\b(out|away|absent|gone|off|missing)\b/,
+            // Not "is NOT absent", not "missing assignments/work", and not
+            // "is anything missing from noah's report card" - those share the
+            // words and are not an absence.
+            /^(?!.*\b(today|right now|just now|this morning|this afternoon)\b)(?!.*\b(?:is|are|isnt|arent)\s+not\b)(?!.*\bmissing\s+(?:work|assignments?|homework|grades?|tests?|quizz?(?:es)?|scores?)\b)(?!.*\breport\s*cards?\b)[\s\S]*\b(is|are|will be|wont be|will not be|is going to be|are going to be)\b.{0,20}\b(out|away|absent|gone|off|missing)\b/,
             /^(?!.*\b(today|right now|just now)\b)[\s\S]*\b(wont|will not|cant|cannot|can not)\b.{0,12}\b(be (in|here)|make it|attend|come in)\b/,
             /^(?!.*\b(today|right now|just now)\b)[\s\S]*\b(has|have|got)\b.{0,16}\b(appointment|dentist|doctor|orthodontist|surgery|funeral|wedding|court)\b/,
             /^(?!.*\btoday\b)[\s\S]*\b(out|away|absent|gone)\b.{0,10}\b(next|this|on)\b.{0,12}\b(mon|tues?|wed|thur?s?|fri|sat|sun)/,
@@ -63731,12 +64052,35 @@ Students you had withdrawn stay withdrawn.`)) {
           ]
         },
         // Reports are reads, but heavy ones - they open a document.
+        //
+        // "Are report cards ready", "what grades are missing" - the admin's
+        // report card check, school-wide or for one named student. Ahead of
+        // REPORT_CARD, which needs a student and opens a card: asking what is
+        // MISSING from cards is a different question from asking for one.
+        // "missing grades" says nothing about which work, so the assignment
+        // words stand it down ("which assignments are missing grades" is the
+        // grading queue, not a report card).
+        {
+          intent: 'REPORT_CARD_CHECK',
+          w: 9, notIfNoteCommand: true,
+          patterns: [
+            // "check" arrives as "show" - the normaliser folds the two.
+            /\b(check|show|audit|scan|review|verify|test)\b[\s\S]{0,24}\breport\s*cards\b/,
+            /\breport\s*cards?\b[\s\S]{0,30}\b(ready|missing|broken|problems?|issues?|complete|incomplete|gaps?|holes?|blanks?)\b/,
+            /\b(missing|blank|broken|incomplete)\b[\s\S]{0,30}\breport\s*cards?\b/,
+            { re: /^(?![\s\S]*\b(assignments?|homework|work|submissions?|quiz(zes)?|tests?|worksheets?|to grade)\b)[\s\S]*\b(missing|blank)\s+(quarter(ly)?\s+)?grades\b/, w: 8 },
+            { re: /^(?![\s\S]*\b(assignments?|homework|work|submissions?|quiz(zes)?|tests?|worksheets?|to grade)\b)[\s\S]*\b(what|which|any)\s+(quarter(ly)?\s+)?grades\s+(are\s+)?(still\s+)?missing\b/, w: 8 },
+            /\bbroken\s+reports?\b/,
+          ]
+        },
         {
           intent: 'REPORT_CARD',
           w: 8, requiresStudent: true, notIfNoteCommand: true,
+          // Asking what is wrong with a card is the check, not the card:
+          // "is anything missing from noah's report card".
           patterns: [
-            /\breport\s+card\b/,
-            /\b(print|generate|make|pull|get)\b[\s\S]{0,20}\breport\b/,
+            /^(?![\s\S]*\b(missing|broken|blank|ready|incomplete|gaps?|holes?|problems?|issues?)\b)[\s\S]*\breport\s+card\b/,
+            /^(?![\s\S]*\b(missing|broken|blank|ready|incomplete|gaps?|holes?|problems?|issues?)\b)[\s\S]*\b(print|generate|make|pull|get)\b[\s\S]{0,20}\breport\b/,
           ]
         },
         {
@@ -65053,6 +65397,8 @@ Students you had withdrawn stay withdrawn.`)) {
           return await this.terminalCancelClass(entities);
         case 'UNCANCEL_CLASS':
           return await this.terminalUncancelClass(entities);
+        case 'REPORT_CARD_CHECK':
+          return await this.terminalReportCardCheck(entities);
         case 'REPORT_CARD':
           return await this.terminalReportCard(entities);
         case 'TRANSCRIPT':
@@ -71758,6 +72104,57 @@ Students you had withdrawn stay withdrawn.`)) {
       }
       this._showRivenMessage(`Opening ${this.escapeHtml(student.full_name)}'s report card\u2026`, true);
       await this.generateReportCard(student.id);
+    }
+
+    // "check report cards" / "what grades are missing": the admin's report
+    // card check, answered in the chat. The same checkReportCards the Reports
+    // page runs, with a button to open the full list there.
+    async terminalReportCardCheck(entities) {
+      if (this.userInfo?.profile?.user_type !== 'admin') {
+        this.terminalPrintError('Checking report cards is admin-only. Your own classes\' missing work is in "anything I should know".');
+        return;
+      }
+      if (typeof this.checkReportCards !== 'function') {
+        this.terminalPrintError('The report card check is not available on this page.');
+        return;
+      }
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+      const student = this._rivenResolvedStudent(entities);
+      this._showRivenMessage(student
+        ? `Checking ${esc(student.full_name)}'s report card\u2026`
+        : `Checking every student's report card\u2026`, true);
+      let r;
+      try {
+        r = await this.checkReportCards({ studentId: student?.id || null });
+      } catch (e) {
+        this.terminalPrintError('Could not check report cards: ' + (e?.message || e));
+        return;
+      }
+      const lines = [];
+      if (r.school.length) lines.push(`⛔ <b>School year</b>:<br>${r.school.map(x => '• ' + esc(x)).join('<br>')}`);
+      if (student) {
+        const mine = r.students[0];
+        if (!r.checked) lines.push(`${esc(student.full_name)} has no classes, so there is no card to print.`);
+        else if (!mine) lines.push(`✅ ${esc(student.full_name)}'s card${r.quarter ? ` up to ${esc(r.quarter)}` : ''} is complete.`);
+        else lines.push(`⚠️ <b>${esc(student.full_name)}</b>'s card${r.quarter ? ` up to ${esc(r.quarter)}` : ''}:<br>${mine.issues.map(i => '• ' + esc(i.text)).join('<br>')}`);
+      } else {
+        lines.push(r.students.length
+          ? `Checked ${plural(r.checked, 'student')}${r.quarter ? ` up to ${esc(r.quarter)}` : ''}: ✅ ${r.checked - r.students.length} ready, ⚠️ <b>${r.students.length}</b> need attention.`
+          : `✅ All ${plural(r.checked, 'card')}${r.quarter ? ` up to ${esc(r.quarter)}` : ''} are complete.`);
+        if (r.byClass.length) {
+          const top = r.byClass.slice(0, 6).map(c => `• <b>${esc(c.className)}</b>${c.teacher ? ` (${esc(c.teacher)})` : ''}: ${plural(c.students.length, 'grade')} missing`);
+          if (r.byClass.length > 6) top.push(`• \u2026 and ${r.byClass.length - 6} more classes`);
+          lines.push(`📝 <b>Missing grades</b> (${r.missingCount}):<br>${top.join('<br>')}`);
+        }
+        if (r.brokenCount) lines.push(`🧩 <b>${plural(r.brokenCount, 'card')}</b> would print wrong or incomplete (blank birthday or grade level, a class twice, a stale link).`);
+      }
+      const notYet = r.inProgress.reduce((t, c) => t + c.students.length, 0);
+      if (notYet) lines.push(`<span style="font-size: 12px; color: var(--muted);">Not counted: ${plural(notYet, 'grade')} for the quarter still running.</span>`);
+      if (typeof this.openReportCardCheck === 'function' && !student) {
+        lines.push(`<button class="btn btn-secondary small" onclick="app.openReportCardCheck()">Open the full list</button>`);
+      }
+      this._showRivenMessage(lines.join('<br><br>'), true);
     }
 
     async terminalTranscript(entities) {

@@ -5825,3 +5825,26 @@ Riven) already ran the same code, but two things made the result depend on who p
 
 Here: `tests/report-card-same-for-everyone.test.js` prints one invented student's card from the
 admin panel and from the other buttons and checks they match.
+
+### 2026-10-30 · Report card check (Reports, and Riven)
+
+Admins have a **🩺 Check report cards** button in Reports, next to Report Card. It builds every
+enrolled student's card with the same code that prints it, then lists:
+
+- **Missing grades, by class and teacher.** A quarter that has ended with a blank cell on the card.
+  A class is expected to have a grade from the quarter the student joined it, up to the card's
+  quarter; a class they have since left, only up to its last graded quarter. The quarter still
+  running is listed apart as "not entered yet", since that is normal.
+- **Cards that print wrong:** no birthday or grade level, a class on the record twice, a class
+  left with no grades at all, or the admin's report card setup no longer fitting (a link to a class
+  they are no longer in, a link across subjects, a renamed class with nothing linked into it).
+- **School year problems** that spoil every card: no current quarter, quarters that do not read as
+  Q1 to Q4 or read as the same one, a quarter with no end date.
+
+Riven runs the same check: "check report cards", "are report cards ready", "what grades are
+missing", or "is anything missing from noah's report card" for one student. Admin-only.
+
+To make the check use the printing code, `generateReportCard` was split into
+`_loadReportCardYear`, `_loadReportCardInputs` and `_buildReportCardData`; the card itself is
+unchanged. Tests: `tests/report-card-check.test.js`, with the Riven phrasings in
+`debug-tools/nlp-stress.js`.

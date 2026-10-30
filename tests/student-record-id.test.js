@@ -119,7 +119,9 @@ const lineOf = (idx) => html.slice(0, idx).split('\n').length;
 
     // Both functions really do look up by profile id — if that ever changes,
     // this whole section is measuring the wrong thing.
-    for (const fn of ['generateReportCard', 'generateTranscript']) {
+    // The report card's lookup lives in _loadReportCardInputs since the
+    // generator was split so the report card check could build cards too.
+    for (const fn of ['_loadReportCardInputs', 'generateTranscript']) {
       const i = html.indexOf(`async ${fn}(`);
       ok(`${fn} still looks the student up by profile id`,
          i !== -1 && /from\('user_profiles'\)[\s\S]{0,200}?\.eq\('id', studentId\)/.test(html.slice(i, i + 1400)));
