@@ -43,7 +43,7 @@ const ok = (label, cond, detail = '') => {
 const names = ['generateReportCard', '_loadReportCardYear', '_loadReportCardInputs', '_buildReportCardData', 'loadReportCardSavedOptions', '_parseReportCardColumns',
   '_reportCardOptionsRow', 'saveReportCardOptions', 'saveReportCardColumnPrefs', 'migrateLocalReportCardOptions',
   'loadReportCardOptionsFromStorage', 'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter',
-  'getCourseWeightModifier', 'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
+  'getCourseWeightModifier', 'courseWeightFor', 'courseWeightLabel', 'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
 const proto = eval(`({ ${names.map(method).join(',\n')} })`);
 
 // ---- the database ----

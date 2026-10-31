@@ -2551,6 +2551,21 @@
         }
       }
 
+      // A class's course weight for one student: their own override (set by an
+      // admin from the class roster) or, when there is none, the class's.
+      courseWeightFor(enrollment, cls) {
+        return enrollment?.course_weight_override || cls?.course_weight || 'normal';
+      }
+
+      // The H/C column on the report card and transcript.
+      courseWeightLabel(courseWeight) {
+        return { honors: 'H', ap: 'AP', dual_credit: 'C' }[courseWeight] || 'N/A';
+      }
+
+      courseWeightName(courseWeight) {
+        return { honors: 'Honors', ap: 'AP', dual_credit: 'Dual Credit' }[courseWeight] || 'Normal';
+      }
+
       /**
        * Determines the school year from a date
        * School year runs Aug-July, so Aug 2024 through Jul 2025 = "2024-2025"
@@ -2671,7 +2686,7 @@
                 .from('quarter_grade_snapshots')
                 .select(`
                   *,
-                  class_enrollments!inner(class_id, student_id)
+                  class_enrollments!inner(class_id, student_id, course_weight_override)
                 `)
                 .eq('quarter_id', quarter.id)
                 .eq('class_enrollments.student_id', studentId));
@@ -2681,7 +2696,8 @@
                 class_id: s.class_enrollments.class_id,
                 // Treat class_grade=0 as null (no real data). The grade rounding floor is 55,
                 // so 0 only occurs from DB bug where COALESCE(NULL,0) forced no-data classes to 0.
-                class_grade: s.class_grade === 0 ? null : s.class_grade
+                class_grade: s.class_grade === 0 ? null : s.class_grade,
+                course_weight_override: s.class_enrollments.course_weight_override
               }));
             } else {
               // No snapshots - calculate from assignment submissions within quarter date range
@@ -2689,7 +2705,7 @@
               const { data: enrollments } = await this.supabaseQuery(() =>
                 this.auth.supabase
                   .from('class_enrollments')
-                  .select('id, class_id')
+                  .select('id, class_id, course_weight_override')
                   .eq('student_id', studentId)
                   .in('status', ['active', 'archived']));
 
@@ -2750,7 +2766,8 @@
                   // Convert to gradeData format
                   gradeData = Object.entries(classGrades).map(([classId, grade]) => ({
                     class_id: classId,
-                    class_grade: grade
+                    class_grade: grade,
+                    course_weight_override: enrollments.find(e => e.class_id === classId)?.course_weight_override
                   }));
                 }
               }
@@ -2779,13 +2796,14 @@
 
               const classInfo = classMap[grade.class_id] || {};
               const baseGPA = this.percentageToGPA(grade.class_grade);
-              const modifier = this.getCourseWeightModifier(classInfo.course_weight);
+              const courseWeight = this.courseWeightFor(grade, classInfo);
+              const modifier = this.getCourseWeightModifier(courseWeight);
               const adjustedGPA = Math.min(baseGPA + modifier, 5.0); // Cap at 5.0
 
               quarterClasses.push({
                 classId: grade.class_id,
                 className: classInfo.name || 'Unknown',
-                courseWeight: classInfo.course_weight || 'normal',
+                courseWeight,
                 percentageGrade: grade.class_grade,
                 baseGPA: baseGPA,
                 adjustedGPA: adjustedGPA
@@ -20308,6 +20326,10 @@
 
           // Class default credit value (per-student overrides fall back to this)
           const classDefaultCredit = classData?.credits ?? 1;
+          // Same for Honors / AP / dual credit. Only admins set it per student,
+          // as only admins set it on the class.
+          const classDefaultWeight = classData?.course_weight || 'normal';
+          const canSetWeight = this.userInfo.profile?.user_type === 'admin';
 
           // Build active students HTML
           let activeStudentsHtml = '';
@@ -20325,6 +20347,7 @@
                     <div class="list-item-meta">
                       ${this.escapeHtml(student.email || '')} • Grade ${this.escapeHtml(student.grade_level || 'N/A')} • Enrolled: ${enrollDate}
                       • Credit: <strong>${effectiveCredit}</strong>${hasCreditOverride ? ' <span style="color: var(--accent);">(override)</span>' : ''}
+                      ${enrollment.course_weight_override ? `• <strong>${this.courseWeightName(enrollment.course_weight_override)}</strong> <span style="color: var(--accent);">(override)</span>` : ''}
                       <span class="roster-last-active" data-sid="${this.escapeHtml(student.id || '')}"></span>
                     </div>
                   </div>
@@ -20335,6 +20358,9 @@
                     <button class="btn btn-secondary small" onclick="app.editCreditOverride('${enrollment.id}', '${classId}', ${hasCreditOverride ? Number(enrollment.credits_override) : 'null'}, ${classDefaultCredit})" title="Override the credit value this student earns for this class">
                       🎓 Credit
                     </button>
+                    ${canSetWeight ? `<button class="btn btn-secondary small" onclick="app.editCourseWeightOverride('${enrollment.id}', '${classId}', '${enrollment.course_weight_override || ''}', '${classDefaultWeight}')" title="Mark this class Honors, AP or dual credit for this student only">
+                      ⭐ Honors
+                    </button>` : ''}
                     <button class="btn btn-secondary small" onclick="app.showPrivateNotes('${classId}', '${student.id}', '${this.jsAttr((student.first_name || '') + ' ' + (student.last_name || ''))}')" title="Private notes only visible to you">
                       🔒 My Notes
                     </button>
@@ -20512,6 +20538,67 @@
         } catch (error) {
           console.error('Error saving credit override:', error);
           this.showNotification('Error saving credit override: ' + error.message, 'error');
+        }
+      }
+
+      // Honors / AP / dual credit for one student in this class. current is the
+      // student's override ('' for none); classWeight is the class's own.
+      editCourseWeightOverride(enrollmentId, classId, current, classWeight) {
+        const options = [
+          ['', `Class default (${this.courseWeightName(classWeight)})`, 'Whatever the class is set to'],
+          ['normal', 'Normal', 'No GPA bump, even if the class is Honors'],
+          ['honors', 'Honors', '+0.5 weighted GPA, H on the report card'],
+          ['ap', 'AP', '+1.0 weighted GPA, AP on the report card'],
+          ['dual_credit', 'Dual Credit', '+1.0 weighted GPA, C on the report card'],
+        ];
+        const content = `
+          <div>
+            <p style="color: var(--muted); margin-bottom: 15px;">
+              This class is <strong>${this.courseWeightName(classWeight)}</strong>. Choose a different weight for this
+              student only. It changes their report card, transcript and weighted GPA; the rest of the class is unchanged.
+            </p>
+            <div style="display: grid; gap: 8px;">
+              ${options.map(([value, label, hint]) => `
+                <label style="display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer;">
+                  <input type="radio" name="course-weight-override" value="${value}" ${value === (current || '') ? 'checked' : ''} style="margin-top: 3px;">
+                  <span><strong>${label}</strong><br><span style="color: var(--muted); font-size: 0.85rem;">${hint}</span></span>
+                </label>`).join('')}
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
+              <button class="btn btn-secondary" onclick="app.closeModal('course-weight-override')">Cancel</button>
+              <button class="btn btn-primary" onclick="app.saveCourseWeightOverride('${enrollmentId}', '${classId}')">Save</button>
+            </div>
+          </div>
+        `;
+        this.showModal('course-weight-override', '⭐ Honors for this student', content, true);
+      }
+
+      async saveCourseWeightOverride(enrollmentId, classId) {
+        try {
+          const value = document.querySelector('input[name="course-weight-override"]:checked')?.value || null;
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('class_enrollments')
+            .update({ course_weight_override: value })
+            .eq('id', enrollmentId)
+            .select('course_weight_override')
+            .maybeSingle());
+          if (error) throw error;
+          // The database keeps the old value for anyone but an admin, without
+          // an error, so check what was actually saved.
+          if ((data?.course_weight_override || null) !== value) {
+            throw new Error('only an admin can change this');
+          }
+
+          this.closeModal('course-weight-override');
+          this.showNotification(
+            value === null ? 'Using the class default for this student' : `${this.courseWeightName(value)} for this student`,
+            'success'
+          );
+          const showWithdrawn = document.getElementById('show-withdrawn-toggle')?.checked || false;
+          this.manageStudents(classId, showWithdrawn);
+        } catch (error) {
+          console.error('Error saving course weight:', error);
+          this.showNotification('Could not save: ' + (error?.message || error), 'error');
         }
       }
 
@@ -36335,14 +36422,12 @@ Students you had withdrawn stay withdrawn.`)) {
             }
           }
           const baseGPA = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
-          const modifier = this.getCourseWeightModifier(cls.course_weight);
+          const courseWeight = this.courseWeightFor(enrollment, cls);
+          const modifier = this.getCourseWeightModifier(courseWeight);
           const weightedGPA = baseGPA !== null ? Math.min(baseGPA + modifier, 5.0) : null;
 
           // Determine H/C label
-          let honorsCollege = 'N/A';
-          if (cls.course_weight === 'honors') honorsCollege = 'H';
-          else if (cls.course_weight === 'ap') honorsCollege = 'AP';
-          else if (cls.course_weight === 'dual_credit') honorsCollege = 'C';
+          const honorsCollege = this.courseWeightLabel(courseWeight);
 
           // Check for purple flags (significant grade shift between consecutive quarters)
           const qKeys = Object.keys(quarterGrades).sort(); // Q1, Q2, Q3, Q4
@@ -36396,8 +36481,7 @@ Students you had withdrawn stay withdrawn.`)) {
           if (!fromEnr || !fromEnr.classes) continue;
           const subject = this.normalizeReportCardSubject(fromEnr.classes.subject);
           const credits = fromEnr.credits_override ?? fromEnr.classes.credits ?? 1;
-          const cw = fromEnr.classes.course_weight;
-          const honorsCollege = cw === 'honors' ? 'H' : cw === 'ap' ? 'AP' : cw === 'dual_credit' ? 'C' : 'N/A';
+          const honorsCollege = this.courseWeightLabel(this.courseWeightFor(fromEnr, fromEnr.classes));
           if (!subjectGroups[subject]) {
             subjectGroups[subject] = { name: subject, unitsLabel: '', courses: [] };
           }
@@ -36585,7 +36669,7 @@ Students you had withdrawn stay withdrawn.`)) {
         });
         const enrollments = await this.fetchAllRows((from, to) => {
           let q = sb.from('class_enrollments')
-            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, classes(id, name, subject, credits, course_weight, teacher_id)')
+            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, course_weight_override, classes(id, name, subject, credits, course_weight, teacher_id)')
             .in('status', ['active', 'archived']);
           if (studentId) q = q.eq('student_id', studentId);
           return q.order('id').range(from, to);
@@ -37002,7 +37086,8 @@ Students you had withdrawn stay withdrawn.`)) {
                 }
               }
               const baseGPA = gpaTotalWeight > 0 ? gpaWeightedSum / gpaTotalWeight : null;
-              const modifier = this.getCourseWeightModifier(cls.course_weight);
+              const courseWeight = this.courseWeightFor(enrollment, cls);
+              const modifier = this.getCourseWeightModifier(courseWeight);
               const weightedGPA = baseGPA !== null ? Math.min(baseGPA + modifier, 5.0) : null;
 
               // Derive the year letter from the weighted base GPA (Option A) to
@@ -37010,10 +37095,7 @@ Students you had withdrawn stay withdrawn.`)) {
               // raw percentages. finalPercentage is still used below for pass/credit.
               const letterGrade = this.gpaToLetter(baseGPA);
 
-              let hcLabel = 'N/A';
-              if (cls.course_weight === 'honors') hcLabel = 'H';
-              else if (cls.course_weight === 'ap') hcLabel = 'AP';
-              else if (cls.course_weight === 'dual_credit') hcLabel = 'C';
+              const hcLabel = this.courseWeightLabel(courseWeight);
 
               const credits = enrollment.credits_override ?? cls.credits ?? 1;
               const passed = finalPercentage !== null && finalPercentage >= 60;

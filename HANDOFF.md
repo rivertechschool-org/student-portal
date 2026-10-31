@@ -5925,3 +5925,13 @@ includes the academic/participation/final grade operation shape. Build `2026-10-
 The 30-operation synthetic regression and existing grade suites pass; Chromium verifies a
 structured grade request reaches confirmation. The older `debug-tools/rt-surface.js` stops
 in its submissions fixture on both the unchanged baseline and this change.
+
+### 2026-10-31 · Honors for one student
+
+A class's Honors / AP / Dual Credit setting can now be overridden per student, the way credits
+already could. On the class's **👥 Students** roster, admins see a **⭐ Honors** button beside
+**🎓 Credit**: pick the class default, Normal, Honors, AP or Dual Credit. The roster shows the
+student's own weight with "(override)". The report card's H/C column, the transcript and the
+weighted GPA all use the student's weight when one is set, otherwise the class's. Needs the
+backend's per-student course weight migration (applied 2026-10-31).
+`tests/course-weight-override.test.js`.

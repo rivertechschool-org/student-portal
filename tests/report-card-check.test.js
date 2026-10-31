@@ -37,7 +37,7 @@ const ok = (label, cond, detail = '') => {
 
 const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck',
   '_loadReportCardYear', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
-  'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier',
+  'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier', 'courseWeightFor', 'courseWeightLabel',
   'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 const rivenCheck = method('terminalReportCardCheck', '    ');
