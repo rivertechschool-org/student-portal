@@ -5912,3 +5912,16 @@ examples for all three components; Riven build is `2026-10-30·b`.
 Verified with 51 related test suites, the NLP stress grid, and Chromium journeys using invented
 records: attendance save/summary/manual navigation and typed Riven commands through confirmation.
 No database migration is required.
+
+### 2026-10-30 · Riven structured grade transfers: enrollment verification
+
+`/rt apply` now checks each requested student/class enrollment directly instead of relying on
+an unpaginated school-wide enrollment fetch. Grade snapshots are scoped to that enrollment
+and quarter and cached across component edits. Read failures block the batch with a read error;
+they are no longer reported as missing enrollment. A blocked apply also retains its own
+"Nothing was written" message instead of inheriting the planner's wording. `/rt help` now
+includes the academic/participation/final grade operation shape. Build `2026-10-30·c`.
+
+The 30-operation synthetic regression and existing grade suites pass; Chromium verifies a
+structured grade request reaches confirmation. The older `debug-tools/rt-surface.js` stops
+in its submissions fixture on both the unchanged baseline and this change.
