@@ -5894,3 +5894,21 @@ in that quarter (points, "8 / 10" for a student's own version, Excused, Turned i
 blank if not due yet), then the saved academic, participation and class grade and the letter -
 the same quarter grade the report card prints. "Export Class Data" on the class page is the raw
 table dump and is unchanged. `tests/class-grades-export.test.js`.
+
+### 2026-10-30 · Class attendance summary and Riven Manage Grades commands
+
+The Classes attendance button now matches the selected lesson to the master register, saves
+its marks, and shows the present count with planned late arrivals, early departures and other
+attendance notices. **update attendance manually** opens the usual register for that lesson.
+Missing master marks keep existing class marks; unavailable master data or canceled lessons do
+not produce a success message. Existing notes are preserved.
+
+Riven accepts **academic avg/average**, **participation**, and **final grade** edits for the
+current quarter, including several components in one command. For example, "set [student]'s
+academic avg in [class] to 88". It validates every value before confirmation and uses the same
+grade operations as Manage Grades. Explicit final grades are applied last. `/help` includes
+examples for all three components; Riven build is `2026-10-30·b`.
+
+Verified with 51 related test suites, the NLP stress grid, and Chromium journeys using invented
+records: attendance save/summary/manual navigation and typed Riven commands through confirmation.
+No database migration is required.

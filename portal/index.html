@@ -18256,8 +18256,8 @@
           date.setDate(monday.getDate() + ((d + 6) % 7));
           const dateStr = this._localDateStr(date);
           return dateStr <= this._localDateStr(now)
-            ? `app.showClassAttendance('${cls.id}', '${dateStr}', ${p === null ? 'null' : Number(p)})`
-            : `app.showClassAttendance('${cls.id}')`;
+            ? `app.showClassAttendance('${cls.id}', '${dateStr}', ${p === null ? 'null' : Number(p)}, true)`
+            : `app.showClassAttendance('${cls.id}', null, null, true)`;
         };
         // A calendar cell holds a compact card: the full class card is built
         // for a three-across grid and would make every period row very tall.
@@ -18863,7 +18863,7 @@
           <div class="class-card" onclick="app.openClass('${cls.id}')" style="cursor: pointer; ${dimCard ? 'opacity: 0.7; border-color: var(--muted);' : ''}">
             ${isTeacher ? `
               <div class="class-actions">
-                <button onclick="event.stopPropagation(); app.showClassAttendance('${cls.id}')" title="Take attendance">📋</button>
+                <button onclick="event.stopPropagation(); app.showClassAttendance('${cls.id}', null, null, true)" title="Take attendance">📋</button>
                 <button onclick="event.stopPropagation(); app.showClassProgress('${cls.id}')" title="Class progress">📈</button>
                 <button onclick="event.stopPropagation(); app.toggleHideClass('${cls.id}', 'none')" title="${isHidden ? 'Unhide' : 'Hide'} this class">${isHidden ? '👁️' : '🙈'}</button>
                 <button onclick="event.stopPropagation(); app.editClass('${cls.id}')">✏️</button>
@@ -19546,7 +19546,7 @@
               <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
                 <!-- Attendance is the action teachers reach for most, so it sits first in the grid -->
                 ${showTeacherFeatures ? `
-                  <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}')">
+                  <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}', null, null, true)">
                     📋 Class Attendance
                   </button>
                   <button class="btn btn-secondary" onclick="app.showCoverDays('${classId}')"
@@ -48814,7 +48814,9 @@ Students you had withdrawn stay withdrawn.`)) {
       }
     }
 
-    async showClassAttendance(classId, dateStr = null, selectedPeriod = null) {
+    async showClassAttendance(classId, dateStr = null, selectedPeriod = null, quickMatch = false) {
+      if (this._classQuickBusy) return;
+      if (quickMatch) this._classQuickBusy = true;
       // Close existing class attendance modal first to prevent stacking
       this.closeModal('class-attendance');
 
@@ -48833,11 +48835,12 @@ Students you had withdrawn stay withdrawn.`)) {
         const className = classData?.name || 'Class';
 
         // Get class schedule to see if class meets on this day
-        const { data: classSchedule } = await this.auth.supabase
+        const { data: classSchedule, error: scheduleError } = await this.auth.supabase
           .from('class_schedule')
           .select('*')
           .eq('class_id', classId)
           .eq('day_of_week', dayOfWeek);
+        if (quickMatch && scheduleError) throw scheduleError;
 
         const meetsThatDay = classSchedule && classSchedule.length > 0;
         const periods = classSchedule?.map(s => s.period).sort((a, b) => a - b) || [];
@@ -48846,11 +48849,12 @@ Students you had withdrawn stay withdrawn.`)) {
         const currentPeriod = selectedPeriod !== null ? parseInt(selectedPeriod) : (periods.length > 0 ? periods[0] : null);
 
         // Get enrolled students
-        const { data: enrollments } = await this.auth.supabase
+        const { data: enrollments, error: enrollmentError } = await this.auth.supabase
           .from('class_enrollments')
           .select('student_id')
           .eq('class_id', classId)
           .eq('status', 'active');
+        if (quickMatch && enrollmentError) throw enrollmentError;
 
         const studentIds = enrollments?.map(e => e.student_id) || [];
 
@@ -48863,7 +48867,7 @@ Students you had withdrawn stay withdrawn.`)) {
         const dailyByStudent = {};
 
         if (studentIds.length > 0) {
-          const { data: studentData } = await this.auth.supabase
+          const { data: studentData, error: studentError } = await this.auth.supabase
             .from('user_profiles')
             .select('id, first_name, last_name, grade_level')
             .in('id', studentIds)
@@ -48875,6 +48879,7 @@ Students you had withdrawn stay withdrawn.`)) {
             // never set the column, and NULL is not true.
             .or('student_status.is.null,student_status.neq.past')
             .order('last_name');
+          if (quickMatch && studentError) throw studentError;
 
           students = studentData || [];
 
@@ -48892,6 +48897,7 @@ Students you had withdrawn stay withdrawn.`)) {
             } catch (e) {
               // A missing roll-up must not stop the register being taken.
               console.warn('daily attendance unavailable:', e);
+              if (quickMatch) throw new Error("Couldn't load the master register. Attendance was not changed.");
             }
           }
         }
@@ -48906,7 +48912,7 @@ Students you had withdrawn stay withdrawn.`)) {
         // Who is expected in late or out early on this date, and this
         // period's bell times, so each row can say whether THIS class is the
         // one they walk into late, or out of early, or miss.
-        const lateEarly = await this._loadLateEarly((students || []).map(x => x.id), today);
+        const lateEarly = await this._loadLateEarly((students || []).map(x => x.id), today, { strict: quickMatch });
         const periodBlock = Object.keys(lateEarly).length ? await this._bellBlockFor(today, currentPeriod) : null;
 
         // Get existing attendance session for this date and period
@@ -48922,7 +48928,8 @@ Students you had withdrawn stay withdrawn.`)) {
           sessionQuery = sessionQuery.is('period', null);
         }
 
-        const { data: sessionData } = await sessionQuery;
+        const { data: sessionData, error: sessionError } = await sessionQuery;
+        if (quickMatch && sessionError) throw sessionError;
         const session = sessionData && sessionData.length > 0 ? sessionData[0] : null;
         const isCanceled = session?.status === 'canceled';
         const attendanceTaken = session?.status === 'completed';
@@ -48937,9 +48944,12 @@ Students you had withdrawn stay withdrawn.`)) {
         // Filter by period if we have one
         if (currentPeriod !== null) {
           attendanceQuery = attendanceQuery.eq('period', currentPeriod);
+        } else {
+          attendanceQuery = attendanceQuery.is('period', null);
         }
 
-        const { data: attendanceData } = await attendanceQuery;
+        const { data: attendanceData, error: attendanceError } = await attendanceQuery;
+        if (quickMatch && attendanceError) throw attendanceError;
 
         const attendanceMap = {};
         attendanceData?.forEach(a => {
@@ -48969,10 +48979,11 @@ Students you had withdrawn stay withdrawn.`)) {
         let scheduledToday = new Set();
         let hasTimetable = new Set();
         if (students.length) {
-          const { data: sched } = await this.auth.supabase
+          const { data: sched, error: timetableError } = await this.auth.supabase
             .from('student_schedule')
             .select('student_id, day_of_week')
             .in('student_id', students.map(x => x.id));
+          if (quickMatch && timetableError) throw timetableError;
           for (const r of (sched || [])) {
             hasTimetable.add(r.student_id);
             if (r.day_of_week === dayOfWeek) scheduledToday.add(r.student_id);
@@ -48987,6 +48998,13 @@ Students you had withdrawn stay withdrawn.`)) {
           ? 'not down for ' + dayName
           : 'no attending days set';
         const roster = expected.concat(alsoShown);
+
+        if (quickMatch) {
+          await this._matchAndSummarizeClassAttendance({ classId, className, date: today,
+            period: currentPeriod, meetsThatDay, isCanceled, roster, daily: dailyByStudent,
+            existing: attendanceData || [], lateEarly, periodBlock });
+          return;
+        }
 
         // Present and absent are the two buttons. The rest are rarer marks and
         // live behind the three dots beside them; the class and daily registers
@@ -49170,7 +49188,65 @@ Students you had withdrawn stay withdrawn.`)) {
       } catch (error) {
         console.error('Error loading class attendance:', error);
         this.showNotification('Error loading attendance: ' + error.message, 'error');
+        if (quickMatch) {
+          this.showModal('class-attendance', 'Attendance needs review', `
+            <p>Could not match attendance to the master register. Attendance was not changed.</p>
+            <p>${this.escapeHtml(error.message)}</p>
+            <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}', '${today}', ${selectedPeriod === null ? 'null' : Number(selectedPeriod)})">update attendance manually</button>`, true);
+        }
+      } finally {
+        if (quickMatch) this._classQuickBusy = false;
       }
+    }
+
+    async _matchAndSummarizeClassAttendance({ classId, className, date, period,
+      meetsThatDay, isCanceled, roster, daily, existing, lateEarly, periodBlock }) {
+      const records = new Map(existing.map(row => [row.student_id, { ...row }]));
+      let matched = 0, missing = 0;
+      for (const student of roster) {
+        const status = this._dayStatusForPeriod(daily[student.id], period);
+        if (!status) { missing++; continue; }
+        matched++;
+        records.set(student.id, {
+          class_id: classId, student_id: student.id, date, period, status,
+          notes: records.get(student.id)?.notes || null,
+          marked_by: this.userInfo.user.id,
+        });
+      }
+
+      let message;
+      if (isCanceled) message = 'This class is canceled. Attendance was not changed.';
+      else if (!meetsThatDay) message = 'This class is not scheduled for this day. Attendance was not changed.';
+      else if (!roster.length) message = 'There are no students on this register.';
+      else if (!matched) message = 'The master register has no marks for these students yet. Attendance was not changed.';
+      else {
+        const saved = await this.saveClassAttendance(classId, date, period, {
+          records: [...records.values()], summary: true,
+        });
+        if (saved) {
+          const present = roster.filter(student =>
+            ['present', 'late', 'left_early', 'late_left_early'].includes(records.get(student.id)?.status)).length;
+          const when = date === this._localDateStr(new Date()) ? 'today' : `on ${date}`;
+          message = `Matched to Master! You have ${present} student${present === 1 ? '' : 's'} present ${when}.`;
+        } else message = 'Attendance could not be fully saved. Open the manual register to review and retry.';
+      }
+      const notices = roster.map(student => {
+        const plan = this._lateEarlyChip(lateEarly[student.id], periodBlock);
+        const day = daily[student.id];
+        const status = day?.status && day.status !== 'present' ? this.dailyStatusChip(day) : '';
+        const unknown = !day?.status ? '<div>No master mark yet; existing class mark was kept.</div>' : '';
+        if (!plan && !status && !unknown) return '';
+        return `<li style="margin-bottom: 12px;"><strong>${this.escapeHtml(student.first_name)} ${this.escapeHtml(student.last_name)}</strong>${plan}${status}${unknown}</li>`;
+      }).filter(Boolean).join('');
+      this.showModal('class-attendance', `📋 ${this.escapeHtml(className)}${period === null ? '' : ` — Period ${period}`}`, `
+        <p role="status" style="font-size: 20px; font-weight: 700;">${this.escapeHtml(message)}</p>
+        ${missing && matched ? `<p>${missing} student${missing === 1 ? ' has' : 's have'} no master mark yet. Review them manually.</p>` : ''}
+        <h3>Class notices</h3>
+        ${notices ? `<ul style="padding-left: 20px;">${notices}</ul>` : '<p>No planned late arrivals or early departures affecting this class.</p>'}
+        <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px;">
+          <button class="btn btn-secondary" onclick="app.closeModal('class-attendance')">Close</button>
+          <button class="btn btn-primary" onclick="app.showClassAttendance('${classId}', '${date}', ${period === null ? 'null' : Number(period)})">update attendance manually</button>
+        </div>`, true);
     }
 
     // One row of a class register. Extracted because the register now draws two
@@ -49221,7 +49297,7 @@ Students you had withdrawn stay withdrawn.`)) {
     // Plans for these students on one date: { studentId: [plan, ...] }.
     // Never throws: a missing plan list must not stop a register being taken.
     // { all: true } reads every student's for the date (the daily register).
-    async _loadLateEarly(studentIds, dateStr, { all = false } = {}) {
+    async _loadLateEarly(studentIds, dateStr, { all = false, strict = false } = {}) {
       const by = {};
       if ((!all && !studentIds?.length) || !dateStr) return by;
       try {
@@ -49234,6 +49310,7 @@ Students you had withdrawn stay withdrawn.`)) {
         for (const p of data || []) (by[p.student_id] = by[p.student_id] || []).push(p);
       } catch (e) {
         console.warn('planned late/early unavailable:', e?.message || e);
+        if (strict) throw new Error('Could not load planned arrivals and departures. Attendance was not changed.');
       }
       return by;
     }
@@ -49571,9 +49648,9 @@ Students you had withdrawn stay withdrawn.`)) {
         </div>`;
     }
 
-    async saveClassAttendance(classId, date, period = null) {
-      const rows = document.querySelectorAll('tr[data-student-id]');
-      const attendanceRecords = [];
+    async saveClassAttendance(classId, date, period = null, options = {}) {
+      const rows = options.records ? [] : document.querySelectorAll('tr[data-student-id]');
+      const attendanceRecords = options.records || [];
 
       rows.forEach(row => {
         const studentId = row.dataset.studentId;
@@ -49630,7 +49707,8 @@ Students you had withdrawn stay withdrawn.`)) {
         previousQuery = period !== null
           ? previousQuery.eq('period', period)
           : previousQuery.is('period', null);
-        const { data: previousRows } = await previousQuery;
+        const { data: previousRows, error: previousError } = await previousQuery;
+        if (previousError) throw previousError;
 
         // Abort before we destroy anything if the delete failed — otherwise a
         // failed insert after a successful delete would wipe the roster's marks.
@@ -49693,18 +49771,20 @@ Students you had withdrawn stay withdrawn.`)) {
         if (sessionInsertError) throw sessionInsertError;
 
         const periodLabel = period ? ` for Period ${period}` : '';
-        this.showNotification(`Saved attendance for ${attendanceRecords.length} students${periodLabel}`, 'success');
+        if (!options.summary) this.showNotification(`Saved attendance for ${attendanceRecords.length} students${periodLabel}`, 'success');
 
         // Send notifications for late/left_early students (async, don't block)
         this.sendAttendanceAlertNotifications(attendanceRecords, 'class');
 
         // Refresh the modal to show updated status
-        this.showClassAttendance(classId, date, period);
+        if (!options.summary) this.showClassAttendance(classId, date, period);
         this._weekAttendanceChanged();
+        return true;
 
       } catch (error) {
         console.error('Error saving class attendance:', error);
         this.showNotification('Error saving attendance: ' + error.message, 'error');
+        return false;
       }
     }
 
@@ -57769,7 +57849,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-30·a';
+      const RIVEN_BUILD = '2026-10-30·b';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -62682,12 +62762,12 @@ Students you had withdrawn stay withdrawn.`)) {
           intent: 'SET_GRADE',
           w: 5, notIfNoteCommand: true,
           patterns: [
-            /\b(set|change|give|gave|update|make|put|enter|record|override|add)\b.*\bgrade\b/,
+            /\b(set|change|edit|give|gave|update|make|put|enter|record|override|add)\b.*\bgrade\b/,
             /\bgrade\b.*\bto\b\s*\d/,
             /\b(final|participation|academic|skill)\s+grade\b/,
             // "give him a b in participation and a c in skill" — component
             // words work without saying "grade"
-            /\b(set|change|give|gave|update|make|put|add)\b.*\b(participation|academic|skill|skills|part)\b/,
+            /\b(set|change|edit|give|gave|update|make|put|enter|record|override|add)\b.*\b(participation|academic|skill|skills|part)\b/,
             /\b[abcdf][+-]?\s+(in|for|on)\s+(participation|academic|skill|skills|part)\b/
           ],
           requiresStudent: true,
@@ -65733,7 +65813,10 @@ Students you had withdrawn stay withdrawn.`)) {
     • "Who's out next week?" — the upcoming absence list<br>
     • "Add [student] to [class]" / "Remove [student] from [class]"<br>
     • "Create a class called [name]"<br>
-    • "Set [student]'s final grade in [class] to 92" (or participation/academic, letters OK)<br>
+    • Manage Grades (current quarter): "Set [student]'s academic avg in [class] to 88"<br>
+    • "Set [student]'s participation in [class] to 90"<br>
+    • "Set [student]'s final grade in [class] to 92" (letters also work)<br>
+    • Together: "Set [student]'s academic avg to 88, participation to 90, and final grade to 92 in [class]"<br>
     • "What are [student]'s grades?" / "Grades for [class]"<br>
     • "Change [student]'s phone to 555-1234" / "What's [student]'s contact info?"<br>
     • "How much RTC did [student] have last week?"<br>
@@ -67615,7 +67698,7 @@ Students you had withdrawn stay withdrawn.`)) {
         • Award, deduct, or transfer RTC ("give ari 5", "move 10 from ari to ava")<br>
         • Mark attendance ("mark ari present in Math")<br>
         • Manage rosters and classes ("add ari to Robotics", "create a class called Chess Club")<br>
-        • Set grades ("set ari's final grade in Math to 92")<br>
+        • Edit Manage Grades: "set ari's academic avg in Math to 88", "set ari's participation in Math to 90", or "set ari's final grade in Math to 92" (current quarter)<br>
         • Update contact info ("change ari's phone to 555-1234")<br>
         • Take and search notes, and undo my recent changes<br><br>
         Sensitive changes always ask you to confirm first.`, true);
@@ -74454,6 +74537,45 @@ Students you had withdrawn stay withdrawn.`)) {
       );
     }
 
+    // Match the three editable columns in Manage Grades. Parse the value next
+    // to its component, never the first number in a class name or quarter.
+    // Each clause must be complete: an invalid second grade must not quietly
+    // disappear while the first one is saved.
+    _rivenGradeChanges(text) {
+      const pairs = [];
+      const valueToken = '([+-]?\\d+(?:\\.\\d+)?|[abcdf][+-]?)(?=%|\\s|[,.!?]|$)';
+      const componentRe = /\b(participation|part|academic|skills?|final|overall|class grade)\b/;
+      for (const clause of String(text || '').toLowerCase().split(/\s*(?:,|;|\band\b|&)\s*/).filter(Boolean)) {
+        if ([...clause.matchAll(new RegExp(componentRe.source, 'g'))].length > 1) {
+          return { error: 'Separate each grade with "and" or a comma, for example: academic avg to 88 and participation to 90.' };
+        }
+        const componentMatch = clause.match(componentRe);
+        const component = !componentMatch ? 'final' : /^part/.test(componentMatch[1]) ? 'participation'
+          : /^(final|overall|class)/.test(componentMatch[1]) ? 'final' : 'academic';
+        // "academic avg to 88", "participation 90", and "a B in
+        // participation" are the same edit. Letter values retain the school's
+        // existing letter-to-percent conversion.
+        const after = componentMatch ? clause.slice(componentMatch.index + componentMatch[0].length) : clause;
+        let match = after.match(new RegExp('(?:\\bto\\b|\\bas\\b|=|:)\\s*(?:an?\\s+)?' + valueToken));
+        if (!match && componentMatch) match = after.match(new RegExp('^\\s*(?:(?:grade|avg|average)\\s*)?(?:an?\\s+)?' + valueToken));
+        if (!match && componentMatch) {
+          const before = clause.slice(0, componentMatch.index);
+          match = before.match(new RegExp('(?:^|\\s)' + valueToken + '\\s*%?\\s*(?:in|for|on)\\s*$'));
+          if (!match) match = before.match(new RegExp('(?:^|\\s)' + valueToken + '\\s*%?\\s*$'));
+        }
+        if (!match && !componentMatch) match = clause.match(new RegExp('\\b(?:an?|grade)\\s+' + valueToken));
+        if (!match) return { error: 'Give each grade a percent (0–100) or letter, for example: academic avg to 88, participation to 90, and final grade to 92.' };
+        const raw = match[1];
+        const value = /^[abcdf]/.test(raw) ? this._letterToPct(raw) : Number(raw);
+        if (!Number.isFinite(value) || value < 0 || value > 100) return { error: 'Each grade must be between 0 and 100, or a valid letter grade.' };
+        pairs.push({ component, value });
+      }
+      if (!pairs.length) return { error: 'Tell me the academic avg, participation, or final grade to set.' };
+      // Repeating a component is deliberate; the last value wins.
+      return { pairs: Object.entries(Object.fromEntries(pairs.map(p => [p.component, p.value])))
+        .map(([component, value]) => ({ component, value })) };
+    }
+
     async terminalSetGrade(entities) {
       const student = entities.student?.student;
       if (!student) { this.terminalPrintError('Whose grade? Tell me a student name.'); return; }
@@ -74486,51 +74608,26 @@ Students you had withdrawn stay withdrawn.`)) {
         return;
       }
 
-      // Components+values: handles multiples in one breath — "a b in
-      // participation and a c in skill". Falls back to single-value parsing.
-      const mapComp = (c) => c.startsWith('part') ? 'participation'
-        : (c === 'final' || c === 'overall' || c === 'class') ? 'final' : 'academic';
-      const pairs = [];
-      const pairRe = /([abcdf][+-]?|\d{1,3}(?:\.\d+)?)\s*%?\s*(?:in|for|on|to)?\s+(participation|part\b|academic|skills?|final|overall)/g;
-      let pm;
-      while ((pm = pairRe.exec(lower)) !== null) {
-        const raw = pm[1];
-        const v = /^[abcdf]/.test(raw) ? this._letterToPct(raw) : parseFloat(raw);
-        if (v != null && !isNaN(v) && v >= 0 && v <= 100) {
-          pairs.push({ component: mapComp(pm[2].trim()), value: v });
-        }
-      }
-      if (!pairs.length) {
-        const component = /\bparticipation\b|\bpart\b/.test(lower) ? 'participation'
-          : /\b(academic|skills?)\b/.test(lower) ? 'academic' : 'final';
-        let value = (entities.amount != null && entities.amount >= 0 && entities.amount <= 100) ? entities.amount : null;
-        if (value === null) {
-          const lm = lower.match(/\b([abcdf][+-])(?=[\s.,!?]|$)/) || lower.match(/\b(?:an?|to)\s+([abcdf])\b(?!\w)/);
-          if (lm) value = this._letterToPct(lm[1]);
-        }
-        if (value === null) {
-          this.terminalPrintError('What grade? Give me a percent (0–100) or a letter, like "set her final grade in Math to 92" or "a B in participation".');
-          return;
-        }
-        pairs.push({ component, value });
-      }
-      // Last mention of a component wins
-      const byComp = {};
-      pairs.forEach(p => { byComp[p.component] = p.value; });
-      const finalPairs = Object.entries(byComp).map(([component, value]) => ({ component, value }));
+      const parsed = this._rivenGradeChanges(lower);
+      if (parsed.error) { this.terminalPrintError(parsed.error); return; }
+      const finalPairs = parsed.pairs;
       const sb = this.auth.supabase;
       const quarter = await this._rivenCurrentQuarter();
       if (!quarter) { this.terminalPrintError('No active quarter is configured — set one up in admin first.'); return; }
-      const { data: prevSnap } = await sb.from('quarter_grade_snapshots').select('*')
+      const { data: prevSnap, error: snapshotError } = await sb.from('quarter_grade_snapshots').select('*')
         .eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id).maybeSingle();
+      if (snapshotError) throw snapshotError;
 
-      const compLabel = (c) => c === 'final' ? 'final (class) grade' : c + ' grade';
+      const compLabel = (c) => c === 'final' ? 'final (class) grade' : c === 'academic' ? 'academic avg' : 'participation grade';
       const describe = finalPairs.map(p => `<b>${compLabel(p.component)}</b> → <b>${p.value} (${this._pctToLetter(p.value)})</b>`).join(', ');
       const hasOverride = finalPairs.some(p => p.component !== 'participation');
       this._requestConfirmation(
         `Set <b>${this.escapeHtml(student.full_name)}</b>'s ${describe} in <b>${this.escapeHtml(row.name)}</b> for ${this.escapeHtml(quarter.name || 'the current quarter')}${hasOverride ? ' — this overrides the calculated grade' : ''}.`,
         async () => {
-          for (const p of finalPairs) {
+          // Academic and participation can recalculate the suggested grade.
+          // Write the teacher's explicit final choice last, as Manage Grades does.
+          const orderedPairs = [...finalPairs].sort((a, b) => Number(a.component === 'final') - Number(b.component === 'final'));
+          for (const p of orderedPairs) {
             if (p.component === 'final') {
               const { error } = await sb.rpc('set_class_grade_override', {
                 p_enrollment_id: enrollment.id, p_quarter_id: quarter.id,
@@ -74553,7 +74650,8 @@ Students you had withdrawn stay withdrawn.`)) {
           }
           // Refresh the computed final unless it was explicitly overridden
           if (!finalPairs.some(p => p.component === 'final') && !prevSnap?.class_grade_override) {
-            await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+            const { error } = await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+            if (error) throw error;
           }
           const descPlain = finalPairs.map(p => `${compLabel(p.component)} ${p.value}`).join(', ');
           this._pushUndo(`setting ${student.full_name}'s ${descPlain} in ${row.name}`, async () => {
@@ -74568,10 +74666,12 @@ Students you had withdrawn stay withdrawn.`)) {
               }).eq('id', prevSnap.id);
               if (e) throw e;
             } else {
-              await sb.from('quarter_grade_snapshots').update({
+              const { error: resetError } = await sb.from('quarter_grade_snapshots').update({
                 class_grade_override: false, academic_grade_override: false, participation_grade: null
               }).eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id);
-              await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+              if (resetError) throw resetError;
+              const { error: recalcError } = await sb.rpc('calculate_quarter_grades', { p_enrollment_id: enrollment.id, p_quarter_id: quarter.id });
+              if (recalcError) throw recalcError;
             }
           });
           const summary = finalPairs.map(p => `${compLabel(p.component)} ${p.value} (${this._pctToLetter(p.value)})`).join(', ');
