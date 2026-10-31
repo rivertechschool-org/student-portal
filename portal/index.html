@@ -57849,7 +57849,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-30·b';
+      const RIVEN_BUILD = '2026-10-30·c';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -59410,19 +59410,9 @@ Students you had withdrawn stay withdrawn.`)) {
       // money on confirm — the confirmation must never understate the write.
       const pendingClassSize = {};
 
-      // Current participation/academic grades, fetched once, so a grade op can
-      // show the value it would replace instead of just the value it sets.
+      // Read only the student/class pairs requested below. A school-wide
+      // enrollment query is capped by PostgREST and can silently omit a class.
       const gradeCache = {};
-      const needGrades = ops.some(o => o && o.op === 'grade');
-      if (needGrades && quarter) {
-        const { data: enr } = await this.auth.supabase
-          .from('class_enrollments').select('id, class_id, student_id').eq('status', 'active');
-        const { data: snaps } = await this.auth.supabase
-          .from('quarter_grade_snapshots').select('*').eq('quarter_id', quarter.id);
-        const snapByEnr = {};
-        (snaps || []).forEach(s => { snapByEnr[s.enrollment_id] = s; });
-        (enr || []).forEach(e => { gradeCache[`${e.student_id}|${e.class_id}`] = { enrollment: e, snap: snapByEnr[e.id] || null }; });
-      }
 
       for (let i = 0; i < ops.length; i++) {
         const o = ops[i] || {};
@@ -59504,8 +59494,31 @@ Students you had withdrawn stay withdrawn.`)) {
           if (typeof value === 'string' && /^[abcdf][+-]?$/i.test(value.trim())) value = this._letterToPct(value.trim().toLowerCase());
           value = Number(value);
           if (!Number.isFinite(value) || value < 0 || value > 100) { fail(this._rtErr('bad_value', `Step ${idx}: "value" must be 0-100 or a letter grade.`)); continue; }
-          const cached = c.pending ? null : gradeCache[`${s.id}|${c.id}`];
-          if (!cached && !c.pending) { fail(this._rtErr('not_enrolled', `Step ${idx}: ${s.full_name} is not actively enrolled in ${c.name}.`)); continue; }
+          const key = `${s.id}|${c.id}`;
+          if (c.pending) {
+            fail(this._rtErr('not_enrolled', `Step ${idx}: create and enroll the class before setting its grades.`)); continue;
+          }
+          if (!(key in gradeCache)) {
+            const { data: enrollment, error: enrollmentError } = await this.auth.supabase
+              .from('class_enrollments').select('id, class_id, student_id')
+              .eq('class_id', c.id).eq('student_id', s.id).eq('status', 'active')
+              .order('enrolled_at', { ascending: false }).limit(1).maybeSingle();
+            if (enrollmentError) {
+              fail(this._rtErr('read_failed', `Step ${idx}: could not verify enrollment: ${enrollmentError.message}`)); continue;
+            }
+            if (!enrollment) gradeCache[key] = null;
+            else {
+              const { data: snap, error: snapshotError } = await this.auth.supabase
+                .from('quarter_grade_snapshots').select('*')
+                .eq('enrollment_id', enrollment.id).eq('quarter_id', quarter.id).maybeSingle();
+              if (snapshotError) {
+                fail(this._rtErr('read_failed', `Step ${idx}: could not read current grades: ${snapshotError.message}`)); continue;
+              }
+              gradeCache[key] = { enrollment, snap };
+            }
+          }
+          const cached = gradeCache[key];
+          if (!cached) { fail(this._rtErr('not_enrolled', `Step ${idx}: ${s.full_name} is not actively enrolled in ${c.name}.`)); continue; }
           const snap = cached.snap || {};
           const prev = comp === 'participation' ? snap.participation_grade
             : comp === 'academic' ? snap.academic_grade : snap.class_grade;
@@ -59733,8 +59746,8 @@ Students you had withdrawn stay withdrawn.`)) {
     async _rtApply(spec) {
       const plan = await this._rtPlan({ ops: spec.ops, scope: spec.scope });
       if (!plan.ok) {
-        return { executed: false, blocked: true,
-          note: 'Nothing was written. Fix these and re-send.', ...plan };
+        return { ...plan, executed: false, blocked: true,
+          note: 'Nothing was written. Fix these and re-send.' };
       }
       const line = (s) => {
         if (s.op === 'create_class') return `Create class <b>${this.escapeHtml(s.name)}</b> (${this.escapeHtml(s.subject)})${s.slots ? ' &middot; ' + this.escapeHtml(this._rtSlotLabel(s.slots)) : ''}`;
@@ -60487,6 +60500,7 @@ Students you had withdrawn stay withdrawn.`)) {
             what: 'Executes ops, then runs "reads" and returns the new values in the SAME output.',
             shape: '{"op":"apply","ops":[...],"reads":[{"op":"roster","class":"X","as":"after"}]}',
             rules: 'One confirmation for the whole batch. If ANY op fails to resolve, NOTHING runs. One grouped undo.',
+            grades: 'grade: {"op":"grade","class":"X","student":"<exact name or id>","component":"academic","value":"B+"}. component is academic (Academic Avg), participation, or final. value is a percent 0–100 or letter. Applies to the current quarter; include a grades read to verify the saved values.',
             extra_ops: ['create_class', 'enroll (students[] or from_class)', 'schedule',
               'create_assignment', 'edit_assignment', 'score_assignment'],
             timetable: 'schedule: {"op":"schedule","class":"X","slots":[{"day":"tue","period":1}]} REPLACES that class\'s slots, so re-running leaves one timetable rather than two. create_class takes the same "slots" so a new class lands with its periods. day is mon-fri or 0-6, period is 1-8. A class with no slot on a given day does not meet that day, and its register will not show on the attendance screen.',
