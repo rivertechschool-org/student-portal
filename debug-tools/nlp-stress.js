@@ -648,6 +648,11 @@ const T7 = [
   ["set clementine's final grade in math to 95", 'SET_GRADE', 'Clementine Vasquez', true],
   ['give noah a b+ participation grade in robotics', 'SET_GRADE', 'Noah Williams', true],
   ["change sam's academic grade in math to 88", 'SET_GRADE', 'Sam Carter', true],
+  ["edit sam's academic avg in math to 88", 'SET_GRADE', 'Sam Carter', true],
+  ["set sam's academic average in math to 88", 'SET_GRADE', 'Sam Carter', true],
+  ["edit sam's participation in math to 90", 'SET_GRADE', 'Sam Carter', true],
+  ["edit sam's final grade in math to 92", 'SET_GRADE', 'Sam Carter', true],
+  ["set sam's academic avg to 88, participation to 90, and final grade to 92 in math", 'SET_GRADE', 'Sam Carter', true],
   ["what are clementine's grades", 'VIEW_GRADES', 'Clementine Vasquez', true],
   ['grades for the math class', 'VIEW_GRADES', null, true],
   // STUDENT_BRIEFING — the whole picture for one student. These used to land on
