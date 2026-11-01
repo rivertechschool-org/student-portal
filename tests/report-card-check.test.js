@@ -35,7 +35,7 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck',
+const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck', '_reportCardClassLinks',
   '_loadReportCardYear', '_reportCardYearEnrollments', 'loadGradeBands', 'gradeBandLabel', '_studentGradeBand', '_studentGradeNumber', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
   'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier', 'courseWeightFor', 'courseWeightLabel',
   'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
@@ -295,6 +295,12 @@ function makeApp(role = 'admin') {
   const page = app._renderReportCardCheck(await app.checkReportCards());
   ok('the page leads with the totals', /Checked <b>10 students<\/b> up to <b>Q2<\/b>/.test(page) && /<b>6<\/b> need attention/.test(page), page.slice(0, 300));
   ok('  lists missing grades by class', /Missing grades by class \(2 grades\)/.test(page));
+  {
+    const math = page.slice(page.indexOf('<b>Pre-Algebra</b>'), page.indexOf('</summary>', page.indexOf('<b>Pre-Algebra</b>')));
+    ok('a flagged class links straight to its page', /app\.closeModal\('report-card-check'\); app\.openClass\('c-math'\)/.test(math), math);
+    ok('  and to Manage Grades on the quarter missing grades', /teacherGrades\.showGradeManagementModal\('c-math', 'q1'\)[^>]*>📝 Q1 grades</.test(math));
+    ok('  without folding the list when clicked', (math.match(/event\.preventDefault\(\); event\.stopPropagation\(\);/g) || []).length === 2);
+  }
   ok('  and the cards that print wrong', /Cards that print wrong or incomplete \(4\)/.test(page));
   ok('  and escapes names', !/<script/.test(app._renderReportCardCheck({ quarter: '', school: [], checked: 1, students: [{ id: 'x', name: '<script>', issues: [{ kind: 'profile', text: 'x' }] }], byClass: [], inProgress: [] })));
 
@@ -303,13 +309,14 @@ function makeApp(role = 'admin') {
   const riven = Object.assign(Object.create(proto), makeApp('admin'), {
     _showRivenMessage: (h) => said.push(h), terminalPrintError: (h) => said.push('ERR ' + h),
     _rivenResolvedStudent: (e) => e.student?.student || null,
-    openReportCardCheck() {},
+    openReportCardCheck() {}, openClass() {},
   });
   riven.terminalReportCardCheck = eval('(async function ' + rivenCheck.replace(/^async\s+/, '') + ')');
   await riven.terminalReportCardCheck({});
   const last = said[said.length - 1];
   ok('Riven answers with the same totals', /Checked 10 students up to Q2/.test(last) && /<b>6<\/b> need attention/.test(last), last);
   ok('  names the class missing grades', /Pre-Algebra<\/b> \(Ada Teach\): 2 grades missing/.test(last));
+  ok('  with the same links to the class', /openClass\('c-math'\)/.test(last) && /showGradeManagementModal\('c-math', 'q1'\)/.test(last), last);
   ok('  and offers the full list', /openReportCardCheck/.test(last));
   said.length = 0;
   await riven.terminalReportCardCheck({ student: { student: { id: 's-q1', full_name: 'NoQ1 Test' } } });

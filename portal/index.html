@@ -36809,7 +36809,7 @@ Students you had withdrawn stay withdrawn.`)) {
             const bucket = i.kind === 'missing' ? byClass : inProgress;
             const k = i.classId || i.className;
             bucket[k] = bucket[k] || { classId: i.classId, className: i.className, teacher: teacherName[i.teacherId] || '', students: [] };
-            bucket[k].students.push({ id: st.id, name, quarter: i.quarter, why: i.why });
+            bucket[k].students.push({ id: st.id, name, quarter: i.quarter, quarterId: i.quarterId, why: i.why });
           }
           const shown = issues.filter(i => i.kind !== 'not_yet');
           if (shown.length) result.students.push({ id: st.id, name, issues: shown });
@@ -36910,7 +36910,7 @@ Students you had withdrawn stay withdrawn.`)) {
               const why = s0 ? 'the saved grade is blank'
                 : n === currentNum ? 'no grade entered' : 'no grade was saved when the quarter closed';
               issues.push({
-                kind: ended ? 'missing' : 'not_yet', quarter: `Q${n}`, why,
+                kind: ended ? 'missing' : 'not_yet', quarter: `Q${n}`, quarterId: q.id, why,
                 className: c.courseName, classId: owner.class_id, teacherId: owner.classes?.teacher_id || null,
                 text: `${c.courseName}: no Q${n} grade (${why}).`,
               });
@@ -37007,6 +37007,22 @@ Students you had withdrawn stay withdrawn.`)) {
         this.openReportCardCheck();
       }
 
+      // Buttons from a flagged class in the report card check straight to the
+      // class: its page, and Manage Grades on each quarter missing grades
+      // (usually a closed one, which Manage Grades would not open on by
+      // itself). Inside a <summary>, so a click must not also fold the list.
+      _reportCardClassLinks(c) {
+        if (!c.classId) return '';
+        const id = this.jsAttr(c.classId);
+        const stop = 'event.preventDefault(); event.stopPropagation();';
+        const btn = 'class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px; margin-left: 4px;"';
+        const quarters = [...new Map((c.students || []).filter(x => x.quarterId).map(x => [x.quarterId, x.quarter])).entries()]
+          .sort((a, b) => String(a[1]).localeCompare(String(b[1])));
+        return `<span style="white-space: nowrap;"><button ${btn} onclick="${stop} app.closeModal('report-card-check'); app.openClass('${id}')" title="Open this class">🏫 Open class</button>`
+          + quarters.map(([qid, label]) => `<button ${btn} onclick="${stop} app.closeModal('report-card-check'); teacherGrades.showGradeManagementModal('${id}', '${this.jsAttr(qid)}')" title="Enter the missing ${this.escapeHtml(label)} grades">📝 ${this.escapeHtml(label)} grades</button>`).join('')
+          + `</span>`;
+      }
+
       _renderReportCardCheck(r) {
         const esc = (t) => this.escapeHtml(String(t ?? ''));
         const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
@@ -37022,7 +37038,7 @@ Students you had withdrawn stay withdrawn.`)) {
           <button class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px;" onclick="app.closeModal('report-card-check'); app.viewStudentDetails('${this.jsAttr(id)}')">Student Hub</button>`;
         if (r.byClass.length) {
           parts.push(`<h4 style="margin: 14px 0 6px;">Missing grades by class (${plural(r.missingCount, 'grade')})</h4>`
-            + r.byClass.map(c => `<details style="margin-bottom: 6px;"><summary style="cursor: pointer;"><b>${esc(c.className)}</b>${c.teacher ? ` · ${esc(c.teacher)}` : ''} · ${plural(c.students.length, 'grade')} missing</summary>
+            + r.byClass.map(c => `<details style="margin-bottom: 6px;"><summary style="cursor: pointer;"><b>${esc(c.className)}</b>${c.teacher ? ` · ${esc(c.teacher)}` : ''} · ${plural(c.students.length, 'grade')} missing ${this._reportCardClassLinks(c)}</summary>
                 <ul style="margin: 6px 0 0 18px; font-size: 13px;">${c.students.map(x => `<li>${esc(x.name)} · ${esc(x.quarter)} <span style="color: var(--muted);">(${esc(x.why)})</span></li>`).join('')}</ul></details>`).join(''));
         }
         const broken = r.students.filter(x => x.issues.some(i => i.kind !== 'missing'));
@@ -58054,7 +58070,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-01·b';
+      const RIVEN_BUILD = '2026-11-01·c';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -72700,7 +72716,8 @@ Students you had withdrawn stay withdrawn.`)) {
           lines.push(`🎓 Left out ${bandOut.map(([code, n]) => `${esc(this.gradeBandLabel ? this.gradeBandLabel(code) : code)} (${n})`).join(', ')}.`);
         }
         if (r.byClass.length) {
-          const top = r.byClass.slice(0, 6).map(c => `• <b>${esc(c.className)}</b>${c.teacher ? ` (${esc(c.teacher)})` : ''}: ${plural(c.students.length, 'grade')} missing`);
+          const links = (c) => (typeof this._reportCardClassLinks === 'function' && typeof this.openClass === 'function' ? ' ' + this._reportCardClassLinks(c) : '');
+          const top = r.byClass.slice(0, 6).map(c => `• <b>${esc(c.className)}</b>${c.teacher ? ` (${esc(c.teacher)})` : ''}: ${plural(c.students.length, 'grade')} missing${links(c)}`);
           if (r.byClass.length > 6) top.push(`• \u2026 and ${r.byClass.length - 6} more classes`);
           lines.push(`📝 <b>Missing grades</b> (${r.missingCount}):<br>${top.join('<br>')}`);
         }

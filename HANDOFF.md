@@ -5972,3 +5972,11 @@ window shows how many each unticked band left out, and remembers the choice in t
 Students with no grade level, or a grade no band covers (K today), are always checked, and a
 named student is always checked. Riven: "check report cards without highschool", "excluding young
 elementary", "skip old middle school and young middle". `tests/report-card-check.test.js`.
+
+### 2026-11-01 · Report card check: links to flagged classes
+
+Each class under "Missing grades by class" in 🩺 Check report cards now has **🏫 Open class**
+(the class page) and one **📝 Qn grades** button per quarter it is missing grades for, which opens
+Manage Grades on that quarter - usually a closed one, which Manage Grades would not open on by
+itself. Riven's "check report cards" summary carries the same buttons on each class it names.
+`tests/report-card-check.test.js`.
