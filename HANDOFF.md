@@ -5954,3 +5954,12 @@ student joined it before 1 August of the current school year, it has ended for t
 it, or the class is closed), and it has no grade in any of this year's quarters. A class still
 running from last year stays, so a missing grade there is still caught. Transcripts are
 unchanged: they still list every year. `tests/report-card-check.test.js`.
+
+### 2026-11-01 · A class can be left off report cards
+
+Edit Class (and Create Class) has an admin-only **📄 Include on report cards and transcripts**
+box, ticked by default. Unticked, the class is left off every student's report card, transcript
+and GPA, out of the Reports panel's class list, and out of 🩺 Check report cards. Its grades are
+kept; ticking it again brings it back. Per-student unticking in the Reports panel still works
+as before. Needs the backend's class_on_report_card migration (applied 2026-11-01).
+`tests/report-card-check.test.js`.

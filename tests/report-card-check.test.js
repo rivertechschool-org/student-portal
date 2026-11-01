@@ -232,6 +232,27 @@ function makeApp(role = 'admin') {
     reset();
   }
 
+  // ---- a class left off report cards ----
+  {
+    reset();
+    db.class_enrollments.filter(e => e.class_id === 'c-math').forEach(e => { e.classes = { ...e.classes, on_report_card: false }; });
+    const off = await app.checkReportCards();
+    const t = (first) => (off.students.find(x => x.name === `${first} Test`)?.issues || []).map(i => i.text).join(' | ');
+    ok('a class left off report cards is not checked', !off.byClass.some(c => c.className === 'Pre-Algebra') && !/Pre-Algebra/.test(t('Twice')), JSON.stringify(off.byClass.map(c => c.className)));
+    ok('  a student whose only class it was has no card to check', !off.students.some(x => x.name === 'BlankQ1 Test') && off.checked < 10, String(off.checked));
+    const year = await app._loadReportCardYear();
+    ok('  and the card drops it', app._reportCardYearEnrollments(db.class_enrollments.filter(e => e.student_id === 's-q1'), [], year).map(e => e.class_id).join() === 'c-eng');
+    const tr = method('generateTranscript');
+    ok('the transcript leaves it off too', /enrollments = \(enrollments \|\| \[\]\)\.filter\(e => e\.classes\?\.on_report_card !== false\)/.test(tr));
+    const gpa = method('calculateStudentGPA');
+    ok('  and so does the GPA', /select\('id, name, course_weight, on_report_card'\)/.test(gpa) && /gradeData = gradeData\.filter\(g => classMap\[g\.class_id\]\?\.on_report_card !== false\)/.test(gpa));
+    const edit = method('editClass'), save = html.slice(html.indexOf("updatedData.credits = creditsVal;"), html.indexOf("updatedData.credits = creditsVal;") + 200);
+    ok('Edit Class has the box, ticked unless the class is off', /id="edit-class-on-report-card" \$\{classData\.on_report_card === false \? '' : 'checked'\}/.test(edit));
+    ok('  and saves it', /updatedData\.on_report_card = document\.getElementById\('edit-class-on-report-card'\)\?\.checked !== false;/.test(save));
+    ok('Create Class has it, ticked', /id="class-on-report-card" checked/.test(html) && /classData\.on_report_card = document\.getElementById\('class-on-report-card'\)\?\.checked !== false;/.test(html));
+    reset();
+  }
+
   // ---- leaving out homeschool students ----
   reset();
   db.user_profiles.find(u => u.id === 's-q1').enrollment_type = 'homeschool';

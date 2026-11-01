@@ -2780,11 +2780,13 @@
             const { data: classes } = await this.supabaseQuery(() =>
               this.auth.supabase
                 .from('classes')
-                .select('id, name, course_weight')
+                .select('id, name, course_weight, on_report_card')
                 .in('id', classIds));
 
             const classMap = {};
             classes?.forEach(c => { classMap[c.id] = c; });
+            // Classes left off report cards don't count towards GPA either.
+            gradeData = gradeData.filter(g => classMap[g.class_id]?.on_report_card !== false);
 
             // Calculate GPA for this quarter
             let totalWeightedGPA = 0;
@@ -19119,6 +19121,14 @@
               </label>
               <input type="number" id="class-credits" step="0.25" min="0" max="20" value="1" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
             </div>
+            <!-- Report card - Admin Only -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="class-on-report-card" checked style="margin-top: 3px;">
+                <span><strong>📄 Include on report cards and transcripts</strong>
+                  <span style="font-size: 11px; color: var(--muted); font-weight: normal; display: block; margin-top: 4px;">Admin only - untick for a club, study hall or anything else that should not print. Its grades are kept; tick it again to bring it back.</span></span>
+              </label>
+            </div>
             <!-- Course Weight Section - Admin Only -->
             <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
               <label style="font-weight: 600; margin-bottom: 10px; display: block;">
@@ -19321,6 +19331,7 @@
             return;
           }
           classData.credits = creditsVal;
+          classData.on_report_card = document.getElementById('class-on-report-card')?.checked !== false;
         }
 
         if (!classData.name || !classData.subject) {
@@ -22105,6 +22116,14 @@
               </label>
               <input type="number" id="edit-class-credits" step="0.25" min="0" max="20" value="${classCredits}" style="width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);">
             </div>
+            <!-- Report card - Admin Only -->
+            <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
+              <label style="display: flex; align-items: flex-start; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="edit-class-on-report-card" ${classData.on_report_card === false ? '' : 'checked'} style="margin-top: 3px;">
+                <span><strong>📄 Include on report cards and transcripts</strong>
+                  <span style="font-size: 11px; color: var(--muted); font-weight: normal; display: block; margin-top: 4px;">Admin only - untick for a club, study hall or anything else that should not print. Its grades are kept; tick it again to bring it back.</span></span>
+              </label>
+            </div>
             <!-- Course Weight Section - Admin Only -->
             <div class="form-group" style="margin-top: 20px; padding-top: 20px; border-top: 2px solid var(--border);">
               <label style="font-weight: 600; margin-bottom: 10px; display: block;">
@@ -22210,6 +22229,7 @@
             return;
           }
           updatedData.credits = creditsVal;
+          updatedData.on_report_card = document.getElementById('edit-class-on-report-card')?.checked !== false;
         }
         
         if (!updatedData.name || !updatedData.subject) {
@@ -35175,7 +35195,7 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           let { data: enrollments } = await this.auth.supabase
             .from('class_enrollments')
-            .select('id, class_id, status, enrolled_at, classes(id, name, status)')
+            .select('id, class_id, status, enrolled_at, classes(id, name, status, on_report_card)')
             .eq('student_id', studentId)
             .in('status', ['active', 'archived']);
           // Only this year's classes, as the card prints them.
@@ -36285,8 +36305,10 @@ Students you had withdrawn stay withdrawn.`)) {
       // is closed) and has no grade in any of this year's quarters. A class
       // still running from last year stays, so its missing grades still show.
       // The report card, the report panel's class list and the report card
-      // check all go through this.
+      // check all go through this. A class an admin has left off report cards
+      // (Edit Class) is dropped here too.
       _reportCardYearEnrollments(enrollments, snapshots, year) {
+        enrollments = enrollments.filter(e => e.classes?.on_report_card !== false);
         const startYear = Number(String(year?.currentSchoolYear || '').split('-')[0]);
         if (!startYear) return enrollments;
         const yearStart = `${startYear}-08-01`;
@@ -36704,7 +36726,7 @@ Students you had withdrawn stay withdrawn.`)) {
         });
         const enrollments = await this.fetchAllRows((from, to) => {
           let q = sb.from('class_enrollments')
-            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, course_weight_override, classes(id, name, subject, credits, course_weight, teacher_id, status)')
+            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, course_weight_override, classes(id, name, subject, credits, course_weight, teacher_id, status, on_report_card)')
             .in('status', ['active', 'archived']);
           if (studentId) q = q.eq('student_id', studentId);
           return q.order('id').range(from, to);
@@ -37006,13 +37028,15 @@ Students you had withdrawn stay withdrawn.`)) {
           }
 
           // Load ALL enrollments (active + archived) with class info
-          const { data: enrollments, error: enrollError } = await this.supabaseQuery(() =>
+          let { data: enrollments, error: enrollError } = await this.supabaseQuery(() =>
             this.auth.supabase
               .from('class_enrollments')
               .select('*, classes(*)')
               .eq('student_id', studentId)
               .in('status', ['active', 'archived']));
           if (enrollError) throw enrollError;
+          // Classes an admin has left off report cards are off the transcript too.
+          enrollments = (enrollments || []).filter(e => e.classes?.on_report_card !== false);
 
           // Load ALL quarter_grade_snapshots for these enrollments
           const enrollmentIds = (enrollments || []).map(e => e.id);
