@@ -5944,3 +5944,13 @@ out; the choice is remembered in that browser. Checking one named student always
 Riven does the same when asked: "check report cards without homeschool", "excluding
 homeschoolers", "for full-time students". Plain "check report cards" still checks everyone.
 `tests/report-card-check.test.js`.
+
+### 2026-11-01 · Report cards leave out last year's classes
+
+A student's classes from an earlier school year no longer print on this year's report card, no
+longer appear in the Reports panel's class list for that student, and are no longer flagged by
+🩺 Check report cards ("prints with no grades at all"). A class counts as last year's when the
+student joined it before 1 August of the current school year, it has ended for them (they left
+it, or the class is closed), and it has no grade in any of this year's quarters. A class still
+running from last year stays, so a missing grade there is still caught. Transcripts are
+unchanged: they still list every year. `tests/report-card-check.test.js`.

@@ -35173,11 +35173,20 @@ Students you had withdrawn stay withdrawn.`)) {
         this.renderReportCardClassLinkChips();
 
         try {
-          const { data: enrollments } = await this.auth.supabase
+          let { data: enrollments } = await this.auth.supabase
             .from('class_enrollments')
-            .select('class_id, classes(id, name)')
+            .select('id, class_id, status, enrolled_at, classes(id, name, status)')
             .eq('student_id', studentId)
             .in('status', ['active', 'archived']);
+          // Only this year's classes, as the card prints them.
+          if (enrollments && enrollments.length) {
+            const year = await this._loadReportCardYear();
+            const { data: snaps } = await this.auth.supabase
+              .from('quarter_grade_snapshots')
+              .select('enrollment_id, quarter_id, class_grade')
+              .in('enrollment_id', enrollments.map(e => e.id));
+            enrollments = this._reportCardYearEnrollments(enrollments, snaps || [], year);
+          }
 
           if (!enrollments || enrollments.length === 0) {
             classExclusion.style.display = 'none';
@@ -36270,6 +36279,28 @@ Students you had withdrawn stay withdrawn.`)) {
 
       // Everything one student's report card is built from. Throws if the
       // student cannot be read.
+      // Classes from an earlier school year stay on the student's record (and
+      // the transcript) but not on this year's report card: an enrolment that
+      // began before this school year, has ended (they left it, or the class
+      // is closed) and has no grade in any of this year's quarters. A class
+      // still running from last year stays, so its missing grades still show.
+      // The report card, the report panel's class list and the report card
+      // check all go through this.
+      _reportCardYearEnrollments(enrollments, snapshots, year) {
+        const startYear = Number(String(year?.currentSchoolYear || '').split('-')[0]);
+        if (!startYear) return enrollments;
+        const yearStart = `${startYear}-08-01`;
+        const thisYear = new Set((year.quarters || []).map(q => q.id));
+        const graded = new Set((snapshots || [])
+          .filter(x => thisYear.has(x.quarter_id) && x.class_grade !== null && x.class_grade !== undefined && x.class_grade !== 0)
+          .map(x => x.enrollment_id));
+        return enrollments.filter(e => {
+          const began = e.enrolled_at ? String(e.enrolled_at).slice(0, 10) : null;
+          const ended = e.status === 'archived' || e.classes?.status === 'closed';
+          return !(began && began < yearStart && ended && !graded.has(e.id));
+        });
+      }
+
       async _loadReportCardInputs(studentId, upToQuarterId = null) {
         // Load student profile
         const { data: student, error: studentError } = await this.auth.supabase
@@ -36301,7 +36332,7 @@ Students you had withdrawn stay withdrawn.`)) {
           snapshots = snapshotData || [];
         }
 
-        return { ...year, student, enrollments: enrollments || [], snapshots };
+        return { ...year, student, enrollments: this._reportCardYearEnrollments(enrollments || [], snapshots, year), snapshots };
       }
 
       // The report card itself, from loaded inputs. No database calls, so the
@@ -36673,7 +36704,7 @@ Students you had withdrawn stay withdrawn.`)) {
         });
         const enrollments = await this.fetchAllRows((from, to) => {
           let q = sb.from('class_enrollments')
-            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, course_weight_override, classes(id, name, subject, credits, course_weight, teacher_id)')
+            .select('id, student_id, class_id, status, enrolled_at, class_grade, academic_grade, participation_grade, credits_override, course_weight_override, classes(id, name, subject, credits, course_weight, teacher_id, status)')
             .in('status', ['active', 'archived']);
           if (studentId) q = q.eq('student_id', studentId);
           return q.order('id').range(from, to);
@@ -36717,8 +36748,9 @@ Students you had withdrawn stay withdrawn.`)) {
         const byClass = {};
         const inProgress = {};
         for (const st of students) {
-          const mine = enrBy[st.id] || [];
-          if (!mine.length) continue;  // no classes, no card
+          const onRecord = enrBy[st.id] || [];
+          const mine = this._reportCardYearEnrollments(onRecord, onRecord.flatMap(e => snapByEnr[e.id] || []), year);
+          if (!mine.length) continue;  // no classes this year, no card
           if (skipHomeschool && !studentId && st.enrollment_type === 'homeschool') {
             result.skippedHomeschool++;
             continue;

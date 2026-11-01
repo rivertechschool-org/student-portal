@@ -36,7 +36,7 @@ const ok = (label, cond, detail = '') => {
 };
 
 const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck',
-  '_loadReportCardYear', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
+  '_loadReportCardYear', '_reportCardYearEnrollments', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
   'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier', 'courseWeightFor', 'courseWeightLabel',
   'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
@@ -197,6 +197,40 @@ function makeApp(role = 'admin') {
   db.quarters = db.quarters.map(q => ({ ...q, is_current: false }));
   const r3 = await app.checkReportCards();
   ok('no current quarter is a school problem', r3.school.some(x => /No quarter is marked as the current one/.test(x)));
+
+  // ---- last year's classes ----
+  {
+    reset();
+    const OLD = { ...cls('c-old', 'Old Pottery', 'Art'), status: 'closed' };
+    const OLD2 = cls('c-old2', 'Old Drama', 'Electives');
+    const RUN = cls('c-run', 'Year-Round Robotics', 'Science');
+    const OLD3 = { ...cls('c-old3', 'Bridge Math', 'Math'), status: 'closed' };
+    const lastYear = day(-400) + 'T09:00:00Z';
+    const E = (id, student, c, extra = {}) => ({ id, student_id: student, class_id: c.id, status: 'active', class_grade: null, academic_grade: null, participation_grade: null, credits_override: null, classes: c, ...extra });
+    db.class_enrollments.push(
+      E('e-old', 's-ok', OLD, { enrolled_at: lastYear }),                          // class closed
+      E('e-old2', 's-ok', OLD2, { enrolled_at: lastYear, status: 'archived' }),    // they left it
+      E('e-run', 's-late', RUN, { enrolled_at: lastYear }),                        // still running
+      E('e-old3', 's-ok', OLD3, { enrolled_at: lastYear }),                        // closed, but graded this year
+    );
+    db.quarter_grade_snapshots.push(
+      { enrollment_id: 'e-old', quarter_id: 'q-old', class_grade: 92 },
+      { enrollment_id: 'e-old2', quarter_id: 'q-old', class_grade: 88 },
+      { enrollment_id: 'e-old3', quarter_id: 'q1', class_grade: 81, academic_grade: 81, participation_grade: 81 },
+    );
+    const ly = await app.checkReportCards();
+    const t = (first) => (ly.students.find(x => x.name === `${first} Test`)?.issues || []).map(i => i.text).join(' | ');
+    ok("last year's finished classes are not flagged", !t('Complete'), t('Complete'));
+    ok("a class still running from last year still needs this year's grade", /Year-Round Robotics: no Q1 grade/.test(t('JoinedLate')), t('JoinedLate'));
+    const year = await app._loadReportCardYear();
+    const kept = app._reportCardYearEnrollments(db.class_enrollments.filter(e => e.student_id === 's-ok'), db.quarter_grade_snapshots, year).map(e => e.class_id);
+    ok("the card keeps this year's classes and drops last year's", JSON.stringify(kept.sort()) === '["c-math","c-old3"]', JSON.stringify(kept));
+    const panel = method('loadReportCardClassList');
+    ok("the report panel's class list uses the same rule", /this\._reportCardYearEnrollments\(enrollments, snaps \|\| \[\], year\)/.test(panel));
+    const inputs = method('_loadReportCardInputs');
+    ok('  and so does every Report Card button', /enrollments: this\._reportCardYearEnrollments\(/.test(inputs));
+    reset();
+  }
 
   // ---- leaving out homeschool students ----
   reset();

@@ -30,7 +30,7 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const names = ['generateReportCard', '_loadReportCardYear', '_loadReportCardInputs', '_buildReportCardData', 'loadReportCardSavedOptions',
+const names = ['generateReportCard', '_loadReportCardYear', '_reportCardYearEnrollments', '_loadReportCardInputs', '_buildReportCardData', 'loadReportCardSavedOptions',
   '_parseReportCardColumns', 'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier',
   'courseWeightFor', 'courseWeightLabel', 'courseWeightName', 'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter',
   'calculateStudentGPA', 'editCourseWeightOverride', 'saveCourseWeightOverride'];
