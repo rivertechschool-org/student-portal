@@ -198,6 +198,21 @@ function makeApp(role = 'admin') {
   const r3 = await app.checkReportCards();
   ok('no current quarter is a school problem', r3.school.some(x => /No quarter is marked as the current one/.test(x)));
 
+  // ---- leaving out homeschool students ----
+  reset();
+  db.user_profiles.find(u => u.id === 's-q1').enrollment_type = 'homeschool';
+  const all = await app.checkReportCards();
+  ok('homeschool students are checked unless asked otherwise', all.checked === 10 && all.students.some(x => x.name === 'NoQ1 Test') && all.skippedHomeschool === 0);
+  const ft = await app.checkReportCards({ skipHomeschool: true });
+  ok('leaving them out drops them from the check', ft.checked === 9 && !ft.students.some(x => x.name === 'NoQ1 Test'), String(ft.checked));
+  ok('  and from the missing-grade counts', ft.byClass.find(c => c.className === 'Pre-Algebra')?.students.length === 1 && ft.missingCount === 1);
+  ok('  and says how many were left out', ft.skippedHomeschool === 1);
+  const named = await app.checkReportCards({ studentId: 's-q1', skipHomeschool: true });
+  ok('a named homeschool student is still checked', named.checked === 1 && named.students.length === 1);
+  const winSrc = method('openReportCardCheck');
+  ok('the check window has the box, remembered, and passes it on',
+    /id="rc-check-skip-homeschool"/.test(winSrc) && /localStorage\.getItem\('rcCheckSkipHomeschool'\)/.test(winSrc) && /checkReportCards\(\{ upToQuarterId, skipHomeschool \}\)/.test(winSrc));
+
   // ---- the page ----
   reset();
   const page = app._renderReportCardCheck(await app.checkReportCards());
@@ -222,6 +237,15 @@ function makeApp(role = 'admin') {
   said.length = 0;
   await riven.terminalReportCardCheck({ student: { student: { id: 's-q1', full_name: 'NoQ1 Test' } } });
   ok('for one student, Riven lists what is wrong with their card', /NoQ1 Test<\/b>'s card up to Q2/.test(said.at(-1)) && /no Q1 grade/.test(said.at(-1)), said.at(-1));
+  said.length = 0;
+  db.user_profiles.find(u => u.id === 's-q1').enrollment_type = 'homeschool';
+  await riven.terminalReportCardCheck({ original: 'check report cards without homeschool' });
+  ok('Riven: "without homeschool" leaves them out and says so', /Checked 9 students/.test(said.at(-1)) && /Left out 1 homeschool student\./.test(said.at(-1)), said.at(-1));
+  await riven.terminalReportCardCheck({ original: 'are report cards ready for full-time students' });
+  ok('  so does "full-time students"', /Checked 9 students/.test(said.at(-1)));
+  await riven.terminalReportCardCheck({ original: 'check report cards' });
+  ok('  and plain "check report cards" checks everyone', /Checked 10 students/.test(said.at(-1)) && !/homeschool/.test(said.at(-1)));
+  delete db.user_profiles.find(u => u.id === 's-q1').enrollment_type;
   said.length = 0;
   riven.userInfo = { profile: { user_type: 'teacher' } };
   await riven.terminalReportCardCheck({});

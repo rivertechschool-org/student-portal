@@ -36653,7 +36653,11 @@ Students you had withdrawn stay withdrawn.`)) {
       // they have since left (archived) only up to the last quarter it has a
       // grade for. The current quarter, while it is still running, is listed
       // apart as "no grade yet", because that is normal, not a fault.
-      async checkReportCards({ studentId = null, upToQuarterId = null } = {}) {
+      //
+      // skipHomeschool leaves homeschool students out of a school-wide check
+      // (their report cards are often not the school's to print); they are
+      // counted in skippedHomeschool. A named student is always checked.
+      async checkReportCards({ studentId = null, upToQuarterId = null, skipHomeschool = false } = {}) {
         const sb = this.auth.supabase;
         const year = await this._loadReportCardYear(upToQuarterId);
         const today = this._localDateStr(new Date());
@@ -36661,7 +36665,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         const students = await this.fetchAllRows((from, to) => {
           let q = sb.from('user_profiles')
-            .select('id, first_name, last_name, date_of_birth, grade_level, student_status')
+            .select('id, first_name, last_name, date_of_birth, grade_level, student_status, enrollment_type')
             .eq('user_type', 'student');
           // One named student is checked whether or not they are still here.
           q = studentId ? q.eq('id', studentId) : q.or('student_status.is.null,student_status.neq.past');
@@ -36708,12 +36712,17 @@ Students you had withdrawn stay withdrawn.`)) {
 
         const result = {
           quarter: year.targetQuarter?.name || '', school, checked: 0, students: [], byClass: [], inProgress: [],
+          skippedHomeschool: 0,
         };
         const byClass = {};
         const inProgress = {};
         for (const st of students) {
           const mine = enrBy[st.id] || [];
           if (!mine.length) continue;  // no classes, no card
+          if (skipHomeschool && !studentId && st.enrollment_type === 'homeschool') {
+            result.skippedHomeschool++;
+            continue;
+          }
           result.checked++;
           const inputs = { ...year, student: st, enrollments: mine, snapshots: mine.flatMap(e => snapByEnr[e.id] || []) };
           const options = optsBy[st.id] || {};
@@ -36865,14 +36874,21 @@ Students you had withdrawn stay withdrawn.`)) {
         }
         const sel = document.getElementById('report-card-quarter');
         const upToQuarterId = sel && sel.value !== 'current' ? sel.value : null;
+        // Remembered per browser: whoever prints cards tends to want the same.
+        let skipHomeschool = false;
+        try { skipHomeschool = localStorage.getItem('rcCheckSkipHomeschool') === '1'; } catch (_) {}
         this.showModal('report-card-check', '🩺 Report card check',
           `<div style="padding: 20px; text-align: center; color: var(--muted);">Building every student's report card\u2026</div>`);
         try {
-          const result = await this.checkReportCards({ upToQuarterId });
+          const result = await this.checkReportCards({ upToQuarterId, skipHomeschool });
           this._reportCardCheck = result;
           const body = document.querySelector('#modal-report-card-check .modal-content');
           if (body) {
             body.innerHTML = `<h3 style="margin-bottom: 12px; color: var(--text);">🩺 Report card check</h3>`
+              + `<label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; cursor: pointer;">
+                   <input type="checkbox" id="rc-check-skip-homeschool" ${skipHomeschool ? 'checked' : ''} onchange="app.setReportCardCheckSkipHomeschool(this.checked)">
+                   Leave out homeschool students${skipHomeschool && result.skippedHomeschool ? ` <span style="color: var(--muted);">(${result.skippedHomeschool} left out)</span>` : ''}
+                 </label>`
               + this._renderReportCardCheck(result)
               + `<div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
                    <button class="btn btn-secondary" onclick="app.openReportCardCheck()">↻ Check again</button>
@@ -36884,6 +36900,11 @@ Students you had withdrawn stay withdrawn.`)) {
           if (body) body.innerHTML = `<div style="color: var(--danger);">Could not check report cards: ${this.escapeHtml(e?.message || String(e))}</div>
             <div style="text-align: right; margin-top: 12px;"><button class="btn btn-primary" onclick="app.closeModal('report-card-check')">Close</button></div>`;
         }
+      }
+
+      setReportCardCheckSkipHomeschool(on) {
+        try { localStorage.setItem('rcCheckSkipHomeschool', on ? '1' : '0'); } catch (_) {}
+        this.openReportCardCheck();
       }
 
       _renderReportCardCheck(r) {
@@ -57931,7 +57952,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-10-30·c';
+      const RIVEN_BUILD = '2026-11-01·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -72533,13 +72554,16 @@ Students you had withdrawn stay withdrawn.`)) {
       }
       const esc = (t) => this.escapeHtml(String(t ?? ''));
       const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+      const raw = String(entities.original || entities._rawInput || '').toLowerCase();
+      const skipHomeschool = /\b(no|not|without|excluding|exclude|except|skip|skipping|omit|omitting|minus|leave\s+out|leaving\s+out|but)\b[\s\S]{0,24}\bhome[\s-]?school(ers?|ed)?\b/.test(raw)
+        || /\bfull[\s-]?time\b/.test(raw);
       const student = this._rivenResolvedStudent(entities);
       this._showRivenMessage(student
         ? `Checking ${esc(student.full_name)}'s report card\u2026`
-        : `Checking every student's report card\u2026`, true);
+        : `Checking every ${skipHomeschool ? 'full-time ' : ''}student's report card\u2026`, true);
       let r;
       try {
-        r = await this.checkReportCards({ studentId: student?.id || null });
+        r = await this.checkReportCards({ studentId: student?.id || null, skipHomeschool });
       } catch (e) {
         this.terminalPrintError('Could not check report cards: ' + (e?.message || e));
         return;
@@ -72555,6 +72579,7 @@ Students you had withdrawn stay withdrawn.`)) {
         lines.push(r.students.length
           ? `Checked ${plural(r.checked, 'student')}${r.quarter ? ` up to ${esc(r.quarter)}` : ''}: ✅ ${r.checked - r.students.length} ready, ⚠️ <b>${r.students.length}</b> need attention.`
           : `✅ All ${plural(r.checked, 'card')}${r.quarter ? ` up to ${esc(r.quarter)}` : ''} are complete.`);
+        if (r.skippedHomeschool) lines.push(`🏠 Left out ${plural(r.skippedHomeschool, 'homeschool student')}.`);
         if (r.byClass.length) {
           const top = r.byClass.slice(0, 6).map(c => `• <b>${esc(c.className)}</b>${c.teacher ? ` (${esc(c.teacher)})` : ''}: ${plural(c.students.length, 'grade')} missing`);
           if (r.byClass.length > 6) top.push(`• \u2026 and ${r.byClass.length - 6} more classes`);

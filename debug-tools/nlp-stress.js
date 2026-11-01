@@ -463,6 +463,11 @@ const T6 = [
   // The report card check: what is missing from cards, school-wide or for
   // one student. Asking for a card is still REPORT_CARD.
   ['check report cards', 'REPORT_CARD_CHECK', null, true],
+  ['check report cards without homeschool', 'REPORT_CARD_CHECK', null, true],
+  ['check report cards excluding homeschoolers', 'REPORT_CARD_CHECK', null, true],
+  ['are report cards ready for full-time students', 'REPORT_CARD_CHECK', null, true],
+  ['check report cards but skip homeschool students', 'REPORT_CARD_CHECK', null, true],
+  ['what grades are missing not counting homeschool', 'REPORT_CARD_CHECK', null, true],
   ['are report cards ready', 'REPORT_CARD_CHECK', null, true],
   ['what grades are missing', 'REPORT_CARD_CHECK', null, true],
   ['any missing grades before report cards go out?', 'REPORT_CARD_CHECK', null, true],

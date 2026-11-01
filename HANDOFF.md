@@ -5935,3 +5935,12 @@ student's own weight with "(override)". The report card's H/C column, the transc
 weighted GPA all use the student's weight when one is set, otherwise the class's. Needs the
 backend's per-student course weight migration (applied 2026-10-31).
 `tests/course-weight-override.test.js`.
+
+### 2026-11-01 · Report card check can leave out homeschool students
+
+The 🩺 Check report cards window has a **Leave out homeschool students** box. Ticked, the
+school-wide check skips students whose enrollment type is Homeschool and says how many it left
+out; the choice is remembered in that browser. Checking one named student always checks them.
+Riven does the same when asked: "check report cards without homeschool", "excluding
+homeschoolers", "for full-time students". Plain "check report cards" still checks everyone.
+`tests/report-card-check.test.js`.
