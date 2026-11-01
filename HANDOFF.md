@@ -5980,3 +5980,13 @@ Each class under "Missing grades by class" in 🩺 Check report cards now has **
 Manage Grades on that quarter - usually a closed one, which Manage Grades would not open on by
 itself. Riven's "check report cards" summary carries the same buttons on each class it names.
 `tests/report-card-check.test.js`.
+
+### 2026-11-01 · Report card check stays open until Close or Check again
+
+Following a class link (🏫 Open class, 📝 Qn grades) out of 🩺 Check report cards no longer throws
+the result away. The window hides and a **🩺 Back to report card check** button sits at the bottom
+left; it brings the same list back (no rebuilding), with a ✓ by the classes already opened. The
+Reports page's 🩺 button and Riven's "Open the full list" also show the kept result. Only **Close**
+(or the ✕ on the back button) and **↻ Check again** end it, as does changing the "up to" quarter.
+Coming back from Manage Grades with grades typed but not saved asks to save or cancel first,
+since closing that window would drop them. `tests/report-card-check.test.js`.

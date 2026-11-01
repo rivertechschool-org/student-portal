@@ -35,7 +35,7 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck', '_reportCardClassLinks',
+const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck', '_reportCardClassLinks', '_keepReportCardCheck', '_showReportCardCheck', 'leaveReportCardCheck', 'returnToReportCardCheck', 'closeReportCardCheck', '_hideReportCardCheckReturn', 'openReportCardCheck',
   '_loadReportCardYear', '_reportCardYearEnrollments', 'loadGradeBands', 'gradeBandLabel', '_studentGradeBand', '_studentGradeNumber', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
   'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier', 'courseWeightFor', 'courseWeightLabel',
   'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
@@ -269,7 +269,7 @@ function makeApp(role = 'admin') {
     ok('  two bands at once', mid.checked === 1 && mid.students.length === 1 && mid.students[0].name === 'NoBirthday Test', String(mid.checked));
     const named = await makeApp().checkReportCards({ studentId: 's-q1', skipBands: ['highschool'] });
     ok('  a named student is checked whatever their band', named.checked === 1);
-    const winSrc = method('openReportCardCheck');
+    const winSrc = method('openReportCardCheck') + method('_showReportCardCheck');
     ok('the window has a box per band, remembered, and passes them on', /class="rc-check-band"/.test(winSrc)
       && /localStorage\.getItem\('rcCheckSkipBands'\)/.test(winSrc) && /checkReportCards\(\{ upToQuarterId, skipHomeschool, skipBands \}\)/.test(winSrc));
     reset();
@@ -286,7 +286,7 @@ function makeApp(role = 'admin') {
   ok('  and says how many were left out', ft.skippedHomeschool === 1);
   const named = await app.checkReportCards({ studentId: 's-q1', skipHomeschool: true });
   ok('a named homeschool student is still checked', named.checked === 1 && named.students.length === 1);
-  const winSrc = method('openReportCardCheck');
+  const winSrc = method('openReportCardCheck') + method('_showReportCardCheck');
   ok('the check window has the box, remembered, and passes it on',
     /id="rc-check-skip-homeschool"/.test(winSrc) && /localStorage\.getItem\('rcCheckSkipHomeschool'\)/.test(winSrc) && /checkReportCards\(\{ upToQuarterId, skipHomeschool, skipBands \}\)/.test(winSrc));
 
@@ -297,12 +297,71 @@ function makeApp(role = 'admin') {
   ok('  lists missing grades by class', /Missing grades by class \(2 grades\)/.test(page));
   {
     const math = page.slice(page.indexOf('<b>Pre-Algebra</b>'), page.indexOf('</summary>', page.indexOf('<b>Pre-Algebra</b>')));
-    ok('a flagged class links straight to its page', /app\.closeModal\('report-card-check'\); app\.openClass\('c-math'\)/.test(math), math);
+    ok('a flagged class links straight to its page', /app\.leaveReportCardCheck\('c-math'\); app\.openClass\('c-math'\)/.test(math), math);
     ok('  and to Manage Grades on the quarter missing grades', /teacherGrades\.showGradeManagementModal\('c-math', 'q1'\)[^>]*>📝 Q1 grades</.test(math));
     ok('  without folding the list when clicked', (math.match(/event\.preventDefault\(\); event\.stopPropagation\(\);/g) || []).length === 2);
   }
   ok('  and the cards that print wrong', /Cards that print wrong or incomplete \(4\)/.test(page));
   ok('  and escapes names', !/<script/.test(app._renderReportCardCheck({ quarter: '', school: [], checked: 1, students: [{ id: 'x', name: '<script>', issues: [{ kind: 'profile', text: 'x' }] }], byClass: [], inProgress: [] })));
+
+  // ---- the check stays until Close or Check again ----
+  {
+    reset();
+    const body = { children: [], appendChild(el) { this.children.push(el); } };
+    const els = {};
+    const savedDoc = global.document || {};
+    global.document = {
+      ...savedDoc,
+      body,
+      getElementById: id => els[id] || body.children.find(c => c.id === id) || (savedDoc.getElementById ? savedDoc.getElementById(id) : null),
+      createElement: () => { const el = { style: {}, remove() { body.children = body.children.filter(c => c !== el); } }; return el; },
+      querySelector: () => null,
+    };
+    let built = 0, shown = [], closed = [];
+    const a = makeApp();
+    const realCheck = a.checkReportCards.bind(a);
+    a.checkReportCards = async (o) => { built++; return realCheck(o); };
+    a.loadGradeBands = async () => [];
+    a.showModal = (id, title, content) => { shown.push({ id, content }); };
+    a.closeModal = (id) => { closed.push(id); };
+    a.showNotification = () => {};
+    global.localStorage = { getItem: () => null, setItem() {} };
+    await a.openReportCardCheck();
+    ok('the check builds once and shows', built === 1 && shown.at(-1).content.includes('Missing grades by class'));
+    a.leaveReportCardCheck('c-math');
+    const pill = body.children.find(c => c.id === 'rc-check-return');
+    ok('following a class link hides the window and leaves a way back', closed.at(-1) === 'report-card-check' && pill && /returnToReportCardCheck\(\)/.test(pill.innerHTML));
+    shown.length = 0;
+    a.returnToReportCardCheck();
+    ok('  coming back shows the same list without building it again', built === 1 && shown.length === 1 && shown[0].content.includes('Missing grades by class'));
+    ok('  with the class just opened ticked', /title="Opened from this check"[^<]*✓<\/span><button[^>]*leaveReportCardCheck\('c-math'\)/.test(shown[0].content));
+    ok('  and the way-back button gone', !body.children.some(c => c.id === 'rc-check-return'));
+    await a.openReportCardCheck({ reuse: true });
+    ok('the Reports button shows the kept result too', built === 1);
+    els['grade-management-modal'] = { style: { display: 'block' } };
+    let gradesClosed = 0;
+    global.teacherGrades = { pendingChanges: { x: 1 }, closeGradeModal() { gradesClosed++; } };
+    shown.length = 0;
+    a.returnToReportCardCheck();
+    ok('coming back from Manage Grades with unsaved grades waits, rather than drop them', gradesClosed === 0 && shown.length === 0);
+    global.teacherGrades.pendingChanges = {};
+    a.returnToReportCardCheck();
+    ok('  and closes Manage Grades once nothing is unsaved', gradesClosed === 1 && shown.length === 1);
+    delete els['grade-management-modal'];
+    await a.openReportCardCheck();
+    ok('Check again builds anew', built === 2);
+    a.leaveReportCardCheck();
+    a.closeReportCardCheck();
+    ok('Close ends it: the way back goes', !body.children.some(c => c.id === 'rc-check-return'));
+    await a.openReportCardCheck({ reuse: true });
+    ok('  and the next check builds anew', built === 3);
+    ok('the Reports button and Riven\'s "full list" reuse the kept result',
+      /onclick="app\.openReportCardCheck\(\{ reuse: true \}\)" title="Find missing grades/.test(html)
+      && /app\.openReportCardCheck\(\{ reuse: true \}\)">Open the full list/.test(html));
+    global.document = savedDoc;
+    delete global.teacherGrades;
+    reset();
+  }
 
   // ---- Riven ----
   const said = [];

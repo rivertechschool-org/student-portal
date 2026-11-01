@@ -34974,7 +34974,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 </button>
                 <!-- Every student's card, built and checked for missing grades
                      and setup that no longer fits, before they go home. -->
-                <button class="btn btn-secondary" onclick="app.openReportCardCheck()" title="Find missing grades and cards that would print wrong, for every student">
+                <button class="btn btn-secondary" onclick="app.openReportCardCheck({ reuse: true })" title="Find missing grades and cards that would print wrong, for every student">
                   🩺 Check report cards
                 </button>
               </div>
@@ -36942,13 +36942,23 @@ Students you had withdrawn stay withdrawn.`)) {
       }
 
       // The admin action: Reports > Check report cards.
-      async openReportCardCheck() {
+      // The check stays until the admin presses Close or Check again: following
+      // a link to a class hides the window and leaves a "Back to report card
+      // check" button, and the Reports button shows the same result again, so
+      // the rest of the list is still there without building every card anew.
+      // reuse: show the last result if it was for the same "up to" quarter.
+      async openReportCardCheck({ reuse = false } = {}) {
         if (this.userInfo?.profile?.user_type !== 'admin') {
           this.showNotification('Checking report cards is admin-only', 'info');
           return;
         }
         const sel = document.getElementById('report-card-quarter');
         const upToQuarterId = sel && sel.value !== 'current' ? sel.value : null;
+        if (reuse && this._reportCardCheck && this._reportCardCheckView
+            && this._reportCardCheckView.upToQuarterId === upToQuarterId) {
+          this._showReportCardCheck();
+          return;
+        }
         // Remembered per browser: whoever prints cards tends to want the same.
         let skipHomeschool = false;
         try { skipHomeschool = localStorage.getItem('rcCheckSkipHomeschool') === '1'; } catch (_) {}
@@ -36956,39 +36966,100 @@ Students you had withdrawn stay withdrawn.`)) {
         try { skipBands = JSON.parse(localStorage.getItem('rcCheckSkipBands') || '[]'); } catch (_) {}
         if (!Array.isArray(skipBands)) skipBands = [];
         const bands = await this.loadGradeBands();
+        this._hideReportCardCheckReturn();
         this.showModal('report-card-check', '🩺 Report card check',
           `<div style="padding: 20px; text-align: center; color: var(--muted);">Building every student's report card\u2026</div>`);
         try {
           const result = await this.checkReportCards({ upToQuarterId, skipHomeschool, skipBands });
-          this._reportCardCheck = result;
-          const body = document.querySelector('#modal-report-card-check .modal-content');
-          if (body) {
-            body.innerHTML = `<h3 style="margin-bottom: 12px; color: var(--text);">🩺 Report card check</h3>`
-              + `<label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; cursor: pointer;">
-                   <input type="checkbox" id="rc-check-skip-homeschool" ${skipHomeschool ? 'checked' : ''} onchange="app.setReportCardCheckSkipHomeschool(this.checked)">
-                   Leave out homeschool students${skipHomeschool && result.skippedHomeschool ? ` <span style="color: var(--muted);">(${result.skippedHomeschool} left out)</span>` : ''}
-                 </label>`
-              + (bands.length ? `<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px; font-size: 14px;">
-                   <span style="color: var(--muted);">Grade bands:</span>
-                   ${bands.map(b => {
-                     const on = !skipBands.includes(b.code);
-                     const n = result.skippedBands[b.code];
-                     return `<label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
-                       <input type="checkbox" class="rc-check-band" value="${this.escapeHtml(b.code)}" ${on ? 'checked' : ''} onchange="app.setReportCardCheckBand(this.value, this.checked)">
-                       ${this.escapeHtml(b.label)}${!on && n ? ` <span style="color: var(--muted);">(${n} left out)</span>` : ''}</label>`;
-                   }).join('')}
-                 </div>` : '')
-              + this._renderReportCardCheck(result)
-              + `<div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
-                   <button class="btn btn-secondary" onclick="app.openReportCardCheck()">↻ Check again</button>
-                   <button class="btn btn-primary" onclick="app.closeModal('report-card-check')">Close</button>
-                 </div>`;
-          }
+          this._keepReportCardCheck(result, { upToQuarterId, skipHomeschool, skipBands, bands });
+          this._showReportCardCheck();
         } catch (e) {
           const body = document.querySelector('#modal-report-card-check .modal-content');
           if (body) body.innerHTML = `<div style="color: var(--danger);">Could not check report cards: ${this.escapeHtml(e?.message || String(e))}</div>
             <div style="text-align: right; margin-top: 12px;"><button class="btn btn-primary" onclick="app.closeModal('report-card-check')">Close</button></div>`;
         }
+      }
+
+      // Holds a result for showing again. Riven's school-wide check keeps its
+      // result here too, so its class links can come back to the list.
+      _keepReportCardCheck(result, view) {
+        this._reportCardCheck = result;
+        this._reportCardCheckView = { ...view, at: new Date() };
+        this._reportCardCheckVisited = new Set();
+      }
+
+      _showReportCardCheck() {
+        const result = this._reportCardCheck;
+        if (!result) return;
+        const { skipHomeschool = false, skipBands = [], bands = [], at } = this._reportCardCheckView || {};
+        this._hideReportCardCheckReturn();
+        const when = at ? at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '';
+        this.showModal('report-card-check', '🩺 Report card check',
+          `<label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; cursor: pointer;">
+             <input type="checkbox" id="rc-check-skip-homeschool" ${skipHomeschool ? 'checked' : ''} onchange="app.setReportCardCheckSkipHomeschool(this.checked)">
+             Leave out homeschool students${skipHomeschool && result.skippedHomeschool ? ` <span style="color: var(--muted);">(${result.skippedHomeschool} left out)</span>` : ''}
+           </label>`
+          + (bands.length ? `<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px; font-size: 14px;">
+               <span style="color: var(--muted);">Grade bands:</span>
+               ${bands.map(b => {
+                 const on = !skipBands.includes(b.code);
+                 const n = result.skippedBands?.[b.code];
+                 return `<label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                   <input type="checkbox" class="rc-check-band" value="${this.escapeHtml(b.code)}" ${on ? 'checked' : ''} onchange="app.setReportCardCheckBand(this.value, this.checked)">
+                   ${this.escapeHtml(b.label)}${!on && n ? ` <span style="color: var(--muted);">(${n} left out)</span>` : ''}</label>`;
+               }).join('')}
+             </div>` : '')
+          + this._renderReportCardCheck(result)
+          + `<div style="display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 16px; flex-wrap: wrap;">
+               ${when ? `<span style="color: var(--muted); font-size: 12px; margin-right: auto;">Checked at ${this.escapeHtml(when)}</span>` : ''}
+               <button class="btn btn-secondary" onclick="app.openReportCardCheck()">↻ Check again</button>
+               <button class="btn btn-primary" onclick="app.closeReportCardCheck()">Close</button>
+             </div>`);
+      }
+
+      // Following a link out of the check: hide the window, keep the result,
+      // and leave a button to come back to it from wherever the link went.
+      leaveReportCardCheck(classId = null) {
+        if (classId) (this._reportCardCheckVisited = this._reportCardCheckVisited || new Set()).add(classId);
+        this.closeModal('report-card-check');
+        if (!this._reportCardCheck) return;
+        let pill = document.getElementById('rc-check-return');
+        if (!pill) {
+          pill = document.createElement('div');
+          pill.id = 'rc-check-return';
+          pill.style.cssText = 'position: fixed; left: 16px; bottom: 16px; z-index: 9000; display: flex; gap: 4px; align-items: center;'
+            + ' background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 4px; box-shadow: 0 4px 16px rgba(0,0,0,.35);';
+          pill.innerHTML = `<button class="btn btn-primary small" style="border-radius: 999px;" onclick="app.returnToReportCardCheck()">🩺 Back to report card check</button>
+            <button class="btn btn-secondary small" style="border-radius: 999px;" onclick="app.closeReportCardCheck()" title="Done with the check" aria-label="Close the report card check">✕</button>`;
+          document.body.appendChild(pill);
+        }
+      }
+
+      returnToReportCardCheck() {
+        // Manage Grades is its own window, not one of ours: put it away first,
+        // but never with grades typed and not saved - closing it drops them.
+        const grades = document.getElementById('grade-management-modal');
+        if (grades && grades.style.display === 'block' && typeof teacherGrades !== 'undefined' && teacherGrades.closeGradeModal) {
+          if (Object.keys(teacherGrades.pendingChanges || {}).length) {
+            this.showNotification('Save or cancel the grades you changed first.', 'info');
+            return;
+          }
+          teacherGrades.closeGradeModal();
+        }
+        this._showReportCardCheck();
+      }
+
+      // Close is "done": the result goes, and so does the way back to it.
+      closeReportCardCheck() {
+        this.closeModal('report-card-check');
+        this._hideReportCardCheckReturn();
+        this._reportCardCheck = null;
+        this._reportCardCheckView = null;
+        this._reportCardCheckVisited = null;
+      }
+
+      _hideReportCardCheckReturn() {
+        document.getElementById('rc-check-return')?.remove();
       }
 
       // Untick a band to leave its students out; remembered like the box above.
@@ -37011,15 +37082,17 @@ Students you had withdrawn stay withdrawn.`)) {
       // class: its page, and Manage Grades on each quarter missing grades
       // (usually a closed one, which Manage Grades would not open on by
       // itself). Inside a <summary>, so a click must not also fold the list.
+      // A class already opened from this result is ticked.
       _reportCardClassLinks(c) {
         if (!c.classId) return '';
         const id = this.jsAttr(c.classId);
         const stop = 'event.preventDefault(); event.stopPropagation();';
         const btn = 'class="btn btn-secondary small" style="padding: 2px 8px; font-size: 11px; margin-left: 4px;"';
+        const seen = this._reportCardCheckVisited?.has(c.classId) ? '<span title="Opened from this check" style="color: var(--accent-2, #8bffb0); margin-left: 4px;">✓</span>' : '';
         const quarters = [...new Map((c.students || []).filter(x => x.quarterId).map(x => [x.quarterId, x.quarter])).entries()]
           .sort((a, b) => String(a[1]).localeCompare(String(b[1])));
-        return `<span style="white-space: nowrap;"><button ${btn} onclick="${stop} app.closeModal('report-card-check'); app.openClass('${id}')" title="Open this class">🏫 Open class</button>`
-          + quarters.map(([qid, label]) => `<button ${btn} onclick="${stop} app.closeModal('report-card-check'); teacherGrades.showGradeManagementModal('${id}', '${this.jsAttr(qid)}')" title="Enter the missing ${this.escapeHtml(label)} grades">📝 ${this.escapeHtml(label)} grades</button>`).join('')
+        return `<span style="white-space: nowrap;">${seen}<button ${btn} onclick="${stop} app.leaveReportCardCheck('${id}'); app.openClass('${id}')" title="Open this class">🏫 Open class</button>`
+          + quarters.map(([qid, label]) => `<button ${btn} onclick="${stop} app.leaveReportCardCheck('${id}'); teacherGrades.showGradeManagementModal('${id}', '${this.jsAttr(qid)}')" title="Enter the missing ${this.escapeHtml(label)} grades">📝 ${this.escapeHtml(label)} grades</button>`).join('')
           + `</span>`;
       }
 
@@ -58070,7 +58143,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-01·c';
+      const RIVEN_BUILD = '2026-11-01·d';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -72695,6 +72768,9 @@ Students you had withdrawn stay withdrawn.`)) {
       let r;
       try {
         r = await this.checkReportCards({ studentId: student?.id || null, skipHomeschool, skipBands });
+        if (!student && typeof this._keepReportCardCheck === 'function') {
+          this._keepReportCardCheck(r, { upToQuarterId: null, skipHomeschool, skipBands, bands: typeof this.loadGradeBands === 'function' ? await this.loadGradeBands() : [] });
+        }
       } catch (e) {
         this.terminalPrintError('Could not check report cards: ' + (e?.message || e));
         return;
@@ -72726,7 +72802,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const notYet = r.inProgress.reduce((t, c) => t + c.students.length, 0);
       if (notYet) lines.push(`<span style="font-size: 12px; color: var(--muted);">Not counted: ${plural(notYet, 'grade')} for the quarter still running.</span>`);
       if (typeof this.openReportCardCheck === 'function' && !student) {
-        lines.push(`<button class="btn btn-secondary small" onclick="app.openReportCardCheck()">Open the full list</button>`);
+        lines.push(`<button class="btn btn-secondary small" onclick="app.openReportCardCheck({ reuse: true })">Open the full list</button>`);
       }
       this._showRivenMessage(lines.join('<br><br>'), true);
     }
