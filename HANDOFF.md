@@ -5963,3 +5963,12 @@ and GPA, out of the Reports panel's class list, and out of 🩺 Check report car
 kept; ticking it again brings it back. Per-student unticking in the Reports panel still works
 as before. Needs the backend's class_on_report_card migration (applied 2026-11-01).
 `tests/report-card-check.test.js`.
+
+### 2026-11-01 · Report card check: filter by grade band
+
+The 🩺 Check report cards window has a row of **Grade bands** boxes (one per band from the grade
+bands list, all ticked). Untick a band to leave out students whose grade level falls in it; the
+window shows how many each unticked band left out, and remembers the choice in that browser.
+Students with no grade level, or a grade no band covers (K today), are always checked, and a
+named student is always checked. Riven: "check report cards without highschool", "excluding young
+elementary", "skip old middle school and young middle". `tests/report-card-check.test.js`.

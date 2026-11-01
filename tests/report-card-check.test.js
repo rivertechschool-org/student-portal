@@ -36,7 +36,7 @@ const ok = (label, cond, detail = '') => {
 };
 
 const names = ['checkReportCards', '_reportCardYearProblems', '_reportCardGaps', '_renderReportCardCheck',
-  '_loadReportCardYear', '_reportCardYearEnrollments', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
+  '_loadReportCardYear', '_reportCardYearEnrollments', 'loadGradeBands', 'gradeBandLabel', '_studentGradeBand', '_studentGradeNumber', '_buildReportCardData', 'fetchAllRows', '_localDateStr',
   'normalizeReportCardSubject', 'percentageToGPA', 'gpaToLetter', 'getCourseWeightModifier', 'courseWeightFor', 'courseWeightLabel',
   'determineSchoolYear', 'getQuarterNumber', 'percentageToLetter'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
@@ -97,6 +97,10 @@ function reset() {
       ...['e-ok', 'e-q1b', 'e-left2', 'e-empty2', 'e-nodob', 'e-tw1', 'e-tw2', 'e-ln1', 'e-ln2', 'e-q2', 'e-left']
         .map(e => ({ enrollment_id: e, quarter_id: 'q1', class_grade: 85, academic_grade: 85, participation_grade: 85 })),
       { enrollment_id: 'e-blank', quarter_id: 'q1', class_grade: 0, academic_grade: 0, participation_grade: 0 },
+    ],
+    grade_bands: [
+      { code: 'old_middle', label: 'Old Middle School', min_grade: 7, max_grade: 8, sort_order: 4 },
+      { code: 'highschool', label: 'Highschool', min_grade: 9, max_grade: 12, sort_order: 5 },
     ],
     report_card_options: [
       { student_id: 's-link', excluded_class_ids: [], class_links: [{ fromClassId: 'c-math', intoClassId: 'c-eng' }], virtual_classes: [{ id: 'v-x', name: 'Ghost Course' }] },
@@ -253,6 +257,24 @@ function makeApp(role = 'admin') {
     reset();
   }
 
+  // ---- leaving out grade bands ----
+  {
+    reset();
+    db.user_profiles.find(u => u.id === 's-q1').grade_level = '10';
+    const hs = await makeApp().checkReportCards({ skipBands: ['highschool'] });
+    ok('leaving out a grade band drops its students', hs.checked === 9 && !hs.students.some(x => x.name === 'NoQ1 Test'), String(hs.checked));
+    ok('  counted per band', JSON.stringify(hs.skippedBands) === '{"highschool":1}', JSON.stringify(hs.skippedBands));
+    ok('  a student with no grade level is still checked', hs.students.some(x => x.name === 'NoBirthday Test'));
+    const mid = await makeApp().checkReportCards({ skipBands: ['old_middle', 'highschool'] });
+    ok('  two bands at once', mid.checked === 1 && mid.students.length === 1 && mid.students[0].name === 'NoBirthday Test', String(mid.checked));
+    const named = await makeApp().checkReportCards({ studentId: 's-q1', skipBands: ['highschool'] });
+    ok('  a named student is checked whatever their band', named.checked === 1);
+    const winSrc = method('openReportCardCheck');
+    ok('the window has a box per band, remembered, and passes them on', /class="rc-check-band"/.test(winSrc)
+      && /localStorage\.getItem\('rcCheckSkipBands'\)/.test(winSrc) && /checkReportCards\(\{ upToQuarterId, skipHomeschool, skipBands \}\)/.test(winSrc));
+    reset();
+  }
+
   // ---- leaving out homeschool students ----
   reset();
   db.user_profiles.find(u => u.id === 's-q1').enrollment_type = 'homeschool';
@@ -266,7 +288,7 @@ function makeApp(role = 'admin') {
   ok('a named homeschool student is still checked', named.checked === 1 && named.students.length === 1);
   const winSrc = method('openReportCardCheck');
   ok('the check window has the box, remembered, and passes it on',
-    /id="rc-check-skip-homeschool"/.test(winSrc) && /localStorage\.getItem\('rcCheckSkipHomeschool'\)/.test(winSrc) && /checkReportCards\(\{ upToQuarterId, skipHomeschool \}\)/.test(winSrc));
+    /id="rc-check-skip-homeschool"/.test(winSrc) && /localStorage\.getItem\('rcCheckSkipHomeschool'\)/.test(winSrc) && /checkReportCards\(\{ upToQuarterId, skipHomeschool, skipBands \}\)/.test(winSrc));
 
   // ---- the page ----
   reset();
@@ -301,6 +323,16 @@ function makeApp(role = 'admin') {
   await riven.terminalReportCardCheck({ original: 'check report cards' });
   ok('  and plain "check report cards" checks everyone', /Checked 10 students/.test(said.at(-1)) && !/homeschool/.test(said.at(-1)));
   delete db.user_profiles.find(u => u.id === 's-q1').enrollment_type;
+  db.user_profiles.find(u => u.id === 's-q1').grade_level = '10';
+  riven._gradeBands = null;
+  await riven.terminalReportCardCheck({ original: 'check report cards without high school' });
+  ok('Riven: "without high school" leaves that band out and says so', /Checked 9 students/.test(said.at(-1)) && /Left out Highschool \(1\)\./.test(said.at(-1)), said.at(-1));
+  await riven.terminalReportCardCheck({ original: 'check report cards excluding old middle school and highschool' });
+  ok('  two bands in one sentence', /Checked 1 student up/.test(said.at(-1)) && /Old Middle School \(8\), Highschool \(1\)/.test(said.at(-1)), said.at(-1));
+  await riven.terminalReportCardCheck({ original: 'check report cards for highschool' });
+  ok('  naming a band without "without" leaves nobody out', /Checked 10 students/.test(said.at(-1)), said.at(-1));
+  db.user_profiles.find(u => u.id === 's-q1').grade_level = '7';
+
   said.length = 0;
   riven.userInfo = { profile: { user_type: 'teacher' } };
   await riven.terminalReportCardCheck({});
