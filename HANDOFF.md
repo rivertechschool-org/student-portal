@@ -5990,3 +5990,11 @@ Reports page's 🩺 button and Riven's "Open the full list" also show the kept r
 (or the ✕ on the back button) and **↻ Check again** end it, as does changing the "up to" quarter.
 Coming back from Manage Grades with grades typed but not saved asks to save or cancel first,
 since closing that window would drop them. `tests/report-card-check.test.js`.
+
+### 2026-11-01 · Report card check: homeschool box also leaves out homeschool classes
+
+The check's box is now **Leave out homeschool students and classes**. Ticked, it also leaves out
+every class with "homeschool" (or "home school" / "home-school") in its name, for full-time
+students too; a student whose classes are all such is left out with them. The window and Riven
+say how many students and classes were left out. A named student is still checked in full.
+`tests/report-card-check.test.js`.

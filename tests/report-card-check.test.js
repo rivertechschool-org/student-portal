@@ -284,6 +284,24 @@ function makeApp(role = 'admin') {
   ok('leaving them out drops them from the check', ft.checked === 9 && !ft.students.some(x => x.name === 'NoQ1 Test'), String(ft.checked));
   ok('  and from the missing-grade counts', ft.byClass.find(c => c.className === 'Pre-Algebra')?.students.length === 1 && ft.missingCount === 1);
   ok('  and says how many were left out', ft.skippedHomeschool === 1);
+  {
+    // Classes named for the homeschool days go too, for full-time students as well.
+    const HS = cls('c-hs', 'Homeschool Older Tuesday Art', 'Art');
+    const HS2 = cls('c-hs2', 'Home-School Younger Science', 'Science');
+    const E2 = (id, student, c) => ({ id, student_id: student, class_id: c.id, status: 'active', enrolled_at: day(-85) + 'T09:00:00Z', class_grade: null, academic_grade: null, participation_grade: null, credits_override: null, classes: c });
+    db.user_profiles.push({ id: 's-hsonly', first_name: 'OnlyHomeschoolClass', last_name: 'Test', user_type: 'student', date_of_birth: '2012-01-01', grade_level: '7', student_status: 'active' });
+    db.class_enrollments.push(E2('e-hs1', 's-ok', HS), E2('e-hs2', 's-hsonly', HS2));
+    const withHs = await app.checkReportCards();
+    ok('without the box, a homeschool class is checked like any other', withHs.byClass.some(c => c.className === 'Homeschool Older Tuesday Art') && withHs.checked === 11);
+    const noHs = await app.checkReportCards({ skipHomeschool: true });
+    ok('with it, classes with "homeschool" in the name are left out', !noHs.byClass.some(c => /home.?school/i.test(c.className)) && !noHs.students.some(x => x.name === 'Complete Test'), JSON.stringify(noHs.byClass.map(c => c.className)));
+    ok('  "Home-School" spelled apart too, and a student with only those classes goes with them', !noHs.students.some(x => x.name === 'OnlyHomeschoolClass Test') && noHs.checked === 9, String(noHs.checked));
+    ok('  counted', noHs.skippedHomeschoolClasses === 2 && noHs.skippedHomeschool === 2, `${noHs.skippedHomeschoolClasses} classes, ${noHs.skippedHomeschool} students`);
+    const named = await app.checkReportCards({ studentId: 's-ok', skipHomeschool: true });
+    ok('  a named student still has every class checked', named.students[0]?.issues.some(i => /Homeschool Older Tuesday Art/.test(i.text)));
+    db.user_profiles = db.user_profiles.filter(u => u.id !== 's-hsonly');
+    db.class_enrollments = db.class_enrollments.filter(e => !/^e-hs/.test(e.id));
+  }
   const named = await app.checkReportCards({ studentId: 's-q1', skipHomeschool: true });
   ok('a named homeschool student is still checked', named.checked === 1 && named.students.length === 1);
   const winSrc = method('openReportCardCheck') + method('_showReportCardCheck');

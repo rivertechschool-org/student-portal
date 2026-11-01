@@ -36717,7 +36717,10 @@ Students you had withdrawn stay withdrawn.`)) {
       //
       // skipHomeschool leaves homeschool students out of a school-wide check
       // (their report cards are often not the school's to print); they are
-      // counted in skippedHomeschool. A named student is always checked.
+      // counted in skippedHomeschool. It also leaves out classes with
+      // "homeschool" in the name (the homeschool days' classes), counted in
+      // skippedHomeschoolClasses; a student whose classes are all such is
+      // left out with them. A named student is always checked.
       //
       // skipBands (grade band codes) does the same for students whose grade
       // level falls in those bands; skippedBands counts them per band. A
@@ -36783,13 +36786,20 @@ Students you had withdrawn stay withdrawn.`)) {
         };
         const byClass = {};
         const inProgress = {};
+        const homeschoolClasses = new Set();
         for (const st of students) {
           const onRecord = enrBy[st.id] || [];
-          const mine = this._reportCardYearEnrollments(onRecord, onRecord.flatMap(e => snapByEnr[e.id] || []), year);
+          let mine = this._reportCardYearEnrollments(onRecord, onRecord.flatMap(e => snapByEnr[e.id] || []), year);
           if (!mine.length) continue;  // no classes this year, no card
           if (skipHomeschool && !studentId && st.enrollment_type === 'homeschool') {
             result.skippedHomeschool++;
             continue;
+          }
+          if (skipHomeschool && !studentId) {
+            const kept = mine.filter(e => !/home[\s-]?school/i.test(e.classes?.name || ''));
+            mine.filter(e => !kept.includes(e)).forEach(e => homeschoolClasses.add(e.class_id));
+            if (!kept.length) { result.skippedHomeschool++; continue; }
+            mine = kept;
           }
           if (skipBandSet.size) {
             const band = this._studentGradeBand(st.grade_level, bands);
@@ -36818,6 +36828,7 @@ Students you had withdrawn stay withdrawn.`)) {
         result.byClass = order(byClass);
         result.inProgress = order(inProgress);
         result.students.sort((a, b) => a.name.localeCompare(b.name));
+        result.skippedHomeschoolClasses = homeschoolClasses.size;
         result.missingCount = result.byClass.reduce((n, c) => n + c.students.length, 0);
         result.brokenCount = result.students.filter(x => x.issues.some(i => i.kind !== 'missing')).length;
         return result;
@@ -36997,7 +37008,7 @@ Students you had withdrawn stay withdrawn.`)) {
         this.showModal('report-card-check', '🩺 Report card check',
           `<label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 14px; cursor: pointer;">
              <input type="checkbox" id="rc-check-skip-homeschool" ${skipHomeschool ? 'checked' : ''} onchange="app.setReportCardCheckSkipHomeschool(this.checked)">
-             Leave out homeschool students${skipHomeschool && result.skippedHomeschool ? ` <span style="color: var(--muted);">(${result.skippedHomeschool} left out)</span>` : ''}
+             Leave out homeschool students and classes${skipHomeschool && (result.skippedHomeschool || result.skippedHomeschoolClasses) ? ` <span style="color: var(--muted);">(${[result.skippedHomeschool ? `${result.skippedHomeschool} student${result.skippedHomeschool === 1 ? '' : 's'}` : '', result.skippedHomeschoolClasses ? `${result.skippedHomeschoolClasses} class${result.skippedHomeschoolClasses === 1 ? '' : 'es'}` : ''].filter(Boolean).join(', ')} left out)</span>` : ''}
            </label>`
           + (bands.length ? `<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px; font-size: 14px;">
                <span style="color: var(--muted);">Grade bands:</span>
@@ -58143,7 +58154,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-01·d';
+      const RIVEN_BUILD = '2026-11-01·e';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -72786,7 +72797,9 @@ Students you had withdrawn stay withdrawn.`)) {
         lines.push(r.students.length
           ? `Checked ${plural(r.checked, 'student')}${r.quarter ? ` up to ${esc(r.quarter)}` : ''}: ✅ ${r.checked - r.students.length} ready, ⚠️ <b>${r.students.length}</b> need attention.`
           : `✅ All ${plural(r.checked, 'card')}${r.quarter ? ` up to ${esc(r.quarter)}` : ''} are complete.`);
-        if (r.skippedHomeschool) lines.push(`🏠 Left out ${plural(r.skippedHomeschool, 'homeschool student')}.`);
+        if (r.skippedHomeschool || r.skippedHomeschoolClasses) {
+          lines.push(`🏠 Left out ${[r.skippedHomeschool ? plural(r.skippedHomeschool, 'homeschool student') : '', r.skippedHomeschoolClasses ? `${r.skippedHomeschoolClasses} homeschool class${r.skippedHomeschoolClasses === 1 ? '' : 'es'}` : ''].filter(Boolean).join(' and ')}.`);
+        }
         const bandOut = Object.entries(r.skippedBands || {});
         if (bandOut.length) {
           lines.push(`🎓 Left out ${bandOut.map(([code, n]) => `${esc(this.gradeBandLabel ? this.gradeBandLabel(code) : code)} (${n})`).join(', ')}.`);
