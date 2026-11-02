@@ -7412,6 +7412,9 @@
             if (el) el.textContent = count || 0;
           });
 
+          // Their parent-teacher conference times, while there are any, the
+          // same way as the duty card below.
+          this._loadConferenceScheduleCard();
           // Today's duty, filled in after the page is drawn. Nothing on this
           // dashboard should wait on it: a duty card arriving a second late is
           // fine, a dashboard that will not render is not.
@@ -7421,6 +7424,7 @@
 
           const html = `
             <div id="today-duty-card"></div>
+            <div id="conference-schedule-card"></div>
             <div id="coming-up-card"></div>
             <div class="grid grid-2">
               <div class="card">
@@ -9390,6 +9394,72 @@
         if (error) this.showNotification(error.message, 'error');
         else this.showNotification('Cancelled', 'success');
         await this.showParentConferences(childId);
+      }
+
+      // ---- a teacher's own schedule ----
+      //
+      // The teacher home page carries a card while they have conference times
+      // to come, filled in after the page draws (like the duty card). It comes
+      // from rt_my_conference_schedule(): only the slots this teacher is in,
+      // with the student, grade and parents for each booked one.
+
+      async _loadConferenceScheduleCard() {
+        try {
+          const { data, error } = await this.auth.supabase.rpc('rt_my_conference_schedule');
+          if (error) return;
+          this.myConferenceSchedule = (typeof data === 'string' ? JSON.parse(data) : data) || [];
+          this._renderConferenceScheduleCard(this.myConferenceSchedule);
+        } catch (_e) {
+          // The dashboard is fine without it.
+        }
+      }
+
+      _renderConferenceScheduleCard(days) {
+        const host = document.getElementById('conference-schedule-card');
+        if (!host) return;
+        if (!(days || []).length) { host.innerHTML = ''; return; }
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        host.innerHTML = `
+          <div class="card" style="padding: 14px 16px; margin-bottom: 16px; border-left: 4px solid var(--accent-2); cursor: pointer;"
+               onclick="app.showMyConferenceSchedule()">
+            <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;">
+              <h3 style="margin: 0;">\u{1F91D} Your parent-teacher conferences</h3>
+              <span style="color: var(--muted); font-size: 12px;">tap for your schedule</span>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 4px; margin-top: 10px;">
+              ${days.map(d => {
+                const slots = d.slots || [];
+                const booked = slots.filter(x => x.student).length;
+                return `<div><b>${esc(this._confDayLabel(d.day))}</b>
+                  <span style="color: var(--muted);">\u00b7 ${booked} conference${booked === 1 ? '' : 's'}${slots.length ? `, ${esc(this._confClock(slots[0].starts_at))}\u2013${esc(this._confClock(slots[slots.length - 1].ends_at))}` : ''}${slots.length - booked ? ` \u00b7 ${slots.length - booked} open` : ''}</span></div>`;
+              }).join('')}
+            </div>
+          </div>`;
+      }
+
+      async showMyConferenceSchedule() {
+        await this._loadConferenceScheduleCard();
+        const days = this.myConferenceSchedule || [];
+        if (!days.length) { this.showNotification('You have no conference times coming up.', 'info'); return; }
+        const esc = (t) => this.escapeHtml(String(t == null ? '' : t));
+        const body = days.map(d => `
+          <div style="margin-bottom: 16px;">
+            <div style="font-weight: 700;">${esc(this._confDayLabel(d.day))}</div>
+            <div style="color: var(--muted); font-size: 12px; margin-bottom: 6px;">${esc(d.title)}${d.finalized ? ' \u00b7 families have been sent their times' : ' \u00b7 sign-up still being finalized: times may change'}</div>
+            <div style="overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+              <thead><tr style="text-align: left; color: var(--muted);"><th style="padding: 4px 8px;">Time</th><th style="padding: 4px 8px;">Student</th><th style="padding: 4px 8px;">Parents</th><th style="padding: 4px 8px;">With</th></tr></thead>
+              <tbody>${(d.slots || []).map(x => `<tr style="border-top: 1px solid var(--border);">
+                <td style="padding: 6px 8px; white-space: nowrap;">${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}</td>
+                <td style="padding: 6px 8px;">${x.student
+                  ? `<b>${esc(x.student)}</b>${x.grade ? ` <span style="color: var(--muted);">(gr ${esc(x.grade)})</span>` : ''}${x.confirmed ? '' : ' <span style="color: var(--muted); font-size: 11px;">not confirmed yet</span>'}`
+                  : '<span style="color: var(--muted);">Open</span>'}</td>
+                <td style="padding: 6px 8px;">${x.student ? esc((x.parents || []).join(', ') || 'No parent account') : ''}</td>
+                <td style="padding: 6px 8px;">${esc((x.with || []).join(', '))}</td>
+              </tr>`).join('')}</tbody>
+            </table></div>
+          </div>`).join('');
+        this.showModal('my-conferences', '\u{1F91D} Your conference schedule', body
+          + `<div style="text-align: right;"><button class="btn btn-primary" onclick="app.closeModal('my-conferences')">Close</button></div>`);
       }
 
       // Parent-specific methods

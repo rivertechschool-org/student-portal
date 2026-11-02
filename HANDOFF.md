@@ -6053,3 +6053,13 @@ backend side is in `student-portal-backend` (applied). `tests/conferences.test.j
   different teachers ticked.
 
 Backend in `student-portal-backend` (applied). `tests/conferences.test.js`.
+
+### 2026-11-01 · Teachers see their conference schedule
+
+Teachers (and admins who are in slots) get a **🤝 Your parent-teacher conferences** card on their
+home page while they have conference times coming up. It shows each day's count, time range and
+open times; tapping it opens their schedule: time, student and grade, parents, and who else is
+in the slot, with "not confirmed yet" until the admin finalizes. A teacher sees only the slots
+they are in. Once a family books, that's the student's own teachers, so a teacher dropped from
+a booked slot no longer sees it. Backend in `student-portal-backend` (applied).
+`tests/conferences.test.js`.

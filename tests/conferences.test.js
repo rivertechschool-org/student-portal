@@ -39,6 +39,7 @@ const ok = (label, cond, detail = '') => {
 const names = ['_conferenceZones', '_confMinutes', '_confHHMM', '_confClock', '_confDayLabel', '_conferenceSlotTimes', '_conferencePreviewText',
   '_renderConferenceAdmin', '_renderConferenceAdminDay', '_loadParentConferences', '_conferenceFreeSlotsFor', 'showParentConferences',
   'bookParentConference', 'addConferenceSlots', '_conferenceDayReview', '_renderConferenceReview', '_reportConferenceSend',
+  '_loadConferenceScheduleCard', '_renderConferenceScheduleCard', 'showMyConferenceSchedule',
   'confirmConferenceDay', 'saveConferenceContactEmail', 'setConferenceDayOpen', 'fillConferenceSlot', 'clearConferenceSlot', 'notificationDestination', 'notificationTypeConfig', 'sanitizeLink', '_localDateStr', 'escapeHtml', 'jsAttr'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 
@@ -255,6 +256,34 @@ const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
   {
     const load = method('loadParentData');
     ok("the parent's home re-draws once conferences are loaded, past the half-second de-duplication", /await this\._loadParentConferences\(\);[\s\S]{0,200}this\._lastHomeSetup = 0;\s*this\.setupHomeContent\(\);/.test(load));
+  }
+
+  // ---- a teacher's own schedule ----
+  {
+    const host = { innerHTML: 'stale' };
+    global.document = { getElementById: (id) => (id === 'conference-schedule-card' ? host : null) };
+    let shown = null;
+    const a = Object.create(proto);
+    a.showModal = (id, title, body) => { shown = body; };
+    a.showNotification = () => {};
+    let days = [{ id: 'd1', day: '2099-03-04', title: 'Spring conferences', finalized: false, slots: [
+      { id: 'sl-1', starts_at: '08:10', ends_at: '08:30', student: 'Wren Orchard', grade: '7', parents: ['Paz Orchard'], with: [], confirmed: false },
+      { id: 'sl-2', starts_at: '08:30', ends_at: '08:50', student: null, grade: null, parents: null, with: ['Vera Bose'], confirmed: false },
+    ] }];
+    const calls = [];
+    a.auth = { supabase: { rpc: async (fn) => { calls.push(fn); return { data: days, error: null }; } } };
+    await a._loadConferenceScheduleCard();
+    ok('the teacher home card sums up their day', calls[0] === 'rt_my_conference_schedule' && /Your parent-teacher conferences/.test(host.innerHTML) && /1 conference, 8:10 AM\u20138:50 AM \u00b7 1 open/.test(host.innerHTML), host.innerHTML);
+    await a.showMyConferenceSchedule();
+    ok('  and opens their schedule: student, grade, parents, and who else is in an open time', /<b>Wren Orchard<\/b> <span style="color: var\(--muted\);">\(gr 7\)<\/span>/.test(shown) && /Paz Orchard/.test(shown) && /not confirmed yet/.test(shown) && /Vera Bose/.test(shown) && /times may change/.test(shown), shown);
+    days[0].finalized = true; days[0].slots[0].confirmed = true;
+    await a.showMyConferenceSchedule();
+    ok('  after finalizing it says families have their times', /families have been sent their times/.test(shown) && !/not confirmed yet/.test(shown));
+    days = [];
+    await a._loadConferenceScheduleCard();
+    ok('  with no times coming up the card goes away', host.innerHTML === '');
+    const home = method('getTeacherHomeContent');
+    ok('  the card has a place on the teacher home page and is loaded with it', /<div id="conference-schedule-card"><\/div>/.test(home) && /this\._loadConferenceScheduleCard\(\);/.test(home));
   }
 
   // ---- the admin tile ----
