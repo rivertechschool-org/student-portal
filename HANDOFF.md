@@ -6074,3 +6074,19 @@ Nothing goes to teachers before Finalize. Tapping one of these notes opens the t
 schedule, not the parents' page, and the admin's "Sent" message now says how many teachers were
 told. In-app only, no teacher email. Backend in `student-portal-backend` (applied).
 `tests/conferences.test.js`.
+
+### 2026-11-02 · Math Dojo: Belt Tests and practice no longer take skills away
+
+A student's Graduation Core count fell (28 to 24 of 65) after a Belt Test she got entirely right.
+A Dojo session labels each skill from its own questions alone, and fewer than three questions
+reads as "in progress" however they went. That label was saved over "mastered", so a Belt Test,
+which asks one question per skill, demoted every mastered skill it touched, and practice did the
+same to skills it touched once in passing. It had been happening to most students since October.
+
+Fixed in two places. The database now keeps the higher state when a student's own session would
+lower it (teachers and admins can still lower one), and skills knocked down this way were put back.
+The Dojo now takes a higher state from the server even when this device practised more recently,
+so the repaired skills show without clearing anything. Backend in `student-portal-backend`
+(applied). `tests/dojo-server-merge.test.js`.
+
+Not changed: a one-question session still moves that skill's score bar (a wrong answer shows 0).
