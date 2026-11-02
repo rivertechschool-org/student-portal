@@ -2403,6 +2403,7 @@
                         <p class="home-muted">We couldn't load your classes and progress just now. Refresh the page to try again.</p>`;
                     return;
                 }
+                await this.homeLoadQuarterGrades(ov);
                 this.studentOverview = ov;
                 const fill = (id, html) => {
                     const el = document.getElementById(id);
@@ -2498,13 +2499,40 @@
                 return 'F';
             }
 
-            // A class grade, or null when there is nothing to show. graded = 0
-            // means nothing has been marked this quarter, and the portal treats
-            // a stored 0 as "no data" too - either way it is "No grades yet",
-            // never 0.0 or an F.
+            // Match My Grades: a saved quarter grade stands on its own, even
+            // when the teacher grades in person rather than through submissions.
+            // Unsnapshotted enrollment values still need graded work underneath.
+            async homeLoadQuarterGrades(overview) {
+                const studentId = this.auth.studentRecordId();
+                if (!studentId || !overview?.quarter?.id || !overview.classes?.length) return;
+                try {
+                    const byClass = new Map();
+                    for (let from = 0; ; from += 1000) {
+                        const { data, error } = await this.auth.supabase.from('quarter_grade_snapshots')
+                            .select('class_grade, enrollment_id, class_enrollments!inner(class_id, student_id)')
+                            .eq('quarter_id', overview.quarter.id)
+                            .eq('class_enrollments.student_id', studentId)
+                            .order('enrollment_id').range(from, from + 999);
+                        if (error) throw error;
+                        for (const row of data || []) {
+                            if (row.class_grade != null) byClass.set(row.class_enrollments.class_id, row.class_grade);
+                        }
+                        if (!data || data.length < 1000) break;
+                    }
+                    for (const cls of overview.classes) {
+                        if (byClass.has(cls.id)) cls.quarter_snapshot_grade = byClass.get(cls.id);
+                    }
+                } catch (error) {
+                    console.warn('Saved quarter grades unavailable:', error.message || error);
+                }
+            }
+
             homeGradeText(cls) {
-                const pct = cls && cls.class_grade != null ? Number(cls.class_grade) : null;
-                if (!cls || !Number(cls.graded) || pct == null || !isFinite(pct) || pct === 0) return null;
+                const snapshot = cls?.quarter_snapshot_grade;
+                const value = snapshot ?? cls?.class_grade;
+                const pct = value == null ? null : Number(value);
+                const hasSavedGrade = snapshot != null && Number(snapshot) > 0;
+                if (!cls || (!hasSavedGrade && !Number(cls.graded)) || pct == null || !isFinite(pct) || pct === 0) return null;
                 return `${this.homeLetterGrade(pct)} · ${pct.toFixed(1)}%`;
             }
 

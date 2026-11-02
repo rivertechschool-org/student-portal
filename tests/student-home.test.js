@@ -157,6 +157,10 @@ check('a graded class: letter and percent on the portal scale', portal.homeGrade
 check('graded = 0 -> no grade, even with a stored number', portal.homeGradeText(CLASSES[2]), null);
 check('class_grade 0 -> no grade (the portal reads 0 as "no data")', portal.homeGradeText(CLASSES[1]), null);
 check('no class_grade -> no grade', portal.homeGradeText(CLASSES[3]), null);
+check('a saved teacher grade appears with no graded submissions', portal.homeGradeText({ class_grade: 0, graded: 0, quarter_snapshot_grade: 94 }), 'A · 94.0%');
+check('the saved quarter grade wins over a stale enrollment grade', portal.homeGradeText({ class_grade: 70, graded: 4, quarter_snapshot_grade: 94 }), 'A · 94.0%');
+check('a missing saved grade does not expose an unsupported enrollment grade', portal.homeGradeText({ class_grade: 94, graded: 0, quarter_snapshot_grade: null }), null);
+
 check('letter scale edges', [97, 93, 90, 89.9, 60, 59.9].map(p => portal.homeLetterGrade(p)), ['A+', 'A', 'A-', 'B+', 'D', 'F']);
 
 const classesHtml = portal.homeRenderClasses(CLASSES);
