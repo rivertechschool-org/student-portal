@@ -5994,7 +5994,17 @@ function diagCommitBeliefs() {
         // harder skill can make it known for this result, but saving that
         // as if it were answered would let the next Hole Check read a lucky
         // guess higher up as this skill's answer; it is confirmed there instead.
-        setMasteryProbability(node.t, d.tested[id] ? d.own[id] : d.eff[id], now, 'belt_test');
+        let p = d.tested[id] ? d.own[id] : d.eff[id];
+        // A skill already earned comes down only on a miss the test believes
+        // (diagConfirmedGap: two misses, "forgot" missed again, or "never
+        // learned it"). One miss on one question is held just above the line
+        // that takes it back to in progress: the skill stays, and the next
+        // Hole Check reads the saved score as a miss to check again.
+        const earned = ['activated', 'needs_review', 'mastered'].includes(skillTreeData.skills[node.t]?.state);
+        if (earned && !diagConfirmedGap(id)) {
+            p = Math.max(p, BKT_PARAMS.DEMOTE_BELOW);
+        }
+        setMasteryProbability(node.t, p, now, 'belt_test');
         sessionData.bktTouched.add(node.t);
     }
 }
@@ -6715,7 +6725,7 @@ function sendSkillProgress(domain, tier, correct, total, time) {
 }
 
 // Send session results when test/learning ends
-function sendSessionResults() {
+function sendSessionResults(bktTouched = sessionData.bktTouched) {
     if (!window.parent || window.parent === window) return;
 
     const skillProgress = [];
@@ -6753,8 +6763,8 @@ function sendSessionResults() {
     // Phase 2 BKT — collect per-curriculum-skill probability updates so
     // the portal can persist p_mastered + last_evidence_at to skill_progress.
     const bktUpdates = [];
-    if (sessionData.bktTouched && sessionData.bktTouched.size > 0) {
-        for (const skillName of sessionData.bktTouched) {
+    if (bktTouched && bktTouched.size > 0) {
+        for (const skillName of bktTouched) {
             const skill = skillTreeData.skills[skillName];
             if (!skill || typeof skill.p_mastered !== 'number') continue;
             bktUpdates.push({
@@ -44650,6 +44660,10 @@ function finishPlacementUI() {
     // The Belt Test's beliefs go into the skill tree before the session is
     // saved, so the saved probabilities are the test's, evidence only.
     if (state.mode === 'placement' && state.diag) diagCommitBeliefs();
+    // endSessionTracking() resets sessionData, and with it the list of skills
+    // this sitting answered for; sendSessionResults() below needs that list to
+    // send the scores. Without it a Belt Test saved only its labels.
+    const bktTouched = sessionData.bktTouched;
     // End session tracking and send batched update
     endSessionTracking();
 
@@ -44695,7 +44709,7 @@ function finishPlacementUI() {
     }
 
     // Send full session results to Skill Tree
-    sendSessionResults();
+    sendSessionResults(bktTouched);
 }
 
 function calculatePlacement() {

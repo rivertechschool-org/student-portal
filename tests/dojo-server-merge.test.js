@@ -65,7 +65,7 @@ ok('a skill only the server has is taken', s['zz Ratios'] && s['zz Ratios'].stat
 // ---- answers that show a skill needs practice (setMasteryProbability) ----
 function grabFn(name) {
   const i = src.indexOf('function ' + name + '(');
-  let k = src.indexOf('{', i), depth = 0;
+  let k = src.indexOf(') {', i) + 2, depth = 0;   // past any {} default in the parameters
   for (; k < src.length; k++) { if (src[k] === '{') depth++; else if (src[k] === '}' && --depth === 0) break; }
   return src.slice(i, k + 1);
 }
@@ -92,6 +92,55 @@ r = answer(0.95, [false, false, true, true, true]);
 ok('  and three right answers earn it back', r.state === 'mastered', r);
 r = answer(0.95, [false, true, false]);
 ok('  a miss, a hit, a miss: still mastered', r.state === 'mastered', r);
+
+// ---- a Belt Test saves its scores, not only its labels ----
+// finishPlacementUI ends the session (which clears sessionData) before it
+// sends the results, so it must hand the touched skills over itself.
+const fin = grabFn('finishPlacementUI');
+const capAt = fin.indexOf('const bktTouched = sessionData.bktTouched;');
+ok('finishPlacementUI keeps the touched skills before ending the session',
+  capAt >= 0 && capAt < fin.indexOf('endSessionTracking();') && fin.includes('sendSessionResults(bktTouched)'));
+function sendAfterEnd(handOver) {
+  const posted = [];
+  const env = new Function('window', 'skillTreeData', 'state', 'stateFromP', 'getSkillTreeName', 'localStorage',
+    'reportDojoSessionSummary', 'getUserId', 'getTreeSkillName', 'saveSkillTreeData', 'triggerDependentUnlocks',
+    'let sessionData;\n' + grabFn('endSessionTracking') + '\n' + grabFn('sendSessionResults') +
+    '\nreturn { set: v => { sessionData = v; }, get: () => sessionData, endSessionTracking, sendSessionResults };');
+  const tree = { skills: { 'zz Ratios': { state: 'mastered', p_mastered: 0.92, last_evidence_at: '2026-11-02T00:00:00Z' } } };
+  const e = env({ parent: { postMessage: m => posted.push(m) } }, tree,
+    { domainScores: {}, mode: 'placement', gapLog: [], history: [] }, p => p >= 0.85 ? 'mastered' : 'in_progress',
+    x => x, { setItem() {} }, () => {}, () => 'u', x => x, () => {}, () => {});
+  e.set({ startTime: 1, questions: [{ correct: true }], skillProgress: {}, mode: 'placement', bktTouched: new Set(['zz Ratios']) });
+  const touched = e.get().bktTouched;
+  e.endSessionTracking();
+  e.sendSessionResults(handOver ? touched : undefined);
+  return posted[0].bktUpdates;
+}
+let u = sendAfterEnd(true);
+ok('  so the results carry the scores', u.length === 1 && u[0].p_mastered === 0.92, u);
+u = sendAfterEnd(false);
+ok('  (and without it they carry none: the old bug)', u.length === 0, u);
+
+// One Belt Test miss on an earned skill is held at the line; a believed miss is not.
+function beltCommit(obs, own, current) {
+  const tree = { skills: { 'zz Area': { state: current } } };
+  const f = new Function('skillTreeData', 'state', 'sessionData', 'MATH_GRAPH_V2', [orderLine, grabConst('BKT_PARAMS'),
+    grabFn('stateFromP'), grabFn('setMasteryProbability'), grabFn('diagConfirmedGap'), grabFn('diagChangedThisSitting'),
+    grabFn('diagCommitBeliefs'), 'diagCommitBeliefs();'].join('\n'));
+  f(tree, { diag: { obs: { n1: obs }, own: { n1: own }, eff: { n1: own }, tested: { n1: 1 }, asked: { n1: 1 }, seeded: {}, status: {} } },
+    {}, { nodes: { n1: { t: 'zz Area' } } });
+  return tree.skills['zz Area'];
+}
+let k = beltCommit({ c: 0, w: 1, never: 0, forgot: 0 }, 0.11, 'mastered');
+ok('one Belt Test miss leaves a mastered skill mastered', k.state === 'mastered' && k.p_mastered === 0.30 && k.source === 'belt_test', k);
+k = beltCommit({ c: 0, w: 2, never: 0, forgot: 0 }, 0.04, 'mastered');
+ok('  two misses take it back to in progress', k.state === 'in_progress' && k.p_mastered === 0.04, k);
+k = beltCommit({ c: 0, w: 0, never: 1, forgot: 0 }, 0.02, 'mastered');
+ok('  so does "I never learned this"', k.state === 'in_progress', k);
+k = beltCommit({ c: 1, w: 0, never: 0, forgot: 0 }, 0.75, 'mastered');
+ok('  a right answer saves its own score', k.state === 'mastered' && k.p_mastered === 0.75, k);
+k = beltCommit({ c: 0, w: 1, never: 0, forgot: 0 }, 0.11, 'available');
+ok('  a skill not yet earned saves the real low score', k.p_mastered === 0.11 && k.state === 'available', k);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

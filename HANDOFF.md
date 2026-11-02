@@ -6101,3 +6101,18 @@ Two or three right answers earn it back. It never drops below "in progress", so 
 practise. A session's label with no new answers behind it still can't lower anything. The page
 and the database use the same line (`BKT_PARAMS.DEMOTE_BELOW` in the Dojo). Backend in
 `student-portal-backend` (applied). `tests/dojo-server-merge.test.js`.
+
+### 2026-11-02 · Math Dojo: Belt Tests save their scores
+
+Belt Tests (and Testing Center sittings) worked out a mastery score for every skill they asked, but
+none of it reached the database: `finishPlacementUI` ended the session, which clears the list of
+skills it answered for, before `sendSessionResults` read that list. Only the labels were saved.
+The list is now kept and handed over, so a Belt Test counts as evidence like practice does,
+including for taking a skill back to "in progress".
+
+One choice: a Belt Test asks a skill once, and a single multiple-choice miss can be a slip. For a
+skill the student has already earned, one miss the test doesn't believe yet is saved at the 0.30
+line, so the skill stays and the next Hole Check reads it as a miss to ask again. A miss the test
+believes (two misses, "forgot it" then missed, or "never learned it") saves the real score and
+brings the skill down. Skills not yet earned always save the real score. No backend change.
+`tests/dojo-server-merge.test.js`.
