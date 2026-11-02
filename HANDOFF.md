@@ -6026,3 +6026,30 @@ own teachers, or every free slot if none has one. Parents can cancel until the t
 
 More ready-made blocks go in `_conferenceZones()`. Teachers don't see the bookings yet. The
 backend side is in `student-portal-backend` (applied). `tests/conferences.test.js`.
+
+### 2026-11-01 · Conferences: teachers follow the student, confirmations, audit fixes
+
+- **More ready-made blocks:** Afternoon (12:00-2:40) and Late afternoon (3:00-4:40), beside Morning.
+- **Teachers follow the student:** a slot is made with the teachers free then. Once a family
+  takes it, it narrows to that student's own math and English teachers among them. If none of
+  them is in the slot, it keeps them all and the admin sees a warning. The admin also sees a
+  warning when a teacher would be in two conferences at once.
+- **Review, then Finalize:** each day has a Review box: bookings to confirm, bookings with
+  nobody to send to, slots without the student's teacher, and the students in math or English
+  with no time yet. **Finalize & send** closes sign-up and sends every booked family their time:
+  an in-app notification to each linked parent, and an email to each parent's address plus an
+  optional **Also email** on the booking (any address, for families without a parent account).
+  Bookings added afterwards show as "new" with a button to send just those. Each booking has a
+  **Resend**.
+- **After confirming:** a confirmed time is fixed for parents ("contact the school office").
+  When the office clears or removes a confirmed time, or one a parent booked, or deletes the
+  day, the family is told it was cancelled.
+- **Audit fixes:**
+  - parents can't cancel on a closed day, which used to leave them unable to rebook;
+  - a day can't be opened to parents until it has times;
+  - adding overlapping times for the same teacher, or a student's second time on one day, asks first;
+  - the parent's home button no longer gets lost to the home page's half-second de-duplication.
+- **Each slot holds one family.** For two families at once, add the block a second time with
+  different teachers ticked.
+
+Backend in `student-portal-backend` (applied). `tests/conferences.test.js`.

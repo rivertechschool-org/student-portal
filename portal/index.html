@@ -6876,6 +6876,7 @@
 
         // Refresh home content if on home page
         if (this.currentSection === 'home') {
+          this._lastHomeSetup = 0;
           this.setupHomeContent();
         }
       }
@@ -8880,11 +8881,21 @@
       // admin-only and parents go through rt_conferences_for_parent(), which
       // hands back the free slots and their own children's, nobody else's.
       // A parent holds one slot per child per day; booking another moves them.
+      //
+      // A slot is made with the teachers free then; once taken, the database
+      // narrows it to the student's own math and English teachers among them
+      // (or keeps them all, flagged, if none is). When the admin has reviewed
+      // the day, Finalize sends each family their time - in-app to linked
+      // parents, and by email to them and to any address the admin added for
+      // a family without a parent account - and closes sign-up. A confirmed
+      // time is fixed for parents; clearing or removing one tells the family.
 
       // Ready-made blocks of time for "Add time slots". Custom times work too.
       _conferenceZones() {
         return [
           { label: 'Morning', start: '08:10', end: '11:40' },
+          { label: 'Afternoon', start: '12:00', end: '14:40' },
+          { label: 'Late afternoon', start: '15:00', end: '16:40' },
         ];
       }
 
@@ -8940,20 +8951,25 @@
         const sb = this.auth.supabase;
         const since = this._localDateStr(new Date(Date.now() - 14 * 86400000));
         const { data: days, error } = await this.supabaseQuery(() => sb.from('conference_days')
-          .select('id, day, title, is_open').gte('day', since).order('day'));
+          .select('id, day, title, is_open, finalized_at').gte('day', since).order('day'));
         if (error) throw error;
         const dayIds = (days || []).map(d => d.id);
         const slots = dayIds.length ? await this.fetchAllRows((from, to) => sb.from('conference_slots')
-          .select('id, day_id, starts_at, ends_at, teacher_ids, student_id, booked_by, booked_at')
+          .select('id, day_id, starts_at, ends_at, teacher_ids, assigned_teacher_ids, teachers_matched, student_id, booked_by, booked_at, contact_email, confirmed_at')
           .in('day_id', dayIds).order('starts_at').order('id').range(from, to)) : [];
         const people = await this.fetchAllRows((from, to) => sb.from('user_profiles')
-          .select('id, first_name, last_name, user_type, grade_level, account_status, student_status')
+          .select('id, first_name, last_name, email, user_type, grade_level, account_status, student_status')
           .in('user_type', ['teacher', 'admin', 'student', 'parent']).order('id').range(from, to));
         // Math and English teachers are ticked to start with.
         const { data: core } = await this.supabaseQuery(() => sb.from('classes')
-          .select('teacher_id, secondary_teacher_id, status').in('subject', ['Math', 'English']));
+          .select('id, teacher_id, secondary_teacher_id, status').in('subject', ['Math', 'English']));
         const coreIds = new Set();
-        (core || []).filter(c => c.status !== 'closed').forEach(c => { if (c.teacher_id) coreIds.add(c.teacher_id); if (c.secondary_teacher_id) coreIds.add(c.secondary_teacher_id); });
+        const running = (core || []).filter(c => c.status !== 'closed');
+        running.forEach(c => { if (c.teacher_id) coreIds.add(c.teacher_id); if (c.secondary_teacher_id) coreIds.add(c.secondary_teacher_id); });
+        // Who would be expected to book: anyone in a running math or English
+        // class. The review lists those of them with no time yet.
+        const coreEnrolled = running.length ? await this.fetchAllRows((from, to) => sb.from('class_enrollments')
+          .select('student_id').in('class_id', running.map(c => c.id)).eq('status', 'active').order('student_id').range(from, to)) : [];
         const links = await this.fetchAllRows((from, to) => sb.from('parent_child_links')
           .select('parent_id, child_id').order('id').range(from, to));
 
@@ -8969,8 +8985,12 @@
           .map(p => ({ id: p.id, name: name(p), grade: p.grade_level || '' }))
           .sort((x, y) => x.name.localeCompare(y.name));
         const parentsOf = {};
-        links.forEach(l => { if (byId[l.parent_id]) (parentsOf[l.child_id] = parentsOf[l.child_id] || []).push(name(byId[l.parent_id])); });
-        return { days: days || [], slots, teachers, students, parentsOf, byId, name };
+        links.forEach(l => {
+          const parent = byId[l.parent_id];
+          if (parent) (parentsOf[l.child_id] = parentsOf[l.child_id] || []).push({ name: name(parent), email: parent.email || '' });
+        });
+        const expected = new Set(coreEnrolled.map(e => e.student_id).filter(id => byId[id] && byId[id].student_status !== 'past'));
+        return { days: days || [], slots, teachers, students, parentsOf, byId, name, expected };
       }
 
       async _refreshConferenceAdmin() {
@@ -9014,16 +9034,35 @@
             <input type="checkbox" class="conf-teacher-${esc(d.id)}" value="${esc(t.id)}" ${t.core ? 'checked' : ''}> ${esc(t.name)}</label>`).join('');
         const studentOptions = `<option value="">Pick a student\u2026</option>` + c.students.map(st =>
           `<option value="${esc(st.id)}">${esc(st.name)}${st.grade ? ` (gr ${esc(st.grade)})` : ''}</option>`).join('');
+        const teacherNames = (ids) => (ids || []).map(t => c.name(c.byId[t]) || 'Unknown teacher').join(', ');
+        const review = this._conferenceDayReview(d, c);
         const rows = slots.map(x => {
-          const teachers = (x.teacher_ids || []).map(t => c.name(c.byId[t]) || 'Unknown teacher').join(', ');
+          let teachers = esc(teacherNames(x.teacher_ids));
           let who;
           if (x.student_id) {
             const st = c.byId[x.student_id];
             const parents = c.parentsOf[x.student_id] || [];
             const by = x.booked_by && c.byId[x.booked_by]?.user_type === 'parent' ? 'booked by parent' : 'added by the office';
-            who = `<b>${esc(c.name(st) || 'Unknown student')}</b>${parents.length ? ` <span style="color: var(--muted);">\u00b7 ${esc(parents.join(', '))}</span>` : ''}
-              <span style="color: var(--muted); font-size: 11px;">(${by})</span>
-              <button class="btn btn-secondary small" style="margin-left: 6px;" onclick="app.clearConferenceSlot('${this.jsAttr(x.id)}')">Clear</button>`;
+            teachers = `<b>${esc(teacherNames(x.assigned_teacher_ids || x.teacher_ids))}</b>`
+              + (x.teachers_matched === false ? `<div style="color: var(--warning); font-size: 11px;">\u26a0 None of this student's math or English teachers is in this slot</div>` : '')
+              + (review.doubleBooked.has(x.id) ? `<div style="color: var(--warning); font-size: 11px;">\u26a0 A teacher here has another conference at the same time</div>` : '');
+            const sid = this.jsAttr(x.id);
+            const reachable = parents.some(pp => pp.email) || parents.length || x.contact_email;
+            const status = x.confirmed_at
+              ? `<span style="color: var(--accent-2); font-size: 11px;">\u2713 Confirmation sent ${esc(new Date(x.confirmed_at).toLocaleDateString([], { month: 'short', day: 'numeric' }))}</span>
+                 <button class="btn btn-secondary small" style="margin-left: 4px;" onclick="app.resendConferenceSlot('${sid}', '${id}')">Resend</button>`
+              : `<span style="color: var(--muted); font-size: 11px;">Not confirmed yet</span>`;
+            who = `<b>${esc(c.name(st) || 'Unknown student')}</b> <span style="color: var(--muted); font-size: 11px;">(${by})</span>
+              <button class="btn btn-secondary small" style="margin-left: 6px;" onclick="app.clearConferenceSlot('${sid}')">Clear</button>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">${parents.length
+                ? parents.map(pp => `${esc(pp.name)}${pp.email ? ` &lt;${esc(pp.email)}&gt;` : ' (no email: in-app only)'}`).join(', ')
+                : 'No parent account'}</div>
+              ${!reachable ? `<div style="color: var(--warning); font-size: 11px;">\u26a0 Nobody to send the confirmation to: add an email</div>` : ''}
+              <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 4px;">
+                <input type="email" id="conf-email-${esc(x.id)}" value="${esc(x.contact_email || '')}" placeholder="Also email (any address)" style="${input} font-size: 12px; padding: 3px 6px; width: 200px;">
+                <button class="btn btn-secondary small" onclick="app.saveConferenceContactEmail('${sid}')">Save</button>
+                ${status}
+              </div>`;
           } else {
             who = `<span style="color: var(--accent-2);">Open</span>
               <select id="conf-pick-${esc(x.id)}" style="${input} margin-left: 6px; max-width: 220px;">${studentOptions}</select>
@@ -9031,7 +9070,7 @@
           }
           return `<tr style="border-top: 1px solid var(--border);">
               <td style="padding: 6px 8px; white-space: nowrap;">${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}</td>
-              <td style="padding: 6px 8px;">${esc(teachers)}</td>
+              <td style="padding: 6px 8px;">${teachers}</td>
               <td style="padding: 6px 8px;">${who}</td>
               <td style="padding: 6px 8px; text-align: right;"><button class="btn btn-secondary small" title="Remove this time" aria-label="Remove this time" onclick="app.deleteConferenceSlot('${this.jsAttr(x.id)}')">\u2715</button></td>
             </tr>`;
@@ -9044,6 +9083,7 @@
                 <input type="checkbox" ${d.is_open ? 'checked' : ''} onchange="app.setConferenceDayOpen('${id}', this.checked)"> Parents can sign up</label>
               <button class="btn btn-secondary small" onclick="app.deleteConferenceDay('${id}')">Delete day</button>
             </div>
+            ${this._renderConferenceReview(d, c, review)}
             <details style="margin-top: 10px;" ${slots.length ? '' : 'open'}>
               <summary style="cursor: pointer; font-weight: 600;">\u2795 Add time slots</summary>
               <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;">
@@ -9065,6 +9105,95 @@
               <thead><tr style="text-align: left; color: var(--muted);"><th style="padding: 4px 8px;">Time</th><th style="padding: 4px 8px;">Teachers</th><th style="padding: 4px 8px;">Family</th><th></th></tr></thead>
               <tbody>${rows}</tbody></table></div>` : ''}
           </div>`;
+      }
+
+      // What the admin should look at before finalizing: bookings not yet
+      // confirmed, ones that would reach nobody, teachers in two places at
+      // once, and students in math or English with no time on this day.
+      _conferenceDayReview(d, c) {
+        const slots = c.slots.filter(x => x.day_id === d.id);
+        const booked = slots.filter(x => x.student_id);
+        const unsent = booked.filter(x => !x.confirmed_at);
+        const unreachable = booked.filter(x => !(c.parentsOf[x.student_id] || []).length && !x.contact_email);
+        const unmatched = booked.filter(x => x.teachers_matched === false);
+        const doubleBooked = new Set();
+        for (const a of booked) {
+          for (const b of booked) {
+            if (a.id >= b.id) continue;
+            const overlap = this._confMinutes(a.starts_at) < this._confMinutes(b.ends_at) && this._confMinutes(b.starts_at) < this._confMinutes(a.ends_at);
+            const ta = a.assigned_teacher_ids || a.teacher_ids || [], tb = b.assigned_teacher_ids || b.teacher_ids || [];
+            if (overlap && ta.some(t => tb.includes(t))) { doubleBooked.add(a.id); doubleBooked.add(b.id); }
+          }
+        }
+        const have = new Set(booked.map(x => x.student_id));
+        const notBooked = [...(c.expected || [])].filter(id => !have.has(id))
+          .map(id => c.name(c.byId[id])).filter(Boolean).sort((x, y) => x.localeCompare(y));
+        return { booked, unsent, unreachable, unmatched, doubleBooked, notBooked };
+      }
+
+      _renderConferenceReview(d, c, r) {
+        const esc = (t) => this.escapeHtml(t);
+        const id = this.jsAttr(d.id);
+        if (!r.booked.length && !d.finalized_at) {
+          return r.notBooked.length ? `<div style="color: var(--muted); font-size: 12px; margin-top: 6px;">${r.notBooked.length} students in math or English have no time yet.</div>` : '';
+        }
+        const warn = (t) => `<div style="color: var(--warning); font-size: 12px;">\u26a0 ${t}</div>`;
+        const unreachableToSend = r.unsent.filter(x => r.unreachable.includes(x)).length;
+        const button = r.unsent.length
+          ? `<button class="btn btn-primary small" onclick="app.confirmConferenceDay('${id}')">${d.finalized_at ? `\u2709\ufe0f Send ${r.unsent.length} new confirmation${r.unsent.length === 1 ? '' : 's'}` : `\u2705 Finalize & send ${r.unsent.length} confirmation${r.unsent.length === 1 ? '' : 's'}`}</button>`
+          : '';
+        return `<div style="margin-top: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px;">
+              <span style="font-size: 13px;">${d.finalized_at
+                ? `<b>Finalized</b> ${esc(new Date(d.finalized_at).toLocaleDateString([], { month: 'short', day: 'numeric' }))}${r.unsent.length ? ` \u00b7 ${r.unsent.length} booking${r.unsent.length === 1 ? '' : 's'} added or changed since, not confirmed yet` : ' \u00b7 every family has been sent their time'}`
+                : `<b>Review</b> \u00b7 ${r.booked.length} booked, ${r.unsent.length} to confirm. Finalizing sends each family their time and closes sign-up.`}</span>
+              <span style="margin-left: auto;">${button}</span>
+            </div>
+            ${unreachableToSend ? warn(`${unreachableToSend} booking${unreachableToSend === 1 ? ' has' : 's have'} nobody to send to: add an email on ${unreachableToSend === 1 ? 'it' : 'each'}, or it stays unconfirmed`) : ''}
+            ${r.unmatched.length ? warn(`${r.unmatched.length} booking${r.unmatched.length === 1 ? ' is' : 's are'} in a slot without that student's math or English teacher`) : ''}
+            ${r.doubleBooked.size ? warn('A teacher has two conferences at the same time') : ''}
+            ${r.notBooked.length ? `<details style="margin-top: 4px; font-size: 12px;"><summary style="cursor: pointer; color: var(--muted);">${r.notBooked.length} student${r.notBooked.length === 1 ? '' : 's'} in math or English with no time on this day</summary>
+              <div style="color: var(--muted); margin-top: 4px;">${r.notBooked.map(esc).join(', ')}</div></details>` : ''}
+          </div>`;
+      }
+
+      async confirmConferenceDay(dayId) {
+        const c = this._conf || {};
+        const day = (c.days || []).find(d => d.id === dayId);
+        const r = day ? this._conferenceDayReview(day, c) : { unsent: [] };
+        const first = !day?.finalized_at;
+        if (!confirm(first
+          ? `Send ${r.unsent.length} confirmation${r.unsent.length === 1 ? '' : 's'} (in-app and email) and close sign-up for this day?`
+          : `Send ${r.unsent.length} new confirmation${r.unsent.length === 1 ? '' : 's'}?`)) return;
+        const { data, error } = await this.auth.supabase.rpc('rt_confirm_conference_day', { p_day: dayId });
+        if (error) { this.showNotification('Could not send: ' + error.message, 'error'); return; }
+        this._reportConferenceSend(data);
+        await this._refreshConferenceAdmin();
+      }
+
+      async resendConferenceSlot(slotId, dayId) {
+        const { data, error } = await this.auth.supabase.rpc('rt_confirm_conference_day', { p_day: dayId, p_slot: slotId });
+        if (error) { this.showNotification('Could not send: ' + error.message, 'error'); return; }
+        this._reportConferenceSend(data);
+        await this._refreshConferenceAdmin();
+      }
+
+      _reportConferenceSend(data) {
+        const r = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+        const nobody = r.nobody_to_tell || [];
+        const sent = `Sent ${r.sent || 0} confirmation${r.sent === 1 ? '' : 's'}: ${r.notifications || 0} in-app, ${r.emails || 0} email${r.emails === 1 ? '' : 's'}.`;
+        this.showNotification(nobody.length ? `${sent} Not sent, nobody to tell: ${nobody.join(', ')}. Add an email for them and send again.` : sent,
+          nobody.length ? 'warning' : 'success');
+      }
+
+      async saveConferenceContactEmail(slotId) {
+        const value = (document.getElementById(`conf-email-${slotId}`)?.value || '').trim();
+        if (value && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value)) { this.showNotification('That email address does not look right', 'error'); return; }
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots').update({ contact_email: value || null }).eq('id', slotId));
+        if (error) { this.showNotification('Could not save the email: ' + error.message, 'error'); return; }
+        const slot = (this._conf?.slots || []).find(x => x.id === slotId);
+        this.showNotification(value && slot?.confirmed_at ? 'Saved. Press Resend to send the confirmation to it.' : 'Saved', 'success');
+        await this._refreshConferenceAdmin();
       }
 
       _conferencePreviewText(start, end, length) {
@@ -9105,6 +9234,11 @@
         const teacherIds = [...document.querySelectorAll(`.conf-teacher-${dayId}`)].filter(b => b.checked).map(b => b.value);
         if (!slots.length) { this.showNotification('Those times make no slots', 'error'); return; }
         if (!teacherIds.length) { this.showNotification('Each slot needs a teacher: tick at least one', 'error'); return; }
+        const existing = (this._conf?.slots || []).filter(x => x.day_id === dayId);
+        const clash = slots.filter(n => existing.some(x =>
+          this._confMinutes(n.starts_at) < this._confMinutes(x.ends_at) && this._confMinutes(x.starts_at) < this._confMinutes(n.ends_at)
+          && (x.teacher_ids || []).some(t => teacherIds.includes(t)))).length;
+        if (clash && !confirm(`${clash} of these ${slots.length} times overlap slots already on this day with the same teacher. Add them anyway?`)) return;
         const rows = slots.map(x => ({ day_id: dayId, starts_at: x.starts_at, ends_at: x.ends_at, teacher_ids: teacherIds }));
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots').insert(rows));
         if (error) { this.showNotification('Could not add the slots: ' + error.message, 'error'); return; }
@@ -9113,6 +9247,11 @@
       }
 
       async setConferenceDayOpen(dayId, open) {
+        if (open && !(this._conf?.slots || []).some(x => x.day_id === dayId)) {
+          this.showNotification('Add time slots first: parents would see a day with nothing to book', 'error');
+          await this._refreshConferenceAdmin();
+          return;
+        }
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').update({ is_open: !!open }).eq('id', dayId));
         if (error) { this.showNotification('Could not change it: ' + error.message, 'error'); }
         else this.showNotification(open ? 'Parents can now sign up for this day' : 'Sign-up closed for this day', 'success');
@@ -9120,8 +9259,9 @@
       }
 
       async deleteConferenceDay(dayId) {
-        const n = (this._conf?.slots || []).filter(x => x.day_id === dayId && x.student_id).length;
-        if (!confirm(n ? `Delete this day? ${n} famil${n === 1 ? 'y is' : 'ies are'} booked and will lose their time.` : 'Delete this day and its slots?')) return;
+        const mine = (this._conf?.slots || []).filter(x => x.day_id === dayId && x.student_id);
+        const n = mine.length, told = mine.filter(x => x.confirmed_at).length;
+        if (!confirm(n ? `Delete this day? ${n} famil${n === 1 ? 'y is' : 'ies are'} booked and will lose their time.${told ? ` ${told} already confirmed will be told it is cancelled.` : ''}` : 'Delete this day and its slots?')) return;
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').delete().eq('id', dayId));
         if (error) this.showNotification('Could not delete it: ' + error.message, 'error');
         await this._refreshConferenceAdmin();
@@ -9129,7 +9269,8 @@
 
       async deleteConferenceSlot(slotId) {
         const slot = (this._conf?.slots || []).find(x => x.id === slotId);
-        if (slot?.student_id && !confirm('A family is booked in this time. Remove it anyway?')) return;
+        const parentBooked = slot?.booked_by && this._conf?.byId?.[slot.booked_by]?.user_type === 'parent';
+        if (slot?.student_id && !confirm(slot.confirmed_at || parentBooked ? 'A family is booked for this time. Remove it? They will be told it is cancelled.' : 'A student is in this time. Remove it anyway?')) return;
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots').delete().eq('id', slotId));
         if (error) this.showNotification('Could not remove it: ' + error.message, 'error');
         await this._refreshConferenceAdmin();
@@ -9138,12 +9279,21 @@
       async fillConferenceSlot(slotId) {
         const studentId = document.getElementById(`conf-pick-${slotId}`)?.value;
         if (!studentId) { this.showNotification('Pick a student first', 'error'); return; }
+        const slots = this._conf?.slots || [];
+        const target = slots.find(x => x.id === slotId);
+        const already = target && slots.find(x => x.day_id === target.day_id && x.student_id === studentId);
+        if (already && !confirm(`${this._conf.name(this._conf.byId[studentId])} already has ${this._confClock(already.starts_at)} on this day. Add this time too?`)) return;
         const { error } = await this.auth.supabase.rpc('rt_book_conference_slot', { p_slot: slotId, p_student: studentId });
         if (error) this.showNotification(error.message, 'error');
         await this._refreshConferenceAdmin();
       }
 
       async clearConferenceSlot(slotId) {
+        const slot = (this._conf?.slots || []).find(x => x.id === slotId);
+        const parentBooked = slot?.booked_by && this._conf?.byId?.[slot.booked_by]?.user_type === 'parent';
+        if ((slot?.confirmed_at || parentBooked) && !confirm(slot.confirmed_at
+          ? 'This family has been sent their time. Clear it? They will be told it is cancelled.'
+          : 'A parent booked this time. Clear it? They will be told it is cancelled.')) return;
         const { error } = await this.auth.supabase.rpc('rt_cancel_conference_slot', { p_slot: slotId });
         if (error) this.showNotification(error.message, 'error');
         await this._refreshConferenceAdmin();
@@ -9194,7 +9344,7 @@
         const html = days.map(d => {
           const mine = (d.slots || []).filter(x => x.student_id && kidIds.has(x.student_id));
           const childHas = mine.find(x => x.student_id === child.id);
-          const free = d.is_open ? this._conferenceFreeSlotsFor(d, child.id) : [];
+          const free = d.is_open && !childHas?.confirmed ? this._conferenceFreeSlotsFor(d, child.id) : [];
           const teachers = (x) => (x.teachers || []).length ? ` with ${esc(x.teachers.join(' & '))}` : '';
           return `<div class="card" style="padding: 12px; margin-bottom: 12px;">
               <div style="font-weight: 700;">${esc(d.title)}</div>
@@ -9202,11 +9352,17 @@
               ${mine.map(x => {
                 const k = kids.find(kk => kk.id === x.student_id);
                 return `<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--accent-2); border-radius: 6px; margin-bottom: 6px;">
-                  <span>\u2705 <b>${esc(k ? nameOf(k) : '')}</b>: ${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}${teachers(x)}</span>
-                  <button class="btn btn-secondary small" style="margin-left: auto;" onclick="app.cancelParentConference('${this.jsAttr(x.id)}', '${this.jsAttr(child.id)}')">Cancel</button>
+                  <span>${x.confirmed ? '\u2705' : '\u{1F552}'} <b>${esc(k ? nameOf(k) : '')}</b>: ${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}${teachers(x)}</span>
+                  ${x.confirmed
+                    ? `<span style="margin-left: auto; font-size: 12px; color: var(--accent-2);">Confirmed \u00b7 to change it, contact the school office</span>`
+                    : !d.is_open
+                      ? `<span style="margin-left: auto; font-size: 12px; color: var(--muted);">Booked \u00b7 the school will confirm. To change it, contact the school office</span>`
+                      : `<span style="margin-left: auto; font-size: 12px; color: var(--muted);">Booked \u00b7 the school will confirm</span>
+                         <button class="btn btn-secondary small" onclick="app.cancelParentConference('${this.jsAttr(x.id)}', '${this.jsAttr(child.id)}')">Cancel</button>`}
                 </div>`;
               }).join('')}
-              ${!d.is_open ? `<div style="color: var(--muted); font-size: 13px;">Sign-up for this day is closed.</div>`
+              ${childHas?.confirmed ? ''
+                : !d.is_open ? `<div style="color: var(--muted); font-size: 13px;">Sign-up for this day is closed.</div>`
                 : free.length ? `<div style="font-size: 13px; margin: 6px 0;">${childHas ? `Pick another time to move ${esc(nameOf(child))}:` : `Pick a time for ${esc(nameOf(child))}:`}</div>
                   <div style="display: flex; flex-wrap: wrap; gap: 6px;">${free.map(x =>
                     `<button class="btn btn-secondary small" onclick="app.bookParentConference('${this.jsAttr(x.id)}', '${this.jsAttr(child.id)}')">${esc(this._confClock(x.starts_at))}${teachers(x)}</button>`).join('')}</div>`
@@ -15678,6 +15834,7 @@
           child_grade:            { icon: '🎓', class: 'grade',      label: 'Child Grade' },
           child_assignment:       { icon: '📚', class: 'assignment', label: 'Child Assignment' },
           attendance_alert:       { icon: '🕒', class: 'note',       label: 'Attendance' },
+          conference:             { icon: '🤝', class: 'note',       label: 'Conference' },
           // staff queues
           link_request:           { icon: '👪', class: 'system',     label: 'Link Request' },
           material_request:       { icon: '📦', class: 'system',     label: 'Materials' },
@@ -15914,9 +16071,10 @@
           enrollment_application: { section: 'admin-enrollment', label: 'Enrollment' },
           facility_booking:       { section: 'admin-facilities', label: 'Facilities' },
           system_health:          { section: 'admin-dashboard', label: 'Admin Dashboard' },
+          conference:             { section: 'home', label: 'Conferences', then: () => this.showParentConferences() },
         };
         const admin = this.userInfo?.profile?.user_type === 'admin';
-        if (byType[type] && (admin || type === 'material_request')) return byType[type];
+        if (byType[type] && (admin || type === 'material_request' || type === 'conference')) return byType[type];
         const safe = this.sanitizeLink(notification.link);
         if (!safe) return null;
         if (!safe.startsWith('#')) return { href: safe, label: safe };

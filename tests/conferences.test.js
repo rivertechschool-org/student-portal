@@ -38,7 +38,8 @@ const ok = (label, cond, detail = '') => {
 
 const names = ['_conferenceZones', '_confMinutes', '_confHHMM', '_confClock', '_confDayLabel', '_conferenceSlotTimes', '_conferencePreviewText',
   '_renderConferenceAdmin', '_renderConferenceAdminDay', '_loadParentConferences', '_conferenceFreeSlotsFor', 'showParentConferences',
-  'bookParentConference', 'addConferenceSlots', '_localDateStr', 'escapeHtml', 'jsAttr'];
+  'bookParentConference', 'addConferenceSlots', '_conferenceDayReview', '_renderConferenceReview', '_reportConferenceSend',
+  'confirmConferenceDay', 'saveConferenceContactEmail', 'setConferenceDayOpen', 'fillConferenceSlot', 'clearConferenceSlot', 'notificationDestination', 'notificationTypeConfig', 'sanitizeLink', '_localDateStr', 'escapeHtml', 'jsAttr'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 
 (async () => {
@@ -50,7 +51,8 @@ const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
   ok('  with 10 minutes left over, and says so', m.leftover === 10 && app._conferencePreviewText('08:10', '11:40', 20) === '10 slots, 8:10 AM–11:30 AM (10 min left over)', app._conferencePreviewText('08:10', '11:40', 20));
   ok('an afternoon block reads as PM', app._conferencePreviewText('12:30', '13:30', 20) === '3 slots, 12:30 PM–1:30 PM');
   ok('backwards or empty times make no slots', app._conferenceSlotTimes('11:00', '10:00', 20).slots.length === 0 && app._conferenceSlotTimes('', '10:00', 20).slots.length === 0 && app._conferenceSlotTimes('08:00', '09:00', 0).slots.length === 0);
-  ok('the Morning block is 8:10-11:40', JSON.stringify(app._conferenceZones()[0]) === '{"label":"Morning","start":"08:10","end":"11:40"}');
+  ok('the ready-made blocks are 8:10-11:40, 12:00-2:40 and 3:00-4:40', JSON.stringify(app._conferenceZones().map(z => [z.start, z.end])) === '[["08:10","11:40"],["12:00","14:40"],["15:00","16:40"]]');
+  ok('  12:00-2:40 in 20s is 8 slots and 3:00-4:40 is 5, none left over', app._conferencePreviewText('12:00', '14:40', 20) === '8 slots, 12:00 PM\u20132:40 PM' && app._conferencePreviewText('15:00', '16:40', 20) === '5 slots, 3:00 PM\u20134:40 PM');
 
   // ---- adding slots needs a teacher ----
   {
@@ -76,25 +78,42 @@ const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
       'st-1': { id: 'st-1', first_name: 'Wren', last_name: 'Orchard', user_type: 'student' },
       'p-1': { id: 'p-1', first_name: 'Paz', last_name: 'Orchard', user_type: 'parent' },
       't-1': { id: 't-1', first_name: 'Numa', last_name: 'Ratio', user_type: 'teacher' },
+      't-2': { id: 't-2', first_name: 'Vera', last_name: 'Bose', user_type: 'teacher' },
+      'st-2': { id: 'st-2', first_name: 'Kit', last_name: 'Lonely', user_type: 'student' },
+      'st-3': { id: 'st-3', first_name: 'Ash', last_name: 'Unbooked', user_type: 'student' },
     };
     const c = {
       days: [{ id: 'd1', day: '2099-03-04', title: 'Spring conferences', is_open: true }],
       slots: [
-        { id: 'sl-1', day_id: 'd1', starts_at: '08:10:00', ends_at: '08:30:00', teacher_ids: ['t-1'], student_id: 'st-1', booked_by: 'p-1' },
+        { id: 'sl-1', day_id: 'd1', starts_at: '08:10:00', ends_at: '08:30:00', teacher_ids: ['t-1', 't-2'], assigned_teacher_ids: ['t-1'], teachers_matched: true, student_id: 'st-1', booked_by: 'p-1', confirmed_at: null },
         { id: 'sl-2', day_id: 'd1', starts_at: '08:30:00', ends_at: '08:50:00', teacher_ids: ['t-1'], student_id: null },
+        { id: 'sl-3', day_id: 'd1', starts_at: '08:10:00', ends_at: '08:30:00', teacher_ids: ['t-1', 't-2'], assigned_teacher_ids: ['t-1', 't-2'], teachers_matched: false, student_id: 'st-2', booked_by: 'a-1', contact_email: null, confirmed_at: null },
       ],
       teachers: [{ id: 't-1', name: 'Numa Ratio', core: true }, { id: 't-2', name: 'Vera Bose', core: false }],
       students: [{ id: 'st-1', name: 'Wren Orchard', grade: '7' }],
-      parentsOf: { 'st-1': ['Paz Orchard'] },
+      parentsOf: { 'st-1': [{ name: 'Paz Orchard', email: 'paz@example.test' }] },
+      expected: new Set(['st-1', 'st-2', 'st-3']),
       byId: by,
       name: (p) => p ? `${p.first_name} ${p.last_name}` : '',
     };
     const page = app._renderConferenceAdmin(c);
     ok('the admin sees who is booked, their parents and that a parent booked it', /<b>Wren Orchard<\/b>/.test(page) && /Paz Orchard/.test(page) && /booked by parent/.test(page));
     ok('  a free slot offers a student to add', /id="conf-pick-sl-2"/.test(page) && /app\.fillConferenceSlot\('sl-2'\)/.test(page));
-    ok('  the day shows its count and its open switch', /1 of 2 booked/.test(page) && /checked onchange="app\.setConferenceDayOpen\('d1', this\.checked\)"/.test(page));
+    ok('  the day shows its count and its open switch', /2 of 3 booked/.test(page) && /checked onchange="app\.setConferenceDayOpen\('d1', this\.checked\)"/.test(page));
     ok('  math and English teachers start ticked, others do not', /value="t-1" checked/.test(page) && /value="t-2" >/.test(page));
     ok('  times read as a clock', /8:10 AM–8:30 AM/.test(page));
+    ok("a booked slot shows the student's assigned teacher, not the whole pool", /<td style="padding: 6px 8px;"><b>Numa Ratio<\/b>/.test(page) && !/<b>Numa Ratio, Vera Bose<\/b>[\s\S]{0,400}conf-email-sl-1/.test(page));
+    ok("  and flags a slot without the student's math or English teacher", /None of this student's math or English teachers is in this slot/.test(page));
+    ok('  and a teacher in two conferences at once', /A teacher here has another conference at the same time/.test(page) && /A teacher has two conferences at the same time/.test(page));
+    ok("the parent's email is shown, and a family with nobody to tell is flagged", /Paz Orchard &lt;paz@example\.test&gt;/.test(page) && /No parent account/.test(page) && /Nobody to send the confirmation to: add an email/.test(page));
+    ok('  each booking has an "also email" box for any address', /id="conf-email-sl-3"/.test(page) && /saveConferenceContactEmail\('sl-3'\)/.test(page));
+    ok('the review offers Finalize with the count, and lists who has no time', /Finalize & send 2 confirmations/.test(page) && /1 student in math or English with no time on this day/.test(page) && /Ash Unbooked/.test(page));
+    ok('  and warns the booking with nobody to send to will stay unconfirmed', /1 booking has nobody to send to/.test(page));
+    const sent = { ...c, days: [{ ...c.days[0], finalized_at: '2099-03-01T10:00:00Z' }], slots: c.slots.map(x => x.student_id ? { ...x, confirmed_at: '2099-03-01T10:00:00Z' } : x) };
+    const after = app._renderConferenceAdmin(sent);
+    ok('after finalizing it says so, offers Resend, and no Finalize button', /<b>Finalized<\/b>/.test(after) && /every family has been sent their time/.test(after) && /resendConferenceSlot\('sl-1', 'd1'\)/.test(after) && !/confirmConferenceDay/.test(after));
+    sent.slots.push({ id: 'sl-4', day_id: 'd1', starts_at: '09:00:00', ends_at: '09:20:00', teacher_ids: ['t-2'], assigned_teacher_ids: ['t-2'], teachers_matched: true, student_id: 'st-3', booked_by: 'a-1', confirmed_at: null });
+    ok('  a booking added afterwards offers to send just the new one', /Send 1 new confirmation/.test(app._renderConferenceAdmin(sent)));
     ok('with no days, it says what to do', /No conference days yet/.test(app._renderConferenceAdmin({ ...c, days: [] })));
   }
 
@@ -147,20 +166,95 @@ const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
       { id: 'sl-3', starts_at: '08:50', ends_at: '09:10', teachers: ['Vera Bose'], student_id: null, for_children: ['k2'] },
     ] }];
     await a.showParentConferences();
-    ok('the parent sees their booking with its teacher', /✅ <b>Wren Orchard<\/b>: 8:10 AM–8:30 AM with Numa Ratio/.test(shown), shown);
+    ok('the parent sees their booking with its teacher, as booked (not yet confirmed), with Cancel', /\u{1F552} <b>Wren Orchard<\/b>: 8:10 AM\u20138:30 AM with Numa Ratio/u.test(shown) && /Booked \u00b7 the school will confirm<\/span>/.test(shown) && /cancelParentConference\('sl-1'/.test(shown), shown);
     ok('  a child with a booking is offered other times as a move', /Pick another time to move Wren Orchard/.test(shown) && /bookParentConference\('sl-2', 'k1'\)/.test(shown) && !/bookParentConference\('sl-3'/.test(shown));
     ok('  and can switch to their other child', /showParentConferences\('k2'\)/.test(shown));
     await a.showParentConferences('k2');
     ok("  the other child is offered their own teacher's slot", /Pick a time for Ash Orchard/.test(shown) && /bookParentConference\('sl-3', 'k2'\)/.test(shown));
+    days[0].slots[0].confirmed = true;
+    await a.showParentConferences();
+    ok('a confirmed time has no Cancel and no other times, and says to contact the office', /Confirmed \u00b7 to change it, contact the school office/.test(shown) && !/cancelParentConference\('sl-1'/.test(shown) && !/bookParentConference\('sl-2'/.test(shown), shown);
+    days[0].slots[0].confirmed = false;
     days[0].is_open = false;
     days[0].slots = days[0].slots.filter(x => x.student_id);
     await a.showParentConferences();
     ok('a closed day still shows their booking, and says sign-up is closed', /Wren Orchard<\/b>: 8:10 AM/.test(shown) && /Sign-up for this day is closed/.test(shown));
+    ok('  with no Cancel (they could not book again), only "contact the school office"', !/cancelParentConference/.test(shown) && /the school will confirm\. To change it, contact the school office/.test(shown));
     days[0].is_open = true;
     notes.length = 0;
     await a.bookParentConference('sl-2', 'k1');
     ok('booking goes through the database and says where they moved from', calls.some(([fn, args]) => fn === 'rt_book_conference_slot' && args.p_slot === 'sl-2' && args.p_student === 'k1') && /Moved from 8:10 AM/.test(notes[0]?.[0]), JSON.stringify(notes));
     ok('the parent screen never reads the slot tables directly', !/from\('conference_slots'\)/.test(method('showParentConferences') + method('_loadParentConferences') + method('bookParentConference')));
+  }
+
+  // ---- sending, and what the family gets ----
+  {
+    const notes = [];
+    const a = Object.create(proto);
+    a.showNotification = (msg, kind) => notes.push([msg, kind]);
+    a._reportConferenceSend({ sent: 2, notifications: 2, emails: 1, nobody_to_tell: ['Kit Lonely'] });
+    ok('after sending the admin is told what went and who had nobody to tell', /Sent 2 confirmations: 2 in-app, 1 email\. Not sent, nobody to tell: Kit Lonely/.test(notes[0][0]) && notes[0][1] === 'warning', notes[0][0]);
+    a.userInfo = { profile: { user_type: 'parent' } };
+    let opened = false;
+    a.showParentConferences = () => { opened = true; };
+    const dest = a.notificationDestination({ type: 'conference', title: 'Parent-teacher conference confirmed' });
+    dest.then();
+    ok("a conference notification opens the parent's conference screen", dest.section === 'home' && opened && a.notificationTypeConfig('conference').icon === '🤝');
+    const bad = [];
+    global.document = { getElementById: () => ({ value: 'not-an-email' }) };
+    a.showNotification = (msg) => bad.push(msg);
+    let wrote = false;
+    a.supabaseQuery = async () => { wrote = true; return {}; };
+    await a.saveConferenceContactEmail('sl-3');
+    ok('a malformed "also email" is refused before saving', !wrote && /does not look right/.test(bad[0]));
+  }
+
+  // ---- guards found walking the journeys ----
+  {
+    const notes = [], asked = [];
+    let answer = false;
+    global.confirm = (q) => { asked.push(q); return answer; };
+    const a = Object.create(proto);
+    a.showNotification = (msg, kind) => notes.push([msg, kind]);
+    a._refreshConferenceAdmin = async () => {};
+    let writes = 0, rpcs = [];
+    a.supabaseQuery = async () => { writes++; return {}; };
+    a.auth = { supabase: { from: () => ({ update: () => ({ eq: () => ({}) }), insert: () => ({}) }), rpc: async (fn, args) => { rpcs.push([fn, args]); return { error: null }; } } };
+    a._conf = {
+      slots: [
+        { id: 'sl-1', day_id: 'd1', starts_at: '08:10:00', ends_at: '08:30:00', teacher_ids: ['t-1'], student_id: 'st-1', booked_by: 'p-1' },
+        { id: 'sl-2', day_id: 'd1', starts_at: '08:30:00', ends_at: '08:50:00', teacher_ids: ['t-1'], student_id: null },
+      ],
+      byId: { 'p-1': { user_type: 'parent' }, 'st-1': { first_name: 'Wren', last_name: 'Orchard' } },
+      name: (p) => p ? `${p.first_name} ${p.last_name}` : '',
+    };
+    await a.setConferenceDayOpen('d-empty', true);
+    ok('a day with no times cannot be opened to parents', writes === 0 && /Add time slots first/.test(notes[0]?.[0]));
+    await a.setConferenceDayOpen('d1', true);
+    ok('  a day with times can', writes === 1);
+
+    const els = { 'conf-start-d1': { value: '08:10' }, 'conf-end-d1': { value: '09:10' }, 'conf-len-d1': { value: '20' }, 'conf-pick-sl-2': { value: 'st-1' } };
+    let boxes = [{ checked: true, value: 't-1' }];
+    global.document = { getElementById: (id) => els[id], querySelectorAll: () => boxes };
+    writes = 0;
+    await a.addConferenceSlots('d1');
+    ok('adding times over the same teacher\'s times asks first, and No adds nothing', /2 of these 3 times overlap slots already on this day with the same teacher/.test(asked.pop()) && writes === 0);
+    boxes = [{ checked: true, value: 't-2' }];
+    await a.addConferenceSlots('d1');
+    ok('  a second set with a different teacher (two families at once) is added without asking', asked.length === 0 && writes === 1);
+
+    await a.fillConferenceSlot('sl-2');
+    ok('putting a student in a second time on the same day asks first', /Wren Orchard already has 8:10 AM on this day/.test(asked.pop()) && rpcs.length === 0);
+    await a.clearConferenceSlot('sl-1');
+    ok('clearing a time a parent booked warns they will be told', /A parent booked this time\. Clear it\? They will be told it is cancelled\./.test(asked.pop()) && rpcs.length === 0);
+    answer = true;
+    await a.clearConferenceSlot('sl-1');
+    ok('  and clears it on Yes', rpcs.some(([fn, args]) => fn === 'rt_cancel_conference_slot' && args.p_slot === 'sl-1'));
+    delete global.confirm;
+  }
+  {
+    const load = method('loadParentData');
+    ok("the parent's home re-draws once conferences are loaded, past the half-second de-duplication", /await this\._loadParentConferences\(\);[\s\S]{0,200}this\._lastHomeSetup = 0;\s*this\.setupHomeContent\(\);/.test(load));
   }
 
   // ---- the admin tile ----
