@@ -4733,6 +4733,11 @@ const BKT_PARAMS = {
     PRIOR_SIBLING_MASTERED: 0.15,  // ≥1 sibling skill (shares a prereq) is mastered
     PRIOR_PREREQS_MET: 0.30,       // All direct prereqs have P > 0.7
     SECONDARY_WEIGHT: 0.5,         // Apply half the delta to secondary skills
+    // Answers that put P under this take a skill back to in progress: two
+    // misses in a row on one just mastered (0.95 -> 0.70 -> 0.23), or one on
+    // a skill left for months. The database applies the same line (Jordan,
+    // 2026-11-02: pull it down if they genuinely need more practice).
+    DEMOTE_BELOW: 0.30,
 };
 
 // Raw stored probability for a skill — does NOT recursively apply a
@@ -4800,8 +4805,8 @@ function bktUpdateWeighted(currentP, correct, weight) {
 }
 
 // Discrete-state derivation from probability. Used to keep the existing
-// `state` column populated for legacy UI. State upgrades only (caller
-// enforces that downstream).
+// `state` column populated for legacy UI. Whether a lower state applies is
+// decided by the caller (setMasteryProbability) and the database.
 function stateFromP(p) {
     if (p >= 0.85) return 'mastered';
     if (p >= 0.60) return 'activated';
@@ -4822,9 +4827,10 @@ function getMasteryProbability(skillName) {
 }
 
 // Persist the updated probability to the in-memory skill tree. Keeps the
-// legacy mastery_score and state fields in sync. State upgrades only — a
-// single wrong answer shouldn't visually demote a student who'd already
-// earned mastered status; the underlying p_mastered captures the dip.
+// legacy mastery_score and state fields in sync. A single wrong answer
+// doesn't demote a student who'd already earned mastered status (the
+// underlying p_mastered captures the dip); answers that take P under
+// BKT_PARAMS.DEMOTE_BELOW put the skill back to in progress.
 function setMasteryProbability(skillName, newP, timestamp, source) {
     if (!skillTreeData.skills[skillName]) skillTreeData.skills[skillName] = {};
     const skill = skillTreeData.skills[skillName];
@@ -4841,6 +4847,8 @@ function setMasteryProbability(skillName, newP, timestamp, source) {
         if (derivedState === 'mastered' && !skill.mastered_at) {
             skill.mastered_at = timestamp;
         }
+    } else if (newP < BKT_PARAMS.DEMOTE_BELOW && (rank[skill.state] || 0) > rank.in_progress) {
+        skill.state = 'in_progress';
     }
 }
 

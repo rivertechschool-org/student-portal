@@ -6090,3 +6090,14 @@ so the repaired skills show without clearing anything. Backend in `student-porta
 (applied). `tests/dojo-server-merge.test.js`.
 
 Not changed: a one-question session still moves that skill's score bar (a wrong answer shows 0).
+
+### 2026-11-02 · Math Dojo: a skill still comes down when the answers say so
+
+Follow-up to the entry above (Jordan: the system should pull a skill down if the student genuinely
+needs more practice). A mastered skill now goes back to "in progress" when fresh answers drop its
+mastery probability under 0.30. With the Dojo's settings that is two misses in a row on a skill just
+mastered, or one miss on a skill left for months. One miss alone, or a miss then a hit, keeps it.
+Two or three right answers earn it back. It never drops below "in progress", so it stays open to
+practise. A session's label with no new answers behind it still can't lower anything. The page
+and the database use the same line (`BKT_PARAMS.DEMOTE_BELOW` in the Dojo). Backend in
+`student-portal-backend` (applied). `tests/dojo-server-merge.test.js`.

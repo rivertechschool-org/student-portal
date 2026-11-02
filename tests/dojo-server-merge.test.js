@@ -1,4 +1,5 @@
-// The Dojo's merge of the server's skill states (SKILL_DATA_FOR_DOGO).
+// The Dojo's merge of the server's skill states (SKILL_DATA_FOR_DOGO), and
+// when answers take a mastered skill back to in progress.
 // Extracts the real message handler from games/math-dojo.html and runs it
 // against stubs. Invented skills only.
 const fs = require('fs');
@@ -60,6 +61,37 @@ ok('an older, lower server copy leaves a mastered skill alone', s['zz Volume'].s
 // New on the server.
 s = run({}, { 'zz Ratios': { state: 'mastered', last_practiced: t } });
 ok('a skill only the server has is taken', s['zz Ratios'] && s['zz Ratios'].state === 'mastered', s);
+
+// ---- answers that show a skill needs practice (setMasteryProbability) ----
+function grabFn(name) {
+  const i = src.indexOf('function ' + name + '(');
+  let k = src.indexOf('{', i), depth = 0;
+  for (; k < src.length; k++) { if (src[k] === '{') depth++; else if (src[k] === '}' && --depth === 0) break; }
+  return src.slice(i, k + 1);
+}
+function grabConst(name) {
+  const i = src.indexOf('const ' + name + ' = ');
+  return src.slice(i, src.indexOf('\n};', i) + 3);
+}
+const bkt = new Function('skillTreeData', [grabConst('BKT_PARAMS'), grabFn('bktUpdate'), grabFn('stateFromP'), grabFn('setMasteryProbability'),
+  'return { BKT_PARAMS, bktUpdate, setMasteryProbability };'].join('\n'));
+function answer(start, answers) {
+  const data = { skills: { 'zz Ratios': { state: 'mastered', p_mastered: start } } };
+  const b = bkt(data);
+  let p = start;
+  for (const right of answers) { p = b.bktUpdate(p, right); b.setMasteryProbability('zz Ratios', p, '2026-11-02T00:00:00Z', 'dojo'); }
+  return { state: data.skills['zz Ratios'].state, p };
+}
+let r = answer(0.95, [false]);
+ok('one miss on a mastered skill keeps it mastered', r.state === 'mastered', r);
+r = answer(0.95, [false, false]);
+ok('  two misses in a row take it back to in progress', r.state === 'in_progress' && r.p < 0.30, r);
+r = answer(0.61, [false]);
+ok('  one miss on a skill left for months does too', r.state === 'in_progress', r);
+r = answer(0.95, [false, false, true, true, true]);
+ok('  and three right answers earn it back', r.state === 'mastered', r);
+r = answer(0.95, [false, true, false]);
+ok('  a miss, a hit, a miss: still mastered', r.state === 'mastered', r);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
