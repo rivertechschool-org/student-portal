@@ -6063,3 +6063,14 @@ in the slot, with "not confirmed yet" until the admin finalizes. A teacher sees 
 they are in. Once a family books, that's the student's own teachers, so a teacher dropped from
 a booked slot no longer sees it. Backend in `student-portal-backend` (applied).
 `tests/conferences.test.js`.
+
+### 2026-11-02 · Teachers told when their conference schedule is set
+
+When the admin presses Finalize on a conference day, each teacher with booked conferences gets
+one in-app note: the day, how many conferences, and the time range. A booking sent after that
+tells its teachers about the one new conference, and a conference families were already sent
+that is then cancelled tells its teachers too. Finalizing again doesn't repeat the summary.
+Nothing goes to teachers before Finalize. Tapping one of these notes opens the teacher's own
+schedule, not the parents' page, and the admin's "Sent" message now says how many teachers were
+told. In-app only, no teacher email. Backend in `student-portal-backend` (applied).
+`tests/conferences.test.js`.
