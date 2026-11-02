@@ -17,6 +17,7 @@
 
   <!-- Load shared configuration -->
   <script src="../shared/config.js?v=21"></script>
+  <script src="../shared/quarter-review.js?v=1"></script>
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
   <script src="../shared/vocab-bridge.js?v=2"></script>
@@ -8331,13 +8332,18 @@
 
         try {
           const url = new URL(window.location.href);
-          ['go', 'id', 'class'].forEach(k => url.searchParams.delete(k));
+          ['go', 'id', 'class', 'quarter', 'student'].forEach(k => url.searchParams.delete(k));
           window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
         } catch (_e) { /* an old browser keeps the params; harmless */ }
 
         // Every link is a student's own thing to open. RLS decides what any
         // id actually returns; this only refuses obvious junk.
         const looksLikeId = (v) => typeof v === 'string' && /^[0-9a-fA-F-]{8,64}$/.test(v);
+        if (go === 'quarter-assignments' && ['student', 'parent'].includes(this.userInfo?.profile?.user_type)
+            && looksLikeId(classId) && looksLikeId(params.get('quarter')) && looksLikeId(params.get('student'))) {
+          this.viewQuarterAssignments(params.get('quarter'), classId, params.get('student'));
+          return 'quarter-assignments';
+        }
         if (this.userInfo?.profile?.user_type !== 'student') return null;
 
         if (go === 'assignment' && looksLikeId(id)) { this.submitAssignment(id); return 'assignment'; }
@@ -8347,6 +8353,7 @@
       }
 
       getStudentHomeContent() {
+        setTimeout(() => QuarterReview.mount(this.auth, document.getElementById('student-quarter-review')), 0);
         // Load missing assignments
         this.loadMissingAssignments().then(missingAssignments => {
           const missingContainer = document.getElementById('missing-assignments-container');
@@ -8427,6 +8434,7 @@
         });
 
         return `
+          <section id="student-quarter-review" class="card" style="margin-bottom:20px;" hidden></section>
           <!-- Classes a teacher has canceled, today through the next week. -->
           <div id="student-canceled-container"></div>
 
@@ -8727,6 +8735,7 @@
       }
 
       getParentHomeContent() {
+        setTimeout(() => QuarterReview.mount(this.auth, document.getElementById('parent-quarter-review')), 0);
         const children = this.children || [];
         const totalClasses = children.reduce((sum, child) => sum + (child.classes?.length || 0), 0);
         const unreadMessages = this.messageThreads?.reduce((total, thread) => total + thread.unreadCount, 0) || 0;
@@ -8787,6 +8796,7 @@
         }
 
         return `
+          <section id="parent-quarter-review" class="card" style="margin-bottom:20px;" hidden></section>
           <div class="grid grid-2">
             <div class="card">
               <h3>👨‍👩‍👧‍👦 Your Children</h3>
@@ -34212,6 +34222,16 @@ Students you had withdrawn stay withdrawn.`)) {
             }
           }
 
+          if (currentQuarter && currentQuarter.id !== quarterId) {
+            const { error: reviewError } = await this.supabaseQuery(() => this.auth.supabase
+              .from('school_settings').upsert({
+                key: 'quarter_grade_review_transition',
+                value: JSON.stringify({ previous_quarter_id: currentQuarter.id,
+                  current_quarter_id: quarterId, switched_at: new Date().toISOString() }),
+              }, { onConflict: 'key' }));
+            if (reviewError) throw reviewError;
+          }
+
           // Unset all current quarters
           await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
@@ -34816,8 +34836,22 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
       
-      async viewQuarterAssignments(quarterId) {
+      _dayAfterDateOnly(value) {
+        const date = new Date(String(value).slice(0, 10) + 'T00:00:00Z');
+        date.setUTCDate(date.getUTCDate() + 1);
+        return date.toISOString().slice(0, 10);
+      }
+
+      async viewQuarterAssignments(quarterId, classId = null, requestedStudentId = null) {
         try {
+          const role = this.userInfo?.profile?.user_type;
+          if (!['student', 'parent'].includes(role)) return;
+          const studentId = role === 'student' ? this.auth.studentRecordId() : requestedStudentId;
+          if (role === 'parent') {
+            const { data: link, error } = await this.auth.supabase.from('parent_child_links')
+              .select('child_id').eq('parent_id', this.userInfo.user.id).eq('child_id', studentId).maybeSingle();
+            if (error || !link) throw new Error('This child is not linked to your account.');
+          }
           // Load quarter info
           const { data: quarter } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
@@ -34826,7 +34860,10 @@ Students you had withdrawn stay withdrawn.`)) {
             .single());
           
           // Load all student's classes
-          const classIds = this.classes.map(c => c.id);
+          const { data: enrollments, error: enrollmentError } = await this.auth.supabase.from('class_enrollments')
+            .select('class_id').eq('student_id', studentId);
+          if (enrollmentError) throw enrollmentError;
+          const classIds = [...new Set((enrollments || []).map(e => e.class_id))].filter(id => !classId || id === classId);
           
           if (classIds.length === 0) {
             this.showNotification('You are not enrolled in any classes', 'info');
@@ -34840,7 +34877,7 @@ Students you had withdrawn stay withdrawn.`)) {
             .in('class_id', classIds)
             .eq('is_published', true)
             .gte('due_date', quarter.start_date)
-            .lte('due_date', quarter.end_date)
+            .lt('due_date', this._dayAfterDateOnly(quarter.end_date))
             .order('due_date', { ascending: false }));
           
           if (error) throw error;
@@ -34880,7 +34917,7 @@ Students you had withdrawn stay withdrawn.`)) {
               .from('assignment_students')
               .select('assignment_id')
               .in('assignment_id', selectiveAssignmentIds)
-              .eq('student_id', this.auth.studentRecordId()));
+              .eq('student_id', studentId));
 
             if (studentAssignments) {
               assignedToStudentIds = new Set(studentAssignments.map(sa => sa.assignment_id));
@@ -34889,10 +34926,13 @@ Students you had withdrawn stay withdrawn.`)) {
 
           // Filter to assignments that are either assigned to all OR specifically
           // assigned to this student, then lay this student's own versions over them.
-          const filteredAssignments = await this.withMyVersions(assignments.filter(assignment => {
+          const visibleAssignments = assignments.filter(assignment => {
             if (assignment.assigned_to_all) return true;
             return assignedToStudentIds.has(assignment.id);
-          }));
+          });
+          const versions = await this.loadStudentVersions(visibleAssignments.map(a => a.id), [studentId]);
+          const filteredAssignments = visibleAssignments.map(a =>
+            this.withStudentVersion(a, this.studentVersionOf(versions, a.id, [studentId])));
 
           // Load submissions
           const assignmentIds = filteredAssignments.map(a => a.id);
@@ -34900,7 +34940,7 @@ Students you had withdrawn stay withdrawn.`)) {
             .from('assignment_submissions')
             .select('*')
             .in('assignment_id', assignmentIds)
-            .eq('student_id', this.auth.studentRecordId()));
+            .eq('student_id', studentId));
           
           const submissionMap = {};
           submissions?.forEach(s => {
@@ -34967,9 +35007,9 @@ Students you had withdrawn stay withdrawn.`)) {
                         </div>
                         <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 10px;">
                           ${statusBadge}
-                          <button class="btn btn-secondary small" onclick="app.viewArchivedSubmission('${assignment.id}')">
+                          ${role === 'student' ? `<button class="btn btn-secondary small" onclick="app.viewArchivedSubmission('${assignment.id}')">
                             👁️ View Details
-                          </button>
+                          </button>` : ''}
                         </div>
                       </div>
                     </div>
