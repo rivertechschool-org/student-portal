@@ -6872,6 +6872,7 @@
         } catch (error) {
           console.error('Error in loadParentData:', error);
         }
+        await this._loadParentConferences();
 
         // Refresh home content if on home page
         if (this.currentSection === 'home') {
@@ -8845,6 +8846,9 @@
               <button class="btn btn-primary" onclick="app.showParentLateEarlyModal()">
                 ⏰ Late Arrival / Early Pickup
               </button>
+              ${(this.parentConferences || []).length ? `<button class="btn btn-primary" onclick="app.showParentConferences()">
+                🤝 Book a Conference
+              </button>` : ''}
               <button class="btn btn-secondary" onclick="app.showSection('profile')">
                 ⚙️ Account Settings
               </button>
@@ -8864,6 +8868,372 @@
           </div>
           ${this._renderMoreSectionsCard()}
         `;
+      }
+
+      // ---- Parent-teacher conferences ----------------------------------------
+      //
+      // An admin makes a conference day and fills it with time slots (20
+      // minutes by default), each with at least one teacher - usually the math
+      // and English teachers, who are ticked to start with. Parents book a free
+      // slot, first come first served, while the day is open; an admin can put
+      // a family in any slot. Only admins see who is booked: the tables are
+      // admin-only and parents go through rt_conferences_for_parent(), which
+      // hands back the free slots and their own children's, nobody else's.
+      // A parent holds one slot per child per day; booking another moves them.
+
+      // Ready-made blocks of time for "Add time slots". Custom times work too.
+      _conferenceZones() {
+        return [
+          { label: 'Morning', start: '08:10', end: '11:40' },
+        ];
+      }
+
+      // "08:10" -> minutes since midnight, and back.
+      _confMinutes(t) {
+        const m = /^(\d{1,2}):(\d{2})/.exec(String(t || ''));
+        return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+      }
+
+      _confHHMM(min) {
+        return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+      }
+
+      // "13:30" -> "1:30 PM", as people read a clock.
+      _confClock(t) {
+        const min = this._confMinutes(t);
+        if (min === null) return String(t || '');
+        const h = Math.floor(min / 60), mm = String(min % 60).padStart(2, '0');
+        return `${((h + 11) % 12) + 1}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
+      }
+
+      _confDayLabel(day) {
+        const [y, m, d] = String(day).split('-').map(Number);
+        if (!y) return String(day || '');
+        return new Date(y, m - 1, d).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+      }
+
+      // The slots a block of time makes: back to back, each `length` minutes,
+      // the last one ending by `end`. Whatever is left over is reported, so
+      // 8:10-11:40 in 20s says "10 slots, 10 minutes left over".
+      _conferenceSlotTimes(start, end, length) {
+        const a = this._confMinutes(start), b = this._confMinutes(end), len = Number(length);
+        if (a === null || b === null || !(len > 0) || b <= a) return { slots: [], leftover: 0 };
+        const slots = [];
+        let t = a;
+        for (; t + len <= b; t += len) slots.push({ starts_at: this._confHHMM(t), ends_at: this._confHHMM(t + len) });
+        return { slots, leftover: b - t };
+      }
+
+      // ---- the admin side ----
+
+      async openConferenceAdmin() {
+        if (this.userInfo?.profile?.user_type !== 'admin') {
+          this.showNotification('Conferences are set up by an admin', 'info');
+          return;
+        }
+        this.showModal('conferences', '🤝 Parent-teacher conferences',
+          `<div id="conf-admin-body"><div style="padding: 20px; text-align: center; color: var(--muted);">Loading\u2026</div></div>`);
+        await this._refreshConferenceAdmin();
+      }
+
+      async _loadConferenceAdmin() {
+        const sb = this.auth.supabase;
+        const since = this._localDateStr(new Date(Date.now() - 14 * 86400000));
+        const { data: days, error } = await this.supabaseQuery(() => sb.from('conference_days')
+          .select('id, day, title, is_open').gte('day', since).order('day'));
+        if (error) throw error;
+        const dayIds = (days || []).map(d => d.id);
+        const slots = dayIds.length ? await this.fetchAllRows((from, to) => sb.from('conference_slots')
+          .select('id, day_id, starts_at, ends_at, teacher_ids, student_id, booked_by, booked_at')
+          .in('day_id', dayIds).order('starts_at').order('id').range(from, to)) : [];
+        const people = await this.fetchAllRows((from, to) => sb.from('user_profiles')
+          .select('id, first_name, last_name, user_type, grade_level, account_status, student_status')
+          .in('user_type', ['teacher', 'admin', 'student', 'parent']).order('id').range(from, to));
+        // Math and English teachers are ticked to start with.
+        const { data: core } = await this.supabaseQuery(() => sb.from('classes')
+          .select('teacher_id, secondary_teacher_id, status').in('subject', ['Math', 'English']));
+        const coreIds = new Set();
+        (core || []).filter(c => c.status !== 'closed').forEach(c => { if (c.teacher_id) coreIds.add(c.teacher_id); if (c.secondary_teacher_id) coreIds.add(c.secondary_teacher_id); });
+        const links = await this.fetchAllRows((from, to) => sb.from('parent_child_links')
+          .select('parent_id, child_id').order('id').range(from, to));
+
+        const byId = {};
+        people.forEach(p => { byId[p.id] = p; });
+        const name = (p) => p ? `${p.first_name || ''} ${p.last_name || ''}`.trim() : '';
+        const teachers = people
+          .filter(p => (p.user_type === 'teacher' && p.account_status !== 'inactive') || coreIds.has(p.id))
+          .map(p => ({ id: p.id, name: name(p), core: coreIds.has(p.id) }))
+          .sort((x, y) => (y.core - x.core) || x.name.localeCompare(y.name));
+        const students = people
+          .filter(p => p.user_type === 'student' && p.student_status !== 'past')
+          .map(p => ({ id: p.id, name: name(p), grade: p.grade_level || '' }))
+          .sort((x, y) => x.name.localeCompare(y.name));
+        const parentsOf = {};
+        links.forEach(l => { if (byId[l.parent_id]) (parentsOf[l.child_id] = parentsOf[l.child_id] || []).push(name(byId[l.parent_id])); });
+        return { days: days || [], slots, teachers, students, parentsOf, byId, name };
+      }
+
+      async _refreshConferenceAdmin() {
+        const body = document.getElementById('conf-admin-body');
+        if (!body) return;
+        try {
+          this._conf = await this._loadConferenceAdmin();
+          body.innerHTML = this._renderConferenceAdmin(this._conf);
+        } catch (e) {
+          body.innerHTML = `<div style="color: var(--danger);">Could not load conferences: ${this.escapeHtml(e?.message || String(e))}</div>`;
+        }
+      }
+
+      _renderConferenceAdmin(c) {
+        const esc = (t) => this.escapeHtml(t);
+        const today = this._localDateStr(new Date());
+        const input = 'padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);';
+        const newDay = `<div class="card" style="padding: 12px; margin-bottom: 14px;">
+            <div style="font-weight: 600; margin-bottom: 8px;">New conference day</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center;">
+              <input type="date" id="conf-new-day" min="${today}" style="${input}">
+              <input type="text" id="conf-new-title" value="Parent-teacher conferences" style="${input} flex: 1; min-width: 180px;">
+              <button class="btn btn-primary" onclick="app.createConferenceDay()">Add day</button>
+            </div>
+          </div>`;
+        if (!c.days.length) {
+          return newDay + `<div style="color: var(--muted); text-align: center; padding: 12px;">No conference days yet. Add one above, then add its time slots.</div>`;
+        }
+        return newDay + c.days.map(d => this._renderConferenceAdminDay(d, c, input)).join('');
+      }
+
+      _renderConferenceAdminDay(d, c, input) {
+        const esc = (t) => this.escapeHtml(t);
+        const id = this.jsAttr(d.id);
+        const slots = c.slots.filter(x => x.day_id === d.id);
+        const booked = slots.filter(x => x.student_id).length;
+        const past = d.day < this._localDateStr(new Date());
+        const zones = this._conferenceZones();
+        const first = zones[0] || { start: '08:10', end: '11:40' };
+        const teacherBoxes = c.teachers.map(t => `<label style="display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; font-size: 13px; cursor: pointer;">
+            <input type="checkbox" class="conf-teacher-${esc(d.id)}" value="${esc(t.id)}" ${t.core ? 'checked' : ''}> ${esc(t.name)}</label>`).join('');
+        const studentOptions = `<option value="">Pick a student\u2026</option>` + c.students.map(st =>
+          `<option value="${esc(st.id)}">${esc(st.name)}${st.grade ? ` (gr ${esc(st.grade)})` : ''}</option>`).join('');
+        const rows = slots.map(x => {
+          const teachers = (x.teacher_ids || []).map(t => c.name(c.byId[t]) || 'Unknown teacher').join(', ');
+          let who;
+          if (x.student_id) {
+            const st = c.byId[x.student_id];
+            const parents = c.parentsOf[x.student_id] || [];
+            const by = x.booked_by && c.byId[x.booked_by]?.user_type === 'parent' ? 'booked by parent' : 'added by the office';
+            who = `<b>${esc(c.name(st) || 'Unknown student')}</b>${parents.length ? ` <span style="color: var(--muted);">\u00b7 ${esc(parents.join(', '))}</span>` : ''}
+              <span style="color: var(--muted); font-size: 11px;">(${by})</span>
+              <button class="btn btn-secondary small" style="margin-left: 6px;" onclick="app.clearConferenceSlot('${this.jsAttr(x.id)}')">Clear</button>`;
+          } else {
+            who = `<span style="color: var(--accent-2);">Open</span>
+              <select id="conf-pick-${esc(x.id)}" style="${input} margin-left: 6px; max-width: 220px;">${studentOptions}</select>
+              <button class="btn btn-secondary small" onclick="app.fillConferenceSlot('${this.jsAttr(x.id)}')">Add</button>`;
+          }
+          return `<tr style="border-top: 1px solid var(--border);">
+              <td style="padding: 6px 8px; white-space: nowrap;">${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}</td>
+              <td style="padding: 6px 8px;">${esc(teachers)}</td>
+              <td style="padding: 6px 8px;">${who}</td>
+              <td style="padding: 6px 8px; text-align: right;"><button class="btn btn-secondary small" title="Remove this time" aria-label="Remove this time" onclick="app.deleteConferenceSlot('${this.jsAttr(x.id)}')">\u2715</button></td>
+            </tr>`;
+        }).join('');
+        return `<div class="card" style="padding: 12px; margin-bottom: 14px; ${past ? 'opacity: 0.7;' : ''}">
+            <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;">
+              <div style="flex: 1; min-width: 200px;"><div style="font-weight: 700;">${esc(this._confDayLabel(d.day))}</div>
+                <div style="color: var(--muted); font-size: 12px;">${esc(d.title)} \u00b7 ${booked} of ${slots.length} booked</div></div>
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 14px;">
+                <input type="checkbox" ${d.is_open ? 'checked' : ''} onchange="app.setConferenceDayOpen('${id}', this.checked)"> Parents can sign up</label>
+              <button class="btn btn-secondary small" onclick="app.deleteConferenceDay('${id}')">Delete day</button>
+            </div>
+            <details style="margin-top: 10px;" ${slots.length ? '' : 'open'}>
+              <summary style="cursor: pointer; font-weight: 600;">\u2795 Add time slots</summary>
+              <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;">
+                <select id="conf-zone-${esc(d.id)}" style="${input}" onchange="app.pickConferenceZone('${id}', this.value)">
+                  ${zones.map((z, i) => `<option value="${i}">${esc(z.label)} (${esc(this._confClock(z.start))}\u2013${esc(this._confClock(z.end))})</option>`).join('')}
+                  <option value="custom">Custom times</option>
+                </select>
+                <input type="time" id="conf-start-${esc(d.id)}" value="${esc(first.start)}" style="${input}" oninput="app.previewConferenceSlots('${id}')"> to
+                <input type="time" id="conf-end-${esc(d.id)}" value="${esc(first.end)}" style="${input}" oninput="app.previewConferenceSlots('${id}')">
+                <label style="font-size: 13px;"><input type="number" id="conf-len-${esc(d.id)}" value="20" min="5" max="120" step="5" style="${input} width: 64px;" oninput="app.previewConferenceSlots('${id}')"> min each</label>
+              </div>
+              <div style="margin-top: 8px; font-size: 13px;"><span style="color: var(--muted);">Teachers in these slots:</span><br>${teacherBoxes || '<span style="color: var(--muted);">No teachers found.</span>'}</div>
+              <div style="margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                <button class="btn btn-primary" onclick="app.addConferenceSlots('${id}')">Add slots</button>
+                <span id="conf-preview-${esc(d.id)}" style="color: var(--muted); font-size: 13px;">${esc(this._conferencePreviewText(first.start, first.end, 20))}</span>
+              </div>
+            </details>
+            ${slots.length ? `<div style="overflow-x: auto; margin-top: 10px;"><table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+              <thead><tr style="text-align: left; color: var(--muted);"><th style="padding: 4px 8px;">Time</th><th style="padding: 4px 8px;">Teachers</th><th style="padding: 4px 8px;">Family</th><th></th></tr></thead>
+              <tbody>${rows}</tbody></table></div>` : ''}
+          </div>`;
+      }
+
+      _conferencePreviewText(start, end, length) {
+        const { slots, leftover } = this._conferenceSlotTimes(start, end, length);
+        if (!slots.length) return 'Those times make no slots.';
+        return `${slots.length} slot${slots.length === 1 ? '' : 's'}, ${this._confClock(slots[0].starts_at)}\u2013${this._confClock(slots[slots.length - 1].ends_at)}`
+          + (leftover ? ` (${leftover} min left over)` : '');
+      }
+
+      pickConferenceZone(dayId, value) {
+        const z = this._conferenceZones()[Number(value)];
+        if (z) {
+          document.getElementById(`conf-start-${dayId}`).value = z.start;
+          document.getElementById(`conf-end-${dayId}`).value = z.end;
+        }
+        this.previewConferenceSlots(dayId);
+      }
+
+      previewConferenceSlots(dayId) {
+        const v = (k) => document.getElementById(`conf-${k}-${dayId}`)?.value;
+        const el = document.getElementById(`conf-preview-${dayId}`);
+        if (el) el.textContent = this._conferencePreviewText(v('start'), v('end'), v('len'));
+      }
+
+      async createConferenceDay() {
+        const day = document.getElementById('conf-new-day')?.value;
+        const title = (document.getElementById('conf-new-title')?.value || '').trim() || 'Parent-teacher conferences';
+        if (!day) { this.showNotification('Pick a date', 'error'); return; }
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').insert({ day, title }));
+        if (error) { this.showNotification('Could not add the day: ' + error.message, 'error'); return; }
+        this.showNotification('Day added. Add its time slots, then tick "Parents can sign up".', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async addConferenceSlots(dayId) {
+        const v = (k) => document.getElementById(`conf-${k}-${dayId}`)?.value;
+        const { slots } = this._conferenceSlotTimes(v('start'), v('end'), v('len'));
+        const teacherIds = [...document.querySelectorAll(`.conf-teacher-${dayId}`)].filter(b => b.checked).map(b => b.value);
+        if (!slots.length) { this.showNotification('Those times make no slots', 'error'); return; }
+        if (!teacherIds.length) { this.showNotification('Each slot needs a teacher: tick at least one', 'error'); return; }
+        const rows = slots.map(x => ({ day_id: dayId, starts_at: x.starts_at, ends_at: x.ends_at, teacher_ids: teacherIds }));
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots').insert(rows));
+        if (error) { this.showNotification('Could not add the slots: ' + error.message, 'error'); return; }
+        this.showNotification(`${rows.length} slot${rows.length === 1 ? '' : 's'} added`, 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async setConferenceDayOpen(dayId, open) {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').update({ is_open: !!open }).eq('id', dayId));
+        if (error) { this.showNotification('Could not change it: ' + error.message, 'error'); }
+        else this.showNotification(open ? 'Parents can now sign up for this day' : 'Sign-up closed for this day', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async deleteConferenceDay(dayId) {
+        const n = (this._conf?.slots || []).filter(x => x.day_id === dayId && x.student_id).length;
+        if (!confirm(n ? `Delete this day? ${n} famil${n === 1 ? 'y is' : 'ies are'} booked and will lose their time.` : 'Delete this day and its slots?')) return;
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').delete().eq('id', dayId));
+        if (error) this.showNotification('Could not delete it: ' + error.message, 'error');
+        await this._refreshConferenceAdmin();
+      }
+
+      async deleteConferenceSlot(slotId) {
+        const slot = (this._conf?.slots || []).find(x => x.id === slotId);
+        if (slot?.student_id && !confirm('A family is booked in this time. Remove it anyway?')) return;
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots').delete().eq('id', slotId));
+        if (error) this.showNotification('Could not remove it: ' + error.message, 'error');
+        await this._refreshConferenceAdmin();
+      }
+
+      async fillConferenceSlot(slotId) {
+        const studentId = document.getElementById(`conf-pick-${slotId}`)?.value;
+        if (!studentId) { this.showNotification('Pick a student first', 'error'); return; }
+        const { error } = await this.auth.supabase.rpc('rt_book_conference_slot', { p_slot: slotId, p_student: studentId });
+        if (error) this.showNotification(error.message, 'error');
+        await this._refreshConferenceAdmin();
+      }
+
+      async clearConferenceSlot(slotId) {
+        const { error } = await this.auth.supabase.rpc('rt_cancel_conference_slot', { p_slot: slotId });
+        if (error) this.showNotification(error.message, 'error');
+        await this._refreshConferenceAdmin();
+      }
+
+      // ---- the parent side ----
+
+      // What the parent may see, from the database. [] when no conference day
+      // is open and none of their children is booked: then the home page shows
+      // no conference button at all.
+      async _loadParentConferences() {
+        try {
+          const { data, error } = await this.auth.supabase.rpc('rt_conferences_for_parent');
+          if (error) throw error;
+          this.parentConferences = (typeof data === 'string' ? JSON.parse(data) : data) || [];
+        } catch (e) {
+          console.warn('Conferences not loaded:', e?.message || e);
+          this.parentConferences = [];
+        }
+        return this.parentConferences;
+      }
+
+      // The free slots to offer one child on one day: those with one of the
+      // child's teachers. If none of the day's slots has one (teachers not yet
+      // set up for that child), every free slot is offered rather than none.
+      _conferenceFreeSlotsFor(day, childId) {
+        const free = (day.slots || []).filter(x => !x.student_id);
+        const theirs = free.filter(x => (x.for_children || []).includes(childId));
+        return theirs.length ? theirs : free;
+      }
+
+      async showParentConferences(childId = null) {
+        const days = await this._loadParentConferences();
+        const kids = this.children || [];
+        if (!days.length) {
+          this.showNotification('There are no conference times to book right now.', 'info');
+          if (this.currentSection === 'home') { this._lastHomeSetup = 0; this.setupHomeContent(); }
+          return;
+        }
+        if (!kids.length) { this.showNotification('No children are linked to your account yet.', 'info'); return; }
+        const esc = (t) => this.escapeHtml(t);
+        const child = kids.find(k => k.id === childId) || kids[0];
+        const nameOf = (k) => `${k.first_name || ''} ${k.last_name || ''}`.trim();
+        const kidIds = new Set(kids.map(k => k.id));
+        const picker = kids.length > 1 ? `<div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+            ${kids.map(k => `<button class="btn ${k.id === child.id ? 'btn-primary' : 'btn-secondary'} small" onclick="app.showParentConferences('${this.jsAttr(k.id)}')">${esc(nameOf(k))}</button>`).join('')}
+          </div>` : '';
+        const html = days.map(d => {
+          const mine = (d.slots || []).filter(x => x.student_id && kidIds.has(x.student_id));
+          const childHas = mine.find(x => x.student_id === child.id);
+          const free = d.is_open ? this._conferenceFreeSlotsFor(d, child.id) : [];
+          const teachers = (x) => (x.teachers || []).length ? ` with ${esc(x.teachers.join(' & '))}` : '';
+          return `<div class="card" style="padding: 12px; margin-bottom: 12px;">
+              <div style="font-weight: 700;">${esc(d.title)}</div>
+              <div style="color: var(--muted); font-size: 13px; margin-bottom: 8px;">${esc(this._confDayLabel(d.day))}</div>
+              ${mine.map(x => {
+                const k = kids.find(kk => kk.id === x.student_id);
+                return `<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--accent-2); border-radius: 6px; margin-bottom: 6px;">
+                  <span>\u2705 <b>${esc(k ? nameOf(k) : '')}</b>: ${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}${teachers(x)}</span>
+                  <button class="btn btn-secondary small" style="margin-left: auto;" onclick="app.cancelParentConference('${this.jsAttr(x.id)}', '${this.jsAttr(child.id)}')">Cancel</button>
+                </div>`;
+              }).join('')}
+              ${!d.is_open ? `<div style="color: var(--muted); font-size: 13px;">Sign-up for this day is closed.</div>`
+                : free.length ? `<div style="font-size: 13px; margin: 6px 0;">${childHas ? `Pick another time to move ${esc(nameOf(child))}:` : `Pick a time for ${esc(nameOf(child))}:`}</div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 6px;">${free.map(x =>
+                    `<button class="btn btn-secondary small" onclick="app.bookParentConference('${this.jsAttr(x.id)}', '${this.jsAttr(child.id)}')">${esc(this._confClock(x.starts_at))}${teachers(x)}</button>`).join('')}</div>`
+                : `<div style="color: var(--muted); font-size: 13px;">Every time on this day is taken.</div>`}
+            </div>`;
+        }).join('');
+        this.showModal('parent-conferences', '🤝 Parent-teacher conferences', picker + html
+          + `<div style="text-align: right; margin-top: 8px;"><button class="btn btn-primary" onclick="app.closeModal('parent-conferences')">Done</button></div>`);
+      }
+
+      async bookParentConference(slotId, childId) {
+        const { data, error } = await this.auth.supabase.rpc('rt_book_conference_slot', { p_slot: slotId, p_student: childId });
+        if (error) {
+          this.showNotification(error.message, 'error');
+        } else {
+          const r = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+          this.showNotification(r.moved_from ? `Moved from ${this._confClock(r.moved_from)}. You're booked.` : "You're booked.", 'success');
+        }
+        await this.showParentConferences(childId);
+      }
+
+      async cancelParentConference(slotId, childId) {
+        if (!confirm('Cancel this conference time? Someone else may book it.')) return;
+        const { error } = await this.auth.supabase.rpc('rt_cancel_conference_slot', { p_slot: slotId });
+        if (error) this.showNotification(error.message, 'error');
+        else this.showNotification('Cancelled', 'success');
+        await this.showParentConferences(childId);
       }
 
       // Parent-specific methods
@@ -38406,6 +38776,19 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div>
                       <div style="font-weight: 600; font-size: 14px;">Grade Reports</div>
                       <div style="color: var(--muted); font-size: 11px;">By quarter & class</div>
+                    </div>
+                    </div>
+                  </div>
+
+
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid var(--accent-2); transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(139, 255, 176, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.openConferenceAdmin()">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">🤝</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Conferences</div>
+                      <div style="color: var(--muted); font-size: 11px;">Parent-teacher time slots</div>
                     </div>
                     </div>
                   </div>

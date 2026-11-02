@@ -6008,3 +6008,21 @@ whose name says homeschool were ticked when the setting was added; anything else
 by hand. The backend change is in `student-portal-backend` (admin only, like the report card box).
 Also fixed `tests/report-card-check.test.js` building dates in UTC, which failed it every evening
 after 4pm Pacific.
+
+### 2026-11-01 · Parent-teacher conference sign-up
+
+New admin tile **🤝 Conferences**. An admin adds a conference day, then adds its time slots:
+pick the **Morning (8:10-11:40)** block or type custom times, set the length (20 minutes by
+default) and tick the teachers (math and English teachers start ticked; every slot needs at
+least one). Ticking **Parents can sign up** opens the day. The admin sees every slot, who is in
+it, their parents, and whether a parent booked it or the office added it, and can add a student
+to a free slot, clear one, or remove times.
+
+Parents get a **🤝 Book a Conference** button on their home page, shown only while a conference
+day is open (or one of their children is booked on a day still to come). They see the free times
+and their own bookings, never other families'. First come first served; one time per child per
+day, and picking another time moves the child. Each child is offered the slots with one of their
+own teachers, or every free slot if none has one. Parents can cancel until the time starts.
+
+More ready-made blocks go in `_conferenceZones()`. Teachers don't see the bookings yet. The
+backend side is in `student-portal-backend` (applied). `tests/conferences.test.js`.
