@@ -18895,7 +18895,7 @@
                  style="padding: 10px 12px; ${isHidden ? 'opacity: 0.5;' : closed ? 'opacity: 0.7;' : ''} ${st && st.border ? `box-shadow: 0 0 0 2px ${st.border};` : ''}">
               <div style="font-weight: 700; font-size: 14px; line-height: 1.25;">${this.escapeHtml(cls.name || '')}</div>
               <div style="font-size: 11px; opacity: 0.85; margin-top: 4px;">${this.escapeHtml([cls.subject, this.gradeBandLabel(cls.grade_band)].filter(Boolean).join(' · '))}</div>
-              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${cls.student_count || 0}/${cls.max_students || 30}${closed ? ' · Closed' : ''}${isHidden ? ' · Hidden' : ''}</div>
+              <div style="font-size: 11px; opacity: 0.85; margin-top: 2px;">👥 ${this.classAttendanceCount(cls, d, p)}${closed ? ' · Closed' : ''}${isHidden ? ' · Hidden' : ''}</div>
               <div class="class-actions" style="position: static; justify-content: flex-end; margin-top: 8px;">
                 <button onclick="event.stopPropagation(); ${attendanceCall(cls, d, p)}" title="Take attendance">📋</button>
                 <button onclick="event.stopPropagation(); app.showClassProgress('${cls.id}')" title="Class progress">📈</button>
@@ -19030,6 +19030,32 @@
         return m;
       }
 
+      // Week cells describe their own lesson; unscheduled cards use today's
+      // latest recorded lesson. Unknown attendance must not look like zero.
+      classAttendanceCount(cls, day = null, period = null) {
+        const total = cls.student_count || 0;
+        if (this._weekSessionsFor !== this._weekSessionsKey()) return `—/${total}`;
+        const date = day === null ? new Date() : this._weekMonday(new Date());
+        if (day !== null) date.setDate(date.getDate() + ((day + 6) % 7));
+        const dateStr = this._localDateStr(date);
+        let sessions = (this._weekSessions?.[cls.id] || []).filter(r => r.date === dateStr);
+        let rows = (this._weekClassMarks || []).filter(r => r.class_id === cls.id && r.date === dateStr);
+        if (day === null) {
+          const periods = [...sessions, ...rows].map(r => r.period == null ? -1 : Number(r.period));
+          period = periods.length ? Math.max(...periods) : -1;
+        }
+        const matches = r => (r.period == null ? -1 : Number(r.period)) === (period == null ? -1 : Number(period));
+        sessions = sessions.filter(matches);
+        rows = rows.filter(matches);
+        const roster = new Set((this._weekClassEnrollments || []).filter(r => r.class_id === cls.id).map(r => r.student_id));
+        const enrolled = roster.size;
+        if (sessions.some(r => r.status === 'canceled')) return `—/${enrolled}`;
+        if (!rows.length && !sessions.some(r => r.status === 'completed')) return `—/${enrolled}`;
+        const here = new Set(['present', 'late', 'left_early', 'late_left_early']);
+        const present = new Set(rows.filter(r => roster.has(r.student_id) && here.has(r.status)).map(r => r.student_id));
+        return `${present.size}/${enrolled}`;
+      }
+
       _weekSessionsKey() {
         const ids = (this.classes || []).map(c => c.id).filter(Boolean).slice().sort().join(',');
         return `${this._localDateStr(this._weekMonday(new Date()))}|${ids}`;
@@ -19047,6 +19073,7 @@
         const monday = this._weekMonday(new Date());
         const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
         const map = {};
+        let marks = [], enrollments = [];
         try {
           if (ids.length) {
             const { data, error } = await this.auth.supabase.from('class_attendance_sessions')
@@ -19054,6 +19081,15 @@
               .gte('date', this._localDateStr(monday)).lte('date', this._localDateStr(sunday));
             if (error) throw error;
             (data || []).forEach(r => (map[r.class_id] = map[r.class_id] || []).push(r));
+            [marks, enrollments] = await Promise.all([
+              this.fetchAllRows((from, to) => this.auth.supabase.from('class_attendance')
+                .select('class_id, student_id, date, period, status').in('class_id', ids)
+                .gte('date', this._localDateStr(monday)).lte('date', this._localDateStr(sunday))
+                .order('id').range(from, to)),
+              this.fetchAllRows((from, to) => this.auth.supabase.from('class_enrollments')
+                .select('class_id, student_id').in('class_id', ids).eq('status', 'active')
+                .order('id').range(from, to)),
+            ]);
           }
         } catch (e) {
           // Outlines are a nicety. Without them the week still works; with a
@@ -19065,6 +19101,8 @@
         // A register saved while this read was in flight started a newer one;
         // this answer predates that save, so let the newer one land instead.
         if (seq !== this._weekSessionsSeq) return;
+        this._weekClassMarks = marks;
+        this._weekClassEnrollments = enrollments;
         this._weekSessions = map;
         this._weekSessionsFor = key;
         this._weekSessionsLoading = null;
@@ -19453,6 +19491,7 @@
       }
 
       renderClassCard(cls, isWithdrawn = false) {
+        if (['teacher', 'admin'].includes(this.userInfo.profile.user_type)) this.loadWeekAttendance();
         const userType = this.userInfo.profile.user_type;
         const isTeacher = userType === 'teacher' || userType === 'admin';
         const isStudent = userType === 'student';
@@ -19509,7 +19548,7 @@
                </div>` : ''; })()}
             ${isTeacher ? `
               <div class="class-stats" style="margin-top: 8px;">
-                <span>👥 ${cls.student_count || 0}/${cls.max_students || 30}</span>
+                <span title="Present / enrolled">👥 ${this.classAttendanceCount(cls)}</span>
                 <span>🔢 ${cls.class_code}</span>
               </div>
             ` : ''}
