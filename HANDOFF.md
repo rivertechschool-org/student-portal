@@ -5998,3 +5998,13 @@ every class with "homeschool" (or "home school" / "home-school") in its name, fo
 students too; a student whose classes are all such is left out with them. The window and Riven
 say how many students and classes were left out. A named student is still checked in full.
 `tests/report-card-check.test.js`.
+
+### 2026-11-01 · Homeschool classes are a setting on the class, not a name match
+
+Edit Class and Create Class have a new admin box, **🏠 Homeschool class**, beside "Include on
+report cards". The report card check's homeschool box now leaves out the classes ticked there,
+and no longer looks at the name, so renaming a class doesn't change it. The ten existing classes
+whose name says homeschool were ticked when the setting was added; anything else has to be ticked
+by hand. The backend change is in `student-portal-backend` (admin only, like the report card box).
+Also fixed `tests/report-card-check.test.js` building dates in UTC, which failed it every evening
+after 4pm Pacific.

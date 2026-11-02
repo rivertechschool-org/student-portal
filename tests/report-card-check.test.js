@@ -43,7 +43,8 @@ const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 const rivenCheck = method('terminalReportCardCheck', '    ');
 
 // Q1 is over, Q2 is running.
-const iso = (d) => d.toISOString().slice(0, 10);
+// Local dates, as the portal counts them: toISOString is UTC, a day ahead every evening.
+const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const day = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return iso(d); };
 const Q1 = { id: 'q1', name: 'Q1', start_date: day(-80), end_date: day(-10), school_year: '2026-2027', is_current: false };
 const Q2 = { id: 'q2', name: 'Q2', start_date: day(-9), end_date: day(60), school_year: '2026-2027', is_current: true };
@@ -250,9 +251,12 @@ function makeApp(role = 'admin') {
     ok('the transcript leaves it off too', /enrollments = \(enrollments \|\| \[\]\)\.filter\(e => e\.classes\?\.on_report_card !== false\)/.test(tr));
     const gpa = method('calculateStudentGPA');
     ok('  and so does the GPA', /select\('id, name, course_weight, on_report_card'\)/.test(gpa) && /gradeData = gradeData\.filter\(g => classMap\[g\.class_id\]\?\.on_report_card !== false\)/.test(gpa));
-    const edit = method('editClass'), save = html.slice(html.indexOf("updatedData.credits = creditsVal;"), html.indexOf("updatedData.credits = creditsVal;") + 200);
+    const edit = method('editClass'), save = html.slice(html.indexOf("updatedData.credits = creditsVal;"), html.indexOf("updatedData.credits = creditsVal;") + 400);
     ok('Edit Class has the box, ticked unless the class is off', /id="edit-class-on-report-card" \$\{classData\.on_report_card === false \? '' : 'checked'\}/.test(edit));
     ok('  and saves it', /updatedData\.on_report_card = document\.getElementById\('edit-class-on-report-card'\)\?\.checked !== false;/.test(save));
+    ok('Edit Class has the homeschool box and saves it', /id="edit-class-is-homeschool" \$\{classData\.is_homeschool === true \? 'checked' : ''\}/.test(edit)
+      && /updatedData\.is_homeschool = document\.getElementById\('edit-class-is-homeschool'\)\?\.checked === true;/.test(save));
+    ok('Create Class has it, unticked', /id="class-is-homeschool"  style/.test(html) && /classData\.is_homeschool = document\.getElementById\('class-is-homeschool'\)\?\.checked === true;/.test(html));
     ok('Create Class has it, ticked', /id="class-on-report-card" checked/.test(html) && /classData\.on_report_card = document\.getElementById\('class-on-report-card'\)\?\.checked !== false;/.test(html));
     reset();
   }
@@ -285,17 +289,20 @@ function makeApp(role = 'admin') {
   ok('  and from the missing-grade counts', ft.byClass.find(c => c.className === 'Pre-Algebra')?.students.length === 1 && ft.missingCount === 1);
   ok('  and says how many were left out', ft.skippedHomeschool === 1);
   {
-    // Classes named for the homeschool days go too, for full-time students as well.
-    const HS = cls('c-hs', 'Homeschool Older Tuesday Art', 'Art');
-    const HS2 = cls('c-hs2', 'Home-School Younger Science', 'Science');
+    // Classes marked homeschool go too, for full-time students as well. The
+    // setting decides, not the name.
+    const HS = { ...cls('c-hs', 'Homeschool Older Tuesday Art', 'Art'), is_homeschool: true };
+    const HS2 = { ...cls('c-hs2', 'Tuesday Co-op Science', 'Science'), is_homeschool: true };
+    const NAMED = cls('c-hs3', 'Home School History Club', 'History');
     const E2 = (id, student, c) => ({ id, student_id: student, class_id: c.id, status: 'active', enrolled_at: day(-85) + 'T09:00:00Z', class_grade: null, academic_grade: null, participation_grade: null, credits_override: null, classes: c });
     db.user_profiles.push({ id: 's-hsonly', first_name: 'OnlyHomeschoolClass', last_name: 'Test', user_type: 'student', date_of_birth: '2012-01-01', grade_level: '7', student_status: 'active' });
-    db.class_enrollments.push(E2('e-hs1', 's-ok', HS), E2('e-hs2', 's-hsonly', HS2));
+    db.class_enrollments.push(E2('e-hs1', 's-ok', HS), E2('e-hs2', 's-hsonly', HS2), E2('e-hs3', 's-ok', NAMED));
     const withHs = await app.checkReportCards();
     ok('without the box, a homeschool class is checked like any other', withHs.byClass.some(c => c.className === 'Homeschool Older Tuesday Art') && withHs.checked === 11);
     const noHs = await app.checkReportCards({ skipHomeschool: true });
-    ok('with it, classes with "homeschool" in the name are left out', !noHs.byClass.some(c => /home.?school/i.test(c.className)) && !noHs.students.some(x => x.name === 'Complete Test'), JSON.stringify(noHs.byClass.map(c => c.className)));
-    ok('  "Home-School" spelled apart too, and a student with only those classes goes with them', !noHs.students.some(x => x.name === 'OnlyHomeschoolClass Test') && noHs.checked === 9, String(noHs.checked));
+    ok('with it, classes marked homeschool are left out', !noHs.byClass.some(c => c.className === 'Homeschool Older Tuesday Art' || c.className === 'Tuesday Co-op Science'), JSON.stringify(noHs.byClass.map(c => c.className)));
+    ok('  a class only named homeschool, not marked, is still checked', noHs.byClass.some(c => c.className === 'Home School History Club'));
+    ok('  a student with only marked classes goes with them', !noHs.students.some(x => x.name === 'OnlyHomeschoolClass Test') && noHs.checked === 9, String(noHs.checked));
     ok('  counted', noHs.skippedHomeschoolClasses === 2 && noHs.skippedHomeschool === 2, `${noHs.skippedHomeschoolClasses} classes, ${noHs.skippedHomeschool} students`);
     const named = await app.checkReportCards({ studentId: 's-ok', skipHomeschool: true });
     ok('  a named student still has every class checked', named.students[0]?.issues.some(i => /Homeschool Older Tuesday Art/.test(i.text)));
