@@ -6116,3 +6116,30 @@ line, so the skill stays and the next Hole Check reads it as a miss to ask again
 believes (two misses, "forgot it" then missed, or "never learned it") saves the real score and
 brings the skill down. Skills not yet earned always save the real score. No backend change.
 `tests/dojo-server-merge.test.js`.
+
+### 2026-11-02 · Conferences: places, a morning-of reminder, and Riven
+
+- **Places.** The Conferences tool has a **📍 Places** list (Room 4, Library, Phone call...). Each
+  booking gets a **Where** picker in the review, and the review counts bookings with no place and
+  can put them all in one place at once. The confirmation, the teacher's notes, the parent's
+  booking and the teacher's schedule all say where. Changing the place on a conference the family
+  was already sent tells the family (in-app and email) and its teachers. Taking a place off the
+  list leaves bookings already in it alone.
+- **Morning-of reminder.** From 7:00 AM on a conference day, each parent with a confirmed
+  conference gets an in-app note (time, teachers, place), and each teacher gets one with their
+  count, time range, place and first family. Once a day; bookings never confirmed are not
+  reminded. Runs on a schedule in the database; nothing on the page sends it.
+- **Not built, on purpose:** an announcement when sign-up opens. Jordan is sending that through the
+  school's other email channels so families without a portal account hear too.
+- **Riven** (build `2026-11-02·a`). Anyone can ask "conference slots" or "when is Noah's
+  conference" (teachers get their own schedule). Admins can say "add conference slots on November
+  20, morning" (or "8:10 to 11:40, 30 minutes", "with [teacher]"), "book Noah for conferences at
+  9:30" (moves a student who already has a time), "cancel Noah's conference", "put Noah's
+  conference in Room 4", "conferences on Thursday are in the library", "add conference place
+  Gym B", and "confirm conferences" (the same as Finalize; with a student named, just their
+  family). Every change asks first and can be undone except sending. Riven uses the same calls as
+  the tool, so families and teachers are told the same things. "Conference room" is still a room
+  to book.
+
+Backend in `student-portal-backend` (applied). Tests: `tests/conferences.test.js`,
+`tests/riven-conferences.test.js`, conference lines in `debug-tools/nlp-stress.js`.

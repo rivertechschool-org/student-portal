@@ -8914,6 +8914,13 @@
       // parents, and by email to them and to any address the admin added for
       // a family without a parent account - and closes sign-up. A confirmed
       // time is fixed for parents; clearing or removing one tells the family.
+      //
+      // Where: the admin keeps a list of places (conference_locations) and
+      // picks one for each booking in the review, or one for the whole day.
+      // The confirmation says it; changing it after the family was sent their
+      // time tells them and the teachers (the database does). On the morning
+      // of, parents of confirmed conferences and their teachers get an in-app
+      // reminder from a scheduled job; nothing on this page sends it.
 
       // Ready-made blocks of time for "Add time slots". Custom times work too.
       _conferenceZones() {
@@ -8980,7 +8987,7 @@
         if (error) throw error;
         const dayIds = (days || []).map(d => d.id);
         const slots = dayIds.length ? await this.fetchAllRows((from, to) => sb.from('conference_slots')
-          .select('id, day_id, starts_at, ends_at, teacher_ids, assigned_teacher_ids, teachers_matched, student_id, booked_by, booked_at, contact_email, confirmed_at')
+          .select('id, day_id, starts_at, ends_at, teacher_ids, assigned_teacher_ids, teachers_matched, student_id, booked_by, booked_at, contact_email, confirmed_at, location_id')
           .in('day_id', dayIds).order('starts_at').order('id').range(from, to)) : [];
         const people = await this.fetchAllRows((from, to) => sb.from('user_profiles')
           .select('id, first_name, last_name, email, user_type, grade_level, account_status, student_status')
@@ -9015,7 +9022,10 @@
           if (parent) (parentsOf[l.child_id] = parentsOf[l.child_id] || []).push({ name: name(parent), email: parent.email || '' });
         });
         const expected = new Set(coreEnrolled.map(e => e.student_id).filter(id => byId[id] && byId[id].student_status !== 'past'));
-        return { days: days || [], slots, teachers, students, parentsOf, byId, name, expected };
+        // Places, including ones taken off the list: a booking may still name one.
+        const { data: locations } = await this.supabaseQuery(() => sb.from('conference_locations')
+          .select('id, name, active').order('name'));
+        return { days: days || [], slots, teachers, students, parentsOf, byId, name, expected, locations: locations || [] };
       }
 
       async _refreshConferenceAdmin() {
@@ -9041,10 +9051,38 @@
               <button class="btn btn-primary" onclick="app.createConferenceDay()">Add day</button>
             </div>
           </div>`;
+        const places = this._renderConferencePlaces(c, input);
         if (!c.days.length) {
-          return newDay + `<div style="color: var(--muted); text-align: center; padding: 12px;">No conference days yet. Add one above, then add its time slots.</div>`;
+          return newDay + places + `<div style="color: var(--muted); text-align: center; padding: 12px;">No conference days yet. Add one above, then add its time slots.</div>`;
         }
-        return newDay + c.days.map(d => this._renderConferenceAdminDay(d, c, input)).join('');
+        return newDay + places + c.days.map(d => this._renderConferenceAdminDay(d, c, input)).join('');
+      }
+
+      // The school's list of places. Removing one only takes it off the list:
+      // bookings already in it keep it, and so does what families were sent.
+      _renderConferencePlaces(c, input) {
+        const esc = (t) => this.escapeHtml(t);
+        const active = (c.locations || []).filter(l => l.active);
+        return `<details class="card" style="padding: 12px; margin-bottom: 14px;" ${active.length ? '' : 'open'}>
+            <summary style="cursor: pointer; font-weight: 600;">\u{1F4CD} Places <span style="color: var(--muted); font-weight: 400; font-size: 12px;">${active.length
+              ? `${active.length}: ${esc(active.map(l => l.name).join(', '))}` : 'none yet: add the rooms conferences can be in'}</span></summary>
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;">${active.map(l =>
+              `<span style="display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 12px; font-size: 13px;">${esc(l.name)}
+                <button class="btn btn-secondary small" style="padding: 0 6px;" title="Take off the list" aria-label="Take ${esc(l.name)} off the list" onclick="app.retireConferenceLocation('${this.jsAttr(l.id)}')">\u2715</button></span>`).join('')}</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;">
+              <input type="text" id="conf-new-place" placeholder="Room 4, Library, Phone call\u2026" maxlength="80" style="${input} flex: 1; min-width: 180px;">
+              <button class="btn btn-secondary" onclick="app.addConferenceLocation()">Add place</button>
+            </div>
+          </details>`;
+      }
+
+      // A booking's place picker: the places on the list, plus the one it
+      // already has if that was taken off the list since.
+      _conferencePlaceOptions(c, current, blank = 'Where?') {
+        const esc = (t) => this.escapeHtml(t);
+        const list = (c.locations || []).filter(l => l.active || l.id === current);
+        return `<option value="">${esc(blank)}</option>` + list.map(l =>
+          `<option value="${esc(l.id)}" ${l.id === current ? 'selected' : ''}>${esc(l.name)}${l.active ? '' : ' (off the list)'}</option>`).join('');
       }
 
       _renderConferenceAdminDay(d, c, input) {
@@ -9084,6 +9122,7 @@
                 : 'No parent account'}</div>
               ${!reachable ? `<div style="color: var(--warning); font-size: 11px;">\u26a0 Nobody to send the confirmation to: add an email</div>` : ''}
               <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-top: 4px;">
+                <select id="conf-place-${esc(x.id)}" aria-label="Where" style="${input} font-size: 12px; padding: 3px 6px; max-width: 180px;" onchange="app.setConferenceSlotLocation('${sid}', this.value)">${this._conferencePlaceOptions(c, x.location_id)}</select>
                 <input type="email" id="conf-email-${esc(x.id)}" value="${esc(x.contact_email || '')}" placeholder="Also email (any address)" style="${input} font-size: 12px; padding: 3px 6px; width: 200px;">
                 <button class="btn btn-secondary small" onclick="app.saveConferenceContactEmail('${sid}')">Save</button>
                 ${status}
@@ -9141,6 +9180,7 @@
         const unsent = booked.filter(x => !x.confirmed_at);
         const unreachable = booked.filter(x => !(c.parentsOf[x.student_id] || []).length && !x.contact_email);
         const unmatched = booked.filter(x => x.teachers_matched === false);
+        const noPlace = booked.filter(x => !x.location_id);
         const doubleBooked = new Set();
         for (const a of booked) {
           for (const b of booked) {
@@ -9153,7 +9193,7 @@
         const have = new Set(booked.map(x => x.student_id));
         const notBooked = [...(c.expected || [])].filter(id => !have.has(id))
           .map(id => c.name(c.byId[id])).filter(Boolean).sort((x, y) => x.localeCompare(y));
-        return { booked, unsent, unreachable, unmatched, doubleBooked, notBooked };
+        return { booked, unsent, unreachable, unmatched, noPlace, doubleBooked, notBooked };
       }
 
       _renderConferenceReview(d, c, r) {
@@ -9175,6 +9215,11 @@
               <span style="margin-left: auto;">${button}</span>
             </div>
             ${unreachableToSend ? warn(`${unreachableToSend} booking${unreachableToSend === 1 ? ' has' : 's have'} nobody to send to: add an email on ${unreachableToSend === 1 ? 'it' : 'each'}, or it stays unconfirmed`) : ''}
+            ${r.noPlace?.length ? `<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px;">${warn(`${r.noPlace.length} booking${r.noPlace.length === 1 ? ' has' : 's have'} no place yet`)}
+              ${(c.locations || []).some(l => l.active)
+                ? `<select id="conf-dayplace-${esc(d.id)}" aria-label="Place for every booking without one" style="padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); font-size: 12px;">${this._conferencePlaceOptions(c, null, 'Put them all in\u2026')}</select>
+                   <button class="btn btn-secondary small" onclick="app.setConferenceDayLocation('${id}')">Apply</button>`
+                : `<span style="color: var(--muted); font-size: 12px;">Add places under \u{1F4CD} Places first.</span>`}</div>` : ''}
             ${r.unmatched.length ? warn(`${r.unmatched.length} booking${r.unmatched.length === 1 ? ' is' : 's are'} in a slot without that student's math or English teacher`) : ''}
             ${r.doubleBooked.size ? warn('A teacher has two conferences at the same time') : ''}
             ${r.notBooked.length ? `<details style="margin-top: 4px; font-size: 12px;"><summary style="cursor: pointer; color: var(--muted);">${r.notBooked.length} student${r.notBooked.length === 1 ? '' : 's'} in math or English with no time on this day</summary>
@@ -9219,6 +9264,58 @@
         if (error) { this.showNotification('Could not save the email: ' + error.message, 'error'); return; }
         const slot = (this._conf?.slots || []).find(x => x.id === slotId);
         this.showNotification(value && slot?.confirmed_at ? 'Saved. Press Resend to send the confirmation to it.' : 'Saved', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async addConferenceLocation() {
+        const el = document.getElementById('conf-new-place');
+        const name = (el?.value || '').trim().replace(/\s+/g, ' ');
+        if (!name) { this.showNotification('Type the place first', 'error'); return; }
+        const same = (this._conf?.locations || []).find(l => l.name.trim().toLowerCase() === name.toLowerCase());
+        if (same?.active) { this.showNotification(`${same.name} is already on the list`, 'info'); return; }
+        const sb = this.auth.supabase;
+        // A place taken off the list earlier comes back rather than doubling up.
+        const { error } = await this.supabaseQuery(() => same
+          ? sb.from('conference_locations').update({ active: true }).eq('id', same.id)
+          : sb.from('conference_locations').insert({ name }));
+        if (error) { this.showNotification('Could not add the place: ' + error.message, 'error'); return; }
+        this.showNotification(`${name} added`, 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async retireConferenceLocation(locationId) {
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_locations').update({ active: false }).eq('id', locationId));
+        if (error) { this.showNotification('Could not change it: ' + error.message, 'error'); return; }
+        this.showNotification('Taken off the list. Bookings already there keep it.', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async setConferenceSlotLocation(slotId, locationId) {
+        const slot = (this._conf?.slots || []).find(x => x.id === slotId);
+        // After the family was sent their time, a new place is news to them.
+        if (slot?.confirmed_at && locationId && locationId !== slot.location_id
+            && !confirm('This family has been sent their time. Tell them and the teachers about the new place?')) {
+          await this._refreshConferenceAdmin();
+          return;
+        }
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots').update({ location_id: locationId || null }).eq('id', slotId));
+        if (error) this.showNotification('Could not set the place: ' + error.message, 'error');
+        else if (slot?.confirmed_at && locationId) this.showNotification('Place changed. The family and teachers were told.', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      // One place for every booking on the day that has none yet.
+      async setConferenceDayLocation(dayId) {
+        const locationId = document.getElementById(`conf-dayplace-${dayId}`)?.value;
+        if (!locationId) { this.showNotification('Pick a place first', 'error'); return; }
+        const targets = (this._conf?.slots || []).filter(x => x.day_id === dayId && x.student_id && !x.location_id);
+        if (!targets.length) return;
+        const told = targets.filter(x => x.confirmed_at).length;
+        if (told && !confirm(`${told} of these families ${told === 1 ? 'has' : 'have'} been sent their time and will be told the place. Go ahead?`)) return;
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_slots')
+          .update({ location_id: locationId }).in('id', targets.map(x => x.id)));
+        if (error) { this.showNotification('Could not set the place: ' + error.message, 'error'); return; }
+        this.showNotification(`Place set for ${targets.length} booking${targets.length === 1 ? '' : 's'}`, 'success');
         await this._refreshConferenceAdmin();
       }
 
@@ -9378,7 +9475,7 @@
               ${mine.map(x => {
                 const k = kids.find(kk => kk.id === x.student_id);
                 return `<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px; border: 1px solid var(--accent-2); border-radius: 6px; margin-bottom: 6px;">
-                  <span>${x.confirmed ? '\u2705' : '\u{1F552}'} <b>${esc(k ? nameOf(k) : '')}</b>: ${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}${teachers(x)}</span>
+                  <span>${x.confirmed ? '\u2705' : '\u{1F552}'} <b>${esc(k ? nameOf(k) : '')}</b>: ${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}${teachers(x)}${x.location ? ` in <b>${esc(x.location)}</b>` : ''}</span>
                   ${x.confirmed
                     ? `<span style="margin-left: auto; font-size: 12px; color: var(--accent-2);">Confirmed \u00b7 to change it, contact the school office</span>`
                     : !d.is_open
@@ -9469,13 +9566,14 @@
             <div style="font-weight: 700;">${esc(this._confDayLabel(d.day))}</div>
             <div style="color: var(--muted); font-size: 12px; margin-bottom: 6px;">${esc(d.title)}${d.finalized ? ' \u00b7 families have been sent their times' : ' \u00b7 sign-up still being finalized: times may change'}</div>
             <div style="overflow-x: auto;"><table style="width: 100%; border-collapse: collapse; font-size: 13px;">
-              <thead><tr style="text-align: left; color: var(--muted);"><th style="padding: 4px 8px;">Time</th><th style="padding: 4px 8px;">Student</th><th style="padding: 4px 8px;">Parents</th><th style="padding: 4px 8px;">With</th></tr></thead>
+              <thead><tr style="text-align: left; color: var(--muted);"><th style="padding: 4px 8px;">Time</th><th style="padding: 4px 8px;">Student</th><th style="padding: 4px 8px;">Parents</th><th style="padding: 4px 8px;">Where</th><th style="padding: 4px 8px;">With</th></tr></thead>
               <tbody>${(d.slots || []).map(x => `<tr style="border-top: 1px solid var(--border);">
                 <td style="padding: 6px 8px; white-space: nowrap;">${esc(this._confClock(x.starts_at))}\u2013${esc(this._confClock(x.ends_at))}</td>
                 <td style="padding: 6px 8px;">${x.student
                   ? `<b>${esc(x.student)}</b>${x.grade ? ` <span style="color: var(--muted);">(gr ${esc(x.grade)})</span>` : ''}${x.confirmed ? '' : ' <span style="color: var(--muted); font-size: 11px;">not confirmed yet</span>'}`
                   : '<span style="color: var(--muted);">Open</span>'}</td>
                 <td style="padding: 6px 8px;">${x.student ? esc((x.parents || []).join(', ') || 'No parent account') : ''}</td>
+                <td style="padding: 6px 8px;">${esc(x.location || '')}</td>
                 <td style="padding: 6px 8px;">${esc((x.with || []).join(', '))}</td>
               </tr>`).join('')}</tbody>
             </table></div>
@@ -58904,7 +59002,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-01·e';
+      const RIVEN_BUILD = '2026-11-02·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -63513,6 +63611,8 @@ Students you had withdrawn stay withdrawn.`)) {
         'ISSUE_STRIKE', 'REMOVE_STRIKE',
         'PROMOTE_STAFF', 'DEMOTE_STAFF', 'DEACTIVATE_STAFF', 'REACTIVATE_STAFF',
         'DECIDE_BOOKING', 'DECIDE_MATERIAL',
+        'CONFIRM_CONFERENCES', 'BOOK_CONFERENCE', 'CANCEL_CONFERENCE', 'ADD_CONFERENCE_SLOTS',
+        'SET_CONFERENCE_LOCATION', 'ADD_CONFERENCE_PLACE',
         'ADD_NOTE', 'DELETE_NOTE', 'CREATE_ASSIGNMENT', 'ANNOUNCE', 'ACTIVITY_ENROLL', 'ACTIVITY_UNENROLL', 'BOOK_FACILITY',
         // Small, but still a write: "should I mark everything read?" should be
         // answered, not obeyed.
@@ -65001,6 +65101,71 @@ Students you had withdrawn stay withdrawn.`)) {
             // else with a noun in it.
             /\b(approve|order|deny|decline|reject)\b[\s\S]{0,48}\brequests?\b/,
             /\b(material|supplies)\s+request\b[\s\S]{0,20}\b(approved|ordered|denied|declined)\b/,
+          ]
+        },
+        // ---- Parent-teacher conferences ------------------------------------
+        //
+        // "conference" is the anchor, never "conference room", which is a
+        // room to book (BOOK_FACILITY). Each change needs its own verb;
+        // anything else said about conferences is a read.
+        {
+          intent: 'ADD_CONFERENCE_PLACE',
+          w: 14, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(add|create|new)\b[\s\S]{0,12}\bconference\s+(places?|locations?)\b/,
+            /\b(add|create)\b[\s\S]{0,40}\bto\s+the\s+conference\s+(places|locations)\b/,
+          ]
+        },
+        {
+          intent: 'ADD_CONFERENCE_SLOTS',
+          w: 13, notIfNoteCommand: true, notIfQuestion: true, notIfStudent: true,
+          patterns: [
+            /\b(add|create|make|set(\s*up)?|open|schedule)\b[\s\S]{0,40}\bconference\s+(slots?|times?|days?|blocks?)\b/,
+            /\bconference\s+(slots?|times?)\b[\s\S]{0,60}\b\d{1,2}(:\d{2})?\s*(am|pm)?\s*(to|until|till|-|\u2013)\s*\d/,
+            /\b(add|create|make|set\s*up)\b[\s\S]{0,30}\bconferences\b[\s\S]{0,40}\b(morning|afternoon)\b/,
+          ]
+        },
+        {
+          intent: 'SET_CONFERENCE_LOCATION',
+          w: 13, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(set|change|make|update)\b[\s\S]{0,20}\bconferences?\s+(location|place)\b/,
+            /\bconferences?\b(?!\s+rooms?)[\s\S]{0,20}\b(location|place)\b[\s\S]{0,20}\b(to|is|as)\b/,
+            /\b(put|move|hold|have|change)\b[\s\S]{0,40}\bconferences?\b(?!\s+rooms?)[\s\S]{0,12}\b(in|at|to)\s+(?!(?:the\s+)?\d)(?:the\s+)?[a-z]/,
+            /\bconferences?\b(?!\s+rooms?)[\s\S]{0,30}\b(are|is|will\s+be)\s+(in|at)\s+(?!(?:the\s+)?\d)(?:the\s+)?[a-z]/,
+          ]
+        },
+        {
+          intent: 'CANCEL_CONFERENCE',
+          w: 13, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(cancel|clear|remove|drop|unbook|delete)\b[\s\S]{0,40}\bconferences?\b(?!\s+rooms?)/,
+            /\bconferences?\b(?!\s+rooms?)[\s\S]{0,20}\b(is\s+)?(cancell?ed|off)\b/,
+            /\b(take|pull)\b[\s\S]{0,30}\bout\s+of\s+(the\s+)?conferences?\b(?!\s+rooms?)/,
+          ]
+        },
+        {
+          intent: 'BOOK_CONFERENCE',
+          w: 12, requiresStudent: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\bconferences?\b(?!\s+rooms?)[\s\S]{0,40}\b(at|to|for)\s+\d{1,2}(:\d{2})?\b/,
+            /\b(book|schedule|sign)\b[\s\S]{0,30}\b(for|a|up)\s+(a\s+|for\s+)?conferences?\b(?!\s+rooms?)/,
+            /\b(put|book|move)\b[\s\S]{0,30}\b(in|into)\s+the\s+\d{1,2}(:\d{2})?\s*(am|pm)?\s*(conference|slot)/,
+          ]
+        },
+        {
+          intent: 'CONFIRM_CONFERENCES',
+          w: 12, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(confirm|finali[sz]e|send)\b[\s\S]{0,40}\bconferences?\b(?!\s+rooms?)/,
+            /\bconferences?\b(?!\s+rooms?)[\s\S]{0,30}\b(confirmations?|finali[sz]e)\b/,
+          ]
+        },
+        {
+          intent: 'VIEW_CONFERENCES',
+          w: 9, notIfNoteCommand: true,
+          patterns: [
+            /\bconferences?\b(?!\s+rooms?)/,
           ]
         },
         {
@@ -66718,6 +66883,20 @@ Students you had withdrawn stay withdrawn.`)) {
           return await this.terminalDecideMaterial(entities);
         case 'VIEW_QUEUES':
           return await this.terminalViewQueues(entities);
+        case 'VIEW_CONFERENCES':
+          return await this.terminalViewConferences(entities);
+        case 'CONFIRM_CONFERENCES':
+          return await this.terminalConfirmConferences(entities);
+        case 'BOOK_CONFERENCE':
+          return await this.terminalBookConference(entities);
+        case 'CANCEL_CONFERENCE':
+          return await this.terminalCancelConference(entities);
+        case 'ADD_CONFERENCE_SLOTS':
+          return await this.terminalAddConferenceSlots(entities);
+        case 'SET_CONFERENCE_LOCATION':
+          return await this.terminalSetConferenceLocation(entities);
+        case 'ADD_CONFERENCE_PLACE':
+          return await this.terminalAddConferencePlace(entities);
         case 'PROMOTE_STAFF':
           return await this.terminalChangeStaffRole(entities, 'admin');
         case 'DEMOTE_STAFF':
@@ -66933,7 +67112,8 @@ Students you had withdrawn stay withdrawn.`)) {
     \u2022 "Report card for [student]" / "Transcript for [student]"<br>
     \u2022 "What days does [student] attend?" / "Who are [student]'s parents?"<br>
     \u2022 "Is [student] full time or homeschool?" / "How many homeschool students do we have?"<br>
-    \u2022 "What quarter are we in?" / "What's waiting for approval?"
+    \u2022 "What quarter are we in?" / "What's waiting for approval?"<br>
+    \u2022 "Conference slots" / "When is [student]'s conference?" \u2014 teachers see their own schedule
   </div>
 </div>
 
@@ -66956,7 +67136,11 @@ Students you had withdrawn stay withdrawn.`)) {
     \u2022 "Give [class] to [teacher]" / "Reopen [class]" / "Set the current quarter to quarter 2"<br>
     \u2022 "Approve the application for [name]" / "Deny [name]'s application because [reason]"<br>
     \u2022 "Make [name] an admin" / "Deactivate [name]'s account"<br>
-    \u2022 "Approve the [room] booking" / "Decline the [item] request because [reason]"
+    \u2022 "Approve the [room] booking" / "Decline the [item] request because [reason]"<br>
+    \u2022 "Add conference slots on November 20, morning" / "Add conference place Room 4"<br>
+    \u2022 "Book [student] for conferences at 9:30" / "Cancel [student]'s conference"<br>
+    \u2022 "Put [student]'s conference in Room 4" / "Conferences on Thursday are in the library"<br>
+    \u2022 "Confirm conferences" \u2014 sends each family their time, the same as Finalize
   </div>
 </div>
 
@@ -67911,6 +68095,12 @@ Students you had withdrawn stay withdrawn.`)) {
         GRADE_SUBMISSION: 'mark a student\'s work on an assignment',
         DECIDE_BOOKING: 'approve or deny a room booking',
         DECIDE_MATERIAL: 'approve or deny a materials request',
+        CONFIRM_CONFERENCES: 'send conference confirmations',
+        BOOK_CONFERENCE: 'book a conference time',
+        CANCEL_CONFERENCE: 'cancel a conference time',
+        ADD_CONFERENCE_SLOTS: 'add conference times',
+        SET_CONFERENCE_LOCATION: 'set where a conference is',
+        ADD_CONFERENCE_PLACE: 'add a conference place',
         PROMOTE_STAFF: 'make somebody an admin',
         DEMOTE_STAFF: 'take admin rights away',
         DEACTIVATE_STAFF: 'close a staff account',
@@ -71701,6 +71891,503 @@ Students you had withdrawn stay withdrawn.`)) {
             `${r.requested_by_name ? ` \u00b7 ${esc(r.requested_by_name)}` : ''}</div>`).join(''));
       }
       this._showRivenMessage(parts.join(''), true);
+    }
+
+    // ---- Parent-teacher conferences -------------------------------------------
+    //
+    // The same data and the same database calls as the Conferences tool, so a
+    // change made here is the change the tool would make: a booking narrows to
+    // the student's own teachers, clearing a time a family was sent tells
+    // them, and so does a new place on one. Teachers can ask about their own
+    // schedule; every change is an admin's.
+
+    _rivenConfText(entities) {
+      return String(entities?.original || entities?._rawInput || '');
+    }
+
+    // The conference day a sentence names, else the only one coming up.
+    // { day } when found; { iso, error } for a date with no conference day yet
+    // (adding slots makes one); { error } otherwise. `among` narrows the guess
+    // when no date is named, e.g. to the days with confirmations still to send.
+    _rivenConferenceDay(days, text, among = null) {
+      const today = this._localDateStr(new Date());
+      const upcoming = (days || []).filter(d => d.day >= today);
+      const t = String(text || '').toLowerCase();
+      let iso = (t.match(/\b\d{4}-\d{2}-\d{2}\b/) || [])[0] || null;
+      if (!iso) {
+        const named = this._rivenMonthDayDates(t);
+        if (named && named.length) iso = named[0];
+      }
+      if (!iso) {
+        const w = t.match(/\b(today|tomorrow|(?:next |this )?(?:mon|tues?|wed(?:nes)?|thur?s?|fri|sat|sun)(?:day)?)\b/);
+        if (w) iso = this._rivenPhraseToDate(w[1])?.iso || null;
+      }
+      const list = (ds) => ds.map(d => this._confDayLabel(d.day)).join('; ');
+      if (iso) {
+        const d = (days || []).find(x => x.day === iso);
+        return d ? { day: d } : { iso, error: `There is no conference day on ${this._confDayLabel(iso)}.${upcoming.length ? ` Coming up: ${list(upcoming)}.` : ''}` };
+      }
+      const pool = among ? upcoming.filter(among) : upcoming;
+      if (pool.length === 1) return { day: pool[0] };
+      if (!upcoming.length) return { error: 'There are no conference days coming up.' };
+      return { error: `Which day? Coming up: ${list(pool.length ? pool : upcoming)}.` };
+    }
+
+    async _rivenConferenceData() {
+      try {
+        const c = await this._loadConferenceAdmin();
+        this._conf = c;
+        return c;
+      } catch (e) {
+        this.terminalPrintError('Could not read the conferences: ' + (e?.message || e));
+        return null;
+      }
+    }
+
+    // A student's booked times on days still to come (or on one day).
+    _rivenConferenceStudentSlots(c, studentId, day = null) {
+      const today = this._localDateStr(new Date());
+      const dayOf = Object.fromEntries((c.days || []).map(d => [d.id, d]));
+      return (c.slots || []).filter(x => x.student_id === studentId && dayOf[x.day_id]
+        && (day ? x.day_id === day.id : dayOf[x.day_id].day >= today));
+    }
+
+    _rivenConferencePlaceName(c, locationId) {
+      return (c.locations || []).find(l => l.id === locationId)?.name || null;
+    }
+
+    // One line for a booked slot: time, student, teachers, place, sent or not.
+    _rivenConferenceLine(c, x) {
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const time = `${this._confClock(x.starts_at)}\u2013${this._confClock(x.ends_at)}`;
+      if (!x.student_id) return `${esc(time)} <span style="opacity: .7;">open</span>`;
+      const teachers = (x.assigned_teacher_ids || x.teacher_ids || []).map(t => c.name(c.byId[t])).filter(Boolean).join(' & ');
+      const place = this._rivenConferencePlaceName(c, x.location_id);
+      return `${esc(time)} <b>${esc(c.name(c.byId[x.student_id]) || 'a student')}</b>${teachers ? ` with ${esc(teachers)}` : ''}`
+        + (place ? ` in ${esc(place)}` : ' <span style="opacity: .7;">(no place yet)</span>')
+        + (x.confirmed_at ? ' \u2713' : ' <span style="opacity: .7;">\u00b7 not sent yet</span>');
+    }
+
+    _rivenConferenceFreeText(c, day) {
+      const free = (c.slots || []).filter(x => x.day_id === day.id && !x.student_id);
+      return free.length
+        ? `Open on ${this._confDayLabel(day.day)}: ${free.map(x => this._confClock(x.starts_at)).join(', ')}.`
+        : `Every time on ${this._confDayLabel(day.day)} is taken.`;
+    }
+
+    async terminalViewConferences(entities) {
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const text = this._rivenConfText(entities);
+      const student = this._rivenResolvedStudent(entities);
+      if (this.userInfo?.profile?.user_type !== 'admin') return this._rivenMyConferences(student);
+
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const today = this._localDateStr(new Date());
+      const upcoming = c.days.filter(d => d.day >= today);
+      if (!upcoming.length) { this._showRivenMessage('There are no conference days coming up.', true); return; }
+      const dayOf = Object.fromEntries(c.days.map(d => [d.id, d]));
+      const named = this._rivenConferenceDay(c.days, text);
+
+      if (student) {
+        const mine = this._rivenConferenceStudentSlots(c, student.id, named.day || null);
+        if (mine.length) {
+          this._showRivenMessage(`\u{1F91D} <b>${esc(student.full_name)}</b>` + mine.map(x =>
+            `<div style="font-size: 13px;">${esc(this._confDayLabel(dayOf[x.day_id].day))}: ${this._rivenConferenceLine(c, x)}</div>`).join(''), true);
+          return;
+        }
+        const day = named.day || upcoming[0];
+        this._showRivenMessage(`${esc(student.full_name)} has no conference time yet. ${esc(this._rivenConferenceFreeText(c, day))}`, true);
+        return;
+      }
+
+      const show = named.day ? [named.day] : named.iso ? [] : upcoming;
+      if (!show.length) { this.terminalPrintError(named.error); return; }
+      const parts = show.map(d => {
+        const slots = c.slots.filter(x => x.day_id === d.id);
+        const r = this._conferenceDayReview(d, c);
+        const free = slots.filter(x => !x.student_id);
+        const state = d.finalized_at ? 'finalized' : d.is_open ? 'sign-up open' : 'sign-up closed';
+        const notes = [];
+        if (r.unsent.length) notes.push(`${r.unsent.length} not sent yet`);
+        if (r.noPlace.length) notes.push(`${r.noPlace.length} with no place`);
+        if (r.notBooked.length) notes.push(`${r.notBooked.length} math or English student${r.notBooked.length === 1 ? '' : 's'} with no time`);
+        return `<div style="margin-top: 6px;"><b>${esc(this._confDayLabel(d.day))}</b> \u00b7 ${r.booked.length} of ${slots.length} booked \u00b7 ${state}</div>`
+          + (notes.length ? `<div style="font-size: 12px;">\u26a0 ${esc(notes.join(' \u00b7 '))}</div>` : '')
+          + r.booked.map(x => `<div style="font-size: 13px;">\u2022 ${this._rivenConferenceLine(c, x)}</div>`).join('')
+          + (free.length ? `<div style="font-size: 13px;">Open: ${esc(free.map(x => this._confClock(x.starts_at)).join(', '))}</div>` : '');
+      });
+      this._showRivenMessage('\u{1F91D} <b>Conferences</b>' + parts.join(''), true);
+    }
+
+    // A teacher's own times, from the same call as their home card.
+    async _rivenMyConferences(student) {
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const { data, error } = await this.auth.supabase.rpc('rt_my_conference_schedule');
+      if (error) { this.terminalPrintError('Could not read your conference schedule: ' + error.message); return; }
+      let days = (typeof data === 'string' ? JSON.parse(data) : data) || [];
+      if (student) {
+        days = days.map(d => ({ ...d, slots: (d.slots || []).filter(x => x.student === student.full_name) })).filter(d => d.slots.length);
+        if (!days.length) { this._showRivenMessage(`${esc(student.full_name)} has no conference with you coming up.`, true); return; }
+      }
+      if (!days.length) { this._showRivenMessage('You have no conference times coming up.', true); return; }
+      this._showRivenMessage('\u{1F91D} <b>Your conferences</b>' + days.map(d =>
+        `<div style="margin-top: 6px;"><b>${esc(this._confDayLabel(d.day))}</b>${d.finalized ? '' : ' <span style="opacity: .7;">\u00b7 times may change</span>'}</div>`
+        + (d.slots || []).map(x => `<div style="font-size: 13px;">\u2022 ${esc(this._confClock(x.starts_at))} ${x.student
+          ? `<b>${esc(x.student)}</b>${x.location ? ` in ${esc(x.location)}` : ''}`
+          : '<span style="opacity: .7;">open</span>'}</div>`).join('')).join(''), true);
+    }
+
+    _rivenReportConferenceSend(data) {
+      const r = (typeof data === 'string' ? JSON.parse(data) : data) || {};
+      const nobody = r.nobody_to_tell || [];
+      this._naturalSuccess([`Sent ${r.sent || 0} confirmation${r.sent === 1 ? '' : 's'}: ${r.notifications || 0} in-app, ${r.emails || 0} email${r.emails === 1 ? '' : 's'}.`
+        + (r.teachers ? ` ${r.teachers} teacher${r.teachers === 1 ? '' : 's'} told.` : '')
+        + (nobody.length ? ` Not sent, nobody to tell: ${nobody.join(', ')}.` : '')]);
+    }
+
+    // "Confirm conferences": the day's Finalize, or the send for bookings
+    // added since. With a student named, just their family (a resend if they
+    // already had it).
+    async terminalConfirmConferences(entities) {
+      if (!this._rivenRequireAdmin('send conference confirmations')) return;
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const text = this._rivenConfText(entities);
+      const sb = this.auth.supabase;
+      const student = this._rivenResolvedStudent(entities);
+
+      if (student) {
+        const named = this._rivenConferenceDay(c.days, text);
+        const mine = this._rivenConferenceStudentSlots(c, student.id, named.day || null);
+        if (!mine.length) { this.terminalPrintError(`${student.full_name} has no conference time to send.`); return; }
+        if (mine.length > 1) { this.terminalPrintError(`${student.full_name} has ${mine.length} conference times. Say which day.`); return; }
+        const x = mine[0];
+        const day = c.days.find(d => d.id === x.day_id);
+        this._requestConfirmation(
+          `${x.confirmed_at ? 'Resend' : 'Send'} ${esc(student.full_name)}'s family their conference time?<br>`
+          + `${esc(this._confDayLabel(day.day))}: ${this._rivenConferenceLine(c, x)}`,
+          async () => {
+            const { data, error } = await sb.rpc('rt_confirm_conference_day', { p_day: day.id, p_slot: x.id });
+            if (error) throw error;
+            this._rivenReportConferenceSend(data);
+          });
+        return;
+      }
+
+      const pick = this._rivenConferenceDay(c.days, text, d => this._conferenceDayReview(d, c).unsent.length > 0);
+      if (!pick.day) { this.terminalPrintError(pick.error); return; }
+      const day = pick.day;
+      const label = this._confDayLabel(day.day);
+      const r = this._conferenceDayReview(day, c);
+      if (!r.unsent.length) {
+        this._showRivenMessage(r.booked.length ? `Every family booked on ${esc(label)} has been sent their time.` : `Nobody is booked on ${esc(label)} yet.`, true);
+        return;
+      }
+      const warn = [];
+      const noPlace = r.unsent.filter(x => !x.location_id).length;
+      if (noPlace) warn.push(`${noPlace} of them ${noPlace === 1 ? 'has' : 'have'} no place yet, so the message won't say where`);
+      const unreachable = r.unsent.filter(x => r.unreachable.includes(x)).length;
+      if (unreachable) warn.push(`${unreachable} ${unreachable === 1 ? 'has' : 'have'} nobody to send to and will stay unconfirmed`);
+      this._requestConfirmation(
+        `${day.finalized_at ? 'Send' : 'Finalize'} <b>${esc(label)}</b>: ${r.unsent.length} confirmation${r.unsent.length === 1 ? '' : 's'} to families (in-app and email)${day.finalized_at ? '' : ', then close sign-up'}?`
+        + warn.map(w => `<br><span style="font-size: 12px;">\u26a0 ${esc(w)}</span>`).join('')
+        + `<br><span style="font-size: 12px;">Messages can't be taken back once sent.</span>`,
+        async () => {
+          const { data, error } = await sb.rpc('rt_confirm_conference_day', { p_day: day.id });
+          if (error) throw error;
+          this._rivenReportConferenceSend(data);
+        });
+    }
+
+    // A student's math and English teachers: whose slot to prefer when two
+    // families can book the same time.
+    async _rivenStudentCoreTeachers(studentId) {
+      const sb = this.auth.supabase;
+      const { data } = await sb.from('class_enrollments').select('class_id').eq('student_id', studentId).eq('status', 'active');
+      const ids = (data || []).map(e => e.class_id);
+      if (!ids.length) return new Set();
+      const { data: cls } = await sb.from('classes').select('teacher_id, secondary_teacher_id').in('id', ids).in('subject', ['Math', 'English']);
+      const out = new Set();
+      (cls || []).forEach(k => { if (k.teacher_id) out.add(k.teacher_id); if (k.secondary_teacher_id) out.add(k.secondary_teacher_id); });
+      return out;
+    }
+
+    // "Book Noah for conferences at 9:30". A student who already has a time
+    // that day is moved: the new time is taken first, then the old one freed,
+    // so a failure in between leaves two times rather than none.
+    async terminalBookConference(entities) {
+      if (!this._rivenRequireAdmin('book a conference time')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student?'); return; }
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const text = this._rivenConfText(entities);
+      const sb = this.auth.supabase;
+
+      const theirs = this._rivenConferenceStudentSlots(c, student.id);
+      let pick = this._rivenConferenceDay(c.days, text);
+      if (!pick.day && !pick.iso && theirs.length === 1) pick = { day: c.days.find(d => d.id === theirs[0].day_id) };
+      if (!pick.day) { this.terminalPrintError(pick.error); return; }
+      const day = pick.day;
+      const time = this._rivenClockTime(text.replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' '));
+      if (!time) {
+        this._showRivenMessage(`What time for ${esc(student.full_name)}? ${esc(this._rivenConferenceFreeText(c, day))}`, true);
+        return;
+      }
+      const hhmm = (x) => String(x.starts_at || '').slice(0, 5);
+      const at = c.slots.filter(x => x.day_id === day.id && !x.student_id && hhmm(x) === time);
+      if (!at.length) {
+        const taken = c.slots.find(x => x.day_id === day.id && x.student_id && hhmm(x) === time);
+        this.terminalPrintError(taken && taken.student_id === student.id
+          ? `${student.full_name} already has ${this._confClock(time)} on ${this._confDayLabel(day.day)}.`
+          : taken
+            ? `${this._confClock(time)} is taken by ${c.name(c.byId[taken.student_id])}. ${this._rivenConferenceFreeText(c, day)}`
+            : `No conference time starts at ${this._confClock(time)} on ${this._confDayLabel(day.day)}. ${this._rivenConferenceFreeText(c, day)}`);
+        return;
+      }
+      let slot = at[0];
+      if (at.length > 1) {
+        const own = await this._rivenStudentCoreTeachers(student.id);
+        slot = at.find(x => (x.teacher_ids || []).some(t => own.has(t))) || at[0];
+      }
+      const old = theirs.filter(x => x.day_id === day.id);
+      const wasSent = old.some(x => x.confirmed_at);
+      const teachers = (slot.teacher_ids || []).map(t => c.name(c.byId[t])).filter(Boolean).join(' & ');
+      this._requestConfirmation(
+        `Book <b>${esc(student.full_name)}</b> for ${esc(this._confDayLabel(day.day))} at <b>${esc(this._confClock(slot.starts_at))}</b>${teachers ? ` with ${esc(teachers)}` : ''}?`
+        + (old.length ? `<br><span style="font-size: 12px;">This moves them from ${esc(old.map(x => this._confClock(x.starts_at)).join(', '))}.${wasSent
+          ? ' Their family was sent that time and will be told it is cancelled; say "confirm conferences" to send the new one.' : ''}</span>` : '')
+        + (day.finalized_at && !wasSent ? `<br><span style="font-size: 12px;">This day is finalized: say "confirm conferences" to send the family their time.</span>` : ''),
+        async () => {
+          const { error } = await sb.rpc('rt_book_conference_slot', { p_slot: slot.id, p_student: student.id });
+          if (error) throw error;
+          for (const x of old) {
+            const { error: e2 } = await sb.rpc('rt_cancel_conference_slot', { p_slot: x.id });
+            if (e2) throw e2;
+          }
+          this._pushUndo(`${student.full_name}'s conference booking`, async () => {
+            const { error: u } = await sb.rpc('rt_cancel_conference_slot', { p_slot: slot.id });
+            if (u) throw u;
+            for (const x of old) {
+              const { error: u2 } = await sb.rpc('rt_book_conference_slot', { p_slot: x.id, p_student: student.id });
+              if (u2) throw u2;
+            }
+          });
+          this._naturalSuccess([`${student.full_name} is booked for ${this._confClock(slot.starts_at)} on ${this._confDayLabel(day.day)}.`]);
+        });
+    }
+
+    async terminalCancelConference(entities) {
+      if (!this._rivenRequireAdmin('cancel a conference time')) return;
+      const student = this._rivenResolvedStudent(entities);
+      if (!student) { this.terminalPrintError('Which student?'); return; }
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const sb = this.auth.supabase;
+      const named = this._rivenConferenceDay(c.days, this._rivenConfText(entities));
+      const mine = this._rivenConferenceStudentSlots(c, student.id, named.day || null);
+      if (!mine.length) { this.terminalPrintError(`${student.full_name} has no conference time ${named.day ? 'on that day' : 'coming up'}.`); return; }
+      if (mine.length > 1) { this.terminalPrintError(`${student.full_name} has ${mine.length} conference times. Say which day.`); return; }
+      const x = mine[0];
+      const day = c.days.find(d => d.id === x.day_id);
+      const parentBooked = x.booked_by && c.byId[x.booked_by]?.user_type === 'parent';
+      this._requestConfirmation(
+        `Cancel <b>${esc(student.full_name)}</b>'s conference on ${esc(this._confDayLabel(day.day))} at ${esc(this._confClock(x.starts_at))}?`
+        + (x.confirmed_at ? '<br><span style="font-size: 12px;">Their family and teachers were sent this time and will be told it is cancelled.</span>'
+          : parentBooked ? '<br><span style="font-size: 12px;">A parent booked it and will be told it is cancelled.</span>' : ''),
+        async () => {
+          const { error } = await sb.rpc('rt_cancel_conference_slot', { p_slot: x.id });
+          if (error) throw error;
+          this._pushUndo(`cancelling ${student.full_name}'s conference`, async () => {
+            const { error: u } = await sb.rpc('rt_book_conference_slot', { p_slot: x.id, p_student: student.id });
+            if (u) throw u;
+          });
+          this._naturalSuccess([`${student.full_name}'s ${this._confClock(x.starts_at)} conference is cancelled. The time is open again.`]);
+        });
+    }
+
+    // The block of time a sentence asks for: two clock times, or one of the
+    // ready-made blocks by name. Dates are taken out first, so "2026-11-20"
+    // and "nov 20" are never read as a time range.
+    _rivenConferenceBlock(text) {
+      const t = String(text || '').toLowerCase()
+        .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+        .replace(/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\b/g, ' ');
+      const lenM = t.match(/\b(\d{1,3})\s*-?\s*(?:min|mins|minutes?)\b/);
+      const length = lenM ? Number(lenM[1]) : 20;
+      const body = lenM ? t.replace(lenM[0], ' ') : t;
+      const clock = (x) => (/[:.]\d{2}|[ap]\.?m/.test(x) ? this._rivenClockTime(x) : this._rivenClockTime('at ' + x.trim()));
+      const range = body.match(/(\d{1,2}(?:[:.]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s*(?:to|until|till|through|-|\u2013)\s*(\d{1,2}(?:[:.]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)/);
+      if (range) return { start: clock(range[1]), end: clock(range[2]), length };
+      const zone = this._conferenceZones().slice().sort((a, b) => b.label.length - a.label.length)
+        .find(z => body.includes(z.label.toLowerCase()));
+      return zone ? { start: zone.start, end: zone.end, length, zone: zone.label } : { start: null, end: null, length };
+    }
+
+    // "Add conference slots on November 20, morning": the same slots the
+    // Add time slots box makes, with the math and English teachers unless the
+    // sentence names teachers. A date with no conference day yet gets one.
+    async terminalAddConferenceSlots(entities) {
+      if (!this._rivenRequireAdmin('add conference times')) return;
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const text = this._rivenConfText(entities);
+      const sb = this.auth.supabase;
+
+      const pick = this._rivenConferenceDay(c.days, text);
+      const iso = pick.day ? pick.day.day : pick.iso;
+      if (!iso) { this.terminalPrintError(`Which date? For example "add conference slots on November 20, morning". ${pick.error || ''}`.trim()); return; }
+      if (iso < this._localDateStr(new Date())) { this.terminalPrintError(`${this._confDayLabel(iso)} has passed.`); return; }
+      const block = this._rivenConferenceBlock(text);
+      if (!block.start || !block.end) {
+        this.terminalPrintError(`What times? Say ${this._conferenceZones().map(z => `"${z.label.toLowerCase()}"`).join(', ')}, or a range like "8:10 to 11:40".`);
+        return;
+      }
+      const { slots } = this._conferenceSlotTimes(block.start, block.end, block.length);
+      if (!slots.length) { this.terminalPrintError(`${this._confClock(block.start)} to ${this._confClock(block.end)} in ${block.length} minutes makes no slots.`); return; }
+      const lower = text.toLowerCase();
+      const named = c.teachers.filter(tt => tt.name && lower.includes(tt.name.toLowerCase()));
+      const teachers = named.length ? named : c.teachers.filter(tt => tt.core);
+      if (!teachers.length) { this.terminalPrintError('No math or English teachers found to put in them. Name the teachers, e.g. "with Numa Ratio".'); return; }
+      const teacherIds = teachers.map(tt => tt.id);
+      const existing = pick.day ? c.slots.filter(x => x.day_id === pick.day.id) : [];
+      const clash = slots.filter(n => existing.some(x =>
+        this._confMinutes(n.starts_at) < this._confMinutes(x.ends_at) && this._confMinutes(x.starts_at) < this._confMinutes(n.ends_at)
+        && (x.teacher_ids || []).some(t => teacherIds.includes(t)))).length;
+      const label = this._confDayLabel(iso);
+
+      this._requestConfirmation(
+        `Add <b>${slots.length}</b> conference time${slots.length === 1 ? '' : 's'} on <b>${esc(label)}</b>, ${esc(this._confClock(slots[0].starts_at))}\u2013${esc(this._confClock(slots[slots.length - 1].ends_at))}, ${block.length} minutes each, with ${esc(teachers.map(tt => tt.name).join(' & '))}?`
+        + (pick.day ? '' : '<br><span style="font-size: 12px;">That makes a new conference day.</span>')
+        + (clash ? `<br><span style="font-size: 12px;">\u26a0 ${clash} of them overlap times these teachers already have that day.</span>` : '')
+        + `<br><span style="font-size: 12px;">${pick.day?.is_open ? 'Sign-up is open, so parents can book them right away.' : 'Parents can book once sign-up is opened in the Conferences tool.'}</span>`,
+        async () => {
+          let dayId = pick.day?.id;
+          let made = false;
+          if (!dayId) {
+            const { data, error } = await sb.from('conference_days').insert({ day: iso, title: 'Parent-teacher conferences' }).select('id').single();
+            if (error) throw this._rivenPolicyError(error);
+            dayId = data.id;
+            made = true;
+          }
+          const rows = slots.map(x => ({ day_id: dayId, starts_at: x.starts_at, ends_at: x.ends_at, teacher_ids: teacherIds }));
+          const { data: ins, error: e2 } = await sb.from('conference_slots').insert(rows).select('id');
+          if (e2) throw this._rivenPolicyError(e2);
+          const ids = (ins || []).map(r => r.id);
+          this._pushUndo(`the ${rows.length} conference times on ${label}`, async () => {
+            const { error: u } = made
+              ? await sb.from('conference_days').delete().eq('id', dayId)
+              : await sb.from('conference_slots').delete().in('id', ids).is('student_id', null);
+            if (u) throw u;
+          });
+          this._naturalSuccess([`Added ${rows.length} conference time${rows.length === 1 ? '' : 's'} on ${label}.`]);
+        });
+    }
+
+    // "Put Noah's conference in Room 4", or a whole day: "conferences on
+    // thursday are in the library" sets every booking there without a place
+    // ("all conferences ..." moves the ones that have one too). The place
+    // must be on the list; a new place on a time the family was sent tells
+    // them (the database does).
+    async terminalSetConferenceLocation(entities) {
+      if (!this._rivenRequireAdmin('set where conferences are')) return;
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const text = this._rivenConfText(entities);
+      const lower = text.toLowerCase();
+      const sb = this.auth.supabase;
+
+      const active = (c.locations || []).filter(l => l.active);
+      const place = active.filter(l => lower.includes(l.name.toLowerCase())).sort((a, b) => b.name.length - a.name.length)[0];
+      if (!place) {
+        const said = ((text.match(/\b(?:in|at|to)\s+(?:the\s+)?([A-Za-z][\w' -]{0,40}?)\s*[.!]?$/i) || [])[1] || '').trim();
+        this.terminalPrintError(`${said ? `"${said}" is not` : 'That place is not'} on the conference places list${active.length ? ` (${active.map(l => l.name).join(', ')})` : ''}. Add it with "add conference place ${said || 'Room 4'}".`);
+        return;
+      }
+      const student = this._rivenResolvedStudent(entities);
+      const named = this._rivenConferenceDay(c.days, text);
+      let targets, what;
+      if (student) {
+        const mine = this._rivenConferenceStudentSlots(c, student.id, named.day || null);
+        if (!mine.length) { this.terminalPrintError(`${student.full_name} has no conference time ${named.day ? 'on that day' : 'coming up'}.`); return; }
+        if (mine.length > 1) { this.terminalPrintError(`${student.full_name} has ${mine.length} conference times. Say which day.`); return; }
+        targets = mine;
+        what = `${student.full_name}'s ${this._confClock(mine[0].starts_at)} conference`;
+      } else {
+        if (!named.day) { this.terminalPrintError(named.error); return; }
+        const all = /\b(all|every|each)\b/.test(lower);
+        const booked = c.slots.filter(x => x.day_id === named.day.id && x.student_id);
+        targets = booked.filter(x => all || !x.location_id);
+        if (!targets.length) {
+          this._showRivenMessage(booked.length
+            ? `Every booking on ${esc(this._confDayLabel(named.day.day))} already has a place. Say "all conferences on that day are in ${esc(place.name)}" to move them all, or name a student.`
+            : `Nobody is booked on ${esc(this._confDayLabel(named.day.day))} yet.`, true);
+          return;
+        }
+        what = `${targets.length} conference${targets.length === 1 ? '' : 's'} on ${this._confDayLabel(named.day.day)}${all ? '' : ' with no place yet'}`;
+      }
+      targets = targets.filter(x => x.location_id !== place.id);
+      if (!targets.length) { this._showRivenMessage(`Already in ${esc(place.name)}.`, true); return; }
+      const told = targets.filter(x => x.confirmed_at).length;
+      this._requestConfirmation(
+        `Put ${esc(what)} in <b>${esc(place.name)}</b>?`
+        + (told ? `<br><span style="font-size: 12px;">${told} ${told === 1 ? 'family was' : 'families were'} already sent their time and will be told the new place, and so will their teachers.</span>` : ''),
+        async () => {
+          const before = targets.map(x => ({ id: x.id, location_id: x.location_id || null }));
+          const { error } = await sb.from('conference_slots').update({ location_id: place.id }).in('id', before.map(b => b.id));
+          if (error) throw this._rivenPolicyError(error);
+          this._pushUndo(`the place for ${what}`, async () => {
+            const groups = {};
+            before.forEach(b => { (groups[b.location_id || ''] = groups[b.location_id || ''] || []).push(b.id); });
+            for (const [loc, ids] of Object.entries(groups)) {
+              const { error: u } = await sb.from('conference_slots').update({ location_id: loc || null }).in('id', ids);
+              if (u) throw u;
+            }
+          });
+          this._naturalSuccess([student
+            ? `${student.full_name}'s conference is now in ${place.name}.`
+            : `${targets.length} conference${targets.length === 1 ? ' is' : 's are'} now in ${place.name}.`]);
+        });
+    }
+
+    async terminalAddConferencePlace(entities) {
+      if (!this._rivenRequireAdmin('add a conference place')) return;
+      const text = this._rivenConfText(entities);
+      const m = text.match(/\b(?:add|create)\s+(.+?)\s+to\s+the\s+conference\s+(?:places|locations)\b/i)
+        || text.match(/\bconference\s+(?:places|place|locations|location)\b\s*(?:called|named|:|-)?\s*(.+)$/i);
+      // "add the library to ..." names the Library, not "the library".
+      const name = (m ? m[1] : '').trim().replace(/^["']+|["'.!?]+$/g, '').replace(/^the\s+/i, '').replace(/\s+/g, ' ');
+      if (!name) { this.terminalPrintError('What is the place called? For example "add conference place Room 4".'); return; }
+      const c = await this._rivenConferenceData();
+      if (!c) return;
+      const esc = (t) => this.escapeHtml(String(t ?? ''));
+      const sb = this.auth.supabase;
+      const same = (c.locations || []).find(l => l.name.trim().toLowerCase() === name.toLowerCase());
+      if (same?.active) { this._showRivenMessage(`${esc(same.name)} is already on the conference places list.`, true); return; }
+      this._requestConfirmation(
+        same ? `Put <b>${esc(same.name)}</b> back on the conference places list?` : `Add <b>${esc(name)}</b> to the conference places?`,
+        async () => {
+          let id = same?.id;
+          if (same) {
+            const { error } = await sb.from('conference_locations').update({ active: true }).eq('id', same.id);
+            if (error) throw this._rivenPolicyError(error);
+          } else {
+            const { data, error } = await sb.from('conference_locations').insert({ name }).select('id').single();
+            if (error) throw this._rivenPolicyError(error);
+            id = data.id;
+          }
+          this._pushUndo(`adding ${same ? same.name : name} to the conference places`, async () => {
+            const { error: u } = await sb.from('conference_locations').update({ active: false }).eq('id', id);
+            if (u) throw u;
+          });
+          this._naturalSuccess([`${same ? same.name : name} is on the conference places list.`]);
+        });
     }
 
     // ---- Staff ---------------------------------------------------------------

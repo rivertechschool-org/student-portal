@@ -40,6 +40,7 @@ const names = ['_conferenceZones', '_confMinutes', '_confHHMM', '_confClock', '_
   '_renderConferenceAdmin', '_renderConferenceAdminDay', '_loadParentConferences', '_conferenceFreeSlotsFor', 'showParentConferences',
   'bookParentConference', 'addConferenceSlots', '_conferenceDayReview', '_renderConferenceReview', '_reportConferenceSend',
   '_loadConferenceScheduleCard', '_renderConferenceScheduleCard', 'showMyConferenceSchedule',
+  '_renderConferencePlaces', '_conferencePlaceOptions', 'addConferenceLocation', 'setConferenceSlotLocation', 'setConferenceDayLocation',
   'confirmConferenceDay', 'saveConferenceContactEmail', 'setConferenceDayOpen', 'fillConferenceSlot', 'clearConferenceSlot', 'notificationDestination', 'notificationTypeConfig', 'sanitizeLink', '_localDateStr', 'escapeHtml', 'jsAttr'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 
@@ -299,6 +300,95 @@ const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
     ok('  with no times coming up the card goes away', host.innerHTML === '');
     const home = method('getTeacherHomeContent');
     ok('  the card has a place on the teacher home page and is loaded with it', /<div id="conference-schedule-card"><\/div>/.test(home) && /this\._loadConferenceScheduleCard\(\);/.test(home));
+  }
+
+  // ---- where: the places list, the review's picker, and what people see ----
+  {
+    const by = {
+      'st-1': { id: 'st-1', first_name: 'Wren', last_name: 'Orchard', user_type: 'student' },
+      'st-2': { id: 'st-2', first_name: 'Kit', last_name: 'Lonely', user_type: 'student' },
+      't-1': { id: 't-1', first_name: 'Numa', last_name: 'Ratio', user_type: 'teacher' },
+    };
+    const c = {
+      days: [{ id: 'd1', day: '2099-03-04', title: 'Spring conferences', is_open: true }],
+      slots: [
+        { id: 'sl-1', day_id: 'd1', starts_at: '08:10:00', ends_at: '08:30:00', teacher_ids: ['t-1'], assigned_teacher_ids: ['t-1'], teachers_matched: true, student_id: 'st-1', booked_by: 'a-1', confirmed_at: null, location_id: 'loc-old' },
+        { id: 'sl-2', day_id: 'd1', starts_at: '08:30:00', ends_at: '08:50:00', teacher_ids: ['t-1'], assigned_teacher_ids: ['t-1'], teachers_matched: true, student_id: 'st-2', booked_by: 'a-1', confirmed_at: '2099-03-01T10:00:00Z', location_id: null },
+        { id: 'sl-3', day_id: 'd1', starts_at: '08:50:00', ends_at: '09:10:00', teacher_ids: ['t-1'], student_id: null },
+      ],
+      teachers: [{ id: 't-1', name: 'Numa Ratio', core: true }],
+      students: [], parentsOf: { 'st-1': [{ name: 'Paz Orchard', email: 'paz@example.test' }], 'st-2': [{ name: 'Ivo Lonely', email: '' }] },
+      expected: new Set(), byId: by, name: (p) => p ? `${p.first_name} ${p.last_name}` : '',
+      locations: [{ id: 'loc-4', name: 'Room 4', active: true }, { id: 'loc-lib', name: 'Library', active: true }, { id: 'loc-old', name: 'Old Annex', active: false }],
+    };
+    const page = app._renderConferenceAdmin(c);
+    ok('the admin keeps a list of places, with a way to add one and take one off', /Places <span[^>]*>2: Room 4, Library/.test(page) && /retireConferenceLocation\('loc-4'\)/.test(page) && /id="conf-new-place"/.test(page) && !/retireConferenceLocation\('loc-old'\)/.test(page), page.slice(0, 1500));
+    const pick = (page.match(/<select id="conf-place-sl-1"[\s\S]*?<\/select>/) || [''])[0];
+    ok('  each booking has a Where picker from that list', /setConferenceSlotLocation\('sl-1', this\.value\)/.test(pick) && /Room 4/.test(pick) && /Library/.test(pick), pick);
+    ok("  which keeps a place taken off the list if the booking already has it", /value="loc-old" selected>Old Annex \(off the list\)/.test(pick));
+    ok('  a free slot has none', !/conf-place-sl-3/.test(page));
+    ok('the review counts bookings with no place and offers one place for all of them', /1 booking has no place yet/.test(page) && /id="conf-dayplace-d1"/.test(page) && /setConferenceDayLocation\('d1'\)/.test(page));
+    const none = app._renderConferenceAdmin({ ...c, locations: [] });
+    ok('  with no places yet it says to add them first, and the list opens', /Add places under/.test(none) && /<details class="card"[^>]*open>/.test(none));
+
+    // the writes
+    const notes = [], asked = [], updates = [], inserts = [];
+    let answer = false;
+    global.confirm = (q) => { asked.push(q); return answer; };
+    const els = { 'conf-new-place': { value: '  library ' }, 'conf-dayplace-d1': { value: 'loc-4' } };
+    global.document = { getElementById: (id) => els[id] };
+    const a = Object.create(proto);
+    a._conf = c;
+    a.showNotification = (msg, kind) => notes.push([msg, kind]);
+    a._refreshConferenceAdmin = async () => {};
+    a.supabaseQuery = async (fn) => fn();
+    const table = (name) => ({
+      insert: (row) => { inserts.push([name, row]); return { error: null }; },
+      update: (row) => ({
+        eq: (k, v) => { updates.push([name, row, k, v]); return { error: null }; },
+        in: (k, v) => { updates.push([name, row, k, v]); return { error: null }; },
+      }),
+    });
+    a.auth = { supabase: { from: table } };
+    await a.addConferenceLocation();
+    ok('a place already on the list is not added twice, whatever its case', inserts.length === 0 && /Library is already on the list/.test(notes.pop()[0]));
+    els['conf-new-place'].value = 'old annex';
+    await a.addConferenceLocation();
+    ok('  one taken off the list comes back instead of doubling up', inserts.length === 0 && JSON.stringify(updates.pop()) === '["conference_locations",{"active":true},"id","loc-old"]');
+    els['conf-new-place'].value = '  Gym   B ';
+    await a.addConferenceLocation();
+    ok('  a new one is added, tidied', JSON.stringify(inserts.pop()) === '["conference_locations",{"name":"Gym B"}]');
+
+    await a.setConferenceSlotLocation('sl-1', 'loc-4');
+    ok('picking a place before the family is told just saves it', asked.length === 0 && JSON.stringify(updates.pop()) === '["conference_slots",{"location_id":"loc-4"},"id","sl-1"]');
+    await a.setConferenceSlotLocation('sl-2', 'loc-4');
+    ok('  after they were sent their time it asks first, and No changes nothing', /Tell them and the teachers about the new place\?/.test(asked.pop()) && updates.length === 0);
+    answer = true;
+    await a.setConferenceSlotLocation('sl-2', 'loc-4');
+    ok('  and Yes saves it (the database tells them)', updates.length === 1 && /family and teachers were told/.test(notes.pop()[0]));
+    updates.length = 0;
+    await a.setConferenceDayLocation('d1');
+    ok('one place for the day goes to every booking without one, saying who will be told', /1 of these families has been sent their time/.test(asked.pop()) && JSON.stringify(updates.pop()) === '["conference_slots",{"location_id":"loc-4"},"id",["sl-2"]]', JSON.stringify(updates));
+    delete global.confirm;
+
+    // what the parent and the teacher see
+    let shown = null;
+    const pa = Object.create(proto);
+    pa.children = [{ id: 'k1', first_name: 'Wren', last_name: 'Orchard' }];
+    pa.showModal = (id, title, body) => { shown = body; };
+    pa.showNotification = () => {};
+    pa.auth = { supabase: { rpc: async () => ({ data: [{ id: 'd1', day: '2099-03-04', title: 'Spring', is_open: false, slots: [
+      { id: 'sl-1', starts_at: '08:10', ends_at: '08:30', teachers: ['Numa Ratio'], location: 'Room 4', student_id: 'k1', confirmed: true, for_children: ['k1'] }] }], error: null }) } };
+    await pa.showParentConferences();
+    ok("the parent's booking says where", /8:10 AM–8:30 AM with Numa Ratio in <b>Room 4<\/b>/.test(shown), shown);
+    const ta = Object.create(proto);
+    ta.showModal = (id, title, body) => { shown = body; };
+    ta.showNotification = () => {};
+    global.document = { getElementById: () => null };
+    ta.auth = { supabase: { rpc: async () => ({ data: [{ id: 'd1', day: '2099-03-04', title: 'Spring', finalized: true, slots: [
+      { id: 'sl-1', starts_at: '08:10', ends_at: '08:30', student: 'Wren Orchard', grade: '7', parents: ['Paz Orchard'], with: [], location: 'Room 4', confirmed: true }] }], error: null }) } };
+    await ta.showMyConferenceSchedule();
+    ok("  and so does the teacher's schedule", /<th[^>]*>Where<\/th>/.test(shown) && /<td style="padding: 6px 8px;">Room 4<\/td>/.test(shown));
   }
 
   // ---- the admin tile ----
