@@ -82389,6 +82389,14 @@ Students you had withdrawn stay withdrawn.`)) {
       async showGradeManagementModal(classId, selectedQuarterId = null) {
        console.log('Opening grade management for class:', classId);
 
+        // Only the newest load may draw. Opening on the current quarter
+        // calculates a row for every student, which is slow, and picking
+        // another quarter meanwhile started a second load: whichever finished
+        // last painted its table, so the screen could show one quarter while
+        // the menu said another.
+        const loadId = this._loadSeq = (this._loadSeq || 0) + 1;
+        const stale = () => loadId !== this._loadSeq;
+
         // Reset everything
         this.currentClassId = classId;
         this.pendingChanges = {};
@@ -82424,6 +82432,7 @@ Students you had withdrawn stay withdrawn.`)) {
             .select('*')
             .eq('is_archived', false)
             .order('start_date', { ascending: false });
+          if (stale()) return;
 
           if (quartersError || !quarters || quarters.length === 0) {
             document.getElementById('grade-modal-content').innerHTML = `
@@ -82699,6 +82708,8 @@ Students you had withdrawn stay withdrawn.`)) {
             .gte('due_date', quarter.start_date)
             .lte('due_date', quarter.end_date);
 
+          if (stale()) return;
+
           // Store quarter info for save operation
           this.currentQuarter = quarter;
 
@@ -82733,7 +82744,21 @@ Students you had withdrawn stay withdrawn.`)) {
           'participation': '40/60'
         }[this.currentClassGradingWeight] || '50/50';
 
+        // Which quarter these boxes save to, said where the typing happens.
+        // After a quarter switch the screen opens on the new quarter, and
+        // grades meant for the one that just ended were typed into it.
+        const q = this.currentQuarter || {};
+        const qName = window.app.escapeHtml(q.name || 'this quarter');
+        const saveBtn = document.getElementById('grade-save-btn');
+        if (saveBtn) saveBtn.textContent = `💾 Save ${q.name || ''} grades`.replace('  ', ' ');
         let html = `
+          <div class="grade-quarter-banner" style="margin-bottom: 12px; padding: 10px 12px; border-radius: 8px; font-size: 14px; ${q.is_current
+            ? 'background: rgba(139, 255, 176, 0.08); border: 1px solid rgba(139, 255, 176, 0.3);'
+            : 'background: rgba(255, 211, 106, 0.12); border: 2px solid rgba(255, 211, 106, 0.6);'}">
+            ${q.is_current
+              ? `Entering grades for <strong>${qName}</strong>, the current quarter. For an earlier quarter, pick it in the Quarter menu above.`
+              : `Entering grades for <strong>${qName}</strong>. This is not the current quarter; what you save here goes to ${qName}.`}
+          </div>
           <div style="margin-bottom: 15px; padding: 12px; background: rgba(106, 169, 255, 0.05); border-radius: 8px; border: 1px solid rgba(106, 169, 255, 0.2);">
             <strong>📝 Grading System:</strong><br>
             <small style="color: var(--muted-color);">
@@ -82936,8 +82961,14 @@ Students you had withdrawn stay withdrawn.`)) {
         if (!this.pendingChanges[enrollmentId]) {
           this.pendingChanges[enrollmentId] = {};
         }
-        this.pendingChanges[enrollmentId].class_grade = parseFloat(value) || 0;
-        this.pendingChanges[enrollmentId].class_grade_override = isOverride;
+        // An emptied box means "no grade of mine": hand the final grade back
+        // to the suggestion. This used to be parseFloat(value) || 0, so
+        // clearing a final grade saved a teacher-set 0, an F.
+        const parsedGrade = parseFloat(value);
+        const cleared = value === '' || value === null || isNaN(parsedGrade);
+        this.pendingChanges[enrollmentId].class_grade = cleared ? null : parsedGrade;
+        this.pendingChanges[enrollmentId].class_grade_override = cleared ? false : isOverride;
+        if (cleared) isOverride = false;
 
         // Visual feedback
         const row = document.querySelector(`tr[data-enrollment-id="${enrollmentId}"]`);
@@ -82952,10 +82983,10 @@ Students you had withdrawn stay withdrawn.`)) {
             input.style.background = isOverride ? 'rgba(255, 159, 67, 0.15)' : 'rgba(255, 211, 106, 0.1)';
           }
           if (letterSpan) {
-            letterSpan.textContent = this.percentageToLetterGrade(parseFloat(value));
+            letterSpan.textContent = cleared ? '—' : this.percentageToLetterGrade(parsedGrade);
           }
           if (statusSpan) {
-            statusSpan.textContent = isOverride ? 'TEACHER SET' : 'USING SUGGESTED';
+            statusSpan.textContent = cleared ? 'BACK TO SUGGESTED' : isOverride ? 'TEACHER SET' : 'USING SUGGESTED';
           }
         }
       }
@@ -83084,7 +83115,9 @@ Students you had withdrawn stay withdrawn.`)) {
         }
 
         try {
-          window.app.showNotification(`Saving ${changeCount} student grade(s)...`, 'info');
+          const quarterName = this.currentQuarter?.name || 'this quarter';
+          window.app.showNotification(`Saving ${changeCount} student grade(s) for ${quarterName}...`, 'info');
+          const failed = [];
 
           for (const [enrollmentId, changes] of Object.entries(this.pendingChanges)) {
             let participationGrade = null;
@@ -83093,10 +83126,14 @@ Students you had withdrawn stay withdrawn.`)) {
             let classGradeOverride = null;
             let academicGrade = null;
             let academicOverride = null;
+            // Boxes the teacher emptied. upsert_quarter_grade keeps the old
+            // value when handed null, so emptying a box used to change nothing.
+            const clear = {};
 
             if (changes.participation_grade !== undefined) {
               const grade = parseFloat(changes.participation_grade);
               participationGrade = isNaN(grade) || changes.participation_grade === '' ? null : grade;
+              if (participationGrade === null) clear.participation_grade = null;
             }
 
             // Handle academic grade override
@@ -83110,13 +83147,17 @@ Students you had withdrawn stay withdrawn.`)) {
 
             if (changes.teacher_notes !== undefined) {
               teacherNotes = changes.teacher_notes.trim() || null;
+              if (teacherNotes === null) clear.teacher_notes = null;
             }
 
-            // Handle class grade override
+            // Handle class grade override. null means the box was emptied:
+            // drop the teacher's grade and let the suggestion stand.
+            let clearClassGrade = false;
             if (changes.class_grade !== undefined) {
               const parsed = parseFloat(changes.class_grade);
               classGrade = isNaN(parsed) ? null : parsed;  // Allow 0 as a valid grade
               classGradeOverride = changes.class_grade_override !== undefined ? changes.class_grade_override : true;
+              clearClassGrade = classGrade === null;
             }
 
             // Use per-quarter grade storage
@@ -83130,6 +83171,16 @@ Students you had withdrawn stay withdrawn.`)) {
                   p_override: academicOverride
                 });
                 if (academicErr) throw academicErr;
+              }
+
+              if (clearClassGrade) {
+                const { error: clearErr } = await window.app.auth.supabase.rpc('set_class_grade_override', {
+                  p_enrollment_id: enrollmentId,
+                  p_quarter_id: this.currentQuarterId,
+                  p_class_grade: null,
+                  p_override: false
+                });
+                if (clearErr) throw clearErr;
               }
 
               // If teacher set a class grade, use the override function
@@ -83154,6 +83205,15 @@ Students you had withdrawn stay withdrawn.`)) {
                 if (upsertErr) throw upsertErr;
               }
 
+              if (Object.keys(clear).length) {
+                const { error: clearErr } = await window.app.auth.supabase
+                  .from('quarter_grade_snapshots')
+                  .update({ ...clear, updated_at: new Date().toISOString() })
+                  .eq('enrollment_id', enrollmentId)
+                  .eq('quarter_id', this.currentQuarterId);
+                if (clearErr) throw clearErr;
+              }
+
               // Only recalculate if NOT saving a class grade override
               // (recalculating would overwrite the teacher's grade choice)
               if (classGrade === null) {
@@ -83164,41 +83224,24 @@ Students you had withdrawn stay withdrawn.`)) {
                 if (recalcErr) throw recalcErr;
               }
             } catch (rpcError) {
-              console.warn('Per-quarter save failed, falling back to enrollment update:', rpcError.message);
-
-              // Fallback: update class_enrollments directly (for backwards compatibility)
-              const updateData = {};
-              if (participationGrade !== null) updateData.participation_grade = participationGrade;
-              if (teacherNotes !== null) updateData.teacher_notes = teacherNotes;
-              if (classGrade !== null) {
-                updateData.class_grade = classGrade;
-                updateData.class_grade_override = classGradeOverride;
-              }
-              if (academicOverride === true && academicGrade !== null) {
-                updateData.academic_grade = academicGrade;
-              }
-
-              if (Object.keys(updateData).length > 0) {
-                const { error: updateError } = await window.app.auth.supabase
-                  .from('class_enrollments')
-                  .update(updateData)
-                  .eq('id', enrollmentId);
-
-                if (updateError) throw updateError;
-              }
-
-              // Recalculate using old method (if available)
-              try {
-                await window.app.auth.supabase.rpc('update_enrollment_grades', {
-                  p_enrollment_id: enrollmentId
-                });
-              } catch (e) {
-                console.warn('Legacy recalc not available:', e.message);
-              }
+              // Say so and keep the typing. This used to fall back to writing
+              // the enrollment row, which holds the CURRENT quarter's grades,
+              // so a failed save for an earlier quarter quietly landed in the
+              // current one.
+              console.warn('Grade save failed for', enrollmentId, rpcError.message);
+              failed.push(enrollmentId);
             }
           }
 
-          window.app.showNotification('All grades saved successfully!', 'success');
+          if (failed.length) {
+            const kept = {};
+            failed.forEach(id => { kept[id] = this.pendingChanges[id]; });
+            this.pendingChanges = kept;
+            window.app.showNotification(`${failed.length} of ${changeCount} could not be saved for ${quarterName}. They are still on screen; try Save again.`, 'error');
+            return;
+          }
+
+          window.app.showNotification(`Saved ${changeCount} student grade(s) for ${quarterName}.`, 'success');
 
           // Clear pending changes
           this.pendingChanges = {};
@@ -83325,8 +83368,8 @@ Students you had withdrawn stay withdrawn.`)) {
           
           window.app.showNotification('Quarter created successfully!', 'success');
           
-          // Reload the grade modal
-          await this.showGradeManagementModal(this.currentClassId);
+          // Reload the grade modal on the quarter that was open
+          await this.showGradeManagementModal(this.currentClassId, this.currentQuarterId);
           
         } catch (error) {
           console.error('Error creating quarter:', error);
@@ -83358,7 +83401,12 @@ Students you had withdrawn stay withdrawn.`)) {
       async switchQuarter(quarterId) {
         // Save any pending changes first
         if (Object.keys(this.pendingChanges).length > 0) {
-          const confirmed = confirm('You have unsaved changes. Switch quarters anyway? Changes will be lost.');
+          const here = this.currentQuarter?.name || 'this quarter';
+          const there = (this.allQuarters || []).find(q => q.id === quarterId)?.name || 'the other quarter';
+          const n = Object.keys(this.pendingChanges).length;
+          const confirmed = confirm(`You have ${n} unsaved change${n === 1 ? '' : 's'} typed for ${here}.\n\n`
+            + `OK: discard ${n === 1 ? 'it' : 'them'} and open ${there}.\n`
+            + `Cancel: stay on ${here}. Anything you save there goes to ${here}.`);
           if (!confirmed) {
             // Reset dropdown to current quarter
             const selector = document.getElementById('grade-quarter-selector');
@@ -83601,8 +83649,8 @@ OK to discard and continue, Cancel to go back and save.`)) {
           
           window.app.showNotification('Categories saved!', 'success');
           
-          // Return to grade view and recalculate
-          await this.showGradeManagementModal(this.currentClassId);
+          // Return to grade view, on the quarter that was open
+          await this.showGradeManagementModal(this.currentClassId, this.currentQuarterId);
           
         } catch (error) {
           console.error('Error saving categories:', error);
@@ -83611,7 +83659,7 @@ OK to discard and continue, Cancel to go back and save.`)) {
       }
       
       closeCategoryManagement() {
-          this.showGradeManagementModal(this.currentClassId);
+          this.showGradeManagementModal(this.currentClassId, this.currentQuarterId);
         }
     } // ==================== END TEACHER GRADE MANAGEMENT ====================
 
@@ -83743,6 +83791,7 @@ OK to discard and continue, Cancel to go back and save.`)) {
             .select('*')
             .eq('class_id', classId)
             .in('status', ['active', 'archived', 'removed']);
+          if (stale()) return;
 
           if (enrollError) throw enrollError;
 
@@ -84432,7 +84481,7 @@ OK to discard and continue, Cancel to go back and save.`)) {
         </div>
         <div style="display: flex; gap: 10px;">
           <button class="btn btn-secondary" onclick="teacherGrades.closeGradeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="teacherGrades.saveAllGrades()">💾 Save All Changes</button>
+          <button class="btn btn-primary" id="grade-save-btn" onclick="teacherGrades.saveAllGrades()">💾 Save All Changes</button>
         </div>
       </div>
     </div>

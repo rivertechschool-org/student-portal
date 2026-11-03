@@ -152,7 +152,7 @@ global.window = {};
     // currentQuarterId, which is what the Export button reads.
     const tg = html.slice(html.indexOf('class TeacherGradeManagement'), html.indexOf('class GradebookView'));
     ok('switching quarter reloads Manage Grades on the chosen quarter',
-      /async switchQuarter\(quarterId\)[\s\S]{0,700}this\.showGradeManagementModal\(this\.currentClassId, quarterId\)/.test(tg));
+      /async switchQuarter\(quarterId\)[\s\S]{0,1400}this\.showGradeManagementModal\(this\.currentClassId, quarterId\)/.test(tg));
     ok('  which becomes the quarter Export uses',
       /if \(selectedQuarterId\) \{\s*quarter = quarters\.find\(q => q\.id === selectedQuarterId\);[\s\S]{0,200}this\.currentQuarterId = quarter\.id;/.test(tg));
   }

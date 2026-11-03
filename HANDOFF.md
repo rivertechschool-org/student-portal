@@ -6143,3 +6143,31 @@ brings the skill down. Skills not yet earned always save the real score. No back
 
 Backend in `student-portal-backend` (applied). Tests: `tests/conferences.test.js`,
 `tests/riven-conferences.test.js`, conference lines in `debug-tools/nlp-stress.js`.
+
+## 2026-11-03 · Manage Grades: entering an earlier quarter after the switch
+
+The principal entered Quarter 1 grades in Manage Grades right after the switch to Quarter 2, and
+they landed in Quarter 2. Emptying them to start over left the participation grades in place and
+turned the final grades into zeros. What changed:
+
+- **The screen says which quarter you are saving to.** A strip above the table names it (amber
+  when it is not the current quarter), and the button reads "Save Quarter 1 grades". The saved
+  message names the quarter too.
+- **The newest quarter you pick is the one on screen.** Opening the screen loads the current
+  quarter, which is slow, and picking another quarter during that load started a second one.
+  The slower load could then draw over the newer one. Now only the newest load draws.
+- **Coming back from Manage Categories keeps your quarter.** It used to jump back to the current
+  quarter.
+- **Switching with unsaved typing says which quarter the typing is for.** OK throws it away and
+  opens the other quarter; Cancel stays put.
+- **Emptying a box clears it.** An empty final grade goes back to the suggested grade (it used to
+  save a teacher-set 0). An empty participation grade or note is cleared (before, nothing
+  happened).
+- **A failed save says so and keeps your typing.** It used to fall back to writing the student's
+  enrollment record, which holds the current quarter's grades, so a failed save for an earlier
+  quarter could quietly land in the current one.
+
+**Not changed:** Riven's "set grade" commands still always use the current quarter. Their
+confirmation names the quarter.
+
+Test: `tests/grade-quarter-entry.test.js`.
