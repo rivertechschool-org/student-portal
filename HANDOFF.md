@@ -6220,3 +6220,23 @@ this could be added if wanted.
 
 Tests: `tests/riven-cancel-period-range.test.js`, and new run-of-periods lines in round 41 of
 `debug-tools/nlp-stress.js`.
+
+## 2026-11-04 · Workbook Pages: weeks, days and exercises, not just page numbers
+
+High school workbooks go by week and day ("Week 3", "Week 4 Days 1-2"), and the 9th grade book by
+exercise ("3-A"). The first box in the Workbook Pages table took only a page number.
+
+- **The box takes either.** A whole number is a first page, as before: page count, carrying on
+  from the last assignment, automatic grade. Anything else is kept as typed, and the Pages box
+  greys out. The same goes for the box in one student's own version.
+- **The student sees the words.** "Your work: Week 4 Days 1-2", and the 📖 tag on the assignment
+  shows them too.
+- **Words are graded by the teacher.** There is no page count to check against "Week 3", so the
+  work stays turned in, not graded, as anything else the grader can't read already does. The
+  student is told the teacher will grade it.
+- **Carrying on:** a plain "Week 3" or "Unit 2" suggests "Week 4" or "Unit 3" on the next
+  assignment. Anything more complicated ("Week 4 Days 1-2", "3-A") is left blank to type.
+- **Not changed:** Riven's "set Noah's pages" command still works in page numbers only.
+
+Backend in `student-portal-backend` (applied): a column for the words beside the page numbers. A
+student has one or the other, never both. Test: `tests/workbook-pages.test.js`.

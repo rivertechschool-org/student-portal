@@ -24376,6 +24376,8 @@ Students you had withdrawn stay withdrawn.`)) {
                 Students turn in the pages they did (e.g. "Pgs 27-30") and it is graded straight away:
                 all their pages A+, 1 missing B, 2 C, 3 D, 4 or more F, and one letter lower if late.
                 You can change any grade.
+                For a workbook that goes by week or exercise, type it instead of a page number
+                ("Week 4 Days 1-2", "3-A"). Those you grade yourself.
               </p>
               <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: end;">
                 <div class="form-group" style="flex: 2 1 220px; margin: 0;">
@@ -27129,8 +27131,11 @@ Students you had withdrawn stay withdrawn.`)) {
         if (v.description != null) bits.push('instructions');
         // A Workbook Pages assignment gives every student a version just to
         // hold their pages. That is not an adjustment, so it shows the pages.
-        const pages = v.page_end != null
-          ? `<span title="The pages this assignment is for" style="background: #2f6b6d; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; white-space: nowrap;">📖 ${v.page_start === v.page_end ? 'Page ' + v.page_start : 'Pages ' + v.page_start + '–' + v.page_end}</span>`
+        const pageText = v.page_end != null
+          ? (v.page_start === v.page_end ? 'Page ' + v.page_start : 'Pages ' + v.page_start + '–' + v.page_end)
+          : (v.page_label || '');
+        const pages = pageText
+          ? `<span title="The work this assignment is for" style="background: #2f6b6d; color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; margin-left: 6px; white-space: nowrap;">📖 ${this.escapeHtml(pageText)}</span>`
           : '';
         if (!bits.length && pages) return pages;
         const tip = `Changed for ${who}: ${bits.join(', ') || 'no changes'}`;
@@ -27196,8 +27201,12 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
                 ${a.grading_type === 'pages' ? `
                 <div class="form-group">
-                  <label for="student-version-page-start">First page</label>
-                  <input type="number" id="student-version-page-start" min="0" step="1" value="${v?.page_start ?? ''}">
+                  <label for="student-version-page-start">First page, or what to do</label>
+                  <input type="text" id="student-version-page-start" maxlength="80" placeholder="27 or Week 4 Days 1-2"
+                    value="${this.escapeHtml(String(v?.page_label || (v?.page_start ?? '')))}">
+                  <small style="color: var(--muted); display: block; margin-top: 5px;">
+                    Words ("Week 4", "3-A") are graded by you, not automatically.
+                  </small>
                 </div>
                 <div class="form-group">
                   <label for="student-version-page-count">Pages</label>
@@ -27280,18 +27289,23 @@ Students you had withdrawn stay withdrawn.`)) {
           // cannot be graded.
           if (a.grading_type === 'pages') {
             let page_start = ctx.version?.page_start ?? null, page_end = ctx.version?.page_end ?? null;
+            let page_label = ctx.version?.page_label ?? null;
             const sRaw = document.getElementById('student-version-page-start')?.value.trim() ?? '';
             const cRaw = document.getElementById('student-version-page-count')?.value.trim() ?? '';
-            if (!useClass && (sRaw !== '' || cRaw !== '')) {
+            const typed = this._pagesParseStart(sRaw);
+            if (!useClass && typed.label) {
+              // Words: kept as typed, and the page numbers go.
+              page_label = typed.label.slice(0, 80); page_start = null; page_end = null;
+            } else if (!useClass && (sRaw !== '' || cRaw !== '')) {
               const st = Number(sRaw), ct = Number(cRaw);
               if (!Number.isInteger(st) || st < 0 || !Number.isInteger(ct) || ct < 1) {
                 this.showNotification('Pages need a first page and a number of pages', 'error'); return;
               }
-              page_start = st; page_end = st + ct - 1;
+              page_start = st; page_end = st + ct - 1; page_label = null;
             }
-            if (page_end != null) {
+            if (page_end != null || page_label) {
               row = row || { assignment_id: a.id, student_id: studentId, description: null, due_date: null, points_possible: null };
-              row.page_start = page_start; row.page_end = page_end;
+              row.page_start = page_start; row.page_end = page_end; row.page_label = page_label;
             }
           }
 
@@ -28279,6 +28293,14 @@ Students you had withdrawn stay withdrawn.`)) {
                     // Workbook Pages: say which pages, and how to write them so
                     // the grade can be worked out the moment it is turned in.
                     const v = assignment.student_version || {};
+                    // Work set in words ("Week 4 Days 1-2") is graded by the
+                    // teacher, so it says that rather than promising a grade.
+                    if (v.page_end == null && v.page_label) {
+                      return `<div style="padding: 12px; background: rgba(47, 107, 109, 0.1); border-left: 3px solid #2f6b6d; border-radius: 8px; margin-bottom: 12px; font-size: 14px;">
+                        📖 Your work: <strong>${this.escapeHtml(v.page_label)}</strong>.
+                        Type what you did, like <strong>${this.escapeHtml(v.page_label)}</strong>. Your teacher will grade it.
+                      </div>`;
+                    }
                     const mine = v.page_end != null
                       ? (v.page_start === v.page_end ? `page ${v.page_start}` : `pages ${v.page_start}–${v.page_end}`)
                       : null;
@@ -30396,18 +30418,44 @@ Students you had withdrawn stay withdrawn.`)) {
 
       // The rows for the table. Pure, so it can be tested: students
       // [{id, first_name, last_name}], prev Map(studentId -> {page_start,
-      // page_end}) from the earlier assignment, and the default count.
+      // page_end, page_label}) from the earlier assignment, and the default
+      // count.
+      //
+      // 2026-11-04: a target can be words instead of page numbers. High school
+      // workbooks go by week and day ("Week 4 Days 1-2") or exercise ("3-A").
+      // Those are kept as typed in `label` and graded by the teacher; only
+      // page numbers can be counted. A label that is just a name and a number
+      // ("Week 3", "Unit 2") carries on to the next one ("Week 4"); anything
+      // else is left for the teacher to type.
       _pagesPlan(students, prev, defaultCount) {
         return (students || []).map(s => {
           const p = prev && prev.get(s.id);
           const had = p && p.page_end != null;
+          const next = p && p.page_label ? this._pagesNextLabel(p.page_label) : '';
           return {
             id: s.id,
             name: `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'Student',
             start: had ? p.page_end + 1 : '',
+            label: had ? '' : next,
             count: had ? (p.page_end - p.page_start + 1) : defaultCount,
           };
         });
+      }
+
+      // "Week 3" -> "Week 4". Only a name followed by one number; "Week 4
+      // Days 1-2" or "3-A" has no single obvious next, so it gives ''.
+      _pagesNextLabel(label) {
+        const m = String(label || '').trim().match(/^([A-Za-z][A-Za-z .]*?)\s*(\d{1,3})$/);
+        return m ? `${m[1]} ${parseInt(m[2], 10) + 1}` : '';
+      }
+
+      // What was typed in the first box: a whole number is a first page,
+      // anything else is a label. Pure.
+      _pagesParseStart(raw) {
+        const t = String(raw ?? '').trim().replace(/\s+/g, ' ');
+        if (t === '') return { start: '', label: '' };
+        if (/^\d{1,5}$/.test(t)) return { start: parseInt(t, 10), label: '' };
+        return { start: '', label: t };
       }
 
       async _pagesInit() {
@@ -30460,12 +30508,13 @@ Students you had withdrawn stay withdrawn.`)) {
         (ctx?.rows || []).forEach(r => {
           const s = document.querySelector(`.pages-start[data-id="${r.id}"]`);
           const c = document.querySelector(`.pages-count[data-id="${r.id}"]`);
-          if (s) r.start = s.value === '' ? '' : parseInt(s.value);
+          if (s) Object.assign(r, this._pagesParseStart(s.value));
           if (c) r.count = c.value === '' ? '' : parseInt(c.value);
         });
       }
 
-      _pagesEndText(start, count) {
+      _pagesEndText(start, count, label = '') {
+        if (label) return label;
         if (!Number.isInteger(start) || !Number.isInteger(count) || count < 1) return '—';
         return count === 1 ? `p. ${start}` : `pp. ${start}–${start + count - 1}`;
       }
@@ -30477,17 +30526,20 @@ Students you had withdrawn stay withdrawn.`)) {
         if (!rows.length) { host.innerHTML = `<div style="color: var(--muted); font-size: 13px;">No students in this class yet.</div>`; return; }
         const cell = 'padding: 6px 8px; border-bottom: 1px solid var(--border);';
         const input = 'width: 80px; padding: 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text);';
+        // The first box takes a page number or words ("Week 4 Days 1-2"), so
+        // it is a text box, wider than the count.
+        const wide = input.replace('width: 80px', 'width: 130px');
         host.innerHTML = `
           <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
             <thead><tr style="text-align: left; color: var(--muted); font-size: 11px; text-transform: uppercase;">
-              <th style="${cell}">Student</th><th style="${cell}">First page</th><th style="${cell}">Pages</th><th style="${cell}">Their pages</th>
+              <th style="${cell}">Student</th><th style="${cell}">First page, or what to do</th><th style="${cell}">Pages</th><th style="${cell}">Their work</th>
             </tr></thead>
             <tbody>${rows.map(r => `
               <tr>
                 <td style="${cell} font-weight: 600;">${this.escapeHtml(r.name)}</td>
-                <td style="${cell}"><input type="number" min="0" class="pages-start" data-id="${this.jsAttr(r.id)}" value="${r.start}" style="${input}" oninput="app._pagesRowChanged('${this.jsAttr(r.id)}')"></td>
-                <td style="${cell}"><input type="number" min="1" max="200" class="pages-count" data-id="${this.jsAttr(r.id)}" value="${r.count}" style="${input}" oninput="app._pagesRowChanged('${this.jsAttr(r.id)}')"></td>
-                <td style="${cell}" class="pages-end" data-id="${this.jsAttr(r.id)}">${this.escapeHtml(this._pagesEndText(r.start, r.count))}</td>
+                <td style="${cell}"><input type="text" maxlength="80" class="pages-start" data-id="${this.jsAttr(r.id)}" value="${this.escapeHtml(String(r.label || r.start))}" placeholder="27 or Week 4" style="${wide}" oninput="app._pagesRowChanged('${this.jsAttr(r.id)}')"></td>
+                <td style="${cell}"><input type="number" min="1" max="200" class="pages-count" data-id="${this.jsAttr(r.id)}" value="${r.count}" style="${input}${r.label ? ' opacity: 0.4;' : ''}" ${r.label ? 'disabled title="Only for page numbers"' : ''} oninput="app._pagesRowChanged('${this.jsAttr(r.id)}')"></td>
+                <td style="${cell}" class="pages-end" data-id="${this.jsAttr(r.id)}">${this.escapeHtml(this._pagesEndText(r.start, r.count, r.label))}</td>
               </tr>`).join('')}
             </tbody>
           </table>`;
@@ -30497,19 +30549,32 @@ Students you had withdrawn stay withdrawn.`)) {
         this._pagesSyncFromInputs();
         const r = (this._pagesCtx?.rows || []).find(x => x.id === id);
         const out = document.querySelector(`.pages-end[data-id="${id}"]`);
-        if (r && out) out.textContent = this._pagesEndText(r.start, r.count);
+        if (r && out) out.textContent = this._pagesEndText(r.start, r.count, r.label);
+        // A page count means nothing for "Week 4", so it is greyed out.
+        const c = document.querySelector(`.pages-count[data-id="${id}"]`);
+        if (r && c) {
+          c.disabled = !!r.label;
+          c.style.opacity = r.label ? '0.4' : '';
+          c.title = r.label ? 'Only for page numbers' : '';
+        }
       }
 
-      // {targets: [{student_id, page_start, page_end}], blank: [{id, name}]}
+      // {targets: [{student_id, page_start, page_end, page_label}], blank:
+      // [{id, name}]}. Every target has all three keys, so one upsert can
+      // carry page numbers and labels side by side.
       _pagesReadTargets() {
         this._pagesSyncFromInputs();
         const targets = [], blank = [];
         for (const r of this._pagesCtx?.rows || []) {
+          if (r.label) {
+            targets.push({ student_id: r.id, page_start: null, page_end: null, page_label: r.label.slice(0, 80) });
+            continue;
+          }
           if (!Number.isInteger(r.start) || r.start < 0 || !Number.isInteger(r.count) || r.count < 1) {
             blank.push({ id: r.id, name: r.name });
             continue;
           }
-          targets.push({ student_id: r.id, page_start: r.start, page_end: r.start + r.count - 1 });
+          targets.push({ student_id: r.id, page_start: r.start, page_end: r.start + r.count - 1, page_label: null });
         }
         return { targets, blank };
       }

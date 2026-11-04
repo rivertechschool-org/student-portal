@@ -30,7 +30,7 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const names = ['_pagesPlan', '_pagesReadTargets', '_pagesSyncFromInputs', '_pagesEndText', 'studentVersionBadge', '_pagesGradedMessage'];
+const names = ['_pagesPlan', '_pagesReadTargets', '_pagesSyncFromInputs', '_pagesEndText', 'studentVersionBadge', '_pagesGradedMessage', '_pagesParseStart', '_pagesNextLabel'];
 const app = eval(`({ ${names.map(method).join(',\n')} })`);
 app.escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -68,10 +68,39 @@ app._pagesCtx = { rows: app._pagesPlan(students, prev, 4) };
 const read = app._pagesReadTargets();
 ok('targets read back, with the teacher\'s edit to one count',
   JSON.stringify(read.targets) === JSON.stringify([
-    { student_id: 'a', page_start: 27, page_end: 30 },
-    { student_id: 'b', page_start: 16, page_end: 18 },
+    { student_id: 'a', page_start: 27, page_end: 30, page_label: null },
+    { student_id: 'b', page_start: 16, page_end: 18, page_label: null },
   ]), JSON.stringify(read.targets));
 ok('a student with no first page is reported by name', read.blank.length === 1 && read.blank[0].name === 'Rook Ash', JSON.stringify(read.blank));
+
+// ---- words instead of page numbers (2026-11-04) ----
+// High school workbooks go by week and day, or by exercise.
+ok('a number is a first page', JSON.stringify(app._pagesParseStart(' 27 ')) === '{"start":27,"label":""}');
+ok('"Week 4 Days 1-2" is kept as typed', app._pagesParseStart('Week 4  Days 1-2').label === 'Week 4 Days 1-2');
+ok('"3-A" is a label, not page 3', app._pagesParseStart('3-A').label === '3-A' && app._pagesParseStart('3-A').start === '');
+ok('blank is blank', JSON.stringify(app._pagesParseStart('')) === '{"start":"","label":""}');
+inputs['start-a'] = 'Week 4 Days 1-2';
+inputs['start-c'] = '3-A';
+app._pagesCtx = { rows: app._pagesPlan(students, prev, 4) };
+const read2 = app._pagesReadTargets();
+ok('words are saved as the label, with no page numbers',
+  JSON.stringify(read2.targets) === JSON.stringify([
+    { student_id: 'a', page_start: null, page_end: null, page_label: 'Week 4 Days 1-2' },
+    { student_id: 'b', page_start: 16, page_end: 18, page_label: null },
+    { student_id: 'c', page_start: null, page_end: null, page_label: '3-A' },
+  ]), JSON.stringify(read2.targets));
+ok('  so nobody is left blank', read2.blank.length === 0);
+ok('"Their work" shows the words', app._pagesEndText('', 4, 'Week 3') === 'Week 3');
+ok('"Week 3" carries on to "Week 4"', app._pagesNextLabel('Week 3') === 'Week 4');
+ok('  "Unit 12" to "Unit 13"', app._pagesNextLabel('Unit 12') === 'Unit 13');
+ok('  "Week 4 Days 1-2" has no obvious next, so blank', app._pagesNextLabel('Week 4 Days 1-2') === '');
+ok('  nor does "3-A"', app._pagesNextLabel('3-A') === '');
+const plan = app._pagesPlan(students, new Map([['a', { page_label: 'Week 3' }], ['b', { page_label: '3-A' }]]), 4);
+ok('the next assignment suggests Week 4, and leaves 3-A for the teacher',
+  plan[0].label === 'Week 4' && plan[0].start === '' && plan[1].label === '' && plan[1].start === '', JSON.stringify(plan));
+const lb = app.studentVersionBadge({ student_version: { page_label: 'Week 4 Days 1-2' } });
+ok('the badge shows the words', /📖 Week 4 Days 1-2/.test(lb) && !/Adjusted/.test(lb), lb);
+ok('the badge escapes them', /&lt;b&gt;/.test(app.studentVersionBadge({ student_version: { page_label: '<b>' } })));
 
 // ---- the student's badge ----
 const badge = app.studentVersionBadge({ student_version: { page_start: 27, page_end: 30, description: null, due_date: null, points_possible: null } });
