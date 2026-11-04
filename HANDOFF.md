@@ -6171,3 +6171,19 @@ turned the final grades into zeros. What changed:
 confirmation names the quarter.
 
 Test: `tests/grade-quarter-entry.test.js`.
+
+## 2026-11-04 · Class Resources: PDFs on phones open in the phone's viewer
+
+The in-portal PDF preview doesn't work on phones: Chrome on Android leaves it blank, and Safari on
+iPhone and iPad shows one page that won't scroll. Now, for a PDF (including Google Docs, Sheets and
+Slides, which arrive as PDFs):
+
+- **iPhone and iPad:** it opens in a new tab in Safari's own viewer, with every page. The tab is
+  opened at the tap, because Safari blocks it as a popup once the file has finished downloading. If
+  Safari blocks it anyway, the file is saved instead.
+- **Android:** the file is saved (with `.pdf` on the name), and the phone offers to open it in its
+  PDF app.
+- **Computers:** unchanged, still the preview inside the portal. Pictures, audio, video and text
+  still preview inside the portal on phones too.
+
+Not yet tried on a real phone. Test: `tests/resource-pdf-phones.test.js`.

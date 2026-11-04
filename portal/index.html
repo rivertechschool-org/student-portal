@@ -31992,7 +31992,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <div>
               <p style="color: var(--muted); font-size: 12px; margin-bottom: 10px;">
                 Files your teacher has shared. Selecting a file opens it here; the arrow downloads it.
-                PDFs, images, text, audio and video preview in place - other formats download.
+                PDFs, images, text, audio and video preview in place - other formats download. On a phone or tablet, PDFs open in its own PDF viewer so every page shows.
               </p>
               ${crumbs}
               ${body}
@@ -32073,14 +32073,50 @@ Students you had withdrawn stay withdrawn.`)) {
         return null;
       }
 
+      // Phones do not show a PDF inside a page. Chrome on Android has no
+      // in-page PDF viewer, so the preview box came up blank; Safari on
+      // iPhone and iPad draws only the first page, which cannot be scrolled.
+      // So on those, a PDF leaves the portal for the phone's own viewer.
+      // iPadOS reports itself as a Mac; touch points give it away.
+      _mobilePdfMode() {
+        const ua = navigator.userAgent || '';
+        if (/Android/i.test(ua)) return 'android';
+        if (/iPhone|iPad|iPod/i.test(ua) || (/Macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) return 'ios';
+        return null;
+      }
+
       // Opens a resource in the portal rather than downloading it. Falls back
       // to a download for anything the browser cannot show.
       async previewDriveFile(fileId, fileName, classId = null, mimeHint = '') {
         let objectUrl = null;
+        // On an iPhone or iPad a PDF opens in a new tab, in Safari's own
+        // viewer. The tab has to be opened now, while the tap still counts as
+        // a tap: after the download below Safari treats window.open as a
+        // popup and blocks it. Google Docs, Sheets and Slides arrive as PDFs.
+        const mobile = this._mobilePdfMode();
+        const likelyPdf = this._previewKind(mimeHint, fileName) === 'pdf'
+          || /^application\/vnd\.google-apps\.(document|spreadsheet|presentation)$/.test(String(mimeHint || ''));
+        let tab = (mobile === 'ios' && likelyPdf) ? window.open('', '_blank') : null;
         try {
           this.showNotification('Opening preview...', 'info');
           const blob = await this._fetchDriveBlob(fileId, classId);
           const kind = this._previewKind(blob.type || mimeHint, fileName);
+
+          if (kind === 'pdf' && mobile === 'ios' && tab && !tab.closed) {
+            const url = URL.createObjectURL(blob);
+            tab.location.href = url;
+            tab = null;
+            // Long enough for Safari to load it; the tab keeps its copy.
+            setTimeout(() => URL.revokeObjectURL(url), 120000);
+            return;
+          }
+          if (kind === 'pdf' && mobile) {
+            // Android, or an iPhone that blocked the tab: save the file. The
+            // phone then offers to open it in its PDF app.
+            this._saveBlob(blob, /\.pdf$/i.test(fileName || '') ? fileName : `${fileName || 'file'}.pdf`);
+            this.showNotification('Downloaded. Open it from the download notice to read every page.', 'success');
+            return;
+          }
 
           if (!kind) {
             this.showNotification('That file type cannot be previewed - downloading instead.', 'info');
@@ -32122,6 +32158,9 @@ Students you had withdrawn stay withdrawn.`)) {
           this.showNotification(e.message, 'error');
         } finally {
           if (objectUrl) URL.revokeObjectURL(objectUrl);
+          // A tab opened for a PDF that turned out not to be one, or that
+          // failed to arrive, is closed rather than left blank.
+          if (tab && !tab.closed) tab.close();
         }
       }
 
