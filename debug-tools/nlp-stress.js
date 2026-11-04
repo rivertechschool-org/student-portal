@@ -2192,6 +2192,45 @@ app._terminalAllClasses = [
   t41(`"${text}" -> CANCEL_CLASS (got ${got})`, got === 'CANCEL_CLASS');
 });
 
+// A RUN of periods, or "my classes" with no class named: the day, narrowed.
+// "Cancel my classes today from 3-7 period" listed all 24 of the teacher's
+// classes back at them, and "cancel periods 3 to 7 tomorrow" was read as coins.
+[
+  'Cancel my classes today from 3-7 period',
+  'cancel my classes periods 3-7',
+  'cancel periods 3 through 7',
+  'cancel my 3rd through 7th period classes',
+  'cancel my classes p3-p7',
+  'cancel periods 3 to 7 tomorrow',
+  'call off periods 5-7',
+  'cancel my classes after 2nd period',
+  'cancel my classes from period 3 on',
+  'cancel my classes starting with p4 tomorrow',
+  'cancel my classes p3-p7 except spanish',
+  'cancel my classes today',
+  'cancel my classes',
+  'cancel all of my classes tomorrow',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" -> CANCEL_DAY (got ${got})`, got === 'CANCEL_DAY');
+});
+// ...but one named class is still one lesson, run or not.
+[
+  'cancel my math class periods 3-4',
+  'cancel my math classes',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" -> CANCEL_CLASS (got ${got})`, got === 'CANCEL_CLASS');
+});
+// And asking is not cancelling.
+[
+  'what classes do i have today',
+  'which of my classes are cancelled today?',
+].forEach(text => {
+  const got = run(text).intent;
+  t41(`"${text}" is not a cancel (got ${got})`, got !== 'CANCEL_DAY' && got !== 'CANCEL_CLASS');
+});
+
 // A period named, no class named: the period IS the target, singular or not.
 // "cancel my period 3 class" used to reach nothing at all - CANCEL_CLASS needs
 // a class and "period 3 class" is not one - so it answered UNKNOWN_ACTION.

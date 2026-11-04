@@ -6190,3 +6190,28 @@ Tried on a Galaxy S25 (Chrome 156) on 2026-11-04. The old preview showed no page
 icon, a random string of letters as the name, and an Open button. The new behaviour saves the file
 under its real name, and Chrome's "File downloaded · Open" notice comes up. The iPhone and iPad
 route has not been tried on a real device. Test: `tests/resource-pdf-phones.test.js`.
+
+## 2026-11-04 · Riven: "cancel my classes today from 3-7 period"
+
+Riven answered that with a list of the teacher's 24 classes, and "cancel periods 3 to 7 tomorrow"
+was read as an amount of coins. Riven build `2026-11-04·a`. Riven now understands:
+
+- **A run of periods:** "from 3-7 period", "periods 3-7", "periods 3 through 7", "3rd through
+  7th period", "p3-p7", "periods 3 to 7 tomorrow", "periods 2 and 5-7".
+- **An open-ended run:** "after 2nd period", "from period 3 on", "starting with p4".
+- **"Cancel my classes" / "cancel my classes today"** is the teacher's whole day.
+- **These still mean one lesson:** a named class ("cancel my math classes", "cancel my math class
+  periods 3-4").
+- **Exceptions still work:** "periods 3-7 except Spanish".
+
+The confirmation names the run ("periods 3–7"); an open-ended run stops at the last period
+taught that day. Cancelling has always been per class per day, so a class that also meets outside
+the run (Math in periods 2 and 5) is cancelled whole. The confirmation now says so on that line
+before anything happens.
+
+A bare "3-7" with no "period" anywhere is not read as periods, because "cancel classes 11-14" could
+be a date. **Not done:** "cancel my afternoon classes". The bell schedule has a lunch block, so
+this could be added if wanted.
+
+Tests: `tests/riven-cancel-period-range.test.js`, and new run-of-periods lines in round 41 of
+`debug-tools/nlp-stress.js`.

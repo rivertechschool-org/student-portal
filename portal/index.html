@@ -59041,7 +59041,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-02·a';
+      const RIVEN_BUILD = '2026-11-04·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -65592,6 +65592,28 @@ Students you had withdrawn stay withdrawn.`)) {
             // "cancel my period 3 classes" - a period and a PLURAL. One lesson
             // is "cancel my period 3 class", which still goes to CANCEL_CLASS.
             /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,40}\bp(?:eriod)?s?\s*\d{1,2}\b[\s\S]{0,30}\bclasses\b/,
+          ]
+        },
+        {
+          intent: 'CANCEL_DAY',
+          // "cancel my classes today": plural, mine, and no class named, so it
+          // is the day, and so is a run of periods. Stands down when a class
+          // IS named ("cancel my math classes" is that class) and for
+          // questions. Used to answer with the list of classes.
+          w: 12, notIfClass: true, notIfNoteCommand: true, notIfQuestion: true,
+          patterns: [
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b\s+(?:all\s+)?(?:of\s+)?my\s+classes\b/,
+            // A RUN of periods: "cancel my classes today from 3-7 period",
+            // "cancel periods 3 through 7", "my 3rd to 7th period classes",
+            // "p3-p7". These used to list the teacher's classes back at them
+            // (LIST_CLASSES), and "periods 3 to 7" was read as an amount of
+            // coins. A range with no class named is the day; "cancel my math class
+            // periods 3-4" names one and stays one lesson.
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,50}\b(?:p|periods?)\s*\d{1,2}(?:st|nd|rd|th)?\s*(?:-|\u2013|\u2014|to|through|thru|until|till)\s*(?:p|periods?)?\s*\d{1,2}\b/,
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,50}\b\d{1,2}(?:st|nd|rd|th)?\s*(?:-|\u2013|\u2014|to|through|thru|until|till)\s*\d{1,2}(?:st|nd|rd|th)?\s*(?:p\b|periods?\b)/,
+            // Open-ended: "cancel my classes after 2nd period", "from period 3
+            // on", "starting with p4".
+            /\b(cancel|cancell?ing|call(?:ing)?\s+off)\b[\s\S]{0,50}\b(?:after|from|starting(?:\s+(?:with|at|from))?|beginning(?:\s+with)?)\s+(?:(?:the\s+)?(?:p|periods?)\s*\d{1,2}|\d{1,2}(?:st|nd|rd|th)?\s+period)\b/,
           ]
         },
         {
@@ -73929,9 +73951,40 @@ Students you had withdrawn stay withdrawn.`)) {
     // cancel precisely what was being spared - the same inversion one layer
     // down. _rivenExceptClause reads the other half.
     _rivenTargetPeriods(raw) {
-      const head = String(raw || '').split(
-        /\b(?:except|except for|apart from|other than|but not|excluding|besides)\b/i)[0];
+      let head = String(raw || '').split(
+        /\b(?:except|except for|apart from|other than|but not|excluding|besides)\b/i)[0].toLowerCase();
       const periods = new Set();
+      // The last period there can be. Open-ended runs ("after 2nd period")
+      // fill up to here; the caller only cancels classes that actually meet
+      // in a period, so the extra numbers cost nothing.
+      const LAST = 12;
+      const add = (a, b) => { for (let n = Math.max(1, a); n <= Math.min(LAST, b); n++) periods.add(n); };
+      const ord = '(?:st|nd|rd|th)?';
+      const per = '(?:p|periods?)';
+      // Ranges first, and cut out once read, so "3-7" is not also read as
+      // "period 3" and "7" by the rules below. A bare "3-7" counts only when
+      // the sentence says "period" somewhere: "cancel classes 11-14" could
+      // just as well be a date.
+      const saysPeriod = /\bp(?:eriods?)?\b|\bp\d/.test(head);
+      head = head.replace(new RegExp(
+        `\\b(${per}\\s*)?(\\d{1,2})${ord}\\s*(?:-|\u2013|\u2014|to|through|thru|until|till)\\s*(?:${per}\\s*)?(\\d{1,2})${ord}(\\s*${per}\\b)?`, 'g'),
+        (m, pre, a, b, post) => {
+          if (!pre && !post && !saysPeriod) return m;
+          const x = parseInt(a, 10), y = parseInt(b, 10);
+          if (x > LAST || y > LAST) return m;
+          add(Math.min(x, y), Math.max(x, y));
+          return ' ';
+        });
+      // "after 2nd period" is 3 onward; "from period 3 on", "starting with
+      // p3" and "beginning 3rd period" are 3 onward.
+      head = head.replace(new RegExp(
+        `\\b(after|from|starting(?:\\s+(?:with|at|from))?|beginning(?:\\s+with)?)\\s+(?:the\\s+)?(?:${per}\\s*(\\d{1,2})${ord}|(\\d{1,2})${ord}\\s+period)\\b(?:\\s+(?:on|onwards?|and\\s+(?:on|after|later)))?`, 'g'),
+        (m, word, a, b) => {
+          const n = parseInt(a || b, 10);
+          if (n > LAST) return m;
+          add(word === 'after' ? n + 1 : n, LAST);
+          return ' ';
+        });
       // "period 3", "P3", "periods 3 and 4", "3rd period". A run of numbers
       // joined by and/or/commas is read as a run rather than by sweeping up
       // every bare number in the sentence, which would swallow dates and counts.
@@ -73994,9 +74047,23 @@ Students you had withdrawn stay withdrawn.`)) {
       // "cancel my period 3 classes" is not the whole day. Narrow to the
       // periods actually named before saying how much there is to cancel.
       const want = this._rivenTargetPeriods(raw);
-      const periodLabel = want.size
-        ? `period${want.size === 1 ? '' : 's'} ${[...want].sort((a, b) => a - b).join(', ')}`
-        : '';
+      // Said as runs: "periods 3–7", not "periods 3, 4, 5, 6, 7", and an
+      // open-ended "after 2nd period" stops at the last period anyone meets.
+      const runLabel = (nums) => {
+        const xs = [...new Set(nums)].sort((a, b) => a - b);
+        const parts = [];
+        for (let i = 0; i < xs.length; i++) {
+          let j = i;
+          while (j + 1 < xs.length && xs[j + 1] === xs[j] + 1) j++;
+          parts.push(j - i >= 2 ? `${xs[i]}–${xs[j]}` : xs.slice(i, j + 1).join(', '));
+          i = j;
+        }
+        return `period${xs.length === 1 ? '' : 's'} ${parts.join(', ')}`;
+      };
+      const meetsBy = [...new Set(meeting.flatMap(c => periods[c.id] || []))];
+      const lastMet = meetsBy.length ? Math.max(...meetsBy) : 0;
+      const shown = [...want].filter(n => n <= Math.max(lastMet, Math.min(...want)));
+      const periodLabel = want.size ? runLabel(shown) : '';
       if (want.size) {
         const inPeriod = meeting.filter(c => (periods[c.id] || []).some(p => want.has(p)));
         if (!inPeriod.length) {
@@ -74060,7 +74127,12 @@ Students you had withdrawn stay withdrawn.`)) {
 
       const pLabel = (c) => {
         const ps = (periods[c.id] || []).sort((a, b) => a - b);
-        return ps.length ? ` <span style="color: var(--muted);">P${ps.join(', P')}</span>` : '';
+        // Cancelling is per class per day. A class that also meets outside
+        // the periods asked for is called off for those too: say so before,
+        // not after.
+        const outside = want.size ? ps.filter(p => !want.has(p)) : [];
+        return (ps.length ? ` <span style="color: var(--muted);">P${ps.join(', P')}</span>` : '')
+          + (outside.length ? ` <i style="font-size: 11px;">(also meets P${outside.join(', P')}; that is cancelled too)</i>` : '');
       };
       const list = targets.map(c =>
         `<div style="padding: 2px 10px;">\u2022 ${esc(c.name)}${pLabel(c)}` +
