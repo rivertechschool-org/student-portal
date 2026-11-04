@@ -6186,4 +6186,7 @@ Slides, which arrive as PDFs):
 - **Computers:** unchanged, still the preview inside the portal. Pictures, audio, video and text
   still preview inside the portal on phones too.
 
-Not yet tried on a real phone. Test: `tests/resource-pdf-phones.test.js`.
+Tried on a Galaxy S25 (Chrome 156) on 2026-11-04. The old preview showed no pages, only a PDF
+icon, a random string of letters as the name, and an Open button. The new behaviour saves the file
+under its real name, and Chrome's "File downloaded · Open" notice comes up. The iPhone and iPad
+route has not been tried on a real device. Test: `tests/resource-pdf-phones.test.js`.
