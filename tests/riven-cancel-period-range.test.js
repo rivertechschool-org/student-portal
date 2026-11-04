@@ -67,6 +67,12 @@ check('after 2nd period', target('cancel my classes after 2nd period'), upTo12(3
 check('from period 3 on', target('cancel my classes from period 3 on'), upTo12(3));
 check('starting with p4', target('cancel my classes starting with p4 tomorrow'), upTo12(4));
 check('a bare range with no "period" is not read as one', target('cancel classes 11-14'), []);
+check('2nd period', target('Cancel 2nd period class'), [2]);
+check('second period', target('cancel second period class'), [2]);
+check('period two', target('cancel period two'), [2]);
+check('2nd and 3rd period', target('cancel my 2nd and 3rd period classes'), [2, 3]);
+check('first through third period', target('cancel first through third period'), [1, 2, 3]);
+check('after second period', target('cancel my classes after second period'), upTo12(3));
 check('the run before "except" only', target('cancel periods 3-7 except period 5'), [3, 4, 5, 6, 7]);
 
 console.log('\n== what gets cancelled ==\n');
@@ -164,6 +170,12 @@ const written = (a) => a.inserted
     await a.terminalCancelDay.call(a, said('cancel periods 8-10'));
     check('a run nobody teaches in cancels nothing', written(a), []);
     check('  and offers nothing', a.confirmed, null);
+  }
+  {
+    const a = makeApp();
+    await a.terminalCancelDay.call(a, said('Cancel 2nd period class'));
+    check('"Cancel 2nd period class" is the period 2 class', written(a), ['Math']);
+    ok('  and says Math meets in period 5 too', /also meets P5/.test(a.confirmed));
   }
   {
     const a = makeApp();

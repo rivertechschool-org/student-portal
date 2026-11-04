@@ -6209,6 +6209,11 @@ taught that day. Cancelling has always been per class per day, so a class that a
 the run (Math in periods 2 and 5) is cancelled whole. The confirmation now says so on that line
 before anything happens.
 
+**Build `2026-11-04·b`:** "Cancel 2nd period class" got "outside what I can do". Riven
+only knew "period 2" and "p2". It now also takes "2nd period", "second period", "period two",
+"2nd and 3rd period", and the period on its own without "class" ("cancel period 2 today"). It still
+won't take something else named after the period ("cancel the period 2 quiz").
+
 A bare "3-7" with no "period" anywhere is not read as periods, because "cancel classes 11-14" could
 be a date. **Not done:** "cancel my afternoon classes". The bell schedule has a lunch block, so
 this could be added if wanted.

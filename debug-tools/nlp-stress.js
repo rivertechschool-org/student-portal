@@ -2210,6 +2210,18 @@ app._terminalAllClasses = [
   'cancel my classes today',
   'cancel my classes',
   'cancel all of my classes tomorrow',
+  // The period said as an ordinal or a word, with or without "class".
+  'Cancel 2nd period class',
+  'cancel 2nd period',
+  'cancel 2nd period.',
+  'cancel second period class',
+  'cancel period two',
+  'cancel my 2nd period class today',
+  'cancel period 2 today',
+  'cancel period 2',
+  'cancel p2 tomorrow',
+  'cancel my 2nd and 3rd period classes',
+  'cancel my third period class tomorrow',
 ].forEach(text => {
   const got = run(text).intent;
   t41(`"${text}" -> CANCEL_DAY (got ${got})`, got === 'CANCEL_DAY');
@@ -2218,6 +2230,7 @@ app._terminalAllClasses = [
 [
   'cancel my math class periods 3-4',
   'cancel my math classes',
+  'cancel 2nd period math',
 ].forEach(text => {
   const got = run(text).intent;
   t41(`"${text}" -> CANCEL_CLASS (got ${got})`, got === 'CANCEL_CLASS');
@@ -2226,6 +2239,8 @@ app._terminalAllClasses = [
 [
   'what classes do i have today',
   'which of my classes are cancelled today?',
+  'who is in 2nd period',
+  'cancel the period 2 quiz',
 ].forEach(text => {
   const got = run(text).intent;
   t41(`"${text}" is not a cancel (got ${got})`, got !== 'CANCEL_DAY' && got !== 'CANCEL_CLASS');
