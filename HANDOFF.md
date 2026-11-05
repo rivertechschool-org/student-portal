@@ -6240,3 +6240,13 @@ exercise ("3-A"). The first box in the Workbook Pages table took only a page num
 
 Backend in `student-portal-backend` (applied): a column for the words beside the page numbers. A
 student has one or the other, never both. Test: `tests/workbook-pages.test.js`.
+
+## 2026-11-05 · Birthdays on transcripts and report cards printed a day early
+
+Every student's date of birth printed one day early on both pages. The date on file was right and
+the profile screens showed it correctly. The print pages turned the date into a moment at midnight
+UTC, which is still the day before here. They now print the day as written. The print date at the
+top is unchanged.
+
+Cards are built fresh each time, so nothing saved needed repairing. Copies already printed or sent
+still show the old date and need reprinting. Test: `tests/print-dates.test.js`.
