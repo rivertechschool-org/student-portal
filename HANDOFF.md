@@ -6250,3 +6250,15 @@ top is unchanged.
 
 Cards are built fresh each time, so nothing saved needed repairing. Copies already printed or sent
 still show the old date and need reprinting. Test: `tests/print-dates.test.js`.
+
+## 2026-11-06 · Math Dojo Unit Conversion: practice covers the lesson, cups drawn to scale
+
+- **Practice** asked only feet to inches, pounds to ounces and gallons to quarts, always by
+  multiplying. It now asks all 12 conversions the lesson teaches (including yards, miles, tons, pints
+  and cups), in both directions. The three sub-skills and their unlocking are unchanged.
+- **The capacity picture** drew cup, pint and quart the same height, because a minimum height sat
+  above all three. Vessels are now to scale, and whole amounts up to 16 get a line per unit, so a
+  pint shows 2 blocks and a gallon 16. This drawing is shared, so the Tier 2 capacity lessons change too.
+- **Not added:** metric stays in Metric and Customary Conversion. Time units aren't taught here.
+
+Test: `tests/dojo-unit-conversion.test.js`.
