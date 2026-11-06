@@ -23436,6 +23436,264 @@ Students you had withdrawn stay withdrawn.`)) {
       }
      
       // ==================== ASSIGNMENTS: LISTING & CRUD ====================
+      // Separate native date/time controls keep the calendar easy to use. The
+      // combined local value stays at the existing ID for all assignment types.
+      _assignmentDueDateFields(prefix, value, required = true) {
+        const [date = '', time = '23:59'] = (value || '').split('T');
+        return `<div class="form-group">
+          <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+            <div style="flex: 2 1 180px;">
+              <label for="${prefix}-due-day">Due Date${required ? ' *' : ''}</label>
+              <input type="date" id="${prefix}-due-day" value="${date}" ${required ? 'required' : ''}
+                oninput="app._syncAssignmentDueDate('${prefix}')" style="width: 100%;">
+            </div>
+            <div style="flex: 1 1 130px;">
+              <label for="${prefix}-due-time">Time</label>
+              <input type="time" id="${prefix}-due-time" value="${time}" ${required ? 'required' : ''}
+                oninput="app._syncAssignmentDueDate('${prefix}')" style="width: 100%;">
+            </div>
+          </div>
+          <input type="hidden" id="${prefix}-due-date" value="${value || ''}">
+          <small id="${prefix}-due-date-hint" style="color: var(--muted); display: block; margin-top: 5px;"></small>
+        </div>`;
+      }
+
+      _syncAssignmentDueDate(prefix) {
+        const day = document.getElementById(`${prefix}-due-day`).value;
+        const time = document.getElementById(`${prefix}-due-time`).value;
+        document.getElementById(`${prefix}-due-date`).value = day && time ? `${day}T${time}` : '';
+      }
+
+      // A single saved layout per class is read afresh by every role. It only
+      // contains opaque assignment IDs and group names, never roster or grades.
+      async _loadAssignmentLayout(classId) {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('class_assignment_layouts').select('*').eq('class_id', classId).maybeSingle());
+        if (error) throw error;
+        return data ? { ...data, layout: this._normalizeAssignmentLayout(data.layout) } : null;
+      }
+
+      _normalizeAssignmentLayout(raw) {
+        const sort = this._assignmentSortOptions().some(([value]) => value === raw?.sort) ? raw.sort : 'newest';
+        const strings = value => Array.isArray(value) ? [...new Set(value.filter(id => typeof id === 'string'))] : [];
+        const ids = new Set();
+        const groups = (Array.isArray(raw?.groups) ? raw.groups : []).filter(g => {
+          if (!g || typeof g.id !== 'string' || typeof g.name !== 'string' || ids.has(g.id)) return false;
+          ids.add(g.id); return true;
+        }).map(g => ({ id: g.id, name: g.name.slice(0, 100), assignment_ids: strings(g.assignment_ids) }));
+        return { sort, groups, order: strings(raw?.order) };
+      }
+
+      _assignmentSortOptions() {
+        return [ ['newest', 'Newest first'], ['oldest', 'Oldest first'],
+          ['due_asc', 'Due date: soonest first'], ['due_desc', 'Due date: latest first'],
+          ['title', 'Title: A–Z'], ['custom', 'Custom order'] ];
+      }
+
+      _orderedClassAssignments(assignments, layout) {
+        const mode = layout?.sort || 'newest';
+        const ranks = new Map((layout?.order || []).map((id, i) => [id, i]));
+        const stamp = (a, field) => {
+          // A student's own deadline does not change the teacher's class order.
+          const raw = field === 'due_date' ? (a.class_due_date || a.due_date) : a[field];
+          return Date.parse(raw) || 0;
+        };
+        return [...assignments].sort((a, b) => {
+          if (!layout && (a.assignment_type === 'info') !== (b.assignment_type === 'info')) {
+            return a.assignment_type === 'info' ? -1 : 1;
+          }
+          let diff = 0;
+          if (mode === 'custom') diff = (ranks.get(a.id) ?? Infinity) - (ranks.get(b.id) ?? Infinity);
+          if (mode === 'due_asc') diff = stamp(a, 'due_date') - stamp(b, 'due_date');
+          if (mode === 'due_desc') diff = stamp(b, 'due_date') - stamp(a, 'due_date');
+          if (mode === 'oldest') diff = stamp(a, 'created_at') - stamp(b, 'created_at');
+          if (mode === 'title') diff = (a.title || '').localeCompare(b.title || '', undefined, { numeric: true, sensitivity: 'base' });
+          return (Number.isNaN(diff) ? 0 : diff) || stamp(b, 'created_at') - stamp(a, 'created_at') || a.id.localeCompare(b.id);
+        });
+      }
+
+      _classAssignmentSections(assignments, layout) {
+        const ordered = this._orderedClassAssignments(assignments, layout);
+        const used = new Set();
+        const sections = [];
+        for (const group of layout?.groups || []) {
+          const ids = new Set(group.assignment_ids || []);
+          const items = ordered.filter(a => ids.has(a.id) && !used.has(a.id));
+          items.forEach(a => used.add(a.id));
+          // Do not show students an empty group containing only hidden work.
+          if (items.length) sections.push({ name: group.name, assignments: items });
+        }
+        const rest = ordered.filter(a => !used.has(a.id));
+        if (rest.length) sections.push({ name: layout?.groups?.length ? 'Other assignments' : '', assignments: rest });
+        return sections;
+      }
+
+      _renderClassAssignmentLayout(assignments, layout, render) {
+        return this._classAssignmentSections(assignments, layout).map(section =>
+          `${section.name ? `<h4 style="margin: 20px 0 10px;">${this.escapeHtml(section.name)}</h4>` : ''}${section.assignments.map(render).join('')}`
+        ).join('');
+      }
+
+      async organizeClassAssignments(classId) {
+        if (!['teacher', 'admin'].includes(this.userInfo.profile.user_type)) return;
+        try {
+          const saved = await this._loadAssignmentLayout(classId);
+          // Include previous quarters so reorganizing the current one never
+          // discards the teacher's arrangements for older assignments.
+          const assignments = [];
+          for (let offset = 0; ; offset += 1000) {
+            const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignments').select('id, title, due_date, created_at, is_published')
+              .eq('class_id', classId).order('id').range(offset, offset + 999));
+            if (error) throw error;
+            assignments.push(...(data || []));
+            if ((data || []).length < 1000) break;
+          }
+          this._assignmentLayoutEditor = {
+            classId, revision: saved?.revision ?? null, assignments,
+            layout: structuredClone(saved?.layout || { sort: 'newest', groups: [], order: [] })
+          };
+          this.showModal('organize-assignments', 'Organize Assignments', `
+            <p style="color: var(--muted);">This order and these groups are shared with students. Unpublished and unassigned work stays hidden from them.</p>
+            <div class="form-group">
+              <label for="assignment-layout-sort">Order assignments</label>
+              <select id="assignment-layout-sort" onchange="app.changeAssignmentLayoutSort(this.value)">
+                ${this._assignmentSortOptions().map(([value, label]) => `<option value="${value}">${label}</option>`).join('')}
+              </select>
+            </div>
+            <div style="display: flex; gap: 8px; margin: 12px 0;">
+              <input id="assignment-new-group" aria-label="New group name" placeholder="New group name (e.g. Unit 1)" maxlength="100" style="flex: 1; min-width: 0;">
+              <button class="btn btn-secondary" onclick="app.addAssignmentLayoutGroup()">Add group</button>
+            </div>
+            <div id="assignment-layout-groups"></div>
+            <div id="assignment-layout-items" style="max-height: 50vh; overflow-y: auto;"></div>
+            <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('organize-assignments')">Cancel</button>
+              <button id="save-assignment-layout" class="btn btn-primary" onclick="app.saveAssignmentLayout()">Save organization</button>
+            </div>`, true);
+          document.getElementById('assignment-layout-sort').value = this._assignmentLayoutEditor.layout.sort;
+          this.renderAssignmentLayoutEditor();
+        } catch (error) {
+          console.error('Could not open assignment organization:', error);
+          this.showNotification('Shared assignment organization is unavailable. Please contact an administrator if it has not been enabled yet.', 'error');
+        }
+      }
+
+      changeAssignmentLayoutSort(sort) {
+        const state = this._assignmentLayoutEditor;
+        if (!state || !this._assignmentSortOptions().some(([value]) => value === sort)) return;
+        if (sort === 'custom') state.layout.order = this._orderedClassAssignments(state.assignments, state.layout).map(a => a.id);
+        state.layout.sort = sort;
+        this.renderAssignmentLayoutEditor();
+      }
+
+      addAssignmentLayoutGroup() {
+        const input = document.getElementById('assignment-new-group');
+        const name = input.value.trim();
+        const groups = this._assignmentLayoutEditor.layout.groups;
+        if (!name) return;
+        if (groups.some(g => g.name.toLowerCase() === name.toLowerCase())) {
+          this.showNotification('A group with that name already exists', 'error'); return;
+        }
+        groups.push({ id: crypto.randomUUID(), name, assignment_ids: [] });
+        input.value = '';
+        this.renderAssignmentLayoutEditor();
+      }
+
+      updateAssignmentLayoutGroup(index, action, value) {
+        const groups = this._assignmentLayoutEditor.layout.groups;
+        if (!groups[index]) return;
+        if (action === 'name') {
+          const name = value.trim().slice(0, 100);
+          if (!name || groups.some((g, i) => i !== index && g.name.toLowerCase() === name.toLowerCase())) {
+            this.showNotification('Please use a unique, nonempty group name', 'error');
+          } else groups[index].name = name;
+        }
+        // Removing a group never deletes its assignments; they become ungrouped.
+        if (action === 'remove') groups.splice(index, 1);
+        if (action === 'up' && index > 0) [groups[index - 1], groups[index]] = [groups[index], groups[index - 1]];
+        if (action === 'down' && index + 1 < groups.length) [groups[index + 1], groups[index]] = [groups[index], groups[index + 1]];
+        this.renderAssignmentLayoutEditor();
+      }
+
+      setAssignmentLayoutGroup(id, groupId) {
+        for (const group of this._assignmentLayoutEditor.layout.groups) {
+          group.assignment_ids = group.assignment_ids.filter(a => a !== id);
+          if (group.id === groupId) group.assignment_ids.push(id);
+        }
+        this.renderAssignmentLayoutEditor();
+      }
+
+      moveAssignmentInLayout(id, direction) {
+        const state = this._assignmentLayoutEditor;
+        if (state.layout.sort !== 'custom') return;
+        const section = this._classAssignmentSections(state.assignments, state.layout)
+          .find(s => s.assignments.some(a => a.id === id));
+        const ids = section?.assignments.map(a => a.id) || [];
+        const i = ids.indexOf(id), target = i + direction;
+        if (i < 0 || target < 0 || target >= ids.length) return;
+        const order = this._orderedClassAssignments(state.assignments, state.layout).map(a => a.id);
+        const a = order.indexOf(id), b = order.indexOf(ids[target]);
+        [order[a], order[b]] = [order[b], order[a]];
+        state.layout.order = order;
+        this.renderAssignmentLayoutEditor();
+      }
+
+      renderAssignmentLayoutEditor() {
+        const state = this._assignmentLayoutEditor;
+        const { layout, assignments } = state;
+        document.getElementById('assignment-layout-groups').innerHTML = layout.groups.map((g, i) => `
+          <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 8px 0;">
+            <input aria-label="Group name" maxlength="100" value="${this.escapeHtml(g.name)}" style="flex: 1; min-width: 100px;"
+              onchange="app.updateAssignmentLayoutGroup(${i}, 'name', this.value)">
+            <button class="btn btn-secondary small" aria-label="Move group up" ${i === 0 ? 'disabled' : ''} onclick="app.updateAssignmentLayoutGroup(${i}, 'up')">↑</button>
+            <button class="btn btn-secondary small" aria-label="Move group down" ${i === layout.groups.length - 1 ? 'disabled' : ''} onclick="app.updateAssignmentLayoutGroup(${i}, 'down')">↓</button>
+            <button class="btn btn-secondary small" onclick="app.updateAssignmentLayoutGroup(${i}, 'remove')">Remove group</button>
+          </div>`).join('');
+        document.getElementById('assignment-layout-items').innerHTML = this._classAssignmentSections(assignments, layout).map(section => `
+          ${section.name ? `<h4>${this.escapeHtml(section.name)}</h4>` : ''}
+          ${section.assignments.map((a, i) => {
+            const groupId = layout.groups.find(g => g.assignment_ids.includes(a.id))?.id || '';
+            return `<div class="card" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; padding: 10px;">
+              <span style="flex: 1 1 150px; overflow-wrap: anywhere;">${this.escapeHtml(a.title)}${a.is_published ? '' : ' (Draft)'}</span>
+              <select aria-label="Group for ${this.escapeHtml(a.title)}" style="max-width: 100%; width: 180px;" onchange="app.setAssignmentLayoutGroup('${this.jsAttr(a.id)}', this.value)">
+                <option value="">No group</option>
+                ${layout.groups.map(g => `<option value="${this.escapeHtml(g.id)}" ${g.id === groupId ? 'selected' : ''}>${this.escapeHtml(g.name)}</option>`).join('')}
+              </select>
+              ${layout.sort === 'custom' ? `
+                <button class="btn btn-secondary small" aria-label="Move assignment up" ${i === 0 ? 'disabled' : ''} onclick="app.moveAssignmentInLayout('${this.jsAttr(a.id)}', -1)">↑</button>
+                <button class="btn btn-secondary small" aria-label="Move assignment down" ${i === section.assignments.length - 1 ? 'disabled' : ''} onclick="app.moveAssignmentInLayout('${this.jsAttr(a.id)}', 1)">↓</button>` : ''}
+            </div>`;
+          }).join('')}`).join('') || '<p>No assignments yet. Groups can still be saved for later.</p>';
+      }
+
+      async saveAssignmentLayout() {
+        const state = this._assignmentLayoutEditor;
+        const button = document.getElementById('save-assignment-layout');
+        if (!state || button.disabled) return;
+        button.disabled = true;
+        try {
+          const row = { class_id: state.classId, layout: state.layout, revision: (state.revision ?? 0) + 1 };
+          // Compare revisions so a second teacher cannot silently overwrite a
+          // layout changed while this editor was open. First saves race safely
+          // on the primary key rather than using an unconditional upsert.
+          let query = this.auth.supabase.from('class_assignment_layouts');
+          query = state.revision === null ? query.insert(row)
+            : query.update(row).eq('class_id', state.classId).eq('revision', state.revision);
+          const { data, error } = await this.supabaseQuery(() => query.select('class_id').single());
+          if (error || !data) throw error || new Error('Organization changed in another window. Reopen it and try again.');
+          this.closeModal('organize-assignments');
+          this.closeModal('all-assignments');
+          this.showNotification('Assignment organization saved for your class and students', 'success');
+          await this.viewAssignments(state.classId);
+        } catch (error) {
+          this.showNotification('Could not save organization. Another teacher may have changed it; reopen to load their changes. ' + error.message, 'error');
+        } finally {
+          button.disabled = false;
+        }
+      }
+
+
       async viewAssignments(classId) {
         this.showLoading('Loading assignments...');
         try {
@@ -23466,9 +23724,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
           // Filter by current quarter if one exists
           if (currentQuarter) {
-            const startDate = currentQuarter.start_date.split('T')[0];
-            const endDateObj = new Date(currentQuarter.end_date);
-            endDateObj.setHours(23, 59, 59, 999);
+            const startDate = new Date(currentQuarter.start_date.split('T')[0] + 'T00:00:00').toISOString();
+            const endDateObj = new Date(currentQuarter.end_date.split('T')[0] + 'T23:59:59.999');
             const endDate = endDateObj.toISOString();
 
             console.log('Filtering by quarter dates:', startDate, 'to', endDate);
@@ -23541,16 +23798,14 @@ Students you had withdrawn stay withdrawn.`)) {
             assignments = await this.withMyVersions(assignments);
           }
 
-          // For students and parents, sort info assignments to the top
-          if (!isTeacher) {
-            assignments.sort((a, b) => {
-              const aIsInfo = a.assignment_type === 'info';
-              const bIsInfo = b.assignment_type === 'info';
-              if (aIsInfo && !bIsInfo) return -1;
-              if (!aIsInfo && bIsInfo) return 1;
-              // Within same type, sort by created_at descending (newest first)
-              return new Date(b.created_at) - new Date(a.created_at);
-            });
+          let assignmentLayout = null;
+          let layoutUnavailable = false;
+          try {
+            assignmentLayout = (await this._loadAssignmentLayout(classId))?.layout || null;
+          } catch (error) {
+            // A staged rollout or a temporary read failure must not hide work.
+            console.warn('Assignment organization unavailable:', error.message);
+            layoutUnavailable = true;
           }
 
           let assignmentsHtml;
@@ -23641,7 +23896,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
               `;
             } else {
-              assignmentsHtml = assignments.map(assignment => {
+              assignmentsHtml = this._renderClassAssignmentLayout(assignments, assignmentLayout, assignment => {
                 const isInfoOnly = assignment.assignment_type === 'info';
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
                 const categoryName = assignment.category_id ? categoryMap[assignment.category_id] : 'Uncategorized';
@@ -23768,7 +24023,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     </div>
                   </div>
                 `;
-              }).join('');
+              });
             }
           } else if (isParent) {
             // Parent view - read-only, shows children's status
@@ -23811,7 +24066,7 @@ Students you had withdrawn stay withdrawn.`)) {
               const childVersions = await this.loadStudentVersions(assignmentIds,
                 enrolledChildren.flatMap(c => [c.id, c.auth_user_id]));
 
-              assignmentsHtml = assignments.map(classAssignment => {
+              assignmentsHtml = this._renderClassAssignmentLayout(assignments, assignmentLayout, classAssignment => {
                 const dueDate = new Date(classAssignment.due_date);
                 const now = new Date();
 
@@ -23893,7 +24148,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     ` : ''}
                   </div>
                 `;
-              }).join('');
+              });
             }
           } else {
             // Student view
@@ -23920,7 +24175,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 submissionMap[sub.assignment_id] = sub;
               });
 
-              assignmentsHtml = assignments.map(assignment => {
+              assignmentsHtml = this._renderClassAssignmentLayout(assignments, assignmentLayout, assignment => {
                 const submission = submissionMap[assignment.id];
                 const dueDate = new Date(assignment.due_date);
                 const now = new Date();
@@ -23981,7 +24236,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     </div>
                   </div>
                 `;
-              }).join('');
+              });
             }
           }
       
@@ -24028,6 +24283,10 @@ Students you had withdrawn stay withdrawn.`)) {
                 ` : '')}
               </div>
       
+              ${isTeacher ? `<div style="margin-bottom: 12px;">
+                <button class="btn btn-secondary" onclick="app.organizeClassAssignments('${classId}')">↕ Organize assignments</button>
+                ${layoutUnavailable ? '<small style="display: block; color: var(--warning); margin-top: 5px;">Shared organization is unavailable. The list is using its default order.</small>' : ''}
+              </div>` : ''}
               <div style="max-height: 600px; overflow-y: auto;">
                 ${assignmentsHtml}
               </div>
@@ -24068,6 +24327,9 @@ Students you had withdrawn stay withdrawn.`)) {
           if (error) throw error;
       
           let assignments = allAssignments || [];
+          let assignmentLayout = null;
+          try { assignmentLayout = (await this._loadAssignmentLayout(classId))?.layout || null; }
+          catch (error) { console.warn('Assignment organization unavailable:', error.message); }
       
           // Load categories
           const { data: categories } = await this.supabaseQuery(() => this.auth.supabase
@@ -24129,16 +24391,14 @@ Students you had withdrawn stay withdrawn.`)) {
           assignments.forEach(assignment => {
             // Normalize due date to just the date part (ignore time)
             const dueDate = new Date(assignment.due_date);
-            const dueDateOnly = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+            const dueDateOnly = this._localDateStr(dueDate);
             let assigned = false;
             
             quarters?.forEach(quarter => {
               // Normalize quarter dates to just date parts
-              const startDate = new Date(quarter.start_date);
-              const start = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+              const start = quarter.start_date.split('T')[0];
               
-              const endDate = new Date(quarter.end_date);
-              const end = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+              const end = quarter.end_date.split('T')[0];
               
               // Check if assignment falls within quarter (inclusive)
               if (dueDateOnly >= start && dueDateOnly <= end) {
@@ -24180,7 +24440,7 @@ Students you had withdrawn stay withdrawn.`)) {
                       ${quarter.is_current ? '<span style="background: var(--accent); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">CURRENT</span>' : ''}
                       ${quarter.is_archived ? '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-left: 10px;">ARCHIVED</span>' : ''}
                     </h4>
-                    ${quarterAssignments.map(assignment => {
+                    ${this._renderClassAssignmentLayout(quarterAssignments, assignmentLayout, assignment => {
                       const counts = submissionCounts[assignment.id] || { total: 0, graded: 0, submitted: 0, excused: 0 };
                       const gradedCount = counts.graded + counts.excused;
                       const pendingCount = counts.submitted;
@@ -24220,7 +24480,7 @@ Students you had withdrawn stay withdrawn.`)) {
                           </div>
                         </div>
                       `;
-                    }).join('')}
+                    })}
                   </div>
                 `).join('')}
                 
@@ -24230,7 +24490,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     <p style="color: var(--muted); font-size: 12px; margin-bottom: 15px;">
                       These assignments have due dates outside of any defined quarter
                     </p>
-                    ${unassignedAssignments.map(assignment => {
+                    ${this._renderClassAssignmentLayout(unassignedAssignments, assignmentLayout, assignment => {
                       const counts = submissionCounts[assignment.id] || { total: 0, graded: 0, submitted: 0, excused: 0 };
                       const gradedCount = counts.graded + counts.excused;
                       const pendingCount = counts.submitted;
@@ -24270,7 +24530,7 @@ Students you had withdrawn stay withdrawn.`)) {
                           </div>
                         </div>
                       `;
-                    }).join('')}
+                    })}
                   </div>
                 ` : ''}
               </div>
@@ -24440,11 +24700,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <input type="number" id="game-min-time" min="1" max="120" value="10" placeholder="10">
               </div>
 
-              <div class="form-group">
-                <label for="game-rtc-reward">Max RTC Reward</label>
-                <input type="number" id="game-rtc-reward" min="0" max="500" value="30" oninput="app.updateRtcTierPreview('game')">
-                <small id="game-rtc-tier-preview" style="color: var(--muted); display: block; margin-top: 5px;">Tiers: 90%+ = 30 | 80%+ = 20 | 70%+ = 10</small>
-              </div>
+
             </div>
 
             <!-- Skill Mastery Section (hidden by default) -->
@@ -24481,11 +24737,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <input type="number" id="target-mastery" min="50" max="100" value="80" placeholder="80">
               </div>
 
-              <div class="form-group">
-                <label for="skill-rtc-reward">Max RTC Reward</label>
-                <input type="number" id="skill-rtc-reward" min="0" max="500" value="30" oninput="app.updateRtcTierPreview('skill')">
-                <small id="skill-rtc-tier-preview" style="color: var(--muted); display: block; margin-top: 5px;">Tiers: 90%+ = 30 | 80%+ = 20 | 70%+ = 10</small>
-              </div>
+
             </div>
 
             <!-- Regular Assignment Fields -->
@@ -24501,6 +24753,14 @@ Students you had withdrawn stay withdrawn.`)) {
               </div>
             </div>
 
+            ${this._assignmentDueDateFields('assignment', this._localDateStr(new Date()) + 'T23:59')}
+
+            <div class="form-group">
+              <label><input type="checkbox" id="assignment-is-published" checked> Publish immediately (visible to students)</label>
+            </div>
+            <details id="assignment-more-settings" style="border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+              <summary style="cursor: pointer; font-weight: 600;">More settings</summary>
+              <div style="margin-top: 15px;">
             <div class="form-group">
               <label for="assignment-quarter">Quarter *</label>
               <select id="assignment-quarter" required onchange="app.onAssignmentQuarterChange()">
@@ -24511,11 +24771,16 @@ Students you had withdrawn stay withdrawn.`)) {
               </small>
             </div>
 
-            <div class="form-group">
-              <label for="assignment-due-date">Due Date *</label>
-              <input type="datetime-local" id="assignment-due-date" required>
-              <small id="assignment-due-date-hint" style="color: var(--muted); display: block; margin-top: 5px;"></small>
-            </div>
+              <div id="game-advanced-settings" class="form-group" style="display: none;">
+                <label for="game-rtc-reward">Max RTC Reward</label>
+                <input type="number" id="game-rtc-reward" min="0" max="500" value="30" oninput="app.updateRtcTierPreview('game')">
+                <small id="game-rtc-tier-preview" style="color: var(--muted); display: block; margin-top: 5px;">Tiers: 90%+ = 30 | 80%+ = 20 | 70%+ = 10</small>
+              </div>
+              <div id="skill-advanced-settings" class="form-group" style="display: none;">
+                <label for="skill-rtc-reward">Max RTC Reward</label>
+                <input type="number" id="skill-rtc-reward" min="0" max="500" value="30" oninput="app.updateRtcTierPreview('skill')">
+                <small id="skill-rtc-tier-preview" style="color: var(--muted); display: block; margin-top: 5px;">Tiers: 90%+ = 30 | 80%+ = 20 | 70%+ = 10</small>
+              </div>
 
             <div id="points-section" class="form-group">
               <label for="assignment-max-points">Maximum Points</label>
@@ -24566,12 +24831,6 @@ Students you had withdrawn stay withdrawn.`)) {
               </select>
             </div>
             
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="assignment-is-published" checked>
-                Publish immediately (visible to students)
-              </label>
-            </div>
 
             <div id="template-section" class="form-group">
               <label style="display: flex; align-items: center; gap: 10px;">
@@ -24647,6 +24906,8 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
               </div>
             </div>
+              </div>
+            </details>
           </form>
       
           <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -24896,31 +25157,16 @@ Students you had withdrawn stay withdrawn.`)) {
       onAssignmentQuarterChange() {
         const quarterSelect = document.getElementById('assignment-quarter');
         const dueDateInput = document.getElementById('assignment-due-date');
+        const dayInput = document.getElementById('assignment-due-day');
         const hint = document.getElementById('assignment-due-date-hint');
-
         if (!quarterSelect || !this.assignmentQuarters) return;
-
-        const selectedQuarter = this.assignmentQuarters.find(q => q.id === quarterSelect.value);
-        if (!selectedQuarter) return;
-
-        // Format dates for display
-        const startDate = new Date(selectedQuarter.start_date);
-        const endDate = new Date(selectedQuarter.end_date);
-        const formatDate = (d) => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-
-        hint.textContent = `Due date must be between ${formatDate(startDate)} and ${formatDate(endDate)}`;
-
-        // Set min/max on the date input
-        dueDateInput.min = selectedQuarter.start_date.split('T')[0] + 'T00:00';
-        dueDateInput.max = selectedQuarter.end_date.split('T')[0] + 'T23:59';
-
-        // If current due date is outside the quarter range, clear it
-        if (dueDateInput.value) {
-          const currentDue = new Date(dueDateInput.value);
-          if (currentDue < startDate || currentDue > endDate) {
-            dueDateInput.value = '';
-          }
-        }
+        const quarter = this.assignmentQuarters.find(q => q.id === quarterSelect.value);
+        if (!quarter) return;
+        const start = quarter.start_date.split('T')[0], end = quarter.end_date.split('T')[0];
+        hint.textContent = `Due date must be between ${start} and ${end} (${quarter.name}).`;
+        dueDateInput.min = start + 'T00:00';
+        dueDateInput.max = end + 'T23:59';
+        if (dayInput) { dayInput.min = start; dayInput.max = end; }
       }
 
       async submitCreateAssignment(classId) {
@@ -24930,7 +25176,7 @@ Students you had withdrawn stay withdrawn.`)) {
         const selectedQuarterId = document.getElementById('assignment-quarter')?.value;
 
         // Info type doesn't need a due date
-        if (assignmentType !== 'info' && !dueDate) {
+        if (assignmentType !== 'info' && (!dueDate || !Number.isFinite(new Date(dueDate).getTime()))) {
           this.showNotification('Please set a due date', 'error');
           return;
         }
@@ -24939,10 +25185,11 @@ Students you had withdrawn stay withdrawn.`)) {
         if (assignmentType !== 'info' && selectedQuarterId && this.assignmentQuarters) {
           const selectedQuarter = this.assignmentQuarters.find(q => q.id === selectedQuarterId);
           if (selectedQuarter) {
-            const dueDateObj = new Date(dueDate);
-            const startDate = new Date(selectedQuarter.start_date);
-            const endDate = new Date(selectedQuarter.end_date);
-            if (dueDateObj < startDate || dueDateObj > endDate) {
+            const startDate = new Date(selectedQuarter.start_date.split('T')[0] + 'T00:00:00');
+            const endDate = new Date(selectedQuarter.end_date.split('T')[0] + 'T23:59:59.999');
+            if (dueDate.slice(0, 10) < selectedQuarter.start_date.slice(0, 10) || dueDate.slice(0, 10) > selectedQuarter.end_date.slice(0, 10)) {
+              const moreSettings = document.getElementById('assignment-more-settings');
+              if (moreSettings) moreSettings.open = true;
               this.showNotification(`Due date must be within ${selectedQuarter.name} (${startDate.toLocaleDateString()} - ${endDate.toLocaleDateString()})`, 'error');
               return;
             }
@@ -25393,10 +25640,13 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div id="edit-assignment-description-editor"></div>
               </div>
               
+              ${this._assignmentDueDateFields('edit-assignment', formattedDate)}
               <div class="form-group">
-                <label for="edit-assignment-due-date">Due Date *</label>
-                <input type="datetime-local" id="edit-assignment-due-date" value="${formattedDate}" required>
+                <label><input type="checkbox" id="edit-assignment-is-published" ${assignment.is_published ? 'checked' : ''}> Published (visible to students)</label>
               </div>
+              <details id="edit-assignment-more-settings" style="border: 1px solid var(--border); border-radius: 8px; padding: 12px;">
+                <summary style="cursor: pointer; font-weight: 600;">More settings</summary>
+                <div style="margin-top: 15px;">
               
               <div class="form-group">
                 <label for="edit-assignment-max-points">Maximum Points</label>
@@ -25473,12 +25723,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
               </div>
               
-              <div class="form-group">
-                <label>
-                  <input type="checkbox" id="edit-assignment-is-published" ${assignment.is_published ? 'checked' : ''}>
-                  Published (visible to students)
-                </label>
-              </div>
+
 
               <!-- data-has-column: the row came back with is_template, so the
                    database has it and an unticked box can be saved as false. -->
@@ -25544,6 +25789,8 @@ Students you had withdrawn stay withdrawn.`)) {
                   </div>
                 </div>
               </div>
+                </div>
+              </details>
             </form>
           
             <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end;">
@@ -25590,6 +25837,10 @@ Students you had withdrawn stay withdrawn.`)) {
         try {
           const title = document.getElementById('edit-assignment-title').value.trim();
           const dueDateRaw = document.getElementById('edit-assignment-due-date').value;
+          if (!dueDateRaw || !Number.isFinite(new Date(dueDateRaw).getTime())) {
+            this.showNotification('Please set a valid due date and time', 'error');
+            return;
+          }
           const dueDate = new Date(dueDateRaw).toISOString();
           const maxPoints = parseInt(document.getElementById('edit-assignment-max-points').value) || 100;
           const categoryId = document.getElementById('edit-assignment-category').value;
@@ -25620,9 +25871,8 @@ Students you had withdrawn stay withdrawn.`)) {
             || (this.assignmentQuarters || [])[0];
           if (quarterForEdit) {
             const due = new Date(dueDate);
-            const qStart = new Date(quarterForEdit.start_date);
-            const qEnd = new Date(quarterForEdit.end_date);
-            qEnd.setHours(23, 59, 59, 999);
+            const qStart = new Date(quarterForEdit.start_date.split('T')[0] + 'T00:00:00');
+            const qEnd = new Date(quarterForEdit.end_date.split('T')[0] + 'T23:59:59.999');
             if (due < qStart || due > qEnd) {
               const ok = confirm(
                 `That due date is outside ${quarterForEdit.name} ` +
@@ -30312,6 +30562,11 @@ Students you had withdrawn stay withdrawn.`)) {
         const categorySection = document.getElementById('assignment-category')?.closest('.form-group');
         const studentSelectionCard = document.querySelector('#assign-to-specific')?.closest('.card');
         const dueDateSection = document.getElementById('assignment-due-date')?.closest('.form-group');
+
+        for (const [id, type] of [['game-advanced-settings', 'game'], ['skill-advanced-settings', 'skill_mastery']]) {
+          const section = document.getElementById(id);
+          if (section) section.style.display = assignmentType === type ? 'block' : 'none';
+        }
 
         // Hide all special sections first
         if (gameSection) gameSection.style.display = 'none';
