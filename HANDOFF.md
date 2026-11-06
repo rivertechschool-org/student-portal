@@ -6250,3 +6250,24 @@ top is unchanged.
 
 Cards are built fresh each time, so nothing saved needed repairing. Copies already printed or sent
 still show the old date and need reprinting. Test: `tests/print-dates.test.js`.
+
+## 2026-11-05 · Assignment forms and shared organization (prepared, not deployed)
+
+Create Assignment now starts with today's local date and 11:59 PM in separate calendar/time
+controls. Edit keeps the saved date and time. Optional settings live under **More settings**
+in both forms; publish stays visible. Quarter boundaries use whole local calendar days so
+work due at 11:59 PM on the final day still appears in the class list.
+
+**Organize assignments** lets a teacher choose a sort order or custom order, add/rename/remove
+groups, move groups and assign work to them. Students and parents read the saved organization
+when opening the class list; hidden or unassigned work stays filtered. New work starts ungrouped.
+Game Practice and Skill Mastery results still use their existing separate results section.
+
+The matching backend change is prepared in the private backend repository and has NOT been
+applied to River Tech Supabase, at Luke's request. Apply that change before publishing the
+organizer. Missing shared organization falls back to a usable assignment list.
+
+Checks: assignment sort/group regressions, 22 offline browser journey checks using invented
+records (teacher create/edit/save, student and parent reload, conflict, phone layout), and
+inline-script parsing. The existing test suite had 180 passing suites and five failures; all
+five reproduce on the unchanged base. No River Tech Supabase access or live records were used.
