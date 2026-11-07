@@ -6262,3 +6262,9 @@ still show the old date and need reprinting. Test: `tests/print-dates.test.js`.
 - **Not added:** metric stays in Metric and Customary Conversion. Time units aren't taught here.
 
 Test: `tests/dojo-unit-conversion.test.js`.
+
+## 2026-11-07 · Late pickup email says who submitted it
+Jordan asked for the teacher who submitted late pickups to be on the email, taken from the
+account that presses the button. It shows as "Submitted by" under the summary. The change is all
+in the backend repo and is live; nothing changed on the portal page. If two people submit on one
+day the email names both. An account with no name on it just leaves the line out.
