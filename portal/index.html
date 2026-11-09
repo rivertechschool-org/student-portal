@@ -23570,6 +23570,10 @@ Students you had withdrawn stay withdrawn.`)) {
             // Get submission counts for all assignments at once
             const assignmentIds = assignments.map(a => a.id);
 
+            let pagesTargets = new Map();
+            try { pagesTargets = await this._pagesLoadTargets(assignmentIds); }
+            catch (error) { console.warn('Workbook targets not loaded:', error); }
+
             // Initialize submission counts
             const submissionCounts = {};
             assignmentIds.forEach(id => {
@@ -23641,7 +23645,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
               `;
             } else {
-              assignmentsHtml = assignments.map(assignment => {
+              assignmentsHtml = this._pagesGroupCards(assignments, assignments.map(assignment => {
                 const isInfoOnly = assignment.assignment_type === 'info';
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
                 const categoryName = assignment.category_id ? categoryMap[assignment.category_id] : 'Uncategorized';
@@ -23759,6 +23763,11 @@ Students you had withdrawn stay withdrawn.`)) {
                         title="The Drive folder student submissions are uploaded into.">
                         🗂️ Files
                       </button>
+                      ${(assignment.grading_type === 'pages' && pendingCount > 0) || (assignment.grading_type !== 'pages' && this._pagesHasTargets(pagesTargets.get(assignment.id))) ? `
+                        <button class="btn btn-secondary small" onclick="app._pagesRepairAssignment('${this.jsAttr(assignment.id)}')"
+                          title="Restore Pages grading and grade readable pending turn-ins by their recorded submission time. Existing grades are kept.">
+                          📖 Restore &amp; grade pending pages
+                        </button>` : ''}
                       <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
                         ✏️ Edit
                       </button>
@@ -23768,7 +23777,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     </div>
                   </div>
                 `;
-              }).join('');
+              }));
             }
           } else if (isParent) {
             // Parent view - read-only, shows children's status
@@ -23811,7 +23820,7 @@ Students you had withdrawn stay withdrawn.`)) {
               const childVersions = await this.loadStudentVersions(assignmentIds,
                 enrolledChildren.flatMap(c => [c.id, c.auth_user_id]));
 
-              assignmentsHtml = assignments.map(classAssignment => {
+              assignmentsHtml = this._pagesGroupCards(assignments, assignments.map(classAssignment => {
                 const dueDate = new Date(classAssignment.due_date);
                 const now = new Date();
 
@@ -23893,7 +23902,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     ` : ''}
                   </div>
                 `;
-              }).join('');
+              }));
             }
           } else {
             // Student view
@@ -23920,7 +23929,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 submissionMap[sub.assignment_id] = sub;
               });
 
-              assignmentsHtml = assignments.map(assignment => {
+              assignmentsHtml = this._pagesGroupCards(assignments, assignments.map(assignment => {
                 const submission = submissionMap[assignment.id];
                 const dueDate = new Date(assignment.due_date);
                 const now = new Date();
@@ -23981,7 +23990,7 @@ Students you had withdrawn stay withdrawn.`)) {
                     </div>
                   </div>
                 `;
-              }).join('');
+              }));
             }
           }
       
@@ -24392,7 +24401,13 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
                 <button type="button" class="btn btn-secondary small" onclick="app._pagesApplyCount()">Set everyone to this</button>
               </div>
+              <div class="form-group" style="margin-top: 12px;">
+                <label for="pages-weeks">Create assignments for the next how many weeks?</label>
+                <input type="number" id="pages-weeks" min="1" max="52" value="1" oninput="app._pagesPreview()">
+                <small style="color: var(--muted);">The due date below is for the first week. Each following week is due seven days later, with each student's next pages. Linked assignments appear together.</small>
+              </div>
               <div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
+              <div id="pages-series-preview" aria-live="polite" style="font-size: 12px; margin-top: 12px;"></div>
             </div>
 
             <!-- Game Selection Section (hidden by default) -->
@@ -24492,7 +24507,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <div id="regular-assignment-section">
               <div class="form-group">
                 <label for="assignment-title">Title *</label>
-                <input type="text" id="assignment-title" required placeholder="Assignment title">
+                <input type="text" id="assignment-title" required placeholder="Assignment title" oninput="app._pagesPreview()">
               </div>
 
               <div class="form-group">
@@ -24513,7 +24528,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
             <div class="form-group">
               <label for="assignment-due-date">Due Date *</label>
-              <input type="datetime-local" id="assignment-due-date" required>
+              <input type="datetime-local" id="assignment-due-date" required oninput="app._pagesPreview()">
               <small id="assignment-due-date-hint" style="color: var(--muted); display: block; margin-top: 5px;"></small>
             </div>
 
@@ -25010,6 +25025,10 @@ Students you had withdrawn stay withdrawn.`)) {
         // written, so a half-made assignment is never left behind.
         let pageTargets = null;
         if (assignmentType === 'pages') {
+          if (!this._pagesCtx?.loaded) {
+            this.showNotification('Wait for the previous assignments to load, or press Retry.', 'error');
+            return;
+          }
           assignmentData.grading_type = 'pages';
           assignmentData.rubric_id = null;
           assignmentData.graded_offline = false;
@@ -25035,6 +25054,30 @@ Students you had withdrawn stay withdrawn.`)) {
         return;
       }
 
+      if (pageTargets) {
+        if (this._pagesSaving) return;
+        this._pagesSaving = true;
+        try {
+          const weeks = Number(document.getElementById('pages-weeks')?.value || 1);
+          const plan = this._pagesSeriesPlan(assignmentData, pageTargets, weeks);
+          const quarter = (this.assignmentQuarters || []).find(q => q.id === selectedQuarterId);
+          if (quarter) {
+            const end = new Date(quarter.end_date); end.setHours(23, 59, 59, 999);
+            if (plan.some(w => new Date(w.assignment.due_date) < new Date(quarter.start_date)
+                || new Date(w.assignment.due_date) > end)) {
+              throw new Error('Every week must be within the selected quarter. Choose fewer weeks or a different first due date.');
+            }
+          }
+          await this._pagesCreateSeries(plan);
+          this.showNotification(`${weeks} Workbook Pages assignment${weeks === 1 ? '' : 's'} created!`, 'success');
+          this.closeModal('create-assignment');
+          setTimeout(() => this.viewAssignments(classId), 100);
+        } catch (error) {
+          this.showNotification('Error creating assignments: ' + error.message, 'error');
+        } finally { this._pagesSaving = false; }
+        return;
+      }
+
       try {
         // Create the assignment
         const { data: newAssignment, error: assignmentError } = await this.supabaseQuery(() => this.auth.supabase
@@ -25044,19 +25087,6 @@ Students you had withdrawn stay withdrawn.`)) {
           .single());
 
         if (assignmentError) throw assignmentError;
-
-        // Each student's pages, as their version of the assignment. If this
-        // fails the assignment would grade nobody, so it is taken back out.
-        if (pageTargets) {
-          const { error: pagesError } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignment_student_versions')
-            .upsert(pageTargets.map(t => ({ ...t, assignment_id: newAssignment.id })),
-              { onConflict: 'assignment_id,student_id' }));
-          if (pagesError) {
-            await this.supabaseQuery(() => this.auth.supabase.from('assignments').delete().eq('id', newAssignment.id));
-            throw pagesError;
-          }
-        }
 
         // If assigning to specific students, create assignment_students records
         if (!assignmentData.assigned_to_all) {
@@ -25355,6 +25385,7 @@ Students you had withdrawn stay withdrawn.`)) {
       
           // Determine current grading type
           const isRubricGrading = assignment.grading_type === 'rubric';
+          const isPagesGrading = assignment.grading_type === 'pages';
 
           // The RTC reward is paid when a submission is first graded, at the
           // amount set then. Changing it afterwards would pay the rest of the
@@ -25438,9 +25469,11 @@ Students you had withdrawn stay withdrawn.`)) {
               <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
                 <label style="font-weight: 600; margin-bottom: 10px; display: block;">Grading Method</label>
                 
-                <div style="display: flex; gap: 20px; margin-bottom: 15px;">
+                ${isPagesGrading ? `<p>📖 Workbook Pages (auto-graded). Each student's page targets are kept when you save.</p>
+                  <input type="radio" name="edit-grading-type" value="pages" checked hidden>` : ''}
+                <div style="display: ${isPagesGrading ? 'none' : 'flex'}; gap: 20px; margin-bottom: 15px;">
                   <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
-                    <input type="radio" name="edit-grading-type" value="points" ${!isRubricGrading ? 'checked' : ''} onchange="app.toggleEditGradingType('points')">
+                    <input type="radio" name="edit-grading-type" value="points" ${!isRubricGrading && !isPagesGrading ? 'checked' : ''} onchange="app.toggleEditGradingType('points')">
                     <span>Points-Based</span>
                   </label>
                   <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
@@ -30427,6 +30460,216 @@ Students you had withdrawn stay withdrawn.`)) {
       // page numbers can be counted. A label that is just a name and a number
       // ("Week 3", "Unit 2") carries on to the next one ("Week 4"); anything
       // else is left for the teacher to type.
+      // Plan the whole series before writing anything. Local calendar arithmetic
+      // keeps the same due time across daylight-saving changes.
+      _pagesSeriesPlan(assignment, targets, weeks) {
+        if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) throw new Error('Choose a whole number of weeks from 1 to 52.');
+        if (!assignment.title?.trim()) throw new Error('Enter a title.');
+        if (!Number.isFinite(new Date(assignment.due_date).getTime())) throw new Error('Set the first due date.');
+        if (!targets.length) throw new Error('Set pages for at least one student.');
+        let next = targets.map(t => ({ ...t }));
+        const plan = [];
+        for (let i = 0; i < weeks; i++) {
+          const due = new Date(assignment.due_date);
+          due.setDate(due.getDate() + 7 * i);
+          if (next.some(t => !t.page_label && (!Number.isInteger(t.page_start) || !Number.isInteger(t.page_end)
+              || t.page_start < 0 || t.page_end < t.page_start || t.page_end > 5000 || t.page_end - t.page_start >= 200))) {
+            throw new Error('Each week needs valid page targets of up to 200 pages, ending no higher than page 5000.');
+          }
+          plan.push({ assignment: { ...assignment,
+            title: weeks === 1 ? assignment.title : `${assignment.title} · Week ${i + 1}`,
+            due_date: due.toISOString() }, targets: next });
+          if (i === weeks - 1) break;
+          next = next.map(t => {
+            if (t.page_label) {
+              const label = this._pagesNextLabel(t.page_label);
+              if (!label) throw new Error(`Cannot advance "${t.page_label}" automatically. Create one week at a time for this work.`);
+              return { ...t, page_label: label };
+            }
+            return { ...t, page_start: t.page_end + 1, page_end: t.page_end + (t.page_end - t.page_start + 1) };
+          });
+        }
+        return plan;
+      }
+
+      _pagesPreview() {
+        const host = document.getElementById('pages-series-preview');
+        if (!host || !this._pagesCtx?.rows) return;
+        const weeks = Number(document.getElementById('pages-weeks')?.value || 1);
+        const due = document.getElementById('assignment-due-date')?.value;
+        if (!due) { host.textContent = 'Set the first due date to preview the weekly plan.'; return; }
+        try {
+          const chosen = document.getElementById('assign-to-specific')?.checked
+            ? new Set([...document.querySelectorAll('.student-checkbox:checked')].map(c => c.value)) : null;
+          const read = this._pagesReadTargets();
+          const plan = this._pagesSeriesPlan({ title: document.getElementById('assignment-title')?.value || 'Workbook', due_date: due },
+            read.targets.filter(t => !chosen || chosen.has(t.student_id)), weeks);
+          const names = new Map(this._pagesCtx.rows.map(r => [r.id, r.name]));
+          const esc = s => this.escapeHtml(String(s));
+          host.innerHTML = `<strong>Weekly plan</strong>${plan.map(w => `<details><summary>${esc(w.assignment.title)} · due ${esc(new Date(w.assignment.due_date).toLocaleString())}</summary>
+            ${w.targets.map(t => `${esc(names.get(t.student_id) || 'Student')}: ${esc(this._pagesEndText(t.page_start, t.page_end - t.page_start + 1, t.page_label))}`).join('<br>')}</details>`).join('')}`;
+        } catch (error) { host.textContent = error.message; }
+      }
+
+      async _pagesCreateSeries(plan) {
+        const created = [];
+        let previous = plan[0].assignment.pages_continues_from;
+        try {
+          // Keep the series in draft until every target and assignee is saved.
+          for (const week of plan) {
+            const { data: a, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignments')
+              .insert([{ ...week.assignment, is_published: false, pages_continues_from: previous || null }]).select().single());
+            if (error) throw error;
+            created.push(a.id);
+            previous = a.id;
+            const { error: targetError } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_student_versions')
+              .upsert(week.targets.map(t => ({ ...t, assignment_id: a.id })), { onConflict: 'assignment_id,student_id' }));
+            if (targetError) throw targetError;
+            if (!week.assignment.assigned_to_all) {
+              const { error: assigneeError } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_students')
+                .insert(week.targets.map(t => ({ assignment_id: a.id, student_id: t.student_id }))));
+              if (assigneeError) throw assigneeError;
+            }
+          }
+          if (plan[0].assignment.is_published) {
+            const { data: published, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignments')
+              .update({ is_published: true }).in('id', created).select('id'));
+            if (error) throw error;
+            if (published?.length !== created.length) throw new Error('Some assignments could not be published.');
+          }
+        } catch (error) {
+          if (created.length) {
+            const { data: removed, error: cleanupError } = await this.supabaseQuery(() => this.auth.supabase.from('assignments').delete().in('id', created).select('id'));
+            if (cleanupError) throw new Error(`${error.message} Cleanup failed: ${cleanupError.message}. Check the assignment list before retrying.`);
+            if (removed?.length !== created.length) throw new Error(`${error.message} Some assignments could not be removed. Check the assignment list before retrying.`);
+          }
+          throw error;
+        }
+        // Notifications follow successful publication, never a half-created series.
+        if (plan[0].assignment.is_published) {
+          for (let i = 0; i < plan.length; i++) {
+            const a = plan[i].assignment;
+            try { await this.sendNewAssignmentNotifications(created[i], a.title, a.due_date, a.class_id,
+              a.assigned_to_all ? null : plan[i].targets.map(t => t.student_id)); }
+            catch (error) { console.warn('Assignment notification failed:', error); }
+          }
+        }
+        return created;
+      }
+
+      // Continuation links are already stored, so grouping needs no new schema.
+      // A root outside this quarter still identifies siblings inside the list.
+      _pagesGroupCards(assignments, cards) {
+        const byId = new Map(assignments.map(a => [a.id, a]));
+        const groups = new Map();
+        assignments.forEach((a, i) => {
+          let root = a, seen = new Set([a.id]);
+          while (root.pages_continues_from && !seen.has(root.pages_continues_from)) {
+            seen.add(root.pages_continues_from);
+            const prev = byId.get(root.pages_continues_from);
+            if (!prev) { root = { id: root.pages_continues_from }; break; }
+            root = prev;
+          }
+          const key = root.id;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push({ a, card: cards[i] });
+        });
+        return [...groups.values()].map(g => {
+          if (g.length < 2) return g[0].card;
+          g.sort((x, y) => new Date(x.a.due_date) - new Date(y.a.due_date));
+          const title = String(g[0].a.title || 'Workbook Pages').replace(/ · Week \d+$/, '');
+          return `<details class="pages-series" open style="margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px;">
+            <summary style="cursor: pointer; font-weight: 600;">📖 ${this.escapeHtml(title)} · ${g.length} linked assignments</summary>${g.map(x => x.card).join('')}</details>`;
+        }).join('');
+      }
+
+      // Teacher recovery uses the same page/letter rules as the database grader.
+      // This is a staff grading action, never a way for students to set grades.
+      // Historical lateness uses the recorded turn-in, not the day of repair.
+      _pagesRecoveryGrade(assignment, version, submission) {
+        if (submission.status !== 'submitted' || submission.grade != null || submission.grade_override
+            || !Number.isInteger(version?.page_start) || !Number.isInteger(version?.page_end)) return null;
+        let text = String(submission.content || '').toLowerCase()
+          .replace(/\d+\s*\/\s*\d+/g, ' ').replace(/[–—−]/g, '-')
+          .replace(/(\d)\s*(?:to|through|thru)\s*(\d)/g, '$1-$2');
+        const pages = new Set();
+        for (const m of text.matchAll(/(\d+)\s*-\s*(\d+)|(\d+)/g)) {
+          const start = Number(m[1] ?? m[3]), end = Number(m[2] ?? m[3]);
+          if (end < start || end - start > 200 || end > 5000 || (m[1] || m[3]).length > 4 || (m[2] || '').length > 4) return null;
+          for (let p = start; p <= end; p++) pages.add(p);
+        }
+        if (!pages.size) return null;
+        if (!(submission.resubmitted_at || submission.submitted_at)) return null;
+        const turnedAt = new Date(submission.resubmitted_at || submission.submitted_at).getTime();
+        const due = new Date(version.due_date || assignment.due_date).getTime();
+        if (!Number.isFinite(turnedAt) || !Number.isFinite(due)) return null;
+        const late = turnedAt > due && !submission.late_pass_used_at;
+        const missing = [];
+        for (let p = version.page_start; p <= version.page_end; p++) if (!pages.has(p)) missing.push(p);
+        let grade = ['A+', 'B', 'C', 'D', 'F'][Math.min(missing.length, 4)];
+        if (late) grade = ({ 'A+': 'B+', B: 'C', C: 'D', D: 'F', F: 'F' })[grade];
+        const percent = { 'A+': 100, 'B+': 88, B: 85, C: 75, D: 65, F: 50 }[grade];
+        const max = version.points_possible ?? assignment.max_points ?? assignment.points_possible ?? 100;
+        return { grade, points_earned: Math.round(max * percent) / 100, status: 'graded', grade_override: false,
+          feedback: `Pages ${version.page_start}–${version.page_end} were due. You turned in ${[...pages].sort((a,b) => a-b).join(', ')}. `
+            + (missing.length ? `Missing: ${missing.join(', ')} (${missing.length} page${missing.length === 1 ? '' : 's'}).` : 'All of them are there.')
+            + (late ? ' Turned in late, so one letter grade lower.' : '')
+            + ` Grade: ${grade}. Graded automatically - your teacher can change it.` };
+      }
+
+      async _pagesRepairAssignment(assignmentId) {
+        if (!['teacher', 'admin'].includes(this.userInfo?.profile?.user_type) || this._pagesRepairing) return;
+        this._pagesRepairing = true;
+        this.showNotification('Restoring Pages grading and checking pending submissions…', 'info');
+        let graded = 0;
+        try {
+          const { data: a, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignments').select('*').eq('id', assignmentId).single());
+          if (error) throw error;
+          const versions = (await this._pagesLoadTargets([assignmentId])).get(assignmentId);
+          if (!this._pagesHasTargets(versions)) throw new Error('No page targets were found. Set each student’s pages before grading.');
+          const { error: restoreError } = await this.supabaseQuery(() => this.auth.supabase.from('assignments')
+            .update({ grading_type: 'pages', rubric_id: null, graded_offline: false }).eq('id', assignmentId).select('id').single());
+          if (restoreError) throw restoreError;
+          // Map login ids as well as profile ids, matching the server's ids_of.
+          const aliases = new Map(versions);
+          const ids = [...versions.keys()];
+          for (let i = 0; i < ids.length; i += 100) {
+            const { data: profiles, error: profileError } = await this.supabaseQuery(() => this.auth.supabase.from('user_profiles')
+              .select('id, auth_user_id').in('id', ids.slice(i, i + 100)));
+            if (profileError) throw profileError;
+            for (const p of profiles || []) if (p.auth_user_id && !aliases.has(p.auth_user_id)) aliases.set(p.auth_user_id, versions.get(p.id));
+          }
+          const pending = [];
+          for (let offset = 0; ; offset += 500) {
+            const { data, error: readError } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_submissions')
+              .select('*').eq('assignment_id', assignmentId).eq('status', 'submitted').order('id').range(offset, offset + 499));
+            if (readError) throw readError;
+            pending.push(...(data || []));
+            if ((data || []).length < 500) break;
+          }
+          let skipped = 0;
+          for (const sub of pending) {
+            const grade = this._pagesRecoveryGrade(a, aliases.get(sub.student_id), sub);
+            if (!grade) { skipped++; continue; }
+            // Guard against a teacher grading or a student resubmitting while
+            // this repair is running. Existing grades and overrides stay put.
+            let q = this.auth.supabase.from('assignment_submissions')
+              .update({ ...grade, graded_at: new Date().toISOString() }).eq('id', sub.id)
+              .eq('status', 'submitted').is('grade', null).eq('content', sub.content);
+            q = sub.grade_override == null ? q.is('grade_override', null) : q.eq('grade_override', false);
+            q = sub.submitted_at == null ? q.is('submitted_at', null) : q.eq('submitted_at', sub.submitted_at);
+            q = sub.resubmitted_at == null ? q.is('resubmitted_at', null) : q.eq('resubmitted_at', sub.resubmitted_at);
+            const { data: saved, error: gradeError } = await this.supabaseQuery(() => q.select('id'));
+            if (gradeError) throw gradeError;
+            if (saved?.length) graded++; else skipped++;
+          }
+          this.showNotification(`Pages grading restored. ${graded} pending submission(s) graded; ${skipped} left for review. Existing grades were kept.`, 'success');
+          await this.viewAssignments(a.class_id);
+        } catch (error) {
+          this.showNotification(`Pages repair stopped after ${graded} grade(s): ${error.message}. You can retry safely.`, 'error');
+        } finally { this._pagesRepairing = false; }
+      }
+
       _pagesPlan(students, prev, defaultCount) {
         return (students || []).map(s => {
           const p = prev && prev.get(s.id);
@@ -30458,26 +30701,67 @@ Students you had withdrawn stay withdrawn.`)) {
         return { start: '', label: t };
       }
 
+      // Strict, paginated reads for planning/repair: a failed target read must
+      // never become an empty plan. Display-only version reads remain tolerant.
+      async _pagesLoadTargets(assignmentIds) {
+        const out = new Map();
+        const ids = [...new Set(assignmentIds || [])];
+        for (let i = 0; i < ids.length; i += 100) {
+          for (let offset = 0; ; offset += 500) {
+            const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_student_versions').select('id, assignment_id, student_id, page_start, page_end, page_label, due_date, points_possible')
+              .in('assignment_id', ids.slice(i, i + 100)).order('id').range(offset, offset + 499));
+            if (error) throw error;
+            for (const v of data || []) {
+              if (!out.has(v.assignment_id)) out.set(v.assignment_id, new Map());
+              out.get(v.assignment_id).set(v.student_id, v);
+            }
+            if ((data || []).length < 500) break;
+          }
+        }
+        return out;
+      }
+
+      _pagesHasTargets(versions) {
+        return [...(versions?.values() || [])].some(v => v.page_end != null || v.page_label);
+      }
+
       async _pagesInit() {
         const ctx = this._pagesCtx;
-        if (!ctx || ctx.loaded) return;
-        ctx.loaded = true;
+        if (!ctx || ctx.loaded || ctx.loading) return;
+        ctx.loading = true;
         const sel = document.getElementById('pages-continues-from');
-        let prior = [];
         try {
-          const { data } = await this.supabaseQuery(() => this.auth.supabase
-            .from('assignments').select('id, title, due_date')
-            .eq('class_id', ctx.classId).eq('grading_type', 'pages')
-            .order('due_date', { ascending: false }).limit(30));
-          prior = data || [];
-        } catch (_) { prior = []; }
-        if (sel) {
-          // The most recent is the default: that is the one this carries on from
-          // nearly every time.
-          sel.innerHTML = prior.map((a, i) => `<option value="${this.jsAttr(a.id)}"${i === 0 ? ' selected' : ''}>${this.escapeHtml(a.title || 'Untitled')}${a.due_date ? ' · due ' + this.escapeHtml(new Date(a.due_date).toLocaleDateString()) : ''}</option>`).join('')
-            + `<option value=""${prior.length ? '' : ' selected'}>Start fresh (type each student's first page)</option>`;
-        }
-        await this._pagesFillFromPrevious();
+          const all = [];
+          for (let offset = 0; ; offset += 500) {
+            const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignments').select('id, title, due_date, grading_type, is_template, pages_continues_from')
+              .eq('class_id', ctx.classId).order('due_date', { ascending: false })
+              .order('id').range(offset, offset + 499));
+            if (error) throw error;
+            all.push(...(data || []));
+            if ((data || []).length < 500) break;
+          }
+          const versions = await this._pagesLoadTargets(all.map(a => a.id));
+          if (this._pagesCtx !== ctx) return;
+          const prior = all.filter(a => !a.is_template && (a.grading_type === 'pages' || this._pagesHasTargets(versions.get(a.id))));
+          // Continue after the latest planned target, including future weeks.
+          const latest = prior[0];
+          if (sel) {
+            sel.disabled = false;
+            sel.innerHTML = prior.map(a => `<option value="${this.jsAttr(a.id)}"${a.id === latest?.id ? ' selected' : ''}>${this.escapeHtml(a.title || 'Untitled')}${a.due_date ? ' · due ' + this.escapeHtml(new Date(a.due_date).toLocaleDateString()) : ''}</option>`).join('')
+              + `<option value=""${prior.length ? '' : ' selected'}>Start fresh (type each student's first page)</option>`;
+          }
+          ctx.versions = versions;
+          await this._pagesFillFromPrevious();
+          ctx.loaded = true;
+        } catch (error) {
+          if (this._pagesCtx !== ctx) return;
+          if (sel) { sel.innerHTML = '<option value="">Could not load previous assignments</option>'; sel.disabled = true; }
+          const host = document.getElementById('pages-targets');
+          if (host) host.innerHTML = `<p>Previous assignments could not be loaded. Your pages have not been reset.</p><button type="button" class="btn btn-secondary small" onclick="app._pagesInit()">Retry</button>`;
+          this.showNotification('Could not load Workbook Pages: ' + error.message, 'error');
+        } finally { ctx.loading = false; }
       }
 
       async _pagesFillFromPrevious() {
@@ -30485,12 +30769,7 @@ Students you had withdrawn stay withdrawn.`)) {
         if (!ctx) return;
         const prevId = document.getElementById('pages-continues-from')?.value || '';
         const count = parseInt(document.getElementById('pages-default-count')?.value) || 4;
-        let prev = new Map();
-        if (prevId) {
-          const versions = await this.loadStudentVersions([prevId]);
-          prev = versions.get(prevId) || new Map();
-        }
-        ctx.rows = this._pagesPlan(ctx.students, prev, count);
+        ctx.rows = this._pagesPlan(ctx.students, ctx.versions?.get(prevId) || new Map(), count);
         this._pagesRenderTable();
       }
 
@@ -30543,6 +30822,7 @@ Students you had withdrawn stay withdrawn.`)) {
               </tr>`).join('')}
             </tbody>
           </table>`;
+        this._pagesPreview();
       }
 
       _pagesRowChanged(id) {
@@ -30557,6 +30837,7 @@ Students you had withdrawn stay withdrawn.`)) {
           c.style.opacity = r.label ? '0.4' : '';
           c.title = r.label ? 'Only for page numbers' : '';
         }
+        this._pagesPreview();
       }
 
       // {targets: [{student_id, page_start, page_end, page_label}], blank:
@@ -59106,7 +59387,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-04·b';
+      const RIVEN_BUILD = '2026-11-09·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
