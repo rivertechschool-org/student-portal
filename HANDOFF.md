@@ -6268,3 +6268,31 @@ Jordan asked for the teacher who submitted late pickups to be on the email, take
 account that presses the button. It shows as "Submitted by" under the summary. The change is all
 in the backend repo and is live; nothing changed on the portal page. If two people submit on one
 day the email names both. An account with no name on it just leaves the line out.
+
+## 2026-11-09 · Workbook Pages: preserve grading, recover turn-ins, plan weekly series
+
+Editing a Pages assignment offered only Points and Rubric; saving silently changed it to
+Points. That stopped automatic grading and hid it from the next assignment's predecessor
+picker. The edit form now keeps Pages grading and the student's targets. The predecessor
+picker also recognizes older assignments with workbook targets, reports failed loads with a
+Retry button, and reads all results rather than only the latest thirty assignments.
+
+The teacher's assignment list offers **Restore & grade pending pages** for affected work.
+It restores Pages grading and computes grades for readable pending numeric turn-ins using
+the recorded submission time, individual targets/due dates/points, and late passes. Existing
+grades, overrides, excused work, labels and unreadable responses stay for the teacher.
+Concurrent grading or resubmitting prevents a stale recovery write; running it again is safe.
+This is a teacher action through the existing site, with no backend migration required.
+No live school records were inspected or repaired during development.
+
+Create Assignment now takes 1–52 weeks, previews the plan, advances each student's own targets
+and due dates by calendar weeks, and checks the entire plan against the selected quarter.
+Simple labels such as Week 3 advance; ambiguous labels require one week at a time. Linked
+assignments are grouped together for teachers, students and parents. New weeks stay in draft
+until all targets/assignees are saved; failures remove the created series before notifications.
+
+Verification: workbook-pages and riven-set-pages tests; new workbook-pages-series regressions
+(including rollback, pagination, stale writes and daylight saving); a real-browser journey in
+`debug-tools/workbook-pages-journeys.cjs` through repair, edit/save/reload, three-week creation,
+and all three roles' grouped lists. All use invented data. The new work is prepared on a
+branch for review; deployment and live recovery remain separate actions.
