@@ -25387,6 +25387,23 @@ Students you had withdrawn stay withdrawn.`)) {
           const isRubricGrading = assignment.grading_type === 'rubric';
           const isPagesGrading = assignment.grading_type === 'pages';
 
+          // Workbook Pages: each student's pages, editable here after posting.
+          // A failed read must not show empty boxes that look like "no pages",
+          // so the form says so and the targets are left as they are.
+          let pagesRows = null, pagesLoadFailed = false;
+          if (isPagesGrading) {
+            try {
+              const versions = (await this._pagesLoadTargets([assignmentId])).get(assignmentId) || new Map();
+              const who = assignment.assigned_to_all ? studentProfiles
+                : studentProfiles.filter(st => assignedStudentIds.includes(st.id) || versions.has(st.id));
+              pagesRows = this._pagesEditRows(who, versions);
+            } catch (e) {
+              console.warn('Workbook targets not loaded:', e);
+              pagesLoadFailed = true;
+            }
+          }
+          this._pagesCtx = isPagesGrading && pagesRows ? { edit: assignmentId, rows: pagesRows, loaded: true } : null;
+
           // The RTC reward is paid when a submission is first graded, at the
           // amount set then. Changing it afterwards would pay the rest of the
           // class a different amount for the same work, so it can be changed
@@ -25469,8 +25486,14 @@ Students you had withdrawn stay withdrawn.`)) {
               <div class="card" style="background: var(--card); margin: 20px 0; padding: 15px;">
                 <label style="font-weight: 600; margin-bottom: 10px; display: block;">Grading Method</label>
                 
-                ${isPagesGrading ? `<p>📖 Workbook Pages (auto-graded). Each student's page targets are kept when you save.</p>
-                  <input type="radio" name="edit-grading-type" value="pages" checked hidden>` : ''}
+                ${isPagesGrading ? `<p>📖 Workbook Pages (auto-graded). Change any student's pages below.</p>
+                  <input type="radio" name="edit-grading-type" value="pages" checked hidden>
+                  ${pagesLoadFailed
+                    ? `<p style="color: var(--danger); font-size: 13px;">Each student's pages could not be loaded, so they cannot be changed here right now. Saving keeps them as they are.</p>`
+                    : `<div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
+                       <small style="color: var(--muted); display: block; margin-top: 6px;">
+                         A grade already given is not recalculated when you change pages; change it on the grading screen.
+                       </small>`}` : ''}
                 <div style="display: ${isPagesGrading ? 'none' : 'flex'}; gap: 20px; margin-bottom: 15px;">
                   <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                     <input type="radio" name="edit-grading-type" value="points" ${!isRubricGrading && !isPagesGrading ? 'checked' : ''} onchange="app.toggleEditGradingType('points')">
@@ -25588,6 +25611,7 @@ Students you had withdrawn stay withdrawn.`)) {
           `;
           
           this.showModal('edit-assignment', '✏️ Edit Assignment', modalContent, true);
+          if (this._pagesCtx?.edit === assignmentId) this._pagesRenderTable();
           
           // Initialize Quill with existing content
           setTimeout(() => {
@@ -25642,6 +25666,18 @@ Students you had withdrawn stay withdrawn.`)) {
           if (!title || !dueDate) {
             this.showNotification('Title and due date are required', 'error');
             return;
+          }
+
+          // Workbook Pages changed in this form. Worked out before anything is
+          // saved, so a bad box stops the whole save rather than half of it.
+          let pagesChanges = [], pagesNote = null;
+          if (gradingType === 'pages' && this._pagesCtx?.edit === assignmentId) {
+            const { changes, problems } = this._pagesEditChanges();
+            if (problems.length) {
+              this.showNotification(`Pages need a first page and a number of pages, or words like "Week 4": ${problems.join(', ')}`, 'error');
+              return;
+            }
+            pagesChanges = changes;
           }
 
           // An assignment has no quarter column: its DUE DATE decides which
@@ -25726,7 +25762,19 @@ Students you had withdrawn stay withdrawn.`)) {
             return;
           }
           if (error) throw error;
-      
+
+          // Only the page columns, so a student's own due date, points and
+          // instructions on the same row are left alone.
+          if (pagesChanges.length) {
+            const { error: pagesError } = await this.supabaseQuery(() => this.auth.supabase
+              .from('assignment_student_versions')
+              .upsert(pagesChanges.map(c => ({ assignment_id: assignmentId, ...c.target })),
+                { onConflict: 'assignment_id,student_id' }));
+            if (pagesError) throw new Error('The assignment saved, but the pages did not: ' + pagesError.message);
+            pagesNote = await this._pagesEditReportGraded(assignmentId, pagesChanges);
+          }
+          this._pagesCtx = null;
+
           // Handle student assignments if selective
           if (assignToSpecific) {
             // Get selected students (deduplicate in case of stacked modals)
@@ -25763,7 +25811,8 @@ Students you had withdrawn stay withdrawn.`)) {
               .eq('assignment_id', assignmentId));
           }
       
-          this.showNotification('Assignment updated successfully!', 'success');
+          if (pagesNote) this.showNotification(pagesNote.text, pagesNote.type);
+          else this.showNotification('Assignment updated successfully!', 'success');
           this.closeModal('edit-assignment');
           
           // Refresh the list behind the modal.
@@ -30823,6 +30872,75 @@ Students you had withdrawn stay withdrawn.`)) {
             </tbody>
           </table>`;
         this._pagesPreview();
+      }
+
+      // Rows for the edit form: what each student has now, kept as `was` so
+      // only the students actually changed are written. Pure.
+      _pagesEditRows(students, versions) {
+        return (students || []).map(st => {
+          const v = versions?.get(st.id);
+          const has = v && v.page_end != null && Number.isInteger(v.page_start);
+          const row = {
+            id: st.id,
+            name: `${st.first_name || ''} ${st.last_name || ''}`.trim() || 'Student',
+            start: has ? v.page_start : '',
+            label: has ? '' : (v?.page_label || ''),
+            count: has ? v.page_end - v.page_start + 1 : '',
+          };
+          row.was = { start: row.start, label: row.label, count: row.count };
+          return row;
+        });
+      }
+
+      // {changes: [{name, target}], problems: [names]}. A student left blank
+      // who had no pages stays without; one whose pages were cleared is a
+      // problem, because removing pages would leave them ungradable.
+      _pagesEditChanges() {
+        this._pagesSyncFromInputs();
+        const changes = [], problems = [];
+        for (const r of this._pagesCtx?.rows || []) {
+          const w = r.was || {};
+          if (r.label) {
+            if (r.label === w.label) continue;
+            changes.push({ name: r.name, id: r.id,
+              target: { student_id: r.id, page_start: null, page_end: null, page_label: r.label.slice(0, 80) } });
+            continue;
+          }
+          const blank = r.start === '' && (r.count === '' || Number.isNaN(r.count));
+          if (blank && w.start === '' && !w.label) continue;
+          if (!Number.isInteger(r.start) || r.start < 0 || !Number.isInteger(r.count) || r.count < 1 || r.count > 200
+              || r.start + r.count - 1 > 5000) {
+            problems.push(r.name);
+            continue;
+          }
+          if (r.start === w.start && r.count === w.count && !w.label) continue;
+          changes.push({ name: r.name, id: r.id,
+            target: { student_id: r.id, page_start: r.start, page_end: r.start + r.count - 1, page_label: null } });
+        }
+        return { changes, problems };
+      }
+
+      // The save message: who already has a grade on the old pages, so it
+      // can be checked. Returned, so it replaces the plain "updated" notice.
+      async _pagesEditReportGraded(assignmentId, changes) {
+        try {
+          const ids = changes.map(c => c.id);
+          const { data: profiles } = await this.supabaseQuery(() => this.auth.supabase
+            .from('user_profiles').select('id, auth_user_id').in('id', ids));
+          const byAny = new Map();
+          for (const c of changes) byAny.set(c.id, c.name);
+          for (const pr of profiles || []) if (pr.auth_user_id) byAny.set(pr.auth_user_id, byAny.get(pr.id));
+          const { data: subs } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignment_submissions').select('student_id, grade, status')
+            .eq('assignment_id', assignmentId).in('student_id', [...byAny.keys()]));
+          const graded = [...new Set((subs || []).filter(x => x.grade != null).map(x => byAny.get(x.student_id)).filter(Boolean))];
+          const n = changes.length;
+          return { type: graded.length ? 'warning' : 'success',
+            text: `Assignment updated. Pages changed for ${n} student${n === 1 ? '' : 's'}.`
+              + (graded.length ? ` Already graded on the old pages: ${graded.join(', ')}. Check those grades on the grading screen.` : '') };
+        } catch (_) {
+          return { type: 'success', text: `Assignment updated. Pages changed for ${changes.length} student(s).` };
+        }
       }
 
       _pagesRowChanged(id) {

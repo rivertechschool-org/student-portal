@@ -6296,3 +6296,15 @@ Verification: workbook-pages and riven-set-pages tests; new workbook-pages-serie
 `debug-tools/workbook-pages-journeys.cjs` through repair, edit/save/reload, three-week creation,
 and all three roles' grouped lists. All use invented data. The new work is prepared on a
 branch for review; deployment and live recovery remain separate actions.
+
+## 2026-11-09 · Edit Assignment: change each student's Workbook Pages after posting
+Jordan entered some students' pages wrongly and could not find where to fix them after posting.
+Edit Assignment on a Workbook Pages assignment now lists every student's pages in the same table
+as Create, filled in with what each student has. Only students whose pages actually changed are
+saved, and only their page fields, so a student's own due date or points stay. Clearing a
+student's pages is refused, because they could not then be graded. A grade already given is not
+recalculated; the save message names anyone who was already graded on the old pages. Browser
+check: `debug-tools/workbook-pages-edit-targets.cjs` (invented data).
+**Luke:** `debug-tools/workbook-pages-journeys.cjs` fails its last check here with "Cannot set
+properties of null (setting 'innerHTML')", on main as well, with or without this change. Every
+other check in it passes.
