@@ -24364,7 +24364,10 @@ Students you had withdrawn stay withdrawn.`)) {
           <form id="create-assignment-form">
             <!-- Start from a template: fills the form, the teacher still picks
                  due date, quarter and students. -->
-            <div style="display: flex; justify-content: flex-end; margin-bottom: 10px;">
+            <div style="display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 10px;">
+              <button type="button" class="btn btn-secondary small" onclick="app.showAssignmentCopyPicker('${classId}')">
+                📄 Copy an Assignment
+              </button>
               <button type="button" class="btn btn-secondary small" onclick="app.showAssignmentTemplatePicker('${classId}')">
                 📋 From Template
               </button>
@@ -24411,11 +24414,10 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
                 <button type="button" class="btn btn-secondary small" onclick="app._pagesApplyCount()">Set everyone to this</button>
               </div>
-              <div class="form-group" style="margin-top: 12px;">
-                <label for="pages-weeks">Create assignments for the next how many weeks?</label>
-                <input type="number" id="pages-weeks" min="1" max="52" value="1" oninput="app._pagesPreview()">
-                <small style="color: var(--muted);">The due date below is for the first week. Each following week is due seven days later, with each student's next pages. Linked assignments appear together.</small>
-              </div>
+              <p style="font-size: 12px; color: var(--muted); margin: 12px 0 0;">
+                To make several weeks at once, set <strong>How many weeks</strong> under the due date.
+                Each week gets each student's next pages, and linked assignments appear together.
+              </p>
               <div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
               <div id="pages-series-preview" aria-live="polite" style="font-size: 12px; margin-top: 12px;"></div>
             </div>
@@ -24517,7 +24519,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <div id="regular-assignment-section">
               <div class="form-group">
                 <label for="assignment-title">Title *</label>
-                <input type="text" id="assignment-title" required placeholder="Assignment title" oninput="app._pagesPreview()">
+                <input type="text" id="assignment-title" required placeholder="Assignment title" oninput="app._seriesInput()">
               </div>
 
               <div class="form-group">
@@ -24538,8 +24540,29 @@ Students you had withdrawn stay withdrawn.`)) {
 
             <div class="form-group">
               <label for="assignment-due-date">Due Date *</label>
-              <input type="datetime-local" id="assignment-due-date" required oninput="app._pagesPreview()">
+              <input type="datetime-local" id="assignment-due-date" required oninput="app._seriesInput()">
               <small id="assignment-due-date-hint" style="color: var(--muted); display: block; margin-top: 5px;"></small>
+            </div>
+
+            <!-- Weekly copies (2026-11-12): regular and Workbook Pages. One
+                 assignment per week, each due 7 days after the last, numbered
+                 from the week the teacher chooses, so a set that follows
+                 "Week 1" starts at Week 2. -->
+            <div id="series-section" class="form-group" style="display: flex; gap: 12px; flex-wrap: wrap; align-items: start;">
+              <div style="flex: 1 1 160px;">
+                <label for="pages-weeks">How many weeks</label>
+                <input type="number" id="pages-weeks" min="1" max="52" value="1" oninput="app._seriesInput()">
+              </div>
+              <div style="flex: 1 1 160px;">
+                <label for="series-start">Start numbering at week</label>
+                <input type="number" id="series-start" min="1" max="999" placeholder="optional" oninput="app._seriesInput()">
+              </div>
+              <small style="color: var(--muted); flex: 1 1 100%;">
+                The due date above is for the first one; each following week is due 7 days later.
+                Leave the week blank to keep the title as typed. A title with "Week 3" in it is renumbered in place;
+                any other title gets "· Week 2", "· Week 3" and so on added.
+              </small>
+              <div id="series-preview" aria-live="polite" style="font-size: 12px; flex: 1 1 100%;"></div>
             </div>
 
             <div id="points-section" class="form-group">
@@ -24739,6 +24762,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
         this.assignmentTemplates = templates || [];
         this.assignmentTemplateClassId = classId;
+        this._assignmentPickerCopy = false;
 
         const content = this.assignmentTemplates.length === 0 ? `
             <p style="color: var(--muted);">
@@ -24764,6 +24788,101 @@ Students you had withdrawn stay withdrawn.`)) {
         }
       }
 
+      // "Copy an Assignment" (2026-11-12): any assignment in this class,
+      // newest first, fills the form like a template does, and then carries
+      // on from it: due a week later, numbered from its week + 1, the same
+      // students, and for Workbook Pages each student's pages carry on from it.
+      async showAssignmentCopyPicker(classId) {
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+          .from('assignments')
+          .select('id, class_id, title, description, assignment_type, max_points, grading_type, rubric_id, category_id, graded_offline, late_pass_allowed, rtc_reward, max_submit_size_mb, due_date, assigned_to_all, updated_at, classes(name)')
+          .eq('class_id', classId)
+          .order('due_date', { ascending: false })
+          .limit(500));
+        if (error) {
+          this.showNotification('Could not load assignments: ' + error.message, 'error');
+          return;
+        }
+        this.assignmentTemplates = data || [];
+        this.assignmentTemplateClassId = classId;
+        this._assignmentPickerCopy = true;
+        const content = this.assignmentTemplates.length === 0 ? `
+            <p style="color: var(--muted);">This class has no assignments to copy yet.</p>
+            <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('assignment-template-picker')">Close</button>
+            </div>
+          ` : `
+            <p style="font-size: 13px; color: var(--muted); margin: 0 0 10px;">
+              Pick the assignment this one follows. The copy is due a week after it, and a "Week 1" title becomes Week 2.
+              You can change anything before creating.
+            </p>
+            <input type="text" id="assignment-template-search" placeholder="Search by title or description..."
+              oninput="app.renderAssignmentTemplateList(this.value)" style="width: 100%; margin-bottom: 12px;" autocomplete="off">
+            <div id="assignment-template-list" style="max-height: 55vh; overflow-y: auto;"></div>
+            <div style="display: flex; justify-content: flex-end; margin-top: 15px;">
+              <button class="btn btn-secondary" onclick="app.closeModal('assignment-template-picker')">Cancel</button>
+            </div>
+          `;
+        this.showModal('assignment-template-picker', '📄 Copy an Assignment', content, true);
+        if (this.assignmentTemplates.length) {
+          this.renderAssignmentTemplateList('');
+          setTimeout(() => document.getElementById('assignment-template-search')?.focus(), 50);
+        }
+      }
+
+      // datetime-local text for a moment, in local time.
+      _localInputValue(d) {
+        const pad = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+
+      // After a copy is applied: the parts that make it the NEXT one.
+      async _applyAssignmentCopy(t) {
+        const notes = [];
+        // Due a week later (info items have no real due date).
+        const due = new Date(t.due_date);
+        const dueInput = document.getElementById('assignment-due-date');
+        if (t.assignment_type !== 'info' && dueInput && Number.isFinite(due.getTime()) && due.getFullYear() < 2090) {
+          dueInput.value = this._localInputValue(new Date(this._seriesDue(due, 1)));
+          notes.push(`due ${new Date(this._seriesDue(due, 1)).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}`);
+        }
+        // Numbered from its week + 1.
+        const wk = this._seriesWeekOf(t.title);
+        const startInput = document.getElementById('series-start');
+        if (startInput) startInput.value = wk != null ? String(wk + 1) : '';
+        if (wk != null) {
+          // The title box shows the new number too, so what is seen is what is made.
+          const titleInput = document.getElementById('assignment-title');
+          if (titleInput) titleInput.value = this._seriesTitle(t.title, 0, 1, wk + 1);
+          notes.push(`numbered from Week ${wk + 1}`);
+        }
+        // The same students.
+        if (t.assigned_to_all === false) {
+          const { data: rows } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignment_students').select('student_id').eq('assignment_id', t.id));
+          const ids = new Set((rows || []).map(r => r.student_id));
+          const specific = document.getElementById('assign-to-specific');
+          if (specific && ids.size) {
+            specific.checked = true;
+            this.toggleStudentSelection?.();
+            document.querySelectorAll('.student-checkbox').forEach(cb => { cb.checked = ids.has(cb.value); });
+            notes.push(`for the same ${ids.size} student${ids.size === 1 ? '' : 's'}`);
+          }
+        }
+        // Workbook Pages: carry on from it once the list has loaded.
+        if (t.grading_type === 'pages') {
+          for (let i = 0; i < 100 && this._pagesCtx && !this._pagesCtx.loaded; i++) await new Promise(r => setTimeout(r, 100));
+          const sel = document.getElementById('pages-continues-from');
+          if (sel && [...sel.options].some(o => o.value === t.id)) {
+            sel.value = t.id;
+            await this._pagesFillFromPrevious();
+            notes.push('pages carry on from it');
+          }
+        }
+        this._seriesInput();
+        return notes;
+      }
+
       renderAssignmentTemplateList(query) {
         const list = document.getElementById('assignment-template-list');
         if (!list) return;
@@ -24787,8 +24906,11 @@ Students you had withdrawn stay withdrawn.`)) {
           return;
         }
 
+        const copying = !!this._assignmentPickerCopy;
         list.innerHTML = matches.map(t => {
           const desc = plain(t.description);
+          const dueText = copying && t.assignment_type !== 'info' && t.due_date
+            ? ` · due ${this.escapeHtml(new Date(t.due_date).toLocaleDateString())}` : '';
           const kind = t.assignment_type === 'info'
             ? 'Information only'
             : `${t.max_points ?? 100} pts · ${t.grading_type === 'rubric' ? 'Rubric' : t.grading_type === 'pages' ? 'Workbook Pages' : 'Points'}${t.graded_offline ? ' · Offline' : ''}`;
@@ -24796,7 +24918,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <div class="card" style="margin: 0 0 8px 0; padding: 12px; cursor: pointer;" onclick="app.applyAssignmentTemplate('${t.id}')">
               <div style="font-weight: 600;">${this.escapeHtml(t.title)}</div>
               <div style="font-size: 12px; color: var(--muted); margin-top: 3px;">
-                ${this.escapeHtml(t.classes?.name || 'Unknown class')} · ${kind}
+                ${copying ? '' : this.escapeHtml(t.classes?.name || 'Unknown class') + ' · '}${kind}${dueText}
               </div>
               ${desc ? `<div style="font-size: 12px; color: var(--muted); margin-top: 5px;">${this.escapeHtml(desc.length > 140 ? desc.slice(0, 140) + '…' : desc)}</div>` : ''}
             </div>
@@ -24897,6 +25019,15 @@ Students you had withdrawn stay withdrawn.`)) {
         }
 
         const banner = document.getElementById('assignment-template-banner');
+        if (this._assignmentPickerCopy) {
+          const notes = await this._applyAssignmentCopy(t);
+          if (banner) {
+            banner.innerHTML = `📄 Copied from <strong>${this.escapeHtml(t.title)}</strong>${notes.length ? ': ' + this.escapeHtml(notes.join(', ')) : ''}. Check everything, then create.`;
+            banner.style.display = 'block';
+          }
+          this.showNotification('Assignment copied', 'success');
+          return;
+        }
         if (banner) {
           banner.innerHTML = `📋 Filled from template <strong>${this.escapeHtml(t.title)}</strong>${t.classes?.name ? ` (${this.escapeHtml(t.classes.name)})` : ''}. Set the due date, quarter and students, then create.`;
           banner.style.display = 'block';
@@ -25069,7 +25200,7 @@ Students you had withdrawn stay withdrawn.`)) {
         this._pagesSaving = true;
         try {
           const weeks = Number(document.getElementById('pages-weeks')?.value || 1);
-          const plan = this._pagesSeriesPlan(assignmentData, pageTargets, weeks);
+          const plan = this._pagesSeriesPlan(assignmentData, pageTargets, weeks, this._seriesStart());
           const quarter = (this.assignmentQuarters || []).find(q => q.id === selectedQuarterId);
           if (quarter) {
             const end = new Date(quarter.end_date); end.setHours(23, 59, 59, 999);
@@ -25086,6 +25217,40 @@ Students you had withdrawn stay withdrawn.`)) {
           this.showNotification('Error creating assignments: ' + error.message, 'error');
         } finally { this._pagesSaving = false; }
         return;
+      }
+
+      // Weekly copies of a regular assignment: planned whole, created as one
+      // set (all drafts until every one is saved, then published together).
+      // One week just takes the numbered title and goes the usual way.
+      if (!isInfoType) {
+        const weeks = Number(document.getElementById('pages-weeks')?.value || 1);
+        const start = this._seriesStart();
+        if (weeks !== 1) {
+          if (this._pagesSaving) return;
+          this._pagesSaving = true;
+          try {
+            const assignees = assignmentData.assigned_to_all ? null : [...new Set(
+              Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value))];
+            if (assignees && !assignees.length) throw new Error('Please select at least one student for this assignment');
+            const plan = this._seriesPlan(assignmentData, weeks, start).map(w => ({ ...w, assignees }));
+            const quarter = (this.assignmentQuarters || []).find(q => q.id === selectedQuarterId);
+            if (quarter) {
+              const end = new Date(quarter.end_date); end.setHours(23, 59, 59, 999);
+              if (plan.some(w => new Date(w.assignment.due_date) < new Date(quarter.start_date)
+                  || new Date(w.assignment.due_date) > end)) {
+                throw new Error('Every week must be within the selected quarter. Choose fewer weeks or a different first due date.');
+              }
+            }
+            await this._pagesCreateSeries(plan);
+            this.showNotification(`${weeks} assignments created: ${plan[0].assignment.title} to ${plan[plan.length - 1].assignment.title}`, 'success');
+            this.closeModal('create-assignment');
+            setTimeout(() => this.viewAssignments(classId), 100);
+          } catch (error) {
+            this.showNotification('Error creating assignments: ' + this.assignmentTemplateError(error), 'error');
+          } finally { this._pagesSaving = false; }
+          return;
+        }
+        assignmentData.title = this._seriesTitle(assignmentData.title, 0, 1, start);
       }
 
       try {
@@ -30426,6 +30591,11 @@ Students you had withdrawn stay withdrawn.`)) {
         if (skillSection) skillSection.style.display = 'none';
         const pagesSection = document.getElementById('pages-assignment-section');
         if (pagesSection) pagesSection.style.display = 'none';
+        // Weekly copies: game and skill rows live in another table, and info
+        // items have no due date to step on.
+        const seriesSection = document.getElementById('series-section');
+        if (seriesSection) seriesSection.style.display = assignmentType === 'regular' || assignmentType === 'pages' ? 'flex' : 'none';
+        this._seriesInput?.();
 
         // Game and skill assignments are written to homework_assignments, which
         // has no template flag - only regular and info assignments can be one.
@@ -30537,7 +30707,70 @@ Students you had withdrawn stay withdrawn.`)) {
       // else is left for the teacher to type.
       // Plan the whole series before writing anything. Local calendar arithmetic
       // keeps the same due time across daylight-saving changes.
-      _pagesSeriesPlan(assignment, targets, weeks) {
+      // Week numbering for a weekly set (2026-11-12, Jordan: a set that
+      // follows "Week 1" should start at Week 2, not 1). A title that already
+      // says "Week 3" is renumbered in place, keeping the teacher's wording;
+      // any other title gets " · Week N" added. With no starting week chosen,
+      // a single assignment keeps its title as typed, and a set numbers from
+      // the title's own week, or from 1. Pure.
+      _seriesTitle(title, i, weeks, start) {
+        const t = String(title || '').trim();
+        const n0 = Number.isInteger(start) && start > 0 ? start : null;
+        const m = t.match(/^(.*?\bweek\s*)(\d{1,3})(?!\d)(.*)$/i);
+        if (m) return `${m[1]}${(n0 ?? parseInt(m[2], 10)) + i}${m[3]}`;
+        if (n0 == null && weeks === 1) return t;
+        return `${t} · Week ${(n0 ?? 1) + i}`;
+      }
+
+      // The week number a title carries ("Spelling Week 4" -> 4), or null.
+      _seriesWeekOf(title) {
+        const m = String(title || '').match(/\bweek\s*(\d{1,3})(?!\d)/i);
+        return m ? parseInt(m[1], 10) : null;
+      }
+
+      _seriesStart() {
+        const v = parseInt(document.getElementById('series-start')?.value, 10);
+        return Number.isInteger(v) && v > 0 ? v : null;
+      }
+
+      // Week i's due date: local calendar days, so the due time holds across
+      // daylight saving. Pure.
+      _seriesDue(due, i) {
+        const d = new Date(due);
+        d.setDate(d.getDate() + 7 * i);
+        return d.toISOString();
+      }
+
+      // A regular assignment repeated weekly. Pure.
+      _seriesPlan(assignment, weeks, start) {
+        if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) throw new Error('Choose a whole number of weeks from 1 to 52.');
+        if (!assignment.title?.trim()) throw new Error('Enter a title.');
+        if (!Number.isFinite(new Date(assignment.due_date).getTime())) throw new Error('Set the first due date.');
+        return Array.from({ length: weeks }, (_, i) => ({ assignment: { ...assignment,
+          title: this._seriesTitle(assignment.title, i, weeks, start), due_date: this._seriesDue(assignment.due_date, i) } }));
+      }
+
+      // Every input that changes the plan: both previews.
+      _seriesInput() {
+        this._pagesPreview?.();
+        const host = document.getElementById('series-preview');
+        if (!host) return;
+        const type = document.getElementById('assignment-type')?.value;
+        const weeks = Number(document.getElementById('pages-weeks')?.value || 1);
+        const start = this._seriesStart();
+        const title = document.getElementById('assignment-title')?.value || '';
+        // Pages shows its own preview with each student's pages.
+        if (type !== 'regular' || (weeks === 1 && start == null) || !title.trim()) { host.textContent = ''; return; }
+        const due = document.getElementById('assignment-due-date')?.value;
+        try {
+          if (weeks === 1) { host.innerHTML = `Will be created as <strong>${this.escapeHtml(this._seriesTitle(title, 0, 1, start))}</strong>.`; return; }
+          if (!due) { host.textContent = 'Set the first due date to see the weekly plan.'; return; }
+          const plan = this._seriesPlan({ title, due_date: new Date(due).toISOString() }, weeks, start);
+          host.innerHTML = `<strong>Weekly plan</strong><br>${plan.map(w => `${this.escapeHtml(w.assignment.title)} · due ${this.escapeHtml(new Date(w.assignment.due_date).toLocaleString())}`).join('<br>')}`;
+        } catch (error) { host.textContent = error.message; }
+      }
+
+      _pagesSeriesPlan(assignment, targets, weeks, start = null) {
         if (!Number.isInteger(weeks) || weeks < 1 || weeks > 52) throw new Error('Choose a whole number of weeks from 1 to 52.');
         if (!assignment.title?.trim()) throw new Error('Enter a title.');
         if (!Number.isFinite(new Date(assignment.due_date).getTime())) throw new Error('Set the first due date.');
@@ -30545,15 +30778,13 @@ Students you had withdrawn stay withdrawn.`)) {
         let next = targets.map(t => ({ ...t }));
         const plan = [];
         for (let i = 0; i < weeks; i++) {
-          const due = new Date(assignment.due_date);
-          due.setDate(due.getDate() + 7 * i);
           if (next.some(t => !t.page_label && (!Number.isInteger(t.page_start) || !Number.isInteger(t.page_end)
               || t.page_start < 0 || t.page_end < t.page_start || t.page_end > 5000 || t.page_end - t.page_start >= 200))) {
             throw new Error('Each week needs valid page targets of up to 200 pages, ending no higher than page 5000.');
           }
           plan.push({ assignment: { ...assignment,
-            title: weeks === 1 ? assignment.title : `${assignment.title} · Week ${i + 1}`,
-            due_date: due.toISOString() }, targets: next });
+            title: this._seriesTitle(assignment.title, i, weeks, start),
+            due_date: this._seriesDue(assignment.due_date, i) }, targets: next });
           if (i === weeks - 1) break;
           next = next.map(t => {
             if (t.page_label) {
@@ -30578,7 +30809,7 @@ Students you had withdrawn stay withdrawn.`)) {
             ? new Set([...document.querySelectorAll('.student-checkbox:checked')].map(c => c.value)) : null;
           const read = this._pagesReadTargets();
           const plan = this._pagesSeriesPlan({ title: document.getElementById('assignment-title')?.value || 'Workbook', due_date: due },
-            read.targets.filter(t => !chosen || chosen.has(t.student_id)), weeks);
+            read.targets.filter(t => !chosen || chosen.has(t.student_id)), weeks, this._seriesStart());
           const names = new Map(this._pagesCtx.rows.map(r => [r.id, r.name]));
           const esc = s => this.escapeHtml(String(s));
           host.innerHTML = `<strong>Weekly plan</strong>${plan.map(w => `<details><summary>${esc(w.assignment.title)} · due ${esc(new Date(w.assignment.due_date).toLocaleString())}</summary>
@@ -30593,16 +30824,23 @@ Students you had withdrawn stay withdrawn.`)) {
           // Keep the series in draft until every target and assignee is saved.
           for (const week of plan) {
             const { data: a, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignments')
-              .insert([{ ...week.assignment, is_published: false, pages_continues_from: previous || null }]).select().single());
+              .insert([{ ...week.assignment, is_published: false,
+                // Only Pages weeks are chained; a regular weekly set has no
+                // pages to carry on.
+                ...(week.assignment.grading_type === 'pages' ? { pages_continues_from: previous || null } : {}) }]).select().single());
             if (error) throw error;
             created.push(a.id);
             previous = a.id;
-            const { error: targetError } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_student_versions')
-              .upsert(week.targets.map(t => ({ ...t, assignment_id: a.id })), { onConflict: 'assignment_id,student_id' }));
-            if (targetError) throw targetError;
+            if (week.targets?.length) {
+              const { error: targetError } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_student_versions')
+                .upsert(week.targets.map(t => ({ ...t, assignment_id: a.id })), { onConflict: 'assignment_id,student_id' }));
+              if (targetError) throw targetError;
+            }
             if (!week.assignment.assigned_to_all) {
+              const ids = week.assignees || (week.targets || []).map(t => t.student_id);
+              if (!ids.length) throw new Error('Please select at least one student for this assignment');
               const { error: assigneeError } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_students')
-                .insert(week.targets.map(t => ({ assignment_id: a.id, student_id: t.student_id }))));
+                .insert(ids.map(id => ({ assignment_id: a.id, student_id: id }))));
               if (assigneeError) throw assigneeError;
             }
           }
@@ -30625,7 +30863,7 @@ Students you had withdrawn stay withdrawn.`)) {
           for (let i = 0; i < plan.length; i++) {
             const a = plan[i].assignment;
             try { await this.sendNewAssignmentNotifications(created[i], a.title, a.due_date, a.class_id,
-              a.assigned_to_all ? null : plan[i].targets.map(t => t.student_id)); }
+              a.assigned_to_all ? null : (plan[i].assignees || plan[i].targets.map(t => t.student_id))); }
             catch (error) { console.warn('Assignment notification failed:', error); }
           }
         }

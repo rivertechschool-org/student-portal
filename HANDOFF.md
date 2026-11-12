@@ -6336,3 +6336,20 @@ each item, and both hosts (`index.html` and `portal/index.html`) now keep them, 
 another device shows text without pictures. Checks saved before this change still show
 their results, with a note that their problems were not kept. Browser check: the review
 section of `debug-tools/progress-check-journey.py`.
+
+## 2026-11-12 · Create Assignment: copy an assignment, weekly sets numbered from any week
+Jordan wanted to duplicate an assignment as the next one in a weekly set, numbered from where
+the last set ended ("Week 1" was last time, so the new set starts at Week 2).
+- **📄 Copy an Assignment** (beside From Template) lists every assignment in the class, newest
+  first. Picking one fills the form like a template, then makes it the *next* one: due 7 days
+  later, title renumbered (Week 1 becomes Week 2), the same chosen students, and for Workbook
+  Pages each student's pages carry on from it.
+- **How many weeks / Start numbering at week** now sit under the due date and work for
+  regular assignments as well as Workbook Pages. A title that says "Week 3" is renumbered in
+  place; any other title gets "· Week N" added. A blank start keeps a single assignment's
+  title as typed, as before. A regular set is created like a Pages set: all drafts until every
+  one is saved, then published together, and removed if anything fails. Regular weeks are not
+  chained (only Pages weeks are), so they show as separate cards.
+- Not changed: game and skill-mastery assignments, Information items (no due date), and Edit.
+Tests: `tests/workbook-pages-series.test.js` (numbering, regular set, rollback); browser:
+`debug-tools/assignment-copy-journeys.cjs` (invented data).

@@ -10,7 +10,7 @@ function method(name) {
   const end=html.indexOf('\n      }',start);
   return html.slice(start,end+8).trim();
 }
-const names=['_pagesSeriesPlan','_pagesNextLabel','_pagesCreateSeries','_pagesGroupCards','_pagesRecoveryGrade','_pagesLoadTargets','_pagesHasTargets','_pagesInit','_pagesFillFromPrevious','_pagesPlan','_pagesRepairAssignment'];
+const names=['_pagesSeriesPlan','_seriesTitle','_seriesDue','_seriesWeekOf','_seriesPlan','_pagesNextLabel','_pagesCreateSeries','_pagesGroupCards','_pagesRecoveryGrade','_pagesLoadTargets','_pagesHasTargets','_pagesInit','_pagesFillFromPrevious','_pagesPlan','_pagesRepairAssignment'];
 function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})`),{
   auth:{supabase:db},supabaseQuery:fn=>fn(),escapeHtml:s=>String(s).replaceAll('<','&lt;'),jsAttr:s=>s,
   sendNewAssignmentNotifications:async()=>{},showNotification:()=>{},viewAssignments:async()=>{},
@@ -88,5 +88,37 @@ function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})
   // Target reads must not silently truncate at a server page boundary.
   db=pagesDatabase({assignment_student_versions:Array.from({length:1003},(_,i)=>({id:String(i),student_id:String(i),assignment_id:'old',page_end:i}))});
   assert.equal((await app(db)._pagesLoadTargets(['old'])).get('old').size,1003);
+  // 2026-11-12, Jordan: a set that follows "Week 1" starts at Week 2, and any
+  // assignment can be made weekly, not only Workbook Pages.
+  a=app(pagesDatabase(pagesSeed()));
+  for(const [args,want] of [
+    [['Spelling',0,1,null],'Spelling'],                       // one, no start: as typed
+    [['Spelling',1,3,null],'Spelling · Week 2'],              // a set numbers from 1
+    [['Spelling',0,1,2],'Spelling · Week 2'],                 // a chosen start
+    [['Spelling',2,3,5],'Spelling · Week 7'],
+    [['Spelling Week 1',0,1,2],'Spelling Week 2'],            // renumbered in place
+    [['Week 3 Days 1-2 Reading',1,2,null],'Week 4 Days 1-2 Reading'],
+    [['Workbook · Week 4',0,3,9],'Workbook · Week 9'],
+    [['Spelling week12',1,2,null],'Spelling week13'],
+    [['Grade 5 vocab',0,1,null],'Grade 5 vocab'],             // other numbers are left alone
+    [['Grade 5 vocab',1,2,null],'Grade 5 vocab · Week 2'],
+  ]) assert.equal(a._seriesTitle(...args),want,JSON.stringify(args));
+  assert.equal(a._seriesWeekOf('Practice · Week 1'),1);assert.equal(a._seriesWeekOf('Essay 2'),null);
+  assert.deepEqual(a._pagesSeriesPlan({...base,title:'Workbook · Week 1'},targets,2,2).map(w=>w.assignment.title),['Workbook · Week 2','Workbook · Week 3']);
+  // A regular weekly set: no page targets, chosen students, all or nothing.
+  const reg={title:'Spelling Week 1',due_date:'2026-11-13T16:00:00Z',class_id:'math',is_published:true,assigned_to_all:false,grading_type:'points'};
+  const regPlan=a._seriesPlan(reg,3,2).map(w=>({...w,assignees:['ivy','oren']}));
+  assert.deepEqual(regPlan.map(w=>[w.assignment.title,w.assignment.due_date]),[['Spelling Week 2','2026-11-13T16:00:00.000Z'],['Spelling Week 3','2026-11-20T16:00:00.000Z'],['Spelling Week 4','2026-11-27T16:00:00.000Z']]);
+  for(const n of [0,53,1.5]) assert.throws(()=>a._seriesPlan(reg,n,null));
+  db=pagesDatabase(pagesSeed());a=app(db);
+  const regIds=await a._pagesCreateSeries(regPlan);
+  const made=db.tables.assignments.filter(x=>regIds.includes(x.id));
+  assert.equal(made.length,3);assert(made.every(x=>x.is_published&&!('pages_continues_from' in x&&x.pages_continues_from)),'regular weeks are not chained as pages');
+  assert.equal(db.tables.assignment_students.filter(x=>regIds.includes(x.assignment_id)).length,6);
+  assert.equal(db.tables.assignment_student_versions.length,2,'no page targets written for a regular set');
+  db=pagesDatabase(pagesSeed(),{'assignment_students:insert':2});a=app(db);
+  await assert.rejects(()=>a._pagesCreateSeries(regPlan));
+  assert.equal(db.tables.assignments.length,1,'a failed regular set rolls back');
+  await assert.rejects(()=>app(pagesDatabase(pagesSeed()))._pagesCreateSeries(regPlan.map(w=>({...w,assignees:[]}))));
   console.log('Workbook Pages: planning, rollback, recovery, grouping, picker and pagination passed.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
