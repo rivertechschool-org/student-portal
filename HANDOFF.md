@@ -6323,3 +6323,16 @@ IDs, and distinguishes missing targets from missing responses. Grading is unchan
 Browser checks: `debug-tools/game-pin-pages-journeys.cjs`, using invented data
 and blocking external requests. NLP phrasing checks are in `nlp-stress.js`.
 Live student records were not used for verification.
+
+## 2026-11-12 · Math Dojo Progress Check: students can review each problem
+Jordan asked for students to be able to review a Progress Check's problems and how each went.
+Each skill on the results screen now opens to the problem asked, the student's answer and
+the right answer, or what they marked ("never seen" or "don't remember"). Filter chips show
+only secure, not yet or not seen. Every past check has a **Review** button that opens the
+same screen. The check saves the problem text, the answer given and the right answer with
+each item, and both hosts (`index.html` and `portal/index.html`) now keep them, plus the
+`forgot` and `carried` flags they used to drop. Pictures stay in the device's own copy only
+(the newest 5 checks). A row saved on the server is never drawn as markup, so a check from
+another device shows text without pictures. Checks saved before this change still show
+their results, with a note that their problems were not kept. Browser check: the review
+section of `debug-tools/progress-check-journey.py`.

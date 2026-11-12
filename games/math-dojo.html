@@ -58,6 +58,22 @@
         .pc-status.secure { color: var(--emerald-400); } .pc-status.shaky { color: var(--amber-400); } .pc-status.notyet { color: var(--rose-400); }
         .pc-change { font-size: 0.75rem; margin-left: 0.4rem; }
         .pc-change.up { color: var(--emerald-400); } .pc-change.down { color: var(--rose-400); }
+        .pc-item > summary { list-style: none; cursor: pointer; grid-template-columns: 3.2rem 1fr auto 1rem; }
+        .pc-item > summary::-webkit-details-marker { display: none; }
+        .pc-item > summary:hover { background: rgba(148,163,184,0.06); }
+        .pc-item[open] .pc-open { transform: rotate(90deg); }
+        .pc-open { color: var(--slate-400); transition: transform 0.15s; text-align: center; }
+        .pc-problems { padding: 0.25rem 0 0.75rem 3.8rem; }
+        .pc-problem { background: var(--slate-900); border-radius: 10px; padding: 0.75rem 1rem; margin-top: 0.4rem; }
+        .pc-q { color: var(--slate-100); font-size: 1rem; white-space: pre-wrap; }
+        .pc-visual { margin: 0.6rem 0; pointer-events: none; overflow-x: auto; }
+        .pc-answers { display: flex; flex-wrap: wrap; gap: 0.4rem 1.25rem; margin-top: 0.5rem; font-size: 0.9rem; color: var(--slate-300); align-items: baseline; }
+        .pc-right { color: var(--emerald-400); }
+        .pc-filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.5rem 0 0.25rem; }
+        .pc-filter { background: var(--slate-900); color: var(--slate-300); border: 1px solid var(--slate-600); border-radius: 999px; padding: 0.25rem 0.75rem; font-size: 0.85rem; cursor: pointer; }
+        .pc-filter.on { border-color: var(--cyan-500); color: var(--slate-100); }
+        .pc-review-btn { padding: 0.2rem 0.8rem; font-size: 0.8rem; }
+        @media (max-width: 600px) { .pc-problems { padding-left: 0; } }
         .pc-history-row { display: flex; justify-content: space-between; gap: 1rem; padding: 0.4rem 0; border-top: 1px solid var(--slate-700); font-size: 0.9rem; flex-wrap: wrap; }
         .mode-card:hover { transform: translateY(-4px); box-shadow: 0 20px 40px rgba(0,0,0,0.3); }
         .mode-card.placement:hover { border-color: var(--amber-500); }
@@ -1515,7 +1531,7 @@
                 <div class="pc-card" id="progress-result-summary"></div>
                 <div class="pc-card" id="progress-result-items"></div>
                 <div style="display:flex;gap:1rem;justify-content:center;margin-top:1.5rem">
-                    <button class="btn btn-ghost" onclick="goToModeSelect()">Done</button>
+                    <button class="btn btn-ghost" onclick="closeProgressResults()">Done</button>
                     <button class="btn btn-primary" onclick="showGradPath()">🎓 Graduation Path</button>
                 </div>
             </div>
@@ -42776,7 +42792,18 @@ function renderVisual(visual) {
 
     state.visualType = visual.type;
     state.visualInteractive = visual.mode === 'interactive';
+    drawVisual(container, visual);
+}
 
+// A still copy of a question's picture in another element (the Progress Check
+// review). No mode, so nothing in it can be dragged or clicked, and the
+// current question's state is not touched.
+function renderVisualInto(container, visual) {
+    container.innerHTML = '';
+    if (visual) drawVisual(container, { ...visual, mode: undefined });
+}
+
+function drawVisual(container, visual) {
     switch (visual.type) {
         case 'numberline':
             renderNumberLine(container, visual.data, visual.mode);
@@ -44508,7 +44535,14 @@ function submitAnswer() {
     // A Progress Check measures and must not move a skill either way, so it
     // writes no per-skill evidence; its own record is the result.
     if (state.mode !== 'progress') applyBktToTaggedSkills(q, correct);
-    if (state.mode === 'progress') recordProgressResult(correct);
+    if (state.mode === 'progress') {
+        // What the student gave, for the review after the check.
+        let given = null;
+        if (q.visual && q.visual.mode === 'interactive') given = state.visualAnswer == null ? null : formatVisualAnswer(state.visualAnswer, state.visualType);
+        else if (state.isTypedAnswer) given = document.getElementById('typed-answer-input')?.value?.trim();
+        else if (state.selectedAnswer != null) given = q.options[state.selectedAnswer];
+        recordProgressResult(correct, given);
+    }
 
     // Record for retention gauntlet streak tracking
     if (state.mode === 'retention') {
@@ -45160,8 +45194,27 @@ function progressHistoryLocal() {
     const blob = readOwnedBlob('math_progress_checks');
     return (blob && Array.isArray(blob.checks)) ? blob.checks : [];
 }
+// Each check keeps its problems so the student can review them later. The
+// pictures (visual data) are the bulky part and only matter for recent checks,
+// so only the newest PROGRESS_VISUALS_KEPT keep them. If the store is full,
+// older checks drop their problems first, then the newest drops its pictures:
+// the scores are never what is lost.
+const PROGRESS_VISUALS_KEPT = 5;
 function saveProgressHistoryLocal(checks) {
-    writeOwnedBlob('math_progress_checks', { checks: checks.slice(-20) });
+    const recent = checks.slice(-20);
+    const strip = (c, keep) => ({ ...c, items: (c.items || []).map(it => {
+        if (!Array.isArray(it.problems)) return it;
+        if (keep === 'none') { const { problems, ...rest } = it; return rest; }
+        return keep === 'text' ? { ...it, problems: it.problems.map(({ visual, ...pr }) => pr) } : it;
+    }) });
+    const n = recent.length;
+    const attempts = [
+        recent.map((c, i) => strip(c, i >= n - PROGRESS_VISUALS_KEPT ? 'all' : 'text')),
+        recent.map((c, i) => strip(c, i === n - 1 ? 'all' : 'none')),
+        recent.map((c, i) => strip(c, i === n - 1 ? 'text' : 'none')),
+        recent.map(c => strip(c, 'none'))
+    ];
+    for (const a of attempts) if (writeOwnedBlob('math_progress_checks', { checks: a })) return;
 }
 // Checks the host has on record (any device), merged with this device's.
 let progressHistoryRemote = [];
@@ -45287,7 +45340,8 @@ function renderProgressHistory() {
         const edge = c.summary && c.summary.edge ? ` · edge ${escapeHtml(c.summary.edge.code)}. ${escapeHtml(c.summary.edge.title)}` : '';
         return `<div class="pc-history-row"><span>${escapeHtml(when)}${c.kind === 'college_prep' ? ' <span class="plan-tag ready">College Prep</span>' : ''}</span>
             <span><span class="pc-status secure">${k.secure}${total ? '/' + total : ''} secure</span> · <span class="pc-status shaky">${k.shaky} shaky</span> · <span class="pc-status notyet">${k.notyet + k.notseen} not yet</span>${k.notreached ? ` · <span class="pc-muted">${k.notreached} not reached</span>` : ''}</span>
-            <span class="pc-muted">${edge}</span></div>`;
+            <span class="pc-muted">${edge}</span>
+            <button type="button" class="btn btn-ghost pc-review-btn" data-at="${escapeHtml(String(c.at))}" onclick="reviewProgressCheck(this.dataset.at)">Review</button></div>`;
     }).join('');
 }
 
@@ -45299,7 +45353,7 @@ function startProgressCheck(extended) {
     initScores();
     startSessionTracking('progress');
     state.mode = 'progress';
-    progressState.items.forEach(it => { it.results = []; it.notSeen = false; it.forgot = false; it.carried = false; });
+    progressState.items.forEach(it => { it.results = []; it.problems = []; it.notSeen = false; it.forgot = false; it.carried = false; });
     const skipTiers = progressSkippedTiers(progressState.items);
     progressState.items.forEach(it => { it.carried = skipTiers.has(Math.round(it.level)); });
     progressState.block = [];
@@ -45385,11 +45439,43 @@ function loadProgressQuestion() {
     }
 }
 
-function recordProgressResult(correct) {
+function recordProgressResult(correct, given) {
     const entry = progressState.entry;
     if (!entry) return;
-    progressState.items[entry.i].results.push(!!correct);
+    const it = progressState.items[entry.i];
+    it.results.push(!!correct);
+    progressKeepProblem(it, correct ? 'right' : 'wrong', given);
     progressState.entry = null;
+}
+
+// The right answer as the student would read it, for any question shape.
+function progressRightAnswer(q) {
+    if (q.visual && q.visual.mode === 'interactive') {
+        const t = q.visual.data.target !== undefined ? q.visual.data.target : q.visual.data.targetPoint;
+        return String(formatVisualAnswer(t, q.visual.type));
+    }
+    if (state.isTypedAnswer || !Array.isArray(q.options)) return String(q.answer);
+    return String(q.options[q.answerIndex]);
+}
+
+// One problem for the review: the question, its picture, what the student
+// gave and the right answer. `how` is right | wrong | never | forgot. The
+// picture is kept as a still (mode dropped), so the review can redraw it.
+function progressKeepProblem(it, how, given) {
+    const q = state.currentQuestion;
+    if (!q) return;
+    let visual = null;
+    if (q.visual) {
+        const { mode, ...still } = q.visual;
+        try { if (JSON.stringify(still).length <= 4000) visual = still; } catch (e) {}
+    }
+    (it.problems = it.problems || []).push({
+        q: String(q.question || '').slice(0, 400),
+        visual,
+        given: given == null || given === '' ? null : String(given).slice(0, 120),
+        answer: progressRightAnswer(q).slice(0, 120),
+        how
+    });
 }
 
 // "Never seen this": the whole item is not seen; its other question is skipped.
@@ -45398,6 +45484,7 @@ function progressNeverSeen() {
     if (!entry) return;
     stopTimer();
     progressState.items[entry.i].notSeen = true;
+    progressKeepProblem(progressState.items[entry.i], 'never', null);
     progressState.entry = null;
     recordQuestionResult(state.currentQuestion.domain, state.currentQuestion.tier, false, 0);
     loadProgressQuestion();
@@ -45415,6 +45502,7 @@ function progressDontRemember() {
     const it = progressState.items[entry.i];
     it.results.push(false);
     it.forgot = true;
+    progressKeepProblem(it, 'forgot', null);
     progressState.entry = null;
     recordQuestionResult(state.currentQuestion.domain, state.currentQuestion.tier, false, 0);
     loadProgressQuestion();
@@ -45446,7 +45534,8 @@ function endProgressCheck(reason) {
         status: progressItemStatus(it),
         forgot: !!it.forgot,
         carried: !!it.carried,
-        skills: [...new Set(it.picks.map(s => s.dojo))]
+        skills: [...new Set(it.picks.map(s => s.dojo))],
+        problems: it.problems || []
     }));
     // The edge: the first item of the run that ended the check.
     let edge = null;
@@ -45480,6 +45569,7 @@ function endProgressCheck(reason) {
             window.parent.postMessage({ type: 'DOJO_PROGRESS_CHECK', subject: 'Math', owner: getUserId(), check: record }, '*');
         }
     }
+    progressReviewFrom = null;
     renderProgressResults(record, previous);
     document.getElementById('test-screen').classList.remove('active');
     document.getElementById('progress-result-screen').classList.add('active');
@@ -45492,6 +45582,7 @@ function renderProgressResults(record, previous) {
     let up = 0, down = 0;
     const asked = record.items.filter(it => it.status !== 'notreached' && !it.carried);
     const carried = record.items.filter(it => it.carried);
+    progressReviewProblems = [];
     const rows = asked.map(it => {
         let change = '';
         const was = before.get(it.code);
@@ -45501,9 +45592,14 @@ function renderProgressResults(record, previous) {
             else if (d < 0) { down++; change = '<span class="pc-change down">▼ slipped</span>'; }
         } else if (previous) change = '<span class="pc-change">new</span>';
         const cls = it.status === 'notseen' ? 'notyet' : it.status;
-        return `<div class="pc-row"><span class="pc-code">${escapeHtml(it.code)}</span>
+        const head = `<span class="pc-code">${escapeHtml(it.code)}</span>
             <span>${escapeHtml(it.title)}${it.section === 'R' ? ' <span class="plan-tag ready">Stage 7</span>' : ''} <span class="pc-muted">· ${it.status === 'notseen' ? 'never seen' : it.correct + '/' + it.total}${it.forgot ? ' · seen, did not remember' : ''}</span>${change}</span>
-            <span class="pc-status ${cls}">${PROGRESS_STATUS_LABEL[it.status]}</span></div>`;
+            <span class="pc-status ${cls}">${PROGRESS_STATUS_LABEL[it.status]}</span>`;
+        const filter = progressFilterOf(it.status);
+        const problems = Array.isArray(it.problems) ? it.problems : [];
+        if (!problems.length) return `<div class="pc-row" data-filter="${filter}">${head}</div>`;
+        const pi = progressReviewProblems.push(problems) - 1;
+        return `<details class="pc-item" data-filter="${filter}" data-pi="${pi}"><summary class="pc-row">${head}<span class="pc-open" aria-hidden="true">▸</span></summary><div class="pc-problems"></div></details>`;
     }).join('');
     const total = record.items.filter(it => it.section === 'core').length;
     const r7 = k.readiness;
@@ -45528,10 +45624,94 @@ function renderProgressResults(record, previous) {
             : ' This is your first check: the next one will show what moved.'}</p>
         ${k.shaky + k.notyet ? '<p class="pc-muted">Shaky and not-yet skills are the ones to practice next in Training Grounds.</p>' : ''}`;
     const carriedTiers = [...new Set(carried.map(it => 'T' + Math.round(it.level)))];
+    const fc = { all: asked.length, secure: 0, shaky: 0, notyet: 0, notseen: 0 };
+    asked.forEach(it => { fc[progressFilterOf(it.status)]++; });
+    const hasProblems = asked.some(it => Array.isArray(it.problems) && it.problems.length);
+    const chip = (f, label) => fc[f] || f === 'all' ? `<button type="button" class="pc-filter${f === 'all' ? ' on' : ''}" data-f="${f}" onclick="filterProgressReview('${f}')">${label} <b>${fc[f]}</b></button>` : '';
     document.getElementById('progress-result-items').innerHTML = `<h3>Skill by skill (easiest first)</h3>
+        ${hasProblems ? `<p class="pc-muted">Tap a skill to see its problem, your answer and the right answer.</p>
+        <div class="pc-filters">${chip('all', 'All')}${chip('secure', '✓ Secure')}${chip('shaky', '~ Shaky')}${chip('notyet', '✗ Not yet')}${chip('notseen', '🆕 Not seen')}</div>`
+            : asked.length ? '<p class="pc-muted">This check was saved before problems were kept, so only the results are shown.</p>' : ''}
         ${carried.length ? `<p class="pc-muted">⏭️ ${carried.length} skill${carried.length === 1 ? '' : 's'} at ${carriedTiers.join(', ')} skipped - all right in your last ${PROGRESS_SKIP_RUN} checks, counted as secure.</p>` : ''}
-        ${rows || '<p class="pc-muted">Nothing was answered.</p>'}
+        <div id="pc-review-rows">${rows || '<p class="pc-muted">Nothing was answered.</p>'}</div>
         ${k.notreached ? `<p class="pc-muted" style="margin-top:0.5rem">${k.notreached} harder skill${k.notreached === 1 ? '' : 's'} not reached this time.</p>` : ''}`;
+    // A problem is drawn the first time its skill is opened: 65 pictures at
+    // once would be slow, and most are never opened.
+    document.querySelectorAll('#pc-review-rows details.pc-item').forEach(d => {
+        d.addEventListener('toggle', () => { if (d.open) renderProgressProblems(d); });
+    });
+}
+
+// Review state: the problems behind each row on the results screen, and where
+// the results were opened from (null = straight after a check, 'setup' = from
+// the past-checks list, so Done goes back there).
+let progressReviewProblems = [];
+let progressReviewFrom = null;
+
+function progressFilterOf(status) {
+    return status === 'secure' || status === 'shaky' || status === 'notseen' ? status : 'notyet';
+}
+
+function filterProgressReview(f) {
+    document.querySelectorAll('.pc-filter').forEach(b => b.classList.toggle('on', b.dataset.f === f));
+    document.querySelectorAll('#pc-review-rows [data-filter]').forEach(r => {
+        r.style.display = f === 'all' || r.dataset.filter === f ? '' : 'none';
+    });
+}
+
+const PROGRESS_HOW_LABEL = {
+    right: '<span class="pc-status secure">✓ Right</span>',
+    wrong: '<span class="pc-status notyet">✗ Not right</span>',
+    never: '<span class="pc-status notyet">🆕 You marked: never seen this</span>',
+    forgot: '<span class="pc-status notyet">🤔 You marked: seen it, don&#39;t remember</span>'
+};
+
+function renderProgressProblems(details) {
+    const box = details.querySelector('.pc-problems');
+    if (!box || box.dataset.drawn) return;
+    box.dataset.drawn = '1';
+    const problems = progressReviewProblems[+details.dataset.pi] || [];
+    problems.forEach(pr => {
+        const div = document.createElement('div');
+        div.className = 'pc-problem';
+        const answered = pr.how === 'right' || pr.how === 'wrong';
+        div.innerHTML = `<div class="pc-q">${escapeHtml(pr.q)}</div>
+            <div class="pc-visual"></div>
+            <div class="pc-answers">${PROGRESS_HOW_LABEL[pr.how] || ''}
+                ${answered ? `<span>Your answer: <b>${pr.given == null ? '<i>no answer</i>' : escapeHtml(pr.given)}</b></span>` : ''}
+                ${pr.how !== 'right' ? `<span>Right answer: <b class="pc-right">${escapeHtml(pr.answer)}</b></span>` : ''}</div>`;
+        box.appendChild(div);
+        const vis = div.querySelector('.pc-visual');
+        if (pr.visual) {
+            try { renderVisualInto(vis, pr.visual); } catch (e) { vis.remove(); }
+        } else vis.remove();
+    });
+}
+
+// Opened from "Your past checks": the same results screen, compared with the
+// check before it.
+function reviewProgressCheck(at) {
+    const hist = progressHistory();
+    const i = hist.findIndex(c => c.at === at);
+    if (i < 0) return;
+    progressReviewFrom = 'setup';
+    renderProgressResults(hist[i], i > 0 ? hist[i - 1] : null);
+    const when = new Date(hist[i].at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    document.getElementById('progress-result-sub').textContent = `Your check from ${when}.`;
+    document.getElementById('progress-setup-screen').classList.remove('active');
+    document.getElementById('progress-result-screen').classList.add('active');
+    window.scrollTo(0, 0);
+}
+
+function closeProgressResults() {
+    if (progressReviewFrom === 'setup') {
+        progressReviewFrom = null;
+        document.getElementById('progress-result-screen').classList.remove('active');
+        document.getElementById('progress-setup-screen').classList.add('active');
+        window.scrollTo(0, 0);
+        return;
+    }
+    goToModeSelect();
 }
 
 // Past checks from the host (all devices). The reply is

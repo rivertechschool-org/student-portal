@@ -295,6 +295,73 @@ with sync_playwright() as p:
         ok(f"plotting: {x['label']} is marked {'right' if want else 'wrong'}, no crash",
            x['err'] is None and (x['fb'].startswith('✓') if want else x['fb'].startswith('✗')), x)
 
+    print('\n== reviewing the problems (Jordan, 2026-11-12) ==')
+    # "For Dojo progress check allow students to review the problems and their
+    # status": each skill on the results opens to its problem, what the student
+    # gave and the right answer; past checks reopen the same review.
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []; state.mode = null")
+    pg.evaluate("goToModeSelect(); selectMode('progress'); startProgressCheck(false)")
+    pg.evaluate(ANSWER, True); pg.evaluate("nextQuestion()")
+    pg.evaluate(ANSWER, False); pg.evaluate("nextQuestion()")
+    pg.evaluate("submitDontRemember()")
+    asked = pg.evaluate("progressState.items.filter(i => i.problems.length).map(i => ({ code: i.code, p: i.problems }))")
+    # wrong, forgot, never, never is four in a row: the edge.
+    for _ in range(2): pg.evaluate("submitNeverSeen()")
+    pg.wait_for_timeout(300)
+    rec = pg.evaluate("progressHistoryLocal().slice(-1)[0]")
+    hows = [p['how'] for i in rec['items'] for p in i.get('problems', [])]
+    ok('every question asked is kept with how it went', hows == ['right', 'wrong', 'forgot', 'never', 'never'], hows)
+    wrong = next(p for i in rec['items'] for p in i.get('problems', []) if p['how'] == 'wrong')
+    ok('a wrong one keeps the question, the answer given and the right answer',
+       wrong['q'] and wrong['answer'] and wrong['given'] and wrong['given'] != wrong['answer'], wrong)
+    rows = pg.locator('#pc-review-rows details.pc-item')
+    ok('every asked skill opens on the results screen', rows.count() == 5, rows.count())
+    first = rows.nth(0)
+    first.locator('summary').click(); pg.wait_for_timeout(200)
+    txt = first.inner_text()
+    ok('opening a right one shows its problem and "Right", no correction', '✓ Right' in txt and 'Right answer' not in txt and asked[0]['p'][0]['q'][:20] in txt, txt[:200])
+    second = rows.nth(1); second.locator('summary').click(); pg.wait_for_timeout(200)
+    txt = second.inner_text()
+    ok('a wrong one shows your answer and the right answer', 'Your answer' in txt and 'Right answer' in txt, txt[:300])
+    ok('the filters count each status', '✗ Not yet' in pg.inner_text('.pc-filters') and '🆕 Not seen' in pg.inner_text('.pc-filters'))
+    pg.click('.pc-filter[data-f="notseen"]')
+    vis = pg.evaluate("[...document.querySelectorAll('#pc-review-rows [data-filter]')].filter(r => r.style.display !== 'none').map(r => r.dataset.filter)")
+    ok('"Not seen" shows only the not-seen skills', vis == ['notseen'] * 2, vis)
+    rows.nth(3).locator('summary').click(); pg.wait_for_timeout(200)
+    ok('a not-seen one says so and gives the answer', 'never seen this' in rows.nth(3).inner_text() and 'Right answer' in rows.nth(3).inner_text())
+    # A picture question draws its picture as a still in the review.
+    pic = pg.evaluate("""() => {
+      let q; for (let i = 0; i < 300; i++) { q = generateQuestion(1, 'Comparing Lengths'); if (q.visual) break; }
+      state.currentQuestion = q; const it = { problems: [] }; progressKeepProblem(it, 'wrong', '3');
+      progressReviewProblems = [it.problems];
+      const d = document.createElement('details'); d.dataset.pi = '0'; d.innerHTML = '<summary></summary><div class="pc-problems"></div>';
+      document.getElementById('pc-review-rows').appendChild(d); renderProgressProblems(d);
+      const html = d.querySelector('.pc-visual')?.innerHTML || '';
+      d.remove(); return { kept: !!it.problems[0].visual, drawn: html.length > 50, mode: it.problems[0].visual && it.problems[0].visual.mode };
+    }""")
+    ok('a picture is kept and redrawn, without its interactive mode', pic['kept'] and pic['drawn'] and pic['mode'] is None, pic)
+    pg.click('text=Done'); pg.wait_for_timeout(200)
+    pg.evaluate("selectMode('progress')"); pg.wait_for_timeout(200)
+    ok('past checks have a Review button', pg.locator('#progress-history .pc-review-btn').count() == 1)
+    pg.click('#progress-history .pc-review-btn'); pg.wait_for_timeout(300)
+    ok('Review reopens that check with its problems', pg.is_visible('#progress-result-screen') and pg.locator('#pc-review-rows details.pc-item').count() == 5
+       and 'Your check from' in pg.inner_text('#progress-result-sub'))
+    pg.click('#progress-result-screen >> text=Done'); pg.wait_for_timeout(200)
+    ok('Done from a review goes back to the past checks', pg.is_visible('#progress-setup-screen'))
+    # A check from the host (another device): text only, still reviewable.
+    pg.evaluate("""() => { const c = JSON.parse(JSON.stringify(progressHistoryLocal().slice(-1)[0]));
+      c.at = '2026-11-01T17:00:00.000Z'; c.items.forEach(i => (i.problems || []).forEach(p => delete p.visual));
+      const old = JSON.parse(JSON.stringify(c)); old.at = '2026-10-01T17:00:00.000Z'; old.items.forEach(i => delete i.problems);
+      window.postMessage({ type: 'PROGRESS_HISTORY_FOR_DOJO', checks: [c, old] }, '*'); }""")
+    pg.wait_for_timeout(300)
+    pg.locator('#progress-history .pc-review-btn[data-at="2026-11-01T17:00:00.000Z"]').click(); pg.wait_for_timeout(200)
+    ok('a check from another device reviews without pictures', pg.locator('#pc-review-rows details.pc-item').count() == 5)
+    pg.click('#progress-result-screen >> text=Done'); pg.wait_for_timeout(200)
+    pg.locator('#progress-history .pc-review-btn[data-at="2026-10-01T17:00:00.000Z"]').click(); pg.wait_for_timeout(200)
+    ok('a check saved before problems were kept says so', 'saved before problems were kept' in pg.inner_text('#progress-result-items')
+       and pg.locator('#pc-review-rows details.pc-item').count() == 0)
+    pg.evaluate("saveProgressHistoryLocal([]); progressHistoryRemote = []")
+
     print('\n== a new student ==')
     # The check now finds its own edge, so a student with no history can take it.
     pg.evaluate("skillTreeData.skills = {}; saveSkillTreeData(); goToModeSelect(); selectMode('progress')"); pg.wait_for_timeout(200)
