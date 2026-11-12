@@ -6308,3 +6308,18 @@ check: `debug-tools/workbook-pages-edit-targets.cjs` (invented data).
 **Luke:** `debug-tools/workbook-pages-journeys.cjs` fails its last check here with "Cannot set
 properties of null (setting 'innerHTML')", on main as well, with or without this change. Every
 other check in it passes.
+
+## 2026-11-12 · Riven game-code lookup and teacher pages comparison
+
+Riven can read a student's current Games PIN by name ("what is [name]'s game
+code?"), including follow-ups about another student. It reads afresh and does
+not regenerate a PIN; explicit reset requests keep their existing confirmation.
+
+View Submissions now shows **Assigned pages / work** and **Student reported**
+for each Workbook Pages student. It uses their individual target, displays the
+submitted text literally, supports week/exercise labels and split login/profile
+IDs, and distinguishes missing targets from missing responses. Grading is unchanged.
+
+Browser checks: `debug-tools/game-pin-pages-journeys.cjs`, using invented data
+and blocking external requests. NLP phrasing checks are in `nlp-stress.js`.
+Live student records were not used for verification.

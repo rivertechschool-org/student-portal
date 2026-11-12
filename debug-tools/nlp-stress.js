@@ -2769,3 +2769,23 @@ const t45 = (label, ok) => { ok ? p45++ : f45++; if (!ok) { console.log('  FAIL'
 });
 app._nlpContext = {};
 console.log(`round 45: ${p45} pass, ${f45} fail`);
+
+// Read-only game credentials: phrasing varies, replacement remains explicit.
+let pinFailures = 0;
+for (const [input, want] of [
+  ["what is clementine's game code", 'VIEW_GAME_PIN'],
+  ['show noah games pin', 'VIEW_GAME_PIN'],
+  ['get the game login code for clementine', 'VIEW_GAME_PIN'],
+  ["noah's pin", 'VIEW_GAME_PIN'],
+  ['game code', 'VIEW_GAME_PIN'],
+  ['give noah a new pin', 'REGENERATE_PIN'],
+  ['reset clementine games pin', 'REGENERATE_PIN'],
+  ['noah forgot his pin', 'REGENERATE_PIN'],
+  ['add a note for noah: bring your game code', 'ADD_NOTE'],
+]) {
+  app._nlpContext = {};
+  const got = run(input);
+  if (got.intent !== want) { pinFailures++; console.error('FAIL game PIN', input, got.intent, want); }
+}
+console.log(`Game PIN queries: ${9 - pinFailures} pass, ${pinFailures} fail`);
+if (pinFailures) process.exitCode = 1;
