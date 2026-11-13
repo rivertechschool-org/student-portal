@@ -40,7 +40,7 @@ const names = ['_conferenceZones', '_confMinutes', '_confHHMM', '_confClock', '_
   '_renderConferenceAdmin', '_renderConferenceAdminDay', '_loadParentConferences', '_conferenceFreeSlotsFor', 'showParentConferences',
   'bookParentConference', 'addConferenceSlots', '_conferenceDayReview', '_renderConferenceReview', '_reportConferenceSend',
   '_loadConferenceScheduleCard', '_renderConferenceScheduleCard', 'showMyConferenceSchedule',
-  '_renderConferencePlaces', '_renderConferenceFormLink', '_renderConferenceRequests', '_conferenceHeldSlots', '_conferencePlaceOptions', 'addConferenceLocation', 'setConferenceSlotLocation', 'setConferenceDayLocation',
+  '_renderConferencePlaces', '_renderConferenceFormLink', '_renderConferenceRequests', '_conferenceHeldSlots', '_renderConferenceWindows', '_conferenceWindowsFromSlots', '_conferencePlaceOptions', 'addConferenceLocation', 'setConferenceSlotLocation', 'setConferenceDayLocation',
   'confirmConferenceDay', 'saveConferenceContactEmail', 'setConferenceDayOpen', 'fillConferenceSlot', 'clearConferenceSlot', 'notificationDestination', 'notificationTypeConfig', 'sanitizeLink', '_localDateStr', 'escapeHtml', 'jsAttr'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 

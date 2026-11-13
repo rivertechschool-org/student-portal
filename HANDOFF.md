@@ -6381,3 +6381,14 @@ too (Morning 8:20–11:20, Midday 11:20–1:20, Afternoon 1:20–3:20 to start).
 **Needs:** the backend migration `public_conference_requests` (test in `supabase/tests/`).
 Until it is applied the form says sign-up is not available and the admin screen is as before.
 Checks: `debug-tools/conference-request-journeys.cjs`, `tests/conferences.test.js`.
+
+## 2026-11-13 (later) — Jordan's Claude
+**Conferences: the admin picks the public form's days and times, and gaps between slots.**
+Each conference day now has an "On the public form" box beside "Parents can sign up"; the
+two are separate, and a day is on the form only when ticked (Finalize takes it off). Its
+"🕒 Public form times" section edits the time ranges the form offers; "Match my slots"
+fills one range per block of slots. "Add time slots" has a "min between" box for a break
+between conferences (20 min each, 5 between: 8:20, 8:45, 9:10...).
+**Needs:** backend migration `public_conference_form_days`. Before it is applied the form
+still offers days with portal sign-up open, and the new box and times section are hidden.
+Checks: `tests/conference-form-days.test.js`, `debug-tools/conference-request-journeys.cjs`.
