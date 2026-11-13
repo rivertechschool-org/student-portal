@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parent-Teacher Conferences</title>
+  <link rel="icon" href="/favicon.ico?v=2">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
+  <link rel="stylesheet" href="../shared/styles.css">
+  <!--
+    Public sign-up for parent-teacher conferences (2026-11-13, Jordan).
+    No sign-in. Three steps, in order: full time or homeschool (homeschool
+    stops here: no homeschool conferences at this time), the grade band
+    (junior high and high school only), then name, email, students and a
+    time of day. The database checks all of it again, matches the students,
+    holds the earliest free time in that window first come first served, and
+    leaves the request pending for the office. Its answer is the same whether
+    or not anyone matched, so this page never says who goes to the school.
+  -->
+  <style>
+    body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; min-height: 100vh; }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { text-align: center; padding: 18px 0 8px; }
+    header h1 { font-size: var(--text-2xl, 1.6rem); margin: 0 0 6px; color: var(--accent); }
+    header p { color: var(--muted); margin: 0; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-top: 18px; }
+    .step-label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+    h2 { font-size: 1.15rem; margin: 0 0 14px; }
+    .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .choice { padding: 14px 12px; border: 2px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font-size: 1rem; cursor: pointer; text-align: center; }
+    .choice:hover, .choice:focus-visible { border-color: var(--accent); outline: none; }
+    .choice small { display: block; color: var(--muted); font-size: 12px; margin-top: 3px; }
+    .stop { text-align: center; padding: 6px 0; }
+    .stop p { margin: 0 0 14px; line-height: 1.5; }
+    label.field { display: block; font-weight: 600; font-size: 14px; margin: 14px 0 6px; }
+    input[type=text], input[type=email], select, textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font-size: 16px; font-family: inherit; }
+    .student-row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .student-row button { flex: none; }
+    .windows { display: grid; gap: 8px; }
+    .window { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+    .window input { width: 18px; height: 18px; margin: 0; flex: none; }
+    .window .full { color: var(--warning); font-size: 12px; }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .actions { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+    .btn { padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 15px; cursor: pointer; }
+    .btn-primary { background: var(--accent); color: #0b0e12; border-color: var(--accent); font-weight: 600; }
+    .btn:disabled { opacity: 0.6; cursor: default; }
+    .link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0; }
+    .error { color: var(--danger); font-size: 14px; margin-top: 12px; }
+    .trap { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+    .done { text-align: center; }
+    .done .big { font-size: 2.4rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Parent-Teacher Conferences</h1>
+      <p>Ask for a conference time</p>
+    </header>
+    <main id="app" aria-live="polite"></main>
+  </div>
+
+  <script src="../shared/supabase.min.js"></script>
+  <script>
+    const sb = window.supabase.createClient(
+      'https://joxvhzxkrcigknsdrusr.supabase.co',
+      'sb_publishable_xgvdFBaHCJKl9p-Lu61aZw_3oLkeTtc'
+    );
+    const el = document.getElementById('app');
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const clock = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); if (!m) return t || ''; const h = +m[1]; return `${((h + 11) % 12) + 1}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`; };
+    const dayLabel = d => { const [y, m, dd] = String(d).split('-').map(Number); return new Date(y, m - 1, dd).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }); };
+
+    const state = { program: null, band: null, days: null, students: [''], form: {} };
+
+    // Step 1: full time or homeschool. It comes before anything else.
+    function stepProgram() {
+      el.innerHTML = `<section class="card">
+          <div class="step-label">Step 1 of 3</div>
+          <h2>Is your student full time or homeschool?</h2>
+          <div class="choices">
+            <button class="choice" onclick="pickProgram('full_time')">Full time</button>
+            <button class="choice" onclick="pickProgram('homeschool')">Homeschool</button>
+          </div>
+        </section>`;
+    }
+    function pickProgram(p) {
+      state.program = p;
+      if (p === 'homeschool') {
+        el.innerHTML = `<section class="card stop">
+            <p>We are not holding homeschool conferences at this time. Thank you for checking.</p>
+            <button class="link" onclick="stepProgram()">← Back</button>
+          </section>`;
+        return;
+      }
+      stepBand();
+    }
+
+    // Step 2: grade band. Only junior high and high school go on.
+    function stepBand() {
+      el.innerHTML = `<section class="card">
+          <div class="step-label">Step 2 of 3</div>
+          <h2>What grade band is your student in?</h2>
+          <div class="choices">
+            <button class="choice" onclick="pickBand('elementary')">Elementary<small>K–5</small></button>
+            <button class="choice" onclick="pickBand('junior_high')">Junior high<small>6–8</small></button>
+            <button class="choice" onclick="pickBand('high_school')">High school<small>9–12</small></button>
+          </div>
+          <div class="actions"><button class="link" onclick="stepProgram()">← Back</button></div>
+        </section>`;
+    }
+    function pickBand(b) {
+      state.band = b;
+      if (b !== 'junior_high' && b !== 'high_school') {
+        el.innerHTML = `<section class="card stop">
+            <p>Conferences are for junior high and high school students only at this time. Thank you for checking.</p>
+            <button class="link" onclick="stepBand()">← Back</button>
+          </section>`;
+        return;
+      }
+      stepDetails();
+    }
+
+    // Step 3: the rest.
+    async function stepDetails() {
+      if (!state.days) {
+        el.innerHTML = `<section class="card"><p class="hint">Loading conference times…</p></section>`;
+        const { data, error } = await sb.rpc('rt_conference_public_days');
+        if (error) {
+          el.innerHTML = `<section class="card stop"><p>Conference sign-up is not available right now. Please try again later or contact the school office.</p>
+            <button class="link" onclick="stepBand()">← Back</button></section>`;
+          return;
+        }
+        state.days = (typeof data === 'string' ? JSON.parse(data) : data) || [];
+      }
+      const days = state.days.filter(d => (d.windows || []).length);
+      if (!days.length) {
+        el.innerHTML = `<section class="card stop"><p>Conference sign-up is not open right now. Please check back later.</p>
+          <button class="link" onclick="stepBand()">← Back</button></section>`;
+        return;
+      }
+      const f = state.form;
+      if (!f.day || !days.some(d => d.id === f.day)) f.day = days[0].id;
+      el.innerHTML = `<section class="card">
+          <div class="step-label">Step 3 of 3</div>
+          <h2>Your details</h2>
+          <form id="req" onsubmit="submitRequest(event)" novalidate>
+            ${days.length > 1 ? `<label class="field" for="day">Day</label>
+              <select id="day" onchange="state.form.day = this.value; renderWindows()">${days.map(d => `<option value="${esc(d.id)}" ${d.id === f.day ? 'selected' : ''}>${esc(dayLabel(d.day))}</option>`).join('')}</select>`
+              : `<p class="hint" style="margin: 0;">${esc(days[0].title || 'Parent-teacher conferences')}: <b>${esc(dayLabel(days[0].day))}</b></p>`}
+            <label class="field" for="name">Your name</label>
+            <input type="text" id="name" maxlength="120" autocomplete="name" value="${esc(f.name || '')}" required>
+            <label class="field" for="email">Your email</label>
+            <input type="email" id="email" maxlength="200" autocomplete="email" value="${esc(f.email || '')}" required>
+            <div class="hint">We send your conference time here once the office confirms it.</div>
+            <label class="field">Student name(s)</label>
+            <div id="students"></div>
+            <button type="button" class="link" id="add-student" onclick="addStudent()">+ Add another student</button>
+            <label class="field">Time of day</label>
+            <div class="windows" id="windows" role="radiogroup" aria-label="Time of day"></div>
+            <label class="field" for="notes">Anything we should know? <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <textarea id="notes" rows="3" maxlength="500">${esc(f.notes || '')}</textarea>
+            <div class="trap" aria-hidden="true"><label>Website <input type="text" id="website" tabindex="-1" autocomplete="off"></label></div>
+            <div id="error" class="error" role="alert"></div>
+            <div class="actions">
+              <button type="button" class="link" onclick="saveFields(); stepBand()">← Back</button>
+              <button type="submit" class="btn btn-primary" id="submit">Request a time</button>
+            </div>
+          </form>
+        </section>`;
+      renderStudents();
+      renderWindows();
+    }
+
+    function saveFields() {
+      const v = id => document.getElementById(id)?.value;
+      state.form.name = v('name') ?? state.form.name;
+      state.form.email = v('email') ?? state.form.email;
+      state.form.notes = v('notes') ?? state.form.notes;
+      readStudents();
+    }
+    function readStudents() {
+      const inputs = document.querySelectorAll('.student-name');
+      if (inputs.length) state.students = [...inputs].map(i => i.value);
+    }
+    function renderStudents() {
+      const box = document.getElementById('students');
+      box.innerHTML = state.students.map((s, i) => `<div class="student-row">
+          <input type="text" class="student-name" maxlength="80" placeholder="First and last name" aria-label="Student ${i + 1} name" value="${esc(s)}">
+          ${state.students.length > 1 ? `<button type="button" class="btn" aria-label="Remove student ${i + 1}" onclick="removeStudent(${i})">✕</button>` : ''}
+        </div>`).join('');
+      document.getElementById('add-student').hidden = state.students.length >= 6;
+    }
+    function addStudent() { readStudents(); state.students.push(''); renderStudents(); document.querySelectorAll('.student-name')[state.students.length - 1]?.focus(); }
+    function removeStudent(i) { readStudents(); state.students.splice(i, 1); renderStudents(); }
+
+    function renderWindows() {
+      const day = (state.days || []).find(d => d.id === state.form.day);
+      const box = document.getElementById('windows');
+      if (!day || !box) return;
+      if (state.form.window != null && !day.windows.some(w => w.i === state.form.window)) state.form.window = null;
+      box.innerHTML = day.windows.map(w => `<label class="window">
+          <input type="radio" name="window" value="${w.i}" ${state.form.window === w.i ? 'checked' : ''} onchange="state.form.window = ${Number(w.i)}">
+          <span><b>${esc(w.label)}</b> ${esc(clock(w.start))}–${esc(clock(w.end))}
+          ${w.open ? '' : '<br><span class="full">Full. You can still ask and the office will be in touch.</span>'}</span>
+        </label>`).join('');
+    }
+
+    async function submitRequest(e) {
+      e.preventDefault();
+      saveFields();
+      const err = document.getElementById('error');
+      const f = state.form;
+      const students = state.students.map(s => s.trim()).filter(Boolean);
+      const problem = !String(f.name || '').trim() ? 'Please enter your name.'
+        : !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(f.email || '').trim()) ? 'Please enter a valid email address.'
+        : !students.length ? 'Please enter at least one student\'s name.'
+        : f.window == null ? 'Please pick a time of day.' : '';
+      if (problem) { err.textContent = problem; return; }
+      err.textContent = '';
+      const btn = document.getElementById('submit');
+      btn.disabled = true; btn.textContent = 'Sending…';
+      const { error } = await sb.rpc('rt_conference_request', {
+        p_day: f.day, p_program: state.program, p_band: state.band,
+        p_name: f.name.trim(), p_email: f.email.trim(), p_students: students,
+        p_window: f.window, p_notes: (f.notes || '').trim() || null,
+        p_trap: document.getElementById('website')?.value || null,
+      });
+      if (error) {
+        // The database's own words for a refusal (closed day, too many
+        // requests); anything else is a plain "try again".
+        err.textContent = error.code === '22023' && error.message ? error.message : 'Something went wrong sending your request. Please try again.';
+        btn.disabled = false; btn.textContent = 'Request a time';
+        return;
+      }
+      const day = state.days.find(d => d.id === f.day);
+      el.innerHTML = `<section class="card done">
+          <div class="big">✅</div>
+          <h2>Request received</h2>
+          <p>Thank you${f.name ? ', ' + esc(f.name.trim().split(' ')[0]) : ''}. We have your request for ${esc(dayLabel(day?.day))}.</p>
+          <p class="hint">The office will confirm your conference time by email at <b>${esc(f.email.trim())}</b>.</p>
+        </section>`;
+    }
+
+    stepProgram();
+  </script>
+</body>
+</html>

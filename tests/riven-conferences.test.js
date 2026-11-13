@@ -42,7 +42,7 @@ const names = ['_rivenConfText', '_rivenConferenceDay', '_rivenConferenceData', 
   '_rivenConferenceLine', '_rivenConferenceFreeText', 'terminalViewConferences', '_rivenMyConferences', '_rivenReportConferenceSend',
   'terminalConfirmConferences', '_rivenStudentCoreTeachers', 'terminalBookConference', 'terminalCancelConference', '_rivenConferenceBlock',
   'terminalAddConferenceSlots', 'terminalSetConferenceLocation', 'terminalAddConferencePlace', '_rivenRequireAdmin', '_rivenPolicyError',
-  '_confClock', '_confMinutes', '_confHHMM', '_confDayLabel', '_conferenceSlotTimes', '_conferenceZones', '_conferenceDayReview',
+  '_confClock', '_confMinutes', '_confHHMM', '_confDayLabel', '_conferenceSlotTimes', '_conferenceZones', '_conferenceDayReview', '_conferenceHeldSlots',
   '_localDateStr', '_rivenClockTime', '_rivenMonthDayDates', '_rivenMonthIndex', '_rivenPhraseToDate', '_rivenAbsenceDayNumbers', 'escapeHtml'];
 const proto = eval(`({ ${names.map(n => method(n)).join(',\n')} })`);
 

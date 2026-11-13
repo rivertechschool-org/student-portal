@@ -6364,3 +6364,20 @@ hourly "override code" note that tab used to show, which no longer worked anywhe
 **Needs:** a backend migration (`teacher_sets_a_skill_starting_point`, with its test in
 `supabase/tests/`). Until it is applied the button says it is not switched on yet.
 Checks: `tests/skill-start-point.test.js`, `debug-tools/skill-start-point-journey.cjs`.
+
+## 2026-11-13 — Jordan's Claude
+**Public conference sign-up form: rivertech.me/conferences/.** No sign-in. It asks, in
+order: full time or homeschool (homeschool is told there are no homeschool conferences at
+this time), then the grade band (only junior high and high school go on), then name,
+email, student name(s) and a time of day ("Morning 8:20–11:20" and so on). The database
+matches each student and holds the earliest free slot in that window, first come first
+served, in the same slots parents book in the portal. The form always answers "received"
+and never says what matched.
+Requests land in the admin 🤝 Conferences screen under each day as **pending**, showing
+what matched, the held time and whether the email belongs to a parent account. Approve
+adds their email to the held times so Finalize emails them; Decline frees the times.
+Finalize leaves out times held by pending requests. Each day's windows are edited there
+too (Morning 8:20–11:20, Midday 11:20–1:20, Afternoon 1:20–3:20 to start).
+**Needs:** the backend migration `public_conference_requests` (test in `supabase/tests/`).
+Until it is applied the form says sign-up is not available and the admin screen is as before.
+Checks: `debug-tools/conference-request-journeys.cjs`, `tests/conferences.test.js`.

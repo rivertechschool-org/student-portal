@@ -9025,7 +9025,20 @@
         // Places, including ones taken off the list: a booking may still name one.
         const { data: locations } = await this.supabaseQuery(() => sb.from('conference_locations')
           .select('id, name, active').order('name'));
-        return { days: days || [], slots, teachers, students, parentsOf, byId, name, expected, locations: locations || [] };
+        // Public sign-up requests and each day's time windows. Read apart from
+        // the rest, and allowed to fail: they arrive with a database update,
+        // and the conference screen must keep working without it.
+        const soft = (q) => Promise.resolve(q).then(r => r, e => ({ data: null, error: e }));
+        const [reqRes, winRes] = dayIds.length ? await Promise.all([
+          soft(sb.from('conference_requests')
+            .select('id, day_id, program, grade_band, parent_name, email, students, window_label, window_start, window_end, notes, placements, email_known, status, decided_at, created_at')
+            .in('day_id', dayIds).order('created_at').limit(1000)),
+          soft(sb.from('conference_days').select('id, request_windows').in('id', dayIds)),
+        ]) : [{ data: [] }, { data: [] }];
+        const windowsByDay = {};
+        (winRes.data || []).forEach(w => { windowsByDay[w.id] = Array.isArray(w.request_windows) ? w.request_windows : []; });
+        return { days: days || [], slots, teachers, students, parentsOf, byId, name, expected, locations: locations || [],
+                 requests: reqRes.data || [], requestsReady: !reqRes.error, windowsByDay };
       }
 
       async _refreshConferenceAdmin() {
@@ -9051,7 +9064,7 @@
               <button class="btn btn-primary" onclick="app.createConferenceDay()">Add day</button>
             </div>
           </div>`;
-        const places = this._renderConferencePlaces(c, input);
+        const places = this._renderConferencePlaces(c, input) + this._renderConferenceFormLink(c);
         if (!c.days.length) {
           return newDay + places + `<div style="color: var(--muted); text-align: center; padding: 12px;">No conference days yet. Add one above, then add its time slots.</div>`;
         }
@@ -9105,7 +9118,8 @@
           if (x.student_id) {
             const st = c.byId[x.student_id];
             const parents = c.parentsOf[x.student_id] || [];
-            const by = x.booked_by && c.byId[x.booked_by]?.user_type === 'parent' ? 'booked by parent' : 'added by the office';
+            const by = review.held.has(x.id) ? 'sign-up form, waiting for approval'
+              : x.booked_by && c.byId[x.booked_by]?.user_type === 'parent' ? 'booked by parent' : 'added by the office';
             teachers = `<b>${esc(teacherNames(x.assigned_teacher_ids || x.teacher_ids))}</b>`
               + (x.teachers_matched === false ? `<div style="color: var(--warning); font-size: 11px;">\u26a0 None of this student's math or English teachers is in this slot</div>` : '')
               + (review.doubleBooked.has(x.id) ? `<div style="color: var(--warning); font-size: 11px;">\u26a0 A teacher here has another conference at the same time</div>` : '');
@@ -9148,6 +9162,7 @@
               <button class="btn btn-secondary small" onclick="app.deleteConferenceDay('${id}')">Delete day</button>
             </div>
             ${this._renderConferenceReview(d, c, review)}
+            ${this._renderConferenceRequests(d, c, input)}
             <details style="margin-top: 10px;" ${slots.length ? '' : 'open'}>
               <summary style="cursor: pointer; font-weight: 600;">\u2795 Add time slots</summary>
               <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;">
@@ -9171,13 +9186,148 @@
           </div>`;
       }
 
+      // ---- sign-up requests from the public form (conferences/index.html) ----
+      // 2026-11-13, Jordan: anyone can ask for a time; the database matches
+      // each student typed and holds the earliest free slot in the window
+      // they chose, first come first served. Every request waits here as
+      // pending: approving adds their email to the held times (so Finalize
+      // emails them); declining frees the times. The form never shows what
+      // matched, so the office is the one who sees it.
+
+      // Slot ids held by this day's pending requests, still with that student.
+      _conferenceHeldSlots(d, c) {
+        const held = new Set();
+        const slots = new Map((c.slots || []).map(x => [x.id, x]));
+        (c.requests || []).filter(q => q.day_id === d.id && q.status === 'pending').forEach(q => {
+          (q.placements || []).forEach(p => {
+            const x = p && p.note === 'held' && slots.get(p.slot_id);
+            if (x && x.student_id && x.student_id === p.student_id) held.add(x.id);
+          });
+        });
+        return held;
+      }
+
+      _renderConferenceFormLink(c) {
+        const url = 'https://rivertech.me/conferences/';
+        return `<div class="card" style="padding: 10px 12px; margin-bottom: 14px; font-size: 13px;">
+            \u{1F4DD} <b>Public sign-up form:</b> <a href="${url}" target="_blank" rel="noopener">${url}</a>
+            <button class="btn btn-secondary small" style="margin-left: 6px;" onclick="navigator.clipboard?.writeText('${url}').then(() => app.showNotification('Link copied', 'success'))">Copy link</button>
+            <div style="color: var(--muted); font-size: 12px; margin-top: 4px;">${c.requestsReady
+              ? 'Anyone can ask for a time on a day with "Parents can sign up" ticked. Full-time junior high and high school only. Requests land on their day below as pending.'
+              : 'It starts taking requests once the database update for it is applied.'}</div>
+          </div>`;
+      }
+
+      _renderConferenceRequests(d, c, input) {
+        if (!c.requestsReady) return '';
+        const esc = (t) => this.escapeHtml(t);
+        const id = this.jsAttr(d.id);
+        const wins = c.windowsByDay?.[d.id] || [];
+        const slots = new Map((c.slots || []).map(x => [x.id, x]));
+        const reqs = (c.requests || []).filter(q => q.day_id === d.id);
+        const pending = reqs.filter(q => q.status === 'pending');
+        const decided = reqs.filter(q => q.status !== 'pending');
+        const band = { junior_high: 'Junior high', high_school: 'High school' };
+        const row = (q) => {
+          const qid = this.jsAttr(q.id);
+          const kids = (q.placements && q.placements.length ? q.placements : (q.students || []).map(t => ({ typed: t }))).map(p => {
+            const st = p.student_id && c.byId[p.student_id];
+            const x = p.slot_id && slots.get(p.slot_id);
+            const still = x && x.student_id === p.student_id;
+            let what;
+            if (!p.student_id) what = `<span style="color: var(--warning);">⚠ ${esc(p.note || 'not matched')}: add them to a time yourself</span>`;
+            else if (p.note === 'already booked') what = still ? `already booked at ${esc(this._confClock(x.starts_at))}` : 'was already booked (since changed)';
+            else if (p.note === 'held') what = still ? `<b>held: ${esc(this._confClock(x.starts_at))}–${esc(this._confClock(x.ends_at))}</b>` : 'held time since changed or freed';
+            else what = `<span style="color: var(--warning);">⚠ ${esc(p.note || 'no time')}: add them to a time yourself</span>`;
+            const how = p.how === 'parent_email' ? ' (matched by parent email)' : p.how === 'name' ? ' (matched by name)' : '';
+            return `<div>• “${esc(p.typed || '')}” → ${st ? `<b>${esc(c.name(st))}</b>${esc(how)}, ` : ''}${what}</div>`;
+          }).join('');
+          const when = new Date(q.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+          const buttons = q.status === 'pending'
+            ? `<button class="btn btn-primary small" onclick="app.decideConferenceRequest('${qid}', 'approve')">Approve</button>
+               <button class="btn btn-secondary small" onclick="app.decideConferenceRequest('${qid}', 'decline')">Decline</button>`
+            : `<span style="color: var(--muted); font-size: 12px;">${q.status === 'approved' ? '✓ Approved' : '✕ Declined'}</span>
+               <button class="btn btn-secondary small" onclick="app.decideConferenceRequest('${qid}', 'reopen')">Reopen</button>`;
+          return `<div class="conf-request" style="border-top: 1px solid var(--border); padding: 8px 0; font-size: 13px;">
+              <div style="display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline;">
+                <b>${esc(q.parent_name)}</b> <span>&lt;${esc(q.email)}&gt;</span>
+                ${q.email_known ? `<span style="color: var(--accent-2); font-size: 12px;">✓ a parent account has this email</span>` : `<span style="color: var(--warning); font-size: 12px;">⚠ not an email on file: check before approving</span>`}
+                <span style="color: var(--muted); font-size: 12px;">${esc(q.window_label)} (${esc(this._confClock(q.window_start))}–${esc(this._confClock(q.window_end))}) · ${esc(band[q.grade_band] || q.grade_band || '')} · ${esc(when)}</span>
+                <span style="margin-left: auto; display: inline-flex; gap: 4px;">${buttons}</span>
+              </div>
+              <div style="margin-top: 4px; padding-left: 4px;">${kids}</div>
+              ${q.notes ? `<div style="color: var(--muted); font-size: 12px; margin-top: 2px;">Note: ${esc(q.notes)}</div>` : ''}
+            </div>`;
+        };
+        const winRows = (wins.length ? wins : [{ label: '', start: '', end: '' }]).map(w => `<div style="display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
+            <input type="text" class="conf-win-label" value="${esc(w.label || '')}" placeholder="Morning" maxlength="40" aria-label="Window name" style="${input} width: 130px;">
+            <input type="time" class="conf-win-start" value="${esc(w.start || '')}" aria-label="Starts" style="${input}"> to
+            <input type="time" class="conf-win-end" value="${esc(w.end || '')}" aria-label="Ends" style="${input}">
+            <button class="btn btn-secondary small" title="Remove" aria-label="Remove this window" onclick="this.parentElement.remove()">✕</button></div>`).join('');
+        return `<details class="conf-requests" style="margin-top: 10px;" ${pending.length ? 'open' : ''}>
+            <summary style="cursor: pointer; font-weight: 600;">\u{1F4DD} Sign-up requests <span style="font-weight: 400; font-size: 12px; color: ${pending.length ? 'var(--warning)' : 'var(--muted)'};">${pending.length} pending${decided.length ? `, ${decided.length} decided` : ''}</span></summary>
+            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">From the public form. A matched student is held in the earliest free time in the window they picked. Approve adds their email to the held times so Finalize emails them; Decline frees the times.</div>
+            ${pending.map(row).join('') || '<div style="color: var(--muted); font-size: 13px; padding: 6px 0;">No pending requests.</div>'}
+            ${decided.length ? `<details style="margin-top: 4px;"><summary style="cursor: pointer; color: var(--muted); font-size: 12px;">${decided.length} decided</summary>${decided.map(row).join('')}</details>` : ''}
+            <details style="margin-top: 8px;">
+              <summary style="cursor: pointer; font-size: 13px;">Time windows on the form: ${esc(wins.map(w => `${w.label} ${this._confClock(w.start)}–${this._confClock(w.end)}`).join(' · ') || 'none')}</summary>
+              <div id="conf-wins-${esc(d.id)}">${winRows}</div>
+              <div style="display: flex; gap: 6px; margin-top: 6px;">
+                <button class="btn btn-secondary small" onclick="app.addConferenceWindowRow('${id}')">➕ Window</button>
+                <button class="btn btn-primary small" onclick="app.saveConferenceWindows('${id}')">Save windows</button>
+              </div>
+            </details>
+          </details>`;
+      }
+
+      addConferenceWindowRow(dayId) {
+        const box = document.getElementById(`conf-wins-${dayId}`);
+        const first = box?.firstElementChild;
+        if (!first) return;
+        const row = first.cloneNode(true);
+        row.querySelectorAll('input').forEach(i => { i.value = ''; });
+        box.appendChild(row);
+      }
+
+      async saveConferenceWindows(dayId) {
+        const rows = [...document.querySelectorAll(`#conf-wins-${dayId} > div`)];
+        const wins = [];
+        for (const r of rows) {
+          const label = (r.querySelector('.conf-win-label')?.value || '').trim();
+          const start = r.querySelector('.conf-win-start')?.value || '', end = r.querySelector('.conf-win-end')?.value || '';
+          if (!label && !start && !end) continue;
+          if (!label || !start || !end || this._confMinutes(start) >= this._confMinutes(end)) {
+            this.showNotification('Each window needs a name and a start before its end', 'error');
+            return;
+          }
+          wins.push({ label: label.slice(0, 40), start: start.slice(0, 5), end: end.slice(0, 5) });
+        }
+        if (!wins.length) { this.showNotification('Keep at least one window, or the form offers no times', 'error'); return; }
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').update({ request_windows: wins }).eq('id', dayId));
+        if (error) { this.showNotification('Could not save the windows: ' + error.message, 'error'); return; }
+        this.showNotification('Windows saved', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+      async decideConferenceRequest(requestId, action) {
+        const { data, error } = await this.auth.supabase.rpc('rt_conference_request_decide', { p_request: requestId, p_action: action });
+        if (error) { this.showNotification('Could not update the request: ' + error.message, 'error'); return; }
+        const n = data?.slots || 0;
+        this.showNotification(action === 'approve' ? `Approved${n ? `: their email is on ${n} time${n === 1 ? '' : 's'}, sent at Finalize` : ''}.`
+          : action === 'decline' ? `Declined${n ? `: ${n} time${n === 1 ? '' : 's'} freed` : ''}.` : 'Back to pending.', 'success');
+        await this._refreshConferenceAdmin();
+      }
+
+
       // What the admin should look at before finalizing: bookings not yet
       // confirmed, ones that would reach nobody, teachers in two places at
       // once, and students in math or English with no time on this day.
       _conferenceDayReview(d, c) {
         const slots = c.slots.filter(x => x.day_id === d.id);
         const booked = slots.filter(x => x.student_id);
-        const unsent = booked.filter(x => !x.confirmed_at);
+        // Times held by a sign-up request still pending: Finalize skips them.
+        const held = this._conferenceHeldSlots(d, c);
+        const unsent = booked.filter(x => !x.confirmed_at && !held.has(x.id));
         const unreachable = booked.filter(x => !(c.parentsOf[x.student_id] || []).length && !x.contact_email);
         const unmatched = booked.filter(x => x.teachers_matched === false);
         const noPlace = booked.filter(x => !x.location_id);
@@ -9193,7 +9343,7 @@
         const have = new Set(booked.map(x => x.student_id));
         const notBooked = [...(c.expected || [])].filter(id => !have.has(id))
           .map(id => c.name(c.byId[id])).filter(Boolean).sort((x, y) => x.localeCompare(y));
-        return { booked, unsent, unreachable, unmatched, noPlace, doubleBooked, notBooked };
+        return { booked, unsent, unreachable, unmatched, noPlace, doubleBooked, notBooked, held };
       }
 
       _renderConferenceReview(d, c, r) {
@@ -9220,6 +9370,7 @@
                 ? `<select id="conf-dayplace-${esc(d.id)}" aria-label="Place for every booking without one" style="padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--card); color: var(--text); font-size: 12px;">${this._conferencePlaceOptions(c, null, 'Put them all in\u2026')}</select>
                    <button class="btn btn-secondary small" onclick="app.setConferenceDayLocation('${id}')">Apply</button>`
                 : `<span style="color: var(--muted); font-size: 12px;">Add places under \u{1F4CD} Places first.</span>`}</div>` : ''}
+            ${r.held.size ? warn(`${r.held.size} time${r.held.size === 1 ? ' is' : 's are'} held by sign-up requests not approved yet: approve or decline them below. Finalize leaves them out.`) : ''}
             ${r.unmatched.length ? warn(`${r.unmatched.length} booking${r.unmatched.length === 1 ? ' is' : 's are'} in a slot without that student's math or English teacher`) : ''}
             ${r.doubleBooked.size ? warn('A teacher has two conferences at the same time') : ''}
             ${r.notBooked.length ? `<details style="margin-top: 4px; font-size: 12px;"><summary style="cursor: pointer; color: var(--muted);">${r.notBooked.length} student${r.notBooked.length === 1 ? '' : 's'} in math or English with no time on this day</summary>
@@ -9253,8 +9404,9 @@
         const nobody = r.nobody_to_tell || [];
         const sent = `Sent ${r.sent || 0} confirmation${r.sent === 1 ? '' : 's'}: ${r.notifications || 0} in-app, ${r.emails || 0} email${r.emails === 1 ? '' : 's'}.`
           + (r.teachers ? ` ${r.teachers} teacher${r.teachers === 1 ? '' : 's'} told.` : '');
-        this.showNotification(nobody.length ? `${sent} Not sent, nobody to tell: ${nobody.join(', ')}. Add an email for them and send again.` : sent,
-          nobody.length ? 'warning' : 'success');
+        const pending = r.pending_requests ? ` ${r.pending_requests} time${r.pending_requests === 1 ? '' : 's'} held by sign-up requests not approved yet ${r.pending_requests === 1 ? 'was' : 'were'} left out.` : '';
+        this.showNotification(nobody.length ? `${sent}${pending} Not sent, nobody to tell: ${nobody.join(', ')}. Add an email for them and send again.` : sent + pending,
+          nobody.length || pending ? 'warning' : 'success');
       }
 
       async saveConferenceContactEmail(slotId) {
