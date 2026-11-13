@@ -10650,6 +10650,8 @@
         // does not drop the teacher back on Math.
         this._hubSkillSubject = subject;
         this._hubSkillSubjectFor = studentId;
+        const startBar = document.getElementById('skill-start-bar');
+        if (startBar) startBar.style.display = subject === 'Math' ? 'flex' : 'none';
         container.innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted);">Loading skill progress...</div>';
 
         try {
@@ -47107,18 +47109,160 @@ Students you had withdrawn stay withdrawn.`)) {
               </select>
               <button class="btn btn-primary" onclick="app.openStudentSkillTree('${student.id}')" style="padding: 6px 14px; font-size: 13px;">View Constellation</button>
             </div>
-            <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 12px; color: var(--muted);">
-              <strong style="color: var(--text);">Skill Tree Override Code:</strong>
-              To manually unlock a skill on a student's tree, long-press the skill node and enter the override code.
-              Current code: <strong style="color: var(--accent); font-family: monospace; font-size: 14px;">${new Date().getDate()}${new Date().getMonth() + 1}${new Date().getHours()}</strong>
-              <span style="font-size: 11px;">(changes every hour)</span>
-            </div>
+            ${['teacher', 'admin'].includes(this.userInfo?.profile?.user_type) ? `
+            <div id="skill-start-bar" style="display: ${pref === 'Math' ? 'flex' : 'none'}; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 12px; color: var(--muted);">
+              <button class="btn btn-secondary" onclick="app.openSkillStartPoint('${student.id}')" style="padding: 6px 14px; font-size: 13px;">🎯 Set starting point</button>
+              <span>Pick the skill this student should start at. Everything it needs is marked mastered, labelled as set by you, and the skill opens in Math Dojo.</span>
+            </div>` : ''}
             <div id="skill-progress-content" style="font-size: 13px; color: var(--muted); text-align: center; padding: 20px;">
               Select a subject and click the tab to load skill progress.
             </div>
             <div id="student-progress-checks" style="margin-top: 18px;"></div>`;
         this.loadStudentSkillsTab(student.id);
         this.loadStudentProgressChecks(student.id);
+      }
+
+      // ---- Set starting point (Math) ----
+      // 2026-11-12, Jordan: "let's have a teacher set point." The hourly
+      // override code this tab used to show could not work any more (Math's
+      // tree has no codes, and a student's tree opened from here refuses them).
+      // The teacher picks a skill; every skill it needs, at any depth, is marked
+      // mastered on the server as the teacher's, so it opens in Math Dojo.
+      // Skill rows are keyed by curriculum title, the same name the Dojo saves.
+      async _mathCurriculum() {
+        if (!this._mathCurriculumCache) {
+          this._mathCurriculumCache = fetch('../data/math_curriculum_v2.json').then(r => {
+            if (!r.ok) throw new Error('curriculum ' + r.status);
+            return r.json();
+          }).catch(e => { this._mathCurriculumCache = null; throw e; });
+        }
+        return this._mathCurriculumCache;
+      }
+
+      // What starting at targetId means: every prerequisite beneath it, easiest
+      // first, split into those still to mark and those already mastered.
+      // states: { title: state } for this student.
+      _skillStartPlan(nodes, targetId, states) {
+        const byId = new Map((nodes || []).map(n => [n.id, n]));
+        const target = byId.get(targetId);
+        if (!target) return null;
+        const seen = new Set(), stack = [...(target.hard_prereqs || [])];
+        while (stack.length) {
+          const id = stack.pop();
+          if (seen.has(id) || id === targetId || !byId.has(id)) continue;
+          seen.add(id);
+          stack.push(...(byId.get(id).hard_prereqs || []));
+        }
+        const needs = [...seen].map(id => byId.get(id))
+          .sort((a, b) => (a.dojo_tier || 0) - (b.dojo_tier || 0) || a.id.localeCompare(b.id, undefined, { numeric: true }));
+        const done = st => st === 'mastered' || st === 'activated';
+        return {
+          target,
+          needs,
+          toMark: needs.filter(n => !done(states?.[n.title])),
+          already: needs.filter(n => done(states?.[n.title])).length,
+          targetState: states?.[target.title] || null,
+        };
+      }
+
+      async openSkillStartPoint(studentId) {
+        const esc = (s) => this.escapeHtml(String(s ?? ''));
+        let cur, rows;
+        try {
+          const [c, r] = await Promise.all([
+            this._mathCurriculum(),
+            this.auth.supabase.from('skill_progress').select('skill_name, state')
+              .eq('user_id', studentId).eq('subject', 'Math').limit(1000),
+          ]);
+          if (r.error) throw r.error;
+          cur = c; rows = r.data || [];
+        } catch (e) {
+          console.error('openSkillStartPoint:', e);
+          this.showNotification('Could not load the Math skills. Try again.', 'error');
+          return;
+        }
+        const states = {};
+        rows.forEach(r => { states[r.skill_name] = r.state; });
+        const nodes = (cur.nodes || []).filter(n => n.dojo_skill && n.dojo_tier)
+          .sort((a, b) => a.dojo_tier - b.dojo_tier || a.id.localeCompare(b.id, undefined, { numeric: true }));
+        this._skillStartCtx = { studentId, nodes, states, plan: null };
+        const s = this._studentHubData?.student;
+        const who = s ? `${s.first_name || ''} ${s.last_name || ''}`.trim() : 'this student';
+        const mark = n => ['mastered', 'activated'].includes(states[n.title]) ? ' ✓' : '';
+        this.showModal('skill-start', `🎯 Set starting point for ${esc(who)}`, `
+          <div style="display: flex; flex-direction: column; gap: 10px;">
+            <p style="margin: 0; font-size: 13px; color: var(--muted);">Choose the skill ${esc(who)} should start at. Every skill it needs is marked mastered (labelled as set by a teacher, not counted as the student's own practice). Skills they have already mastered are left as they are, and nothing is ever taken away. ✓ = mastered now.</p>
+            <input id="skill-start-search" type="search" placeholder="Search skills…" oninput="app._skillStartFilter()" style="padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text);">
+            <select id="skill-start-select" size="12" onchange="app._skillStartPreview()" style="width: 100%; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font-size: 13px;">
+              ${nodes.map(n => `<option value="${esc(n.id)}" data-text="${esc((n.title + ' ' + n.dojo_skill + ' grade ' + (n.grade_band || '')).toLowerCase())}">Tier ${n.dojo_tier} · ${esc(n.title)}${n.grade_band ? ` (grade ${esc(n.grade_band)})` : ''}${mark(n)}</option>`).join('')}
+            </select>
+            <div id="skill-start-preview" style="font-size: 13px; color: var(--muted); min-height: 40px;">Pick a skill to see what will be marked.</div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+              <button class="btn btn-secondary" onclick="app.closeModal('skill-start')">Cancel</button>
+              <button class="btn btn-primary" id="skill-start-confirm" onclick="app.confirmSkillStartPoint()" disabled>Set starting point</button>
+            </div>
+          </div>`, true);
+      }
+
+      _skillStartFilter() {
+        const q = (document.getElementById('skill-start-search')?.value || '').trim().toLowerCase();
+        document.querySelectorAll('#skill-start-select option').forEach(o => {
+          o.hidden = !!q && !o.dataset.text.includes(q);
+        });
+      }
+
+      _skillStartPreview() {
+        const ctx = this._skillStartCtx;
+        const id = document.getElementById('skill-start-select')?.value;
+        const el = document.getElementById('skill-start-preview');
+        const btn = document.getElementById('skill-start-confirm');
+        if (!ctx || !id || !el) return;
+        const esc = (s) => this.escapeHtml(String(s ?? ''));
+        const plan = this._skillStartPlan(ctx.nodes, id, ctx.states);
+        ctx.plan = plan;
+        if (!plan) { el.textContent = 'That skill could not be found.'; if (btn) btn.disabled = true; return; }
+        const t = esc(plan.target.title);
+        if (!plan.needs.length) {
+          el.innerHTML = `<strong>${t}</strong> needs nothing first, so it is already open to start.`;
+          if (btn) btn.disabled = true;
+          return;
+        }
+        if (!plan.toMark.length) {
+          el.innerHTML = `Everything <strong>${t}</strong> needs (${plan.needs.length} skills) is already mastered, so it is already open.`;
+          if (btn) btn.disabled = true;
+          return;
+        }
+        const names = plan.toMark.map(n => esc(n.title));
+        el.innerHTML = `Marks <strong>${plan.toMark.length}</strong> skill${plan.toMark.length === 1 ? '' : 's'} mastered${plan.already ? ` (${plan.already} already mastered and left alone)` : ''}, and <strong>${t}</strong> opens ready to start.
+          <details style="margin-top: 6px;"><summary style="cursor: pointer;">Show the ${plan.toMark.length} skill${plan.toMark.length === 1 ? '' : 's'}</summary>
+          <div style="max-height: 160px; overflow-y: auto; margin-top: 4px; line-height: 1.5;">${names.join(', ')}</div></details>`;
+        if (btn) btn.disabled = false;
+      }
+
+      async confirmSkillStartPoint() {
+        const ctx = this._skillStartCtx;
+        const plan = ctx?.plan;
+        if (!plan || !plan.toMark.length) return;
+        const btn = document.getElementById('skill-start-confirm');
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        try {
+          const { data, error } = await this.auth.supabase.rpc('rt_teacher_set_skill_start', {
+            p_student: ctx.studentId, p_subject: 'Math', p_skills: plan.toMark.map(n => n.title),
+          });
+          if (error) throw error;
+          const marked = data?.marked ?? plan.toMark.length;
+          this.closeModal('skill-start');
+          this.showNotification(`Starting point set at ${plan.target.title}: ${marked} skill${marked === 1 ? '' : 's'} marked mastered. It shows in Math Dojo next time it opens.`, 'success', 8000);
+          this._skillStartCtx = null;
+          if (document.getElementById('skill-progress-content')) this.loadStudentSkillsTab(ctx.studentId);
+        } catch (e) {
+          console.error('confirmSkillStartPoint:', e);
+          // The function arrives with a backend migration; until it is applied
+          // the call fails as "not found".
+          const missing = /could not find the function|does not exist|PGRST202/i.test((e?.message || '') + (e?.code || ''));
+          this.showNotification(missing ? 'Setting a starting point is not switched on yet (the database update has not been applied).' : 'Could not set the starting point: ' + (e?.message || 'unknown error'), 'error', 8000);
+          if (btn) { btn.disabled = false; btn.textContent = 'Set starting point'; }
+        }
       }
 
       // Math Dojo Progress Checks (math_dojo_sessions, mode 'progress_check'):

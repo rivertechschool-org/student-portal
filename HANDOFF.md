@@ -6353,3 +6353,14 @@ the last set ended ("Week 1" was last time, so the new set starts at Week 2).
 - Not changed: game and skill-mastery assignments, Information items (no due date), and Edit.
 Tests: `tests/workbook-pages-series.test.js` (numbering, regular set, rollback); browser:
 `debug-tools/assignment-copy-journeys.cjs` (invented data).
+
+## 2026-11-12 — Jordan's Claude
+**Teachers can set a student's starting point in Math.** Student Hub > 🌳 Skill Trees,
+on Math: 🎯 Set starting point. Pick a skill and every skill it needs (at any depth)
+is marked mastered, labelled as set by a teacher, so the chosen skill opens in Math
+Dojo. Skills already mastered are left alone; nothing is ever lowered. It replaces the
+hourly "override code" note that tab used to show, which no longer worked anywhere: Math's
+3D tree has no codes, and a student's tree opened from the portal refuses them.
+**Needs:** a backend migration (`teacher_sets_a_skill_starting_point`, with its test in
+`supabase/tests/`). Until it is applied the button says it is not switched on yet.
+Checks: `tests/skill-start-point.test.js`, `debug-tools/skill-start-point-journey.cjs`.
