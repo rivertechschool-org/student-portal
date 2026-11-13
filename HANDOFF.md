@@ -6416,6 +6416,5 @@ profile id where the sign-in id was needed:
 - The conversation list showed such students as "Unknown User", and opening a chat from
   their profile showed an empty thread. Both now match either id.
 - Opening a class's resource folder told them "Not your class". That check lives in the
-  backend's `get-drive-upload-url` function; the fix is committed there and takes effect
-  once that function is redeployed.
-**Needs:** the `get-drive-upload-url` function redeployed (backend repo) for the resources fix.
+  backend's `get-drive-upload-url` function; fixed there and deployed the same evening.
+**Needs:** nothing.
