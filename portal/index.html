@@ -6944,12 +6944,14 @@
             const { data: profiles } = await this.supabaseQuery(() => 
         this.auth.supabase
               .from('user_profiles')
-              .select('id, first_name, last_name, email, user_type')
-              .in('id', userIds));
-      
-            // Create conversation threads
+              .select('id, auth_user_id, first_name, last_name, email, user_type')
+              .or(`id.in.(${userIds.join(',')}),auth_user_id.in.(${userIds.join(',')})`));
+
+            // Create conversation threads. Messages carry the sign-in id, which
+            // for an activated student is auth_user_id, not the profile id -
+            // looking up by id alone showed them as "Unknown User".
             this.messageThreads = userIds.map(userId => {
-              const profile = profiles?.find(p => p.id === userId) || {
+              const profile = profiles?.find(p => p.id === userId || p.auth_user_id === userId) || {
                 first_name: 'Unknown',
                 last_name: 'User',
                 user_type: 'unknown'
@@ -17845,8 +17847,9 @@
       async openConversation(otherUserId) {
         try {
           const currentProfile = await this.loadMessageRecipientProfile(otherUserId);
-          // Get the conversation thread
-          const thread = this.messageThreads?.find(t => t.userId === otherUserId);
+          // Get the conversation thread (filed under either of their ids)
+          const ids = this.messageIdsOf(currentProfile, otherUserId);
+          const thread = this.messageThreads?.find(t => ids.includes(t.userId));
           if (!thread) {
             const profile = currentProfile;
             if (profile) {
@@ -18029,11 +18032,36 @@
           throw new Error('Please select a valid recipient.');
         }
         const { data, error } = await this.supabaseQuery(() => this.auth.supabase
-          .from('user_profiles').select('id, first_name, last_name, email, user_type, account_status')
+          .from('user_profiles').select('id, auth_user_id, first_name, last_name, email, user_type, account_status')
           .or(`id.eq.${recipientId},auth_user_id.eq.${recipientId}`).limit(1).maybeSingle());
         if (error) throw error;
         if (!data) throw new Error('This recipient is no longer available.');
         return data;
+      }
+
+      // A message is addressed to the recipient's SIGN-IN id, not their profile
+      // id. For a student an admin activated, the two differ (the profile came
+      // first, the sign-in was linked later by auth_user_id), and addressing the
+      // profile id failed to send. With no sign-in at all
+      // there is nobody to deliver to; the insert says so and
+      // _messageSendError turns that into words.
+      messageAddressOf(profile) {
+        return profile?.auth_user_id || profile?.id;
+      }
+
+      // The ids a conversation with this person may be filed under: messages
+      // sent before this fix carry the profile id, newer ones the sign-in id.
+      messageIdsOf(profile, given) {
+        return [...new Set([given, profile?.id, profile?.auth_user_id].filter(Boolean))];
+      }
+
+      _messageSendError(error, profile) {
+        if (error?.code === '23503') {
+          const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(' ') || 'This person';
+          return new Error(`${name} has no portal sign-in yet, so they can't receive messages. `
+            + `Activate their account first, or message their parent.`);
+        }
+        return error;
       }
 
       async requireActiveMessageRecipient(recipientId) {
@@ -18050,9 +18078,11 @@
         if (!content?.trim()) return;
         
         try {
-          await this.requireActiveMessageRecipient(recipientId);
+          const recipient = await this.requireActiveMessageRecipient(recipientId);
+          const sendTo = this.messageAddressOf(recipient);
+          const ids = this.messageIdsOf(recipient, recipientId);
           // Find existing thread ID if it exists
-          const existingThread = this.messageThreads?.find(t => t.userId === recipientId);
+          const existingThread = this.messageThreads?.find(t => ids.includes(t.userId));
           let threadId = existingThread?.messages[0]?.thread_id;
           
           // Generate new thread ID if needed
@@ -18064,14 +18094,14 @@
             .from('messages')
             .insert([{
               sender_id: this.userInfo.user.id,
-              recipient_id: recipientId,
+              recipient_id: sendTo,
               subject: '',
               content: content,
               thread_id: threadId,
               is_read: false
             }]));
       
-          if (error) throw error;
+          if (error) throw this._messageSendError(error, recipient);
 
           // Create notification for recipient (resolve to their auth uid so
           // split-id recipients still receive it)
@@ -18150,7 +18180,7 @@
         }
 
         try {
-          await this.requireActiveMessageRecipient(recipientId);
+          const recipient = await this.requireActiveMessageRecipient(recipientId);
           // Generate thread ID for new conversation
           const threadId = crypto.randomUUID();
 
@@ -18158,13 +18188,13 @@
             .from('messages')
             .insert([{
               sender_id: this.userInfo.user.id,
-              recipient_id: recipientId,
+              recipient_id: this.messageAddressOf(recipient),
               content: content,
               thread_id: threadId,
               is_read: false
             }]));
       
-          if (error) throw error;
+          if (error) throw this._messageSendError(error, recipient);
 
           // Get recipient name and sender name
           const selectedRecipient = this.messageRecipients?.find(r => r.id === recipientId);
@@ -30264,19 +30294,21 @@ Students you had withdrawn stay withdrawn.`)) {
             .single());
       
           if (confirm(`Send reminder to ${student?.first_name} ${student?.last_name} about "${assignment?.title}"?`)) {
-            // Send message through the messaging system
+            // Send message through the messaging system, to the student's
+            // sign-in id (see messageAddressOf).
+            const recipient = await this.loadMessageRecipientProfile(studentId);
             const { error } = await this.supabaseQuery(() => this.auth.supabase
               .from('messages')
               .insert([{
                 sender_id: this.userInfo.user.id,
-                recipient_id: studentId,
+                recipient_id: this.messageAddressOf(recipient),
                 subject: `Reminder: Assignment "${assignment.title}" Due Soon`,
                 content: `This is a reminder that the assignment "${assignment.title}" is due on ${new Date(assignment.due_date).toLocaleDateString()}. Please submit your work as soon as possible.`,
                 thread_id: crypto.randomUUID(),
                 is_read: false
               }]));
       
-            if (error) throw error;
+            if (error) throw this._messageSendError(error, recipient);
             
             this.showNotification(`Reminder sent to ${student?.first_name} ${student?.last_name}`, 'success');
           }

@@ -6405,3 +6405,17 @@ migrations for the public form's day switch and sibling placement are applied (t
   With no run free each child is placed alone and the request says "not back to back".
   A child already booked that day is not moved.
 **Needs:** nothing.
+
+## 2026-11-13 (night) — Jordan's Claude
+**Messages to activated students, and their class resources.** A student whose account an
+admin activated has a sign-in id that differs from their profile id. Three things used the
+profile id where the sign-in id was needed:
+- Sending them a message failed with a raw database error. The portal now addresses
+  messages to the sign-in id. A student with no sign-in at all gets a plain sentence
+  ("… has no portal sign-in yet …") instead of the error.
+- The conversation list showed such students as "Unknown User", and opening a chat from
+  their profile showed an empty thread. Both now match either id.
+- Opening a class's resource folder told them "Not your class". That check lives in the
+  backend's `get-drive-upload-url` function; the fix is committed there and takes effect
+  once that function is redeployed.
+**Needs:** the `get-drive-upload-url` function redeployed (backend repo) for the resources fix.
