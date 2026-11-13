@@ -9250,10 +9250,12 @@
             const st = p.student_id && c.byId[p.student_id];
             const x = p.slot_id && slots.get(p.slot_id);
             const still = x && x.student_id === p.student_id;
+            const together = p.note === 'held' && still && (q.placements || []).filter(o => o.note === 'held').length > 1
+              ? (p.together ? ' <span style="color: var(--accent-2); font-size: 12px;">back to back</span>' : ' <span style="color: var(--warning); font-size: 12px;">not back to back: no run of times was free</span>') : '';
             let what;
             if (!p.student_id) what = `<span style="color: var(--warning);">⚠ ${esc(p.note || 'not matched')}: add them to a time yourself</span>`;
             else if (p.note === 'already booked') what = still ? `already booked at ${esc(this._confClock(x.starts_at))}` : 'was already booked (since changed)';
-            else if (p.note === 'held') what = still ? `<b>held: ${esc(this._confClock(x.starts_at))}–${esc(this._confClock(x.ends_at))}</b>` : 'held time since changed or freed';
+            else if (p.note === 'held') what = still ? `<b>held: ${esc(this._confClock(x.starts_at))}–${esc(this._confClock(x.ends_at))}</b>${together}` : 'held time since changed or freed';
             else what = `<span style="color: var(--warning);">⚠ ${esc(p.note || 'no time')}: add them to a time yourself</span>`;
             const how = p.how === 'parent_email' ? ' (matched by parent email)' : p.how === 'name' ? ' (matched by name)' : '';
             return `<div>• “${esc(p.typed || '')}” → ${st ? `<b>${esc(c.name(st))}</b>${esc(how)}, ` : ''}${what}</div>`;
@@ -9292,17 +9294,26 @@
         const wins = c.windowsByDay?.[d.id] || [];
         const on = !!c.onFormByDay?.[d.id];
         const winRows = (wins.length ? wins : [{ label: '', start: '', end: '' }]).map(w => `<div style="display: flex; gap: 6px; align-items: center; margin-top: 4px; flex-wrap: wrap;">
-            <input type="text" class="conf-win-label" value="${esc(w.label || '')}" placeholder="Morning" maxlength="40" aria-label="Window name" style="${input} width: 130px;">
+            <input type="text" class="conf-win-label" value="${esc(w.label || '')}" placeholder="Name (optional)" maxlength="40" aria-label="Block name, optional" style="${input} width: 140px;">
             <input type="time" class="conf-win-start" value="${esc(w.start || '')}" aria-label="Starts" style="${input}"> to
             <input type="time" class="conf-win-end" value="${esc(w.end || '')}" aria-label="Ends" style="${input}">
             <button class="btn btn-secondary small" title="Remove" aria-label="Remove this window" onclick="this.parentElement.remove()">✕</button></div>`).join('');
-        const summary = wins.map(w => `${w.label} ${this._confClock(w.start)}\u2013${this._confClock(w.end)}`).join(' \u00b7 ') || 'none';
+        const summary = wins.map(w => w.label === this._conferenceBlockName(w.start, w.end) ? w.label : `${w.label} ${this._conferenceBlockName(w.start, w.end)}`).join(' \u00b7 ') || 'none';
         return `<details class="conf-windows" style="margin-top: 10px;">
             <summary style="cursor: pointer; font-weight: 600;">\u{1F552} Public form times <span style="font-weight: 400; font-size: 12px; color: var(--muted);">${esc(summary)}${on ? '' : ' (day not on the form)'}</span></summary>
-            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">The time ranges families pick from on the form. A request is held in the earliest free slot inside the range it picked, so ranges should cover your slots.</div>
+            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">The time blocks families pick from on the form: any times you like (8:00\u20139:00, 8:20\u201310:20 ...). A name is optional; without one the block is shown by its times. A request is held in the earliest free slot inside the block it picked (brothers and sisters back to back), so blocks should cover your slots.</div>
             <div id="conf-wins-${esc(d.id)}">${winRows}</div>
+            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 13px;">
+              <span style="color: var(--muted);">Make blocks from</span>
+              <input type="time" id="conf-blk-start-${esc(d.id)}" value="08:00" aria-label="Blocks start" style="${input}">
+              to <input type="time" id="conf-blk-end-${esc(d.id)}" value="12:00" aria-label="Blocks end" style="${input}">
+              every <select id="conf-blk-len-${esc(d.id)}" aria-label="Block length" style="${input}">
+                ${[[30, '30 min'], [60, '1 hour'], [90, '1\u00bd hours'], [120, '2 hours'], [180, '3 hours']].map(([m, t]) => `<option value="${m}" ${m === 60 ? 'selected' : ''}>${t}</option>`).join('')}
+              </select>
+              <button class="btn btn-secondary small" onclick="app.makeConferenceBlocks('${id}')">Make blocks</button>
+            </div>
             <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
-              <button class="btn btn-secondary small" onclick="app.addConferenceWindowRow('${id}')">\u2795 Window</button>
+              <button class="btn btn-secondary small" onclick="app.addConferenceWindowRow('${id}')">\u2795 Block</button>
               <button class="btn btn-secondary small" onclick="app.windowsFromConferenceSlots('${id}')" title="One window per block of back-to-back slots">Match my slots</button>
               <button class="btn btn-primary small" onclick="app.saveConferenceWindows('${id}')">Save times</button>
             </div>
@@ -9329,21 +9340,51 @@
         });
       }
 
-      windowsFromConferenceSlots(dayId) {
-        const wins = this._conferenceWindowsFromSlots((this._conf?.slots || []).filter(x => x.day_id === dayId));
-        if (!wins.length) { this.showNotification('Add time slots first', 'error'); return; }
+      // A block called by its times: "8:00 AM\u20139:00 AM".
+      _conferenceBlockName(start, end) {
+        return `${this._confClock(start)}\u2013${this._confClock(end)}`;
+      }
+
+      // Back-to-back blocks of `length` minutes from start to end; a short
+      // last block is kept (8:00-10:30 in hours: 8-9, 9-10, 10-10:30).
+      _conferenceBlocks(start, end, length) {
+        const a = this._confMinutes(start), b = this._confMinutes(end), len = Number(length);
+        if (a === null || b === null || !(len > 0) || b <= a) return [];
+        const out = [];
+        for (let t = a; t < b && out.length < 24; t += len) {
+          const e = Math.min(t + len, b);
+          out.push({ label: '', start: this._confHHMM(t), end: this._confHHMM(e) });
+        }
+        return out;
+      }
+
+      makeConferenceBlocks(dayId) {
+        const v = (k) => document.getElementById(`conf-blk-${k}-${dayId}`)?.value;
+        const blocks = this._conferenceBlocks(v('start'), v('end'), v('len'));
+        if (!blocks.length) { this.showNotification('Pick a start before the end', 'error'); return; }
+        this._fillConferenceWindowRows(dayId, blocks);
+        this.showNotification(`${blocks.length} block${blocks.length === 1 ? '' : 's'} filled in. Name them if you like, then press Save times.`, 'info');
+      }
+
+      _fillConferenceWindowRows(dayId, wins) {
         const box = document.getElementById(`conf-wins-${dayId}`);
         const first = box?.firstElementChild;
         if (!first) return;
         box.innerHTML = '';
         wins.forEach(w => {
           const row = first.cloneNode(true);
-          row.querySelector('.conf-win-label').value = w.label;
+          row.querySelector('.conf-win-label').value = w.label || '';
           row.querySelector('.conf-win-start').value = w.start;
           row.querySelector('.conf-win-end').value = w.end;
           box.appendChild(row);
         });
-        this.showNotification(`${wins.length} window${wins.length === 1 ? '' : 's'} filled in from your slots. Press Save times to keep them.`, 'info');
+      }
+
+      windowsFromConferenceSlots(dayId) {
+        const wins = this._conferenceWindowsFromSlots((this._conf?.slots || []).filter(x => x.day_id === dayId));
+        if (!wins.length) { this.showNotification('Add time slots first', 'error'); return; }
+        this._fillConferenceWindowRows(dayId, wins);
+        this.showNotification(`${wins.length} block${wins.length === 1 ? '' : 's'} filled in from your slots. Press Save times to keep them.`, 'info');
       }
 
       async setConferenceDayPublicForm(dayId, on) {
@@ -9381,13 +9422,19 @@
           const label = (r.querySelector('.conf-win-label')?.value || '').trim();
           const start = r.querySelector('.conf-win-start')?.value || '', end = r.querySelector('.conf-win-end')?.value || '';
           if (!label && !start && !end) continue;
-          if (!label || !start || !end || this._confMinutes(start) >= this._confMinutes(end)) {
-            this.showNotification('Each window needs a name and a start before its end', 'error');
+          if (!start || !end || this._confMinutes(start) >= this._confMinutes(end)) {
+            this.showNotification('Each time block needs a start before its end', 'error');
             return;
           }
-          wins.push({ label: label.slice(0, 40), start: start.slice(0, 5), end: end.slice(0, 5) });
+          // No name: the block is called by its times ("8:00 AM\u20139:00 AM").
+          wins.push({ label: (label || this._conferenceBlockName(start, end)).slice(0, 40), start: start.slice(0, 5), end: end.slice(0, 5) });
         }
-        if (!wins.length) { this.showNotification('Keep at least one window, or the form offers no times', 'error'); return; }
+        if (!wins.length) { this.showNotification('Keep at least one time block, or the form offers no times', 'error'); return; }
+        const sorted = [...wins].sort((x, y) => this._confMinutes(x.start) - this._confMinutes(y.start));
+        if (sorted.some((w, i) => i && this._confMinutes(w.start) < this._confMinutes(sorted[i - 1].end))) {
+          this.showNotification('Two time blocks overlap. A family picks one block, so they should not share times.', 'error');
+          return;
+        }
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').update({ request_windows: wins }).eq('id', dayId));
         if (error) { this.showNotification('Could not save the windows: ' + error.message, 'error'); return; }
         this.showNotification('Public form times saved', 'success');

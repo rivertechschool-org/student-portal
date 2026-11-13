@@ -6392,3 +6392,16 @@ between conferences (20 min each, 5 between: 8:20, 8:45, 9:10...).
 **Needs:** backend migration `public_conference_form_days`. Before it is applied the form
 still offers days with portal sign-up open, and the new box and times section are hidden.
 Checks: `tests/conference-form-days.test.js`, `debug-tools/conference-request-journeys.cjs`.
+
+## 2026-11-13 (evening) — Jordan's Claude
+**Conferences: any time blocks, and brothers and sisters back to back.** Both backend
+migrations for the public form's day switch and sibling placement are applied (tests in
+`supabase/tests/` passed against the database first).
+- "🕒 Public form times" takes any blocks (8:00–9:00, 8:20–10:20 ...). A name is optional;
+  an unnamed block is shown by its times. "Make blocks" fills blocks of 30 min to 3 hours
+  between two times. Overlapping blocks are refused (a family picks one).
+- A family listing several children is held in the earliest run of back-to-back times in
+  their block (gaps up to 15 min count), each child with their own teacher where possible.
+  With no run free each child is placed alone and the request says "not back to back".
+  A child already booked that day is not moved.
+**Needs:** nothing.

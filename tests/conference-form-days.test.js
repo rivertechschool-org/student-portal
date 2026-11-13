@@ -10,7 +10,7 @@ function method(name) {
   const end = html.indexOf('\n      }', start);
   return html.slice(start, end + 8).trim();
 }
-const app = eval(`({${['_confMinutes', '_confHHMM', '_confClock', '_conferenceSlotTimes', '_conferencePreviewText', '_conferenceWindowsFromSlots'].map(method).join(',')}})`);
+const app = eval(`({${['_confMinutes', '_confHHMM', '_confClock', '_conferenceSlotTimes', '_conferencePreviewText', '_conferenceWindowsFromSlots', '_conferenceBlocks', '_conferenceBlockName'].map(method).join(',')}})`);
 const times = r => r.slots.map(x => x.starts_at + '-' + x.ends_at);
 
 // No gap: back to back, as before.
@@ -39,4 +39,13 @@ assert.deepEqual(w.map(x => `${x.label} ${x.start}-${x.end}`),
   ['Morning 08:20-09:05', 'Midday 12:30-13:10', 'Afternoon 13:50-14:10', 'Evening 17:00-17:20']);
 assert.deepEqual(app._conferenceWindowsFromSlots([slot('08:00', '08:20'), slot('10:00', '10:20')]).map(x => x.label), ['Morning', 'Morning 2']);
 assert.deepEqual(app._conferenceWindowsFromSlots([]), []);
-console.log('Conference slot gaps and form windows from slots passed.');
+// Time blocks the admin makes: 8-12 in hours, 8:20-10:20 as one, a short last block kept.
+const blk = (a, b, n) => app._conferenceBlocks(a, b, n).map(x => x.start + '-' + x.end);
+assert.deepEqual(blk('08:00', '12:00', 60), ['08:00-09:00', '09:00-10:00', '10:00-11:00', '11:00-12:00']);
+assert.deepEqual(blk('08:20', '10:20', 120), ['08:20-10:20']);
+assert.deepEqual(blk('08:00', '10:30', 60), ['08:00-09:00', '09:00-10:00', '10:00-10:30']);
+assert.deepEqual(blk('10:00', '09:00', 60), []);
+assert.equal(app._conferenceBlocks('00:00', '23:59', 30).length, 24, 'capped');
+assert.equal(app._conferenceBlockName('08:00', '09:00'), '8:00 AM–9:00 AM');
+assert.equal(app._conferenceBlockName('12:20', '14:20'), '12:20 PM–2:20 PM');
+console.log('Conference slot gaps, time blocks and form windows from slots passed.');
