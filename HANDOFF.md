@@ -6432,5 +6432,4 @@ browser (it comes back for them only if the banner is edited). The script is
   families, and links to the sign-up form (a parent in the portal is taken to the portal's
   own sign-up). Students don't get that one.
 - Tests: `tests/announcements.test.js`, `debug-tools/announcement-journeys.cjs` (14).
-**Needs:** the backend migration `…_announcement_banners.sql` applied. Until then only the
-conference banner shows, and the admin tool says announcements are not switched on.
+**Needs:** nothing (the backend migration was applied the same day).
