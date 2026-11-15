@@ -2026,6 +2026,9 @@
       <!-- App Content -->
       <div class="app-content">
         <div class="container">
+          <!-- "Conferences are this week" banner and announcements (announcements/banner.js); a
+               parent with a day to book is taken to the portal's own sign-up. -->
+          <div data-announcements="portal"></div>
           <!-- Content Sections -->
           <div id="content-container">
             <!-- Home Section -->
@@ -2929,6 +2932,8 @@
         // Hide loading, show app
         document.getElementById('loading-screen').classList.add('hidden');
         document.getElementById('main-app').classList.remove('hidden');
+        // Banners are per audience; the page asked before anyone signed in.
+        try { window.RTAnnouncements?.load(); } catch (e) { /* banners are optional */ }
         
         // Load data based on user type
         const userType = this.userInfo.profile.user_type;
@@ -8974,6 +8979,195 @@
       }
 
       // ---- the admin side ----
+
+      // ---- 📣 Announcements: banners at the top of the sign-in page and the
+      // portal, shown from a start time to an end time on their own
+      // (announcements/banner.js draws them; rt_announcements_live decides who
+      // sees which). Asked 2026-11-15: "admin can set the events and put it on
+      // a schedule so they dont have to turn it off".
+
+      _annAudiences() {
+        return [
+          { key: 'visitors', label: 'Sign-in page (not signed in)' },
+          { key: 'parents', label: 'Parents' },
+          { key: 'students', label: 'Students' },
+          { key: 'staff', label: 'Teachers & admins' },
+        ];
+      }
+
+      // Where a banner is in its schedule, at `now`.
+      _annStatus(a, now = new Date()) {
+        const start = new Date(a.starts_at), end = a.ends_at ? new Date(a.ends_at) : null;
+        if (end && end <= now) return 'ended';
+        if (start > now) return 'scheduled';
+        return 'live';
+      }
+
+      // <input type="datetime-local"> speaks local wall time; the database
+      // speaks instants. "2026-11-18T08:00" here is 8 AM where the admin is.
+      _annToLocalInput(iso) {
+        if (!iso) return '';
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        const p = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+      }
+      _annFromLocalInput(v) {
+        if (!v) return null;
+        const d = new Date(v);
+        return isNaN(d) ? undefined : d.toISOString();
+      }
+
+      _annWhen(iso) {
+        return new Date(iso).toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+      }
+
+      // The form's values as a row, or { error } in words.
+      _annRowFromForm(f, now = new Date()) {
+        const message = String(f.message || '').trim();
+        if (!message) return { error: 'Write the announcement first' };
+        if (message.length > 400) return { error: `Keep it under 400 characters (it is ${message.length})` };
+        let link_url = String(f.link_url || '').trim() || null;
+        if (link_url && /^www\./i.test(link_url)) link_url = 'https://' + link_url;
+        if (link_url && !/^(https:\/\/|\/)[^\s<>"]*$/.test(link_url)) return { error: 'The link has to start with https:// (or / for a page on this site)' };
+        const link_label = link_url ? (String(f.link_label || '').trim().slice(0, 40) || 'Open') : null;
+        const audiences = (f.audiences || []).filter(a => this._annAudiences().some(x => x.key === a));
+        if (!audiences.length) return { error: 'Tick at least one group to show it to' };
+        const starts_at = f.starts ? this._annFromLocalInput(f.starts) : now.toISOString();
+        const ends_at = this._annFromLocalInput(f.ends);
+        if (starts_at === undefined || ends_at === undefined) return { error: 'Those dates did not read as dates' };
+        if (ends_at && new Date(ends_at) <= new Date(starts_at)) return { error: 'It has to end after it starts' };
+        if (ends_at && new Date(ends_at) <= now) return { error: 'That end time has already passed, so it would never show' };
+        return { row: { message, link_url, link_label, audiences, tone: f.tone === 'important' ? 'important' : 'info', starts_at, ends_at } };
+      }
+
+      async openAnnouncementsAdmin() {
+        if (this.userInfo?.profile?.user_type !== 'admin') {
+          this.showNotification('Announcements are set by an admin', 'info');
+          return;
+        }
+        this.showModal('announcements', '📣 Announcements',
+          `<div id="ann-admin-body"><div style="padding: 20px; text-align: center; color: var(--muted);">Loading\u2026</div></div>`);
+        await this._refreshAnnouncementsAdmin();
+      }
+
+      async _refreshAnnouncementsAdmin(editId = null) {
+        const body = document.getElementById('ann-admin-body');
+        if (!body) return;
+        const { data, error } = await this.supabaseQuery(() => this.auth.supabase.from('announcements')
+          .select('id, message, link_url, link_label, tone, audiences, starts_at, ends_at, updated_at')
+          .order('starts_at', { ascending: false }).limit(200));
+        if (error) {
+          body.innerHTML = `<div style="padding: 16px; color: var(--muted);">${/does not exist|schema cache|PGRST205|42P01/.test(error.message || '') || error.code === 'PGRST205' || error.code === '42P01'
+            ? 'Announcements are not switched on in the database yet.' : 'Could not load announcements: ' + this.escapeHtml(error.message)}</div>`;
+          return;
+        }
+        this._ann = data || [];
+        body.innerHTML = this._renderAnnouncementsAdmin(this._ann, editId);
+      }
+
+      _renderAnnouncementsAdmin(list, editId = null) {
+        const esc = (t) => this.escapeHtml(String(t ?? ''));
+        const input = 'padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit;';
+        const edit = list.find(a => a.id === editId) || null;
+        const aud = edit ? edit.audiences : ['visitors', 'parents', 'students', 'staff'];
+        const now = new Date();
+        const statusChip = (st) => ({
+          live: '<span style="color: var(--accent-2); font-weight: 600;">● Live</span>',
+          scheduled: '<span style="color: var(--accent); font-weight: 600;">◷ Scheduled</span>',
+          ended: '<span style="color: var(--muted);">Ended</span>',
+        })[st];
+        const audNames = (a) => this._annAudiences().filter(x => (a.audiences || []).includes(x.key)).map(x => x.label).join(', ');
+        const form = `
+          <div class="card" style="padding: 12px; margin-bottom: 14px;">
+            <div style="font-weight: 700; margin-bottom: 8px;">${edit ? 'Edit announcement' : 'New announcement'}</div>
+            <textarea id="ann-message" rows="3" maxlength="400" placeholder="What should everyone see? e.g. No school Friday for the teacher in-service day." style="${input} width: 100%; box-sizing: border-box;">${esc(edit?.message || '')}</textarea>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+              <input type="text" id="ann-link-url" value="${esc(edit?.link_url || '')}" placeholder="Link (optional) https://\u2026" style="${input} flex: 2 1 220px;">
+              <input type="text" id="ann-link-label" value="${esc(edit?.link_label || '')}" maxlength="40" placeholder="Button text, e.g. Sign up" style="${input} flex: 1 1 140px;">
+            </div>
+            <div style="margin-top: 10px; font-size: 13px;"><b>Show it to</b><br>
+              ${this._annAudiences().map(x => `<label style="display: inline-flex; align-items: center; gap: 4px; margin: 4px 12px 0 0; cursor: pointer;">
+                <input type="checkbox" class="ann-aud" value="${x.key}" ${aud.includes(x.key) ? 'checked' : ''}> ${x.label}</label>`).join('')}
+            </div>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-top: 10px; font-size: 13px;">
+              <label>Starts<br><input type="datetime-local" id="ann-starts" value="${esc(this._annToLocalInput(edit?.starts_at) || this._annToLocalInput(now.toISOString()))}" style="${input}"></label>
+              <label>Ends (optional)<br><input type="datetime-local" id="ann-ends" value="${esc(this._annToLocalInput(edit?.ends_at))}" style="${input}"></label>
+              <label style="display: inline-flex; align-items: center; gap: 4px; cursor: pointer; padding-bottom: 6px;"><input type="checkbox" id="ann-important" ${edit?.tone === 'important' ? 'checked' : ''}> Important (red)</label>
+            </div>
+            <div style="font-size: 12px; color: var(--muted); margin-top: 6px;">It appears at the start time and comes down at the end time by itself. With no end it stays until you end or delete it. Anyone can close it with \u00d7; it comes back for them only if you edit it.</div>
+            <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;">
+              <button class="btn btn-primary small" onclick="app.saveAnnouncement(${edit ? `'${esc(edit.id)}'` : 'null'})">${edit ? 'Save changes' : 'Post announcement'}</button>
+              ${edit ? `<button class="btn btn-secondary small" onclick="app._refreshAnnouncementsAdmin()">Cancel</button>` : ''}
+            </div>
+          </div>`;
+        const rows = list.map(a => {
+          const st = this._annStatus(a, now);
+          return `<div class="ann-row" data-id="${esc(a.id)}" style="padding: 10px 0; border-top: 1px solid var(--border);${st === 'ended' ? ' opacity: 0.6;' : ''}">
+              <div style="display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;">
+                ${statusChip(st)}${a.tone === 'important' ? ' <span style="color: #f5576c; font-size: 12px; font-weight: 600;">Important</span>' : ''}
+                <span style="color: var(--muted); font-size: 12px;">${esc(this._annWhen(a.starts_at))} \u2192 ${a.ends_at ? esc(this._annWhen(a.ends_at)) : 'until ended'} \u00b7 ${esc(audNames(a))}</span>
+              </div>
+              <div style="margin: 4px 0; white-space: pre-line;">${esc(a.message)}${a.link_url ? ` <span style="color: var(--muted); font-size: 12px;">[${esc(a.link_label || 'Open')} \u2192 ${esc(a.link_url)}]</span>` : ''}</div>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="btn btn-secondary small" onclick="app._refreshAnnouncementsAdmin('${esc(a.id)}')">Edit</button>
+                ${st !== 'ended' ? `<button class="btn btn-secondary small" onclick="app.endAnnouncement('${esc(a.id)}')">${st === 'scheduled' ? 'Cancel it' : 'End now'}</button>` : ''}
+                <button class="btn btn-secondary small" onclick="app.deleteAnnouncement('${esc(a.id)}')">Delete</button>
+              </div>
+            </div>`;
+        }).join('');
+        return form + (list.length ? `<div style="font-weight: 700; margin-bottom: 4px;">Announcements</div>${rows}`
+          : '<div style="color: var(--muted); font-size: 13px;">No announcements yet.</div>')
+          + '<div style="font-size: 12px; color: var(--muted); margin-top: 12px;">The conference banner ("Parent-teacher conferences are this week") is automatic: it shows the week before a day that is on the public form.</div>';
+      }
+
+      async saveAnnouncement(id = null) {
+        const val = (k) => document.getElementById(k)?.value || '';
+        const { row, error: bad } = this._annRowFromForm({
+          message: val('ann-message'), link_url: val('ann-link-url'), link_label: val('ann-link-label'),
+          audiences: [...document.querySelectorAll('.ann-aud')].filter(b => b.checked).map(b => b.value),
+          starts: val('ann-starts'), ends: val('ann-ends'),
+          tone: document.getElementById('ann-important')?.checked ? 'important' : 'info',
+        });
+        if (bad) { this.showNotification(bad, 'error'); return; }
+        // Editing a banner that is already showing keeps its start; a past
+        // start on a new one just means "now".
+        const sb = this.auth.supabase;
+        const { error } = await this.supabaseQuery(() => id
+          ? sb.from('announcements').update(row).eq('id', id)
+          : sb.from('announcements').insert(row));
+        if (error) { this.showNotification('Could not save: ' + error.message, 'error'); return; }
+        const st = this._annStatus(row);
+        this.showNotification(st === 'scheduled' ? `Scheduled for ${this._annWhen(row.starts_at)}` : (id ? 'Announcement updated' : 'Announcement posted'), 'success');
+        await this._refreshAnnouncementsAdmin();
+        try { window.RTAnnouncements?.load(); } catch (e) { /* optional */ }
+      }
+
+      async endAnnouncement(id) {
+        const a = (this._ann || []).find(x => x.id === id);
+        if (!a) return;
+        const now = new Date();
+        // A scheduled one that never started: end = start + 1 minute would
+        // still be "ended" only after it showed for a minute, so move the
+        // start back too and it is simply over.
+        const patch = new Date(a.starts_at) > now
+          ? { starts_at: new Date(now.getTime() - 60000).toISOString(), ends_at: now.toISOString() }
+          : { ends_at: now.toISOString() };
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('announcements').update(patch).eq('id', id));
+        if (error) { this.showNotification('Could not end it: ' + error.message, 'error'); return; }
+        this.showNotification('Announcement ended', 'success');
+        await this._refreshAnnouncementsAdmin();
+        try { window.RTAnnouncements?.load(); } catch (e) { /* optional */ }
+      }
+
+      async deleteAnnouncement(id) {
+        if (!confirm('Delete this announcement? It goes from everyone\u2019s screen and from this list.')) return;
+        const { error } = await this.supabaseQuery(() => this.auth.supabase.from('announcements').delete().eq('id', id));
+        if (error) { this.showNotification('Could not delete: ' + error.message, 'error'); return; }
+        this.showNotification('Announcement deleted', 'success');
+        await this._refreshAnnouncementsAdmin();
+        try { window.RTAnnouncements?.load(); } catch (e) { /* optional */ }
+      }
 
       async openConferenceAdmin() {
         if (this.userInfo?.profile?.user_type !== 'admin') {
@@ -40348,6 +40542,19 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div>
                       <div style="font-weight: 600; font-size: 14px;">Conferences</div>
                       <div style="color: var(--muted); font-size: 11px;">Parent-teacher time slots</div>
+                    </div>
+                    </div>
+                  </div>
+
+
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #f5b041; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(245, 176, 65, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.openAnnouncementsAdmin()">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">📣</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">Announcements</div>
+                      <div style="color: var(--muted); font-size: 11px;">Banners on a schedule</div>
                     </div>
                     </div>
                   </div>
@@ -85863,5 +86070,6 @@ OK to discard and continue, Cancel to go back and save.`)) {
       </div>
     </div>
   </div>  
+<script src="/announcements/banner.js" defer></script>
 </body>
 </html>

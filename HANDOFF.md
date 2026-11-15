@@ -6418,3 +6418,19 @@ profile id where the sign-in id was needed:
 - Opening a class's resource folder told them "Not your class". That check lives in the
   backend's `get-drive-upload-url` function; fixed there and deployed the same evening.
 **Needs:** nothing.
+
+## 2026-11-15 — Jordan's Claude
+**Announcement banners, on a schedule.** Admin → 📣 Announcements writes a banner with a
+start time, an optional end time, who sees it (sign-in page visitors, parents, students,
+teachers & admins), an optional link button, and an "Important" (red) switch. It appears
+at its start and comes down at its end by itself. Banners show at the top of the sign-in
+page and the portal on first load; anyone can close one with ×, remembered in their own
+browser (it comes back for them only if the banner is edited). The script is
+`announcements/banner.js`, shared by both pages.
+- Automatic: "Parent-teacher conferences are this week" shows the week before any day on
+  the public conference form, says it is for full-time junior high and high school
+  families, and links to the sign-up form (a parent in the portal is taken to the portal's
+  own sign-up). Students don't get that one.
+- Tests: `tests/announcements.test.js`, `debug-tools/announcement-journeys.cjs` (14).
+**Needs:** the backend migration `…_announcement_banners.sql` applied. Until then only the
+conference banner shows, and the admin tool says announcements are not switched on.
