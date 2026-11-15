@@ -10,7 +10,7 @@ function method(name) {
   const end = html.indexOf('\n      }', start);
   return html.slice(start, end + 8).trim();
 }
-const app = eval(`({${['_confMinutes', '_confHHMM', '_confClock', '_conferenceSlotTimes', '_conferencePreviewText', '_conferenceWindowsFromSlots', '_conferenceBlocks', '_conferenceBlockName'].map(method).join(',')}})`);
+const app = eval(`({${['_confMinutes', '_confHHMM', '_confClock', '_conferenceSlotTimes', '_conferencePreviewText', '_conferenceWindowsFromSlots', '_conferenceBlocks', '_conferenceBlockName', '_conferenceWindowProblem'].map(method).join(',')}})`);
 const times = r => r.slots.map(x => x.starts_at + '-' + x.ends_at);
 
 // No gap: back to back, as before.
@@ -48,4 +48,14 @@ assert.deepEqual(blk('10:00', '09:00', 60), []);
 assert.equal(app._conferenceBlocks('00:00', '23:59', 30).length, 24, 'capped');
 assert.equal(app._conferenceBlockName('08:00', '09:00'), '8:00 AM–9:00 AM');
 assert.equal(app._conferenceBlockName('12:20', '14:20'), '12:20 PM–2:20 PM');
+// Block problems say which block. The phone's 12:00 AM slip (reported 2026-11-15):
+const W = (label, start, end) => ({ label, start, end });
+const ok3 = [W('Morning', '08:20', '11:40'), W('Midday', '12:00', '13:20'), W('Afternoon', '13:20', '15:20')];
+assert.equal(app._conferenceWindowProblem(ok3), null, 'touching blocks are fine');
+assert.equal(app._conferenceWindowProblem([W('Morning', '08:20', '11:40'), W('Midday', '00:00', '13:20')]),
+  '"Midday" starts at 12:00 AM, which is midnight. Did you mean 12:00 PM? Change AM to PM.');
+assert.match(app._conferenceWindowProblem([W('Late', '13:00', '03:00')]), /"Late" ends at 3:00 AM, in the night\. Did you mean 3:00 PM\?/);
+assert.equal(app._conferenceWindowProblem([W('Morning', '08:20', '11:40'), W('Midday', '11:00', '13:20')]),
+  '"Morning" (8:20 AM–11:40 AM) and "Midday" (11:00 AM–1:20 PM) overlap. A family picks one block, so blocks should not share times.');
+assert.match(app._conferenceWindowProblem([W('Back', '10:00', '09:00')]), /"Back" has to start before it ends/);
 console.log('Conference slot gaps, time blocks and form windows from slots passed.');

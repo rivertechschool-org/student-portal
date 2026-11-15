@@ -9417,6 +9417,36 @@
         box.appendChild(row);
       }
 
+      // What is wrong with a set of time blocks, in words that say WHICH block,
+      // or null. The phone time picker keeps AM when you type 12:00, so
+      // "Midday 12:00 AM\u20131:20 PM" quietly ran from midnight and overlapped
+      // Morning; the old message only said "two blocks overlap" (reported
+      // 2026-11-15). No conference runs before 6 AM, so a time that early is
+      // taken as an AM/PM slip and named as one.
+      _conferenceWindowProblem(wins) {
+        const min = (t) => this._confMinutes(t);
+        const clock = (t) => this._confClock(t);
+        const name = (w) => `"${w.label}"`;
+        for (const w of wins) {
+          for (const [edge, t] of [['starts', w.start], ['ends', w.end]]) {
+            if (min(t) < 6 * 60) {
+              const pm = this._confHHMM(min(t) + 12 * 60);
+              return `${name(w)} ${edge} at ${clock(t)}${min(t) < 60 ? ', which is midnight' : ', in the night'}. Did you mean ${clock(pm)}? Change AM to PM.`;
+            }
+          }
+          if (min(w.start) >= min(w.end)) return `${name(w)} has to start before it ends (it is ${clock(w.start)} to ${clock(w.end)}).`;
+        }
+        const sorted = [...wins].sort((x, y) => min(x.start) - min(y.start));
+        for (let i = 1; i < sorted.length; i++) {
+          const a = sorted[i - 1], b = sorted[i];
+          if (min(b.start) < min(a.end)) {
+            return `${name(a)} (${clock(a.start)}\u2013${clock(a.end)}) and ${name(b)} (${clock(b.start)}\u2013${clock(b.end)}) overlap. `
+              + `A family picks one block, so blocks should not share times.`;
+          }
+        }
+        return null;
+      }
+
       async saveConferenceWindows(dayId) {
         const rows = [...document.querySelectorAll(`#conf-wins-${dayId} > div`)];
         const wins = [];
@@ -9424,19 +9454,16 @@
           const label = (r.querySelector('.conf-win-label')?.value || '').trim();
           const start = r.querySelector('.conf-win-start')?.value || '', end = r.querySelector('.conf-win-end')?.value || '';
           if (!label && !start && !end) continue;
-          if (!start || !end || this._confMinutes(start) >= this._confMinutes(end)) {
-            this.showNotification('Each time block needs a start before its end', 'error');
+          if (!start || !end) {
+            this.showNotification(`${label ? `"${label}"` : 'Each time block'} needs a start and an end`, 'error');
             return;
           }
           // No name: the block is called by its times ("8:00 AM\u20139:00 AM").
           wins.push({ label: (label || this._conferenceBlockName(start, end)).slice(0, 40), start: start.slice(0, 5), end: end.slice(0, 5) });
         }
         if (!wins.length) { this.showNotification('Keep at least one time block, or the form offers no times', 'error'); return; }
-        const sorted = [...wins].sort((x, y) => this._confMinutes(x.start) - this._confMinutes(y.start));
-        if (sorted.some((w, i) => i && this._confMinutes(w.start) < this._confMinutes(sorted[i - 1].end))) {
-          this.showNotification('Two time blocks overlap. A family picks one block, so they should not share times.', 'error');
-          return;
-        }
+        const problem = this._conferenceWindowProblem(wins);
+        if (problem) { this.showNotification(problem, 'error'); return; }
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').update({ request_windows: wins }).eq('id', dayId));
         if (error) { this.showNotification('Could not save the windows: ' + error.message, 'error'); return; }
         this.showNotification('Public form times saved', 'success');

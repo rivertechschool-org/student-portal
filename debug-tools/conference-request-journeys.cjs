@@ -187,7 +187,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     await rows.nth(2).locator('.conf-win-start').fill('14:00');
     await rows.nth(2).locator('.conf-win-end').fill('13:00');
     await admin.locator('.conf-windows').first().locator('text=Save times').click();
-    assert((await admin.evaluate(()=>window.messages.at(-1).message)).includes('start before its end'));
+    assert((await admin.evaluate(()=>window.messages.at(-1).message)).includes('"Afternoon" has to start before it ends'));
     await rows.nth(2).locator('.conf-win-end').fill('15:20');
     await admin.locator('.conf-windows').first().locator('text=Save times').click();
     await admin.waitForFunction(()=>window.messages.at(-1).message==='Public form times saved');
