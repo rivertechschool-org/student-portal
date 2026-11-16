@@ -24967,7 +24967,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <p style="font-size: 12px; color: var(--muted); margin: 0 0 12px;">
                 Students turn in the pages they did (e.g. "Pgs 27-30") and it is graded straight away:
                 all their pages A+, 1 missing B, 2 C, 3 D, 4 or more F, and one letter lower if late.
-                Completing pages beyond the assigned final page earns 100% before the usual late penalty.
+                Choose below whether pages beyond the assigned final page count as full completion.
                 You can change any grade.
                 For a workbook that goes by week or exercise, type it instead of a page number
                 ("Week 4 Days 1-2", "3-A"). Those you grade yourself.
@@ -24978,8 +24978,17 @@ Students you had withdrawn stay withdrawn.`)) {
                 Automatically regrade when students update their pages
               </label>
               <small style="display: block; color: var(--muted); margin-bottom: 12px;">
-                Uses the updated page numbers. Going beyond the assigned final page earns 100% before the usual late penalty. Teacher-overridden grades stay for your review.
+                Uses the page-counting rule selected below. Teacher-overridden grades stay for your review.
               </small>
+              <!-- Keep the counting policy separate from whether resubmissions regrade. -->
+              <div class="form-group">
+                <label for="pages-beyond-target">When submitted pages go beyond the assigned final page</label>
+                <select id="pages-beyond-target">
+                  <option value="full">Give full completion credit (100% before late penalty)</option>
+                  <option value="exact">Count only pages within the assigned range</option>
+                </select>
+                <small style="display: block; color: var(--muted); margin-top: 5px;">The usual late penalty applies in both cases. For example, if pages 27–30 are assigned, submitting 31–34 earns full completion credit only with the first option.</small>
+              </div>
               <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: end;">
                 <div class="form-group" style="flex: 2 1 220px; margin: 0;">
                   <label for="pages-continues-from">Carries on from</label>
@@ -25319,6 +25328,7 @@ Students you had withdrawn stay withdrawn.`)) {
       assignmentTemplateError(error) {
         const msg = error?.message || String(error);
         // A staged rollout must explain how to continue before the database update.
+        if (/pages_beyond_target_full_credit/.test(msg)) return 'The page-counting choice needs a database update. Select full completion credit to save with the current rule for now.';
         if (/pages_auto_regrade/.test(msg)) return 'Automatic page regrading needs a database update. Untick automatic regrading to save this assignment for now.';
         return /is_template/.test(msg)
           ? 'Templates need a database update that has not been applied yet. Untick "Save as template" to continue.'
@@ -25544,6 +25554,7 @@ Students you had withdrawn stay withdrawn.`)) {
         if (latePass) latePass.checked = t.late_pass_allowed !== false;
         const pagesRegrade = document.getElementById('pages-auto-regrade');
         if (pagesRegrade) pagesRegrade.checked = t.pages_auto_regrade === true;
+        set('pages-beyond-target', t.pages_beyond_target_full_credit === false ? 'exact' : 'full');
 
         // Categories belong to a class. Same class: use it directly. Another
         // class: pick this class's category with the same name, if any, and
@@ -25758,6 +25769,7 @@ Students you had withdrawn stay withdrawn.`)) {
           assignmentData.graded_offline = false;
           // Omit the default until enabled, keeping older databases compatible.
           if (document.getElementById('pages-auto-regrade')?.checked) assignmentData.pages_auto_regrade = true;
+          if (document.getElementById('pages-beyond-target')?.value === 'exact') assignmentData.pages_beyond_target_full_credit = false;
           assignmentData.pages_continues_from = document.getElementById('pages-continues-from')?.value || null;
           const chosen = assignToSpecific
             ? new Set(Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value))
@@ -26255,6 +26267,14 @@ Students you had withdrawn stay withdrawn.`)) {
                   <small style="display: block; color: var(--muted); margin-bottom: 12px;">
                     Applies to future student updates. Teacher-overridden grades stay for your review.
                   </small>
+                  <div class="form-group">
+                    <label for="edit-pages-beyond-target">When submitted pages go beyond the assigned final page</label>
+                    <select id="edit-pages-beyond-target" data-has-column="${'pages_beyond_target_full_credit' in assignment ? '1' : ''}">
+                      <option value="full" ${assignment.pages_beyond_target_full_credit !== false ? 'selected' : ''}>Give full completion credit (100% before late penalty)</option>
+                      <option value="exact" ${assignment.pages_beyond_target_full_credit === false ? 'selected' : ''}>Count only pages within the assigned range</option>
+                    </select>
+                    <small style="display: block; color: var(--muted); margin-top: 5px;">The usual late penalty applies in both cases. Applies to future grading; existing grades stay unchanged.</small>
+                  </div>
                   ${pagesLoadFailed
                     ? `<p style="color: var(--danger); font-size: 13px;">Each student's pages could not be loaded, so they cannot be changed here right now. Saving keeps them as they are.</p>`
                     : `<div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
@@ -26500,6 +26520,11 @@ Students you had withdrawn stay withdrawn.`)) {
           const pagesRegradeBox = document.getElementById('edit-pages-auto-regrade');
           if (gradingType === 'pages' && pagesRegradeBox && (pagesRegradeBox.checked || pagesRegradeBox.dataset.hasColumn)) {
             updates.pages_auto_regrade = pagesRegradeBox.checked;
+          }
+
+          const pagesBeyond = document.getElementById('edit-pages-beyond-target');
+          if (gradingType === 'pages' && pagesBeyond && (pagesBeyond.value === 'exact' || pagesBeyond.dataset.hasColumn)) {
+            updates.pages_beyond_target_full_credit = pagesBeyond.value === 'full';
           }
 
           // RTC reward: only sent while it is unlocked (nobody graded yet).
@@ -31517,7 +31542,7 @@ Students you had withdrawn stay withdrawn.`)) {
         const due = new Date(version.due_date || assignment.due_date).getTime();
         if (!Number.isFinite(turnedAt) || !Number.isFinite(due)) return null;
         // Later workbook pages show progress beyond this assignment, worth full completion credit before the usual late penalty.
-        const ahead = Math.max(...pages) > version.page_end;
+        const ahead = assignment.pages_beyond_target_full_credit !== false && Math.max(...pages) > version.page_end;
         const late = turnedAt > due && !submission.late_pass_used_at;
         const missing = [];
         for (let p = version.page_start; !ahead && p <= version.page_end; p++) if (!pages.has(p)) missing.push(p);

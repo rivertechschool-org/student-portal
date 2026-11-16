@@ -47,6 +47,11 @@ function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})
   const sub={...db.tables.assignment_submissions[0]};
   assert.equal(a._pagesRecoveryGrade(assignment,v,sub).grade,'B');
   assert.equal(a._pagesRecoveryGrade(assignment,v,{...sub,content:'27-30'}).grade,'A+');
+  const strict={...assignment,pages_beyond_target_full_credit:false};
+  assert.equal(a._pagesRecoveryGrade(strict,v,{...sub,content:'31-34'}).grade,'F');
+  assert.equal(a._pagesRecoveryGrade(strict,v,{...sub,content:'29-31'}).grade,'C');
+  assert.equal(a._pagesRecoveryGrade(strict,v,{...sub,content:'27-31'}).grade,'A+');
+  assert.equal(a._pagesRecoveryGrade(strict,v,{...sub,content:'29-31',submitted_at:'2026-11-07T10:00:00Z'}).grade,'D');
   for (const content of ['31-34', '29-31', '35']) {
     for (const submitted_at of [sub.submitted_at,'2026-11-07T10:00:00Z']) {
       const result=a._pagesRecoveryGrade(assignment,v,{...sub,content,submitted_at});

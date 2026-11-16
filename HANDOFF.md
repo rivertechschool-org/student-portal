@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-11-16 — Codex: choose how to count later workbook pages
+Create and Edit Workbook Pages now have a separate "When submitted pages go
+beyond the assigned final page" choice: full completion credit (the current
+default), or count only pages within the assigned range. Both retain the usual
+late penalty. Templates and weekly copies preserve this choice; changing it does
+not recalculate historical grades. It is independent of automatic regrading.
+**Needs:** apply the private backend migration ending `workbook_pages_counting_policy.sql`.
+The earlier regrading and late-penalty SQL was confirmed applied by Luke; this
+additional per-assignment choice is prepared and locally tested, not yet applied.
+Tests: workbook-pages-series, workbook-pages-journeys and the backend PostgreSQL
+regression in tools/tests/workbook-pages-regrade.cjs, including both counting modes.
+
+
 ## 2026-11-16 — Codex
 **Workbook Pages: optional regrading on student updates.** Create and Edit offer an
 opt-in switch; templates and weekly copies retain it. Existing assignments default to
