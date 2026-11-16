@@ -73,7 +73,7 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
     await page.fill('#pages-weeks','3');
     assert.equal(await page.inputValue('#pages-naming'),'due_date');
     assert.equal(await page.locator('#series-start-section').isVisible(),false);
-    assert((await page.locator('#pages-series-preview').innerText()).includes('Winter practice · Due 2026-11-27'));
+    assert((await page.locator('#pages-series-preview').innerText()).includes('Winter practice · Nov 27th'));
     await page.selectOption('#pages-naming','week');
     assert.equal(await page.locator('#series-start-section').isVisible(),true);
     assert((await page.locator('#pages-series-preview').innerText()).includes('Winter practice · Week 3'));
@@ -83,7 +83,7 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
     await page.evaluate(()=>app.submitCreateAssignment('math'));
     await page.waitForTimeout(200);
     assert.equal(await page.evaluate(()=>db.tables.assignments.length),4);
-    assert.deepEqual(await page.evaluate(()=>db.tables.assignments.slice(1).map(a=>a.title)),['Winter practice · Due 2026-11-13','Winter practice · Due 2026-11-20','Winter practice · Due 2026-11-27']);
+    assert.deepEqual(await page.evaluate(()=>db.tables.assignments.slice(1).map(a=>a.title)),['Winter practice · Nov 13th','Winter practice · Nov 20th','Winter practice · Nov 27th']);
     assert(await page.evaluate(()=>db.tables.assignments.slice(1).every(a=>a.pages_auto_regrade===true && a.pages_beyond_target_full_credit===false)));
     // Copying a Pages assignment retains its opt-in, including switching it off.
     await page.evaluate(()=>app.createAssignment('math'));
