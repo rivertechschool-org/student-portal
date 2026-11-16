@@ -48,9 +48,8 @@ beyond the assigned final page" choice: full completion credit (the current
 default), or count only pages within the assigned range. Both retain the usual
 late penalty. Templates and weekly copies preserve this choice; changing it does
 not recalculate historical grades. It is independent of automatic regrading.
-**Needs:** apply the private backend migration ending `workbook_pages_counting_policy.sql`.
-The earlier regrading and late-penalty SQL was confirmed applied by Luke; this
-additional per-assignment choice is prepared and locally tested, not yet applied.
+**Needs:** nothing. User confirmed the counting-policy migration applied on November 16;
+the supplied results show 100% full credit, 50% exact-page credit, and 88% late full credit.
 Tests: workbook-pages-series, workbook-pages-journeys and the backend PostgreSQL
 regression in tools/tests/workbook-pages-regrade.cjs, including both counting modes.
 
