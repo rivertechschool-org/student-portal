@@ -35,6 +35,14 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-11-16 — Codex: continue a Pages assignment from its card
+Teacher assignment cards offer Create next pages. This opens a populated creation
+form for the chosen predecessor, even when later assignments exist. Individual
+page counts, recipients and grading options carry forward; due dates advance one
+week. Week titles continue numbering; other titles use the default date naming.
+Choose How many weeks to create several, then use the normal Create action.
+**Needs:** nothing; no SQL.
+
 ## 2026-11-16 — Codex: workbook assignment naming
 Workbook Pages creation defaults to due-date titles; the naming selector also offers
 Week 1/2/3 with an optional starting week. This is a creation-time choice, not a

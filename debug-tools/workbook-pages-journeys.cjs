@@ -98,6 +98,28 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
     assert.equal(await page.locator('.pages-series').count(),1);
     assert((await page.locator('.pages-series summary').first().innerText()).includes('4 linked assignments'));
     assert.deepEqual(await page.evaluate(()=>db.tables.assignment_student_versions.filter(v=>v.student_id==='oren').map(v=>[v.page_start,v.page_end])),[[10,15],[16,21],[22,27],[28,33]]);
+    // Click an earlier card: it must continue that card, not the latest in the class.
+    const firstId = await page.evaluate(()=>db.tables.assignments[1].id);
+    await page.locator('.pages-series').evaluate(el=>{el.open=true;});
+    await page.locator(`button[onclick="app.createNextPagesAssignment('${firstId}')"]`).click();
+    await page.waitForFunction(()=>!app._openingNextPages);
+    assert.equal(await page.inputValue('#assignment-title'),'Winter practice · Nov 20th');
+    assert.equal(await page.inputValue('#pages-continues-from'),firstId);
+    assert.equal(await page.inputValue('.pages-start[data-id="ivy"]'),'35');
+    assert.equal(await page.inputValue('.pages-count[data-id="oren"]'),'6');
+    assert.equal(await page.isChecked('#pages-auto-regrade'),true);
+    assert.equal(await page.inputValue('#pages-beyond-target'),'exact');
+    await page.evaluate(()=>app.closeModal('create-assignment'));
+    // Continue the latest card and save two more weeks using the populated form.
+    const lastId = await page.evaluate(()=>db.tables.assignments[3].id);
+    await page.locator(`button[onclick="app.createNextPagesAssignment('${lastId}')"]`).click();
+    await page.waitForFunction(()=>!app._openingNextPages);
+    assert.equal(await page.inputValue('#assignment-title'),'Winter practice · Dec 4th');
+    assert.equal(await page.inputValue('.pages-start[data-id="ivy"]'),'43');
+    await page.fill('#pages-weeks','2');
+    await page.evaluate(()=>app.submitCreateAssignment('math'));
+    await page.waitForTimeout(200);
+    assert.deepEqual(await page.evaluate(()=>db.tables.assignments.slice(4).map(a=>a.title)),['Winter practice · Dec 4th','Winter practice · Dec 11th']);
     await page.screenshot({path:'/tmp/workbook-pages-teacher.png',fullPage:true});
     // Student and parent listing use the same grouping without recovery controls.
     for(const role of ['student','parent']) {
@@ -108,6 +130,7 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
       await page.evaluate(()=>app.viewAssignments('math'));
       assert.equal(await page.locator('.pages-series').count(),1,role+' series');
       assert.equal(await page.getByRole('button',{name:'Restore & grade pending pages'}).count(),0);
+      assert.equal(await page.getByRole('button',{name:'Create next pages'}).count(),0);
     }
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>messages.filter(m=>m.type==='error').length),0);

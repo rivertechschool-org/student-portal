@@ -24229,7 +24229,8 @@ Students you had withdrawn stay withdrawn.`)) {
                       </div>
 
                       <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border); flex-wrap: wrap;">
-                        <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                        ${assignment.grading_type === 'pages' ? `<button class="btn btn-secondary small" onclick="app.createNextPagesAssignment('${assignment.id}')" title="Fill the next week's assignment, then choose how many weeks to create">➕ Create next pages</button>` : ''}
+                      <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
                           ✏️ Edit
                         </button>
                         <button class="btn btn-danger small" onclick="app.deleteAssignment('${assignment.id}')">
@@ -24321,6 +24322,7 @@ Students you had withdrawn stay withdrawn.`)) {
                           title="Restore Pages grading and grade readable pending turn-ins by their recorded submission time. Existing grades are kept.">
                           📖 Restore &amp; grade pending pages
                         </button>` : ''}
+                      ${assignment.grading_type === 'pages' ? `<button class="btn btn-secondary small" onclick="app.createNextPagesAssignment('${assignment.id}')" title="Fill the next week's assignment, then choose how many weeks to create">➕ Create next pages</button>` : ''}
                       <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
                         ✏️ Edit
                       </button>
@@ -24799,7 +24801,8 @@ Students you had withdrawn stay withdrawn.`)) {
                               <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
                                 📋 View
                               </button>
-                              <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                              ${assignment.grading_type === 'pages' ? `<button class="btn btn-secondary small" onclick="app.createNextPagesAssignment('${assignment.id}')" title="Fill the next week's assignment, then choose how many weeks to create">➕ Create next pages</button>` : ''}
+                      <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
                                 ✏️ Edit
                               </button>
                               <button class="btn btn-danger small" onclick="app.deleteAssignment('${assignment.id}')">
@@ -24849,7 +24852,8 @@ Students you had withdrawn stay withdrawn.`)) {
                               <button class="btn btn-secondary small" onclick="app.viewSubmissions('${assignment.id}')">
                                 📋 View
                               </button>
-                              <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
+                              ${assignment.grading_type === 'pages' ? `<button class="btn btn-secondary small" onclick="app.createNextPagesAssignment('${assignment.id}')" title="Fill the next week's assignment, then choose how many weeks to create">➕ Create next pages</button>` : ''}
+                      <button class="btn btn-primary small" onclick="app.editAssignment('${assignment.id}')">
                                 ✏️ Edit
                               </button>
                               <button class="btn btn-danger small" onclick="app.deleteAssignment('${assignment.id}')">
@@ -25311,7 +25315,8 @@ Students you had withdrawn stay withdrawn.`)) {
         setTimeout(() => this.onAssignmentQuarterChange(), 50);
 
         // Initialize Quill editor after modal is shown
-        setTimeout(() => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        {
           this.assignmentDescriptionEditor = new Quill('#assignment-description-editor', {
             theme: 'snow',
             placeholder: 'Describe the assignment requirements, instructions, and expectations...',
@@ -25327,7 +25332,7 @@ Students you had withdrawn stay withdrawn.`)) {
               ]
             }
           });
-        }, 100);
+        }
       }
 
       // A template is an ordinary assignment with is_template set - ticked on
@@ -25427,6 +25432,35 @@ Students you had withdrawn stay withdrawn.`)) {
           this.renderAssignmentTemplateList('');
           setTimeout(() => document.getElementById('assignment-template-search')?.focus(), 50);
         }
+      }
+
+      // Open a ready-to-create continuation directly from the chosen Pages card.
+      // Reuse copying so recipients, grading options and individual page counts agree.
+      async createNextPagesAssignment(assignmentId) {
+        if (this._openingNextPages) return;
+        this._openingNextPages = true;
+        try {
+          const { data: source, error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('assignments').select('*').eq('id', assignmentId).single());
+          if (error) throw error;
+          if (!source || source.grading_type !== 'pages') throw new Error('Choose a Workbook Pages assignment.');
+          await this.createAssignment(source.class_id);
+          document.getElementById('pages-naming').value = this._seriesWeekOf(source.title) != null ? 'week' : 'due_date';
+          this.assignmentTemplates = [source];
+          this.assignmentTemplateClassId = source.class_id;
+          this._assignmentPickerCopy = true;
+          await this.applyAssignmentTemplate(source.id);
+          if (!this._pagesCtx?.loaded || document.getElementById('pages-continues-from')?.value !== source.id) {
+            throw new Error('The selected assignment’s page targets could not be loaded. Please retry.');
+          }
+          const due = document.getElementById('assignment-due-date').value;
+          document.getElementById('assignment-title').value = this._pagesSeriesTitle(source.title, 0, 1,
+            this._seriesStart(), document.getElementById('pages-naming').value, due);
+          this._seriesInput();
+        } catch (error) {
+          this.closeModal('create-assignment');
+          this.showNotification('Could not prepare the next pages assignment: ' + error.message, 'error');
+        } finally { this._openingNextPages = false; }
       }
 
       // datetime-local text for a moment, in local time.
