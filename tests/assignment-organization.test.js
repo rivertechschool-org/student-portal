@@ -1,0 +1,23 @@
+// node tests/assignment-organization.test.js
+const assert = require('node:assert/strict');
+const { normalize, move, render } = require('../shared/assignment-organization.js');
+const assignments = ['a', 'b', 'c'].map(id => ({ id }));
+const original = normalize(null, assignments);
+assert.deepEqual(move(original, ['c'], '', 'a').items.map(x => x.id), ['c', 'a', 'b']);
+assert.deepEqual(original.items.map(x => x.id), ['a', 'b', 'c'], 'edits must not mutate saved state');
+const grouped = { version: 1, items: [{ type: 'folder', id: 'f', name: '<img src=x>', items: ['hidden', 'a'] }, { type: 'assignment', id: 'b' }, { type: 'assignment', id: 'c' }] };
+const next = move(grouped, ['c', 'a'], 'f', 'hidden');
+assert.deepEqual(next.items[0].items, ['a', 'c', 'hidden'], 'multi-select preserves displayed order');
+assert.deepEqual(move(next, ['a', 'c'], '', 'f').items.slice(0, 2).map(x => x.id), ['a', 'c']);
+assert.deepEqual(move(grouped, ['a'], 'missing'), grouped, 'invalid destination cannot lose assignments');
+assert.deepEqual(move(grouped, ['a'], 'f', 'a'), grouped, 'dropping onto itself is a no-op');
+const normalized = normalize(grouped, [...assignments, { id: 'new' }]);
+assert.deepEqual(normalized.items[0].items, ['hidden', 'a'], 'other quarters remain intact');
+assert.equal(normalized.items.at(-1).id, 'new', 'new assignments are appended');
+const output = render(grouped, assignments, ['CARD A', 'CARD B', 'CARD C']);
+assert.ok(output.includes('&lt;img src=x&gt;'));
+assert.ok(!output.includes('hidden'));
+assert.ok(output.indexOf('CARD A') < output.indexOf('CARD B'));
+assert.equal(render(grouped, [{ id: 'b' }], ['CARD B']), 'CARD B', 'empty or inaccessible folders stay hidden');
+assert.equal(render(null, assignments, ['a', 'b', 'c'], (_, cards) => cards.join('')), 'abc', 'legacy workbook grouping remains until custom organization is saved');
+console.log('Assignment organization: ordering, multi-select, visibility, escaping and preservation passed.');

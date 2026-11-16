@@ -18,6 +18,8 @@
   <!-- Load shared configuration -->
   <script src="../shared/config.js?v=21"></script>
   <script src="../shared/quarter-review.js?v=1"></script>
+  <script src="../shared/assignment-organization.js?v=1"></script>
+  <link rel="stylesheet" href="../shared/assignment-organization.css?v=1">
   <script src="../shared/components.js"></script>
   <script src="../shared/supabase.min.js"></script>
   <script src="../shared/vocab-bridge.js?v=2"></script>
@@ -23991,6 +23993,14 @@ Students you had withdrawn stay withdrawn.`)) {
           const isParent = userType === 'parent';
           const classData = this.classes.find(c => c.id === classId);
       
+          // Fetch fresh shared organization; class dashboard data may be cached.
+          const { data: organizationClass, error: organizationError } = await this.supabaseQuery(() => this.auth.supabase
+            .from('classes').select('*').eq('id', classId).single());
+          if (organizationError) throw organizationError;
+          const organization = organizationClass?.assignment_organization || null;
+          const canOrganize = isTeacher && (userType === 'admin' ||
+            organizationClass?.teacher_id === this.userInfo.user.id);
+
           // Get current quarter
           const { data: currentQuarter } = await this.supabaseQuery(() => this.auth.supabase
             .from('quarters')
@@ -24009,7 +24019,8 @@ Students you had withdrawn stay withdrawn.`)) {
             .select('*')
             .eq('class_id', classId)
             .or('assignment_type.is.null,assignment_type.neq.info')
-            .order('due_date', { ascending: false });
+            .order('due_date', { ascending: false })
+            .order('id', { ascending: true });
 
           // Filter by current quarter if one exists
           if (currentQuarter) {
@@ -24034,7 +24045,8 @@ Students you had withdrawn stay withdrawn.`)) {
             .select('*')
             .eq('class_id', classId)
             .eq('assignment_type', 'info')
-            .order('created_at', { ascending: false });
+            .order('created_at', { ascending: false })
+            .order('id', { ascending: true });
 
           if (infoError) throw infoError;
 
@@ -24088,17 +24100,11 @@ Students you had withdrawn stay withdrawn.`)) {
             assignments = await this.withMyVersions(assignments);
           }
 
-          // For students and parents, sort info assignments to the top
-          if (!isTeacher) {
-            assignments.sort((a, b) => {
-              const aIsInfo = a.assignment_type === 'info';
-              const bIsInfo = b.assignment_type === 'info';
-              if (aIsInfo && !bIsInfo) return -1;
-              if (!aIsInfo && bIsInfo) return 1;
-              // Within same type, sort by created_at descending (newest first)
-              return new Date(b.created_at) - new Date(a.created_at);
-            });
-          }
+          // Use class dates before individual overrides for the same default order in every role.
+          const defaultOrder = new Map(allAssignments.map((a, i) => [a.id, i]));
+          assignments.sort((a, b) => defaultOrder.get(a.id) - defaultOrder.get(b.id));
+          const renderOrganizedCards = (rows, cards) => AssignmentOrganization.render(
+            organization, rows, cards, (rows, cards) => this._pagesGroupCards(rows, cards));
 
           let assignmentsHtml;
       
@@ -24192,7 +24198,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 </div>
               `;
             } else {
-              assignmentsHtml = this._pagesGroupCards(assignments, assignments.map(assignment => {
+              assignmentsHtml = renderOrganizedCards(assignments, assignments.map(assignment => {
                 const isInfoOnly = assignment.assignment_type === 'info';
                 const dueDate = new Date(assignment.due_date).toLocaleDateString();
                 const categoryName = assignment.category_id ? categoryMap[assignment.category_id] : 'Uncategorized';
@@ -24367,7 +24373,7 @@ Students you had withdrawn stay withdrawn.`)) {
               const childVersions = await this.loadStudentVersions(assignmentIds,
                 enrolledChildren.flatMap(c => [c.id, c.auth_user_id]));
 
-              assignmentsHtml = this._pagesGroupCards(assignments, assignments.map(classAssignment => {
+              assignmentsHtml = renderOrganizedCards(assignments, assignments.map(classAssignment => {
                 const dueDate = new Date(classAssignment.due_date);
                 const now = new Date();
 
@@ -24476,7 +24482,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 submissionMap[sub.assignment_id] = sub;
               });
 
-              assignmentsHtml = this._pagesGroupCards(assignments, assignments.map(assignment => {
+              assignmentsHtml = renderOrganizedCards(assignments, assignments.map(assignment => {
                 const submission = submissionMap[assignment.id];
                 const dueDate = new Date(assignment.due_date);
                 const now = new Date();
@@ -24584,7 +24590,11 @@ Students you had withdrawn stay withdrawn.`)) {
                 ` : '')}
               </div>
       
-              <div style="max-height: 600px; overflow-y: auto;">
+              ${canOrganize && organizationClass && 'assignment_organization' in organizationClass ? `
+                <button class="btn btn-secondary" id="organize-assignments-button" style="margin-bottom: 12px;">↕ Organize assignments</button>
+              ` : ''}
+              <div id="assignment-organization-editor"></div>
+              <div id="assignment-organized-cards" style="max-height: 600px; overflow-y: auto;">
                 ${assignmentsHtml}
               </div>
               ${isTeacher ? `
@@ -24601,6 +24611,29 @@ Students you had withdrawn stay withdrawn.`)) {
           `;
 
           this.showModal('view-assignments', '📝 Class Assignments', modalContent, true);
+          const organizeButton = document.getElementById('organize-assignments-button');
+          if (organizeButton) organizeButton.onclick = () => {
+            const container = document.getElementById('assignment-organization-editor');
+            const cards = document.getElementById('assignment-organized-cards');
+            organizeButton.hidden = true;
+            cards.hidden = true;
+            new AssignmentOrganization.Editor(container, {
+              assignments, layout: organization,
+              cancel: () => { container.replaceChildren(); cards.hidden = false; organizeButton.hidden = false; },
+              save: async layout => {
+                // Compare-and-swap avoids silently overwriting another teacher's edits.
+                let query = this.auth.supabase.from('classes')
+                  .update({ assignment_organization: layout }).eq('id', classId);
+                query = organization === null ? query.is('assignment_organization', null)
+                  : query.eq('assignment_organization', JSON.stringify(organization));
+                const { data, error } = await query.select('id').maybeSingle();
+                if (error) throw error;
+                if (!data) throw new Error('Organization changed elsewhere, or you no longer have permission. Cancel and reopen Assignments before trying again.');
+                this.showNotification('Assignment organization saved for everyone', 'success');
+                await this.viewAssignments(classId);
+              }
+            });
+          };
           if (isTeacher) this.loadClassHomeworkResults(classId, 'class-homework-results');
       
         } catch (error) {
