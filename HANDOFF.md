@@ -35,6 +35,13 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-11-16 — Codex: workbook assignment naming
+Workbook Pages creation defaults to due-date titles; the naming selector also offers
+Week 1/2/3 with an optional starting week. This is a creation-time choice, not a
+persisted grading setting. Copies replace generated date suffixes, and dates use
+the local calendar day shown in the form. Existing assignment titles stay unchanged.
+**Needs:** nothing; no additional backend migration.
+
 ## 2026-11-16 — Codex: choose how to count later workbook pages
 Create and Edit Workbook Pages now have a separate "When submitted pages go
 beyond the assigned final page" choice: full completion credit (the current

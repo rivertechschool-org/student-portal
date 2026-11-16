@@ -10,7 +10,7 @@ function method(name) {
   const end=html.indexOf('\n      }',start);
   return html.slice(start,end+8).trim();
 }
-const names=['_pagesSeriesPlan','_seriesTitle','_seriesDue','_seriesWeekOf','_seriesPlan','_pagesNextLabel','_pagesCreateSeries','_pagesGroupCards','_pagesRecoveryGrade','_pagesLoadTargets','_pagesHasTargets','_pagesInit','_pagesFillFromPrevious','_pagesPlan','_pagesRepairAssignment'];
+const names=['_pagesSeriesTitle','_pagesSeriesPlan','_seriesTitle','_seriesDue','_seriesWeekOf','_seriesPlan','_pagesNextLabel','_pagesCreateSeries','_pagesGroupCards','_pagesRecoveryGrade','_pagesLoadTargets','_pagesHasTargets','_pagesInit','_pagesFillFromPrevious','_pagesPlan','_pagesRepairAssignment'];
 function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})`),{
   auth:{supabase:db},supabaseQuery:fn=>fn(),escapeHtml:s=>String(s).replaceAll('<','&lt;'),jsAttr:s=>s,
   sendNewAssignmentNotifications:async()=>{},showNotification:()=>{},viewAssignments:async()=>{},
@@ -21,6 +21,13 @@ function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})
   const base={title:'Practice',due_date:'2026-11-13T16:00:00Z',class_id:'math',is_published:true,assigned_to_all:false,pages_continues_from:'old',grading_type:'pages'};
   const targets=[{student_id:'ivy',page_start:31,page_end:34,page_label:null},{student_id:'oren',page_start:16,page_end:21,page_label:null}];
   const plan=a._pagesSeriesPlan(base,targets,3);
+  assert.deepEqual(plan.map(w=>w.assignment.title),['Practice · Due 2026-11-13','Practice · Due 2026-11-20','Practice · Due 2026-11-27']);
+  assert.equal(a._pagesSeriesPlan(base,targets,1)[0].assignment.title,'Practice · Due 2026-11-13');
+  assert.deepEqual(a._pagesSeriesPlan(base,targets,3,null,'week').map(w=>w.assignment.title),['Practice · Week 1','Practice · Week 2','Practice · Week 3']);
+  assert.equal(a._pagesSeriesPlan(base,targets,1,null,'week')[0].assignment.title,'Practice · Week 1');
+  assert.equal(a._pagesSeriesPlan({...base,title:'Practice · Due 2026-11-06'},targets,1)[0].assignment.title,'Practice · Due 2026-11-13');
+  assert.equal(a._pagesSeriesPlan({...base,title:'Practice · Week 3'},targets,1)[0].assignment.title,'Practice · Due 2026-11-13');
+  assert.equal(a._pagesSeriesPlan({...base,title:'Practice · Due 2026-11-06'},targets,1,4,'week')[0].assignment.title,'Practice · Week 4');
   assert.deepEqual(plan.map(w=>w.targets.map(t=>[t.page_start,t.page_end])),[[[31,34],[16,21]],[[35,38],[22,27]],[[39,42],[28,33]]]);
   assert.equal(plan[2].assignment.due_date,'2026-11-27T16:00:00.000Z');
   assert.equal(targets[0].page_start,31,'planning does not mutate input');
@@ -30,6 +37,7 @@ function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})
   assert.throws(()=>a._pagesSeriesPlan(base,[{student_id:'ivy',page_start:4998,page_end:5000}],2));
   const oldTZ=process.env.TZ;process.env.TZ='America/Los_Angeles';
   assert.equal(a._pagesSeriesPlan({...base,due_date:'2026-10-30T23:00:00Z'},targets,2)[1].assignment.due_date,'2026-11-07T00:00:00.000Z','weekly due time survives daylight saving');
+  assert.equal(a._pagesSeriesPlan({...base,due_date:'2026-11-14T01:00:00Z'},targets,1)[0].assignment.title,'Practice · Due 2026-11-13','title uses local day, not UTC day');
   if (oldTZ===undefined) delete process.env.TZ;else process.env.TZ=oldTZ;
   const ids=await a._pagesCreateSeries(plan);
   assert.equal(ids.length,3);assert.equal(db.tables.assignment_students.length,6);
@@ -119,7 +127,7 @@ function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})
     [['Grade 5 vocab',1,2,null],'Grade 5 vocab · Week 2'],
   ]) assert.equal(a._seriesTitle(...args),want,JSON.stringify(args));
   assert.equal(a._seriesWeekOf('Practice · Week 1'),1);assert.equal(a._seriesWeekOf('Essay 2'),null);
-  assert.deepEqual(a._pagesSeriesPlan({...base,title:'Workbook · Week 1'},targets,2,2).map(w=>w.assignment.title),['Workbook · Week 2','Workbook · Week 3']);
+  assert.deepEqual(a._pagesSeriesPlan({...base,title:'Workbook · Week 1'},targets,2,2,'week').map(w=>w.assignment.title),['Workbook · Week 2','Workbook · Week 3']);
   // A regular weekly set: no page targets, chosen students, all or nothing.
   const reg={title:'Spelling Week 1',due_date:'2026-11-13T16:00:00Z',class_id:'math',is_published:true,assigned_to_all:false,grading_type:'points'};
   const regPlan=a._seriesPlan(reg,3,2).map(w=>({...w,assignees:['ivy','oren']}));
