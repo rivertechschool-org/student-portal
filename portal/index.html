@@ -24938,6 +24938,14 @@ Students you had withdrawn stay withdrawn.`)) {
                 For a workbook that goes by week or exercise, type it instead of a page number
                 ("Week 4 Days 1-2", "3-A"). Those you grade yourself.
               </p>
+              <!-- Regrading is opt-in for each assignment and its weekly copies. -->
+              <label style="display: flex; gap: 8px; align-items: center; margin-bottom: 6px;">
+                <input type="checkbox" id="pages-auto-regrade">
+                Automatically regrade when students update their pages
+              </label>
+              <small style="display: block; color: var(--muted); margin-bottom: 12px;">
+                Uses the updated page numbers and the usual late rule. Teacher-overridden grades stay for your review.
+              </small>
               <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: end;">
                 <div class="form-group" style="flex: 2 1 220px; margin: 0;">
                   <label for="pages-continues-from">Carries on from</label>
@@ -25276,6 +25284,8 @@ Students you had withdrawn stay withdrawn.`)) {
       // migration adding it has not been applied yet; say that plainly.
       assignmentTemplateError(error) {
         const msg = error?.message || String(error);
+        // A staged rollout must explain how to continue before the database update.
+        if (/pages_auto_regrade/.test(msg)) return 'Automatic page regrading needs a database update. Untick automatic regrading to save this assignment for now.';
         return /is_template/.test(msg)
           ? 'Templates need a database update that has not been applied yet. Untick "Save as template" to continue.'
           : msg;
@@ -25498,6 +25508,8 @@ Students you had withdrawn stay withdrawn.`)) {
         if (offline) offline.checked = !!t.graded_offline;
         const latePass = document.getElementById('assignment-late-pass-allowed');
         if (latePass) latePass.checked = t.late_pass_allowed !== false;
+        const pagesRegrade = document.getElementById('pages-auto-regrade');
+        if (pagesRegrade) pagesRegrade.checked = t.pages_auto_regrade === true;
 
         // Categories belong to a class. Same class: use it directly. Another
         // class: pick this class's category with the same name, if any, and
@@ -25710,6 +25722,8 @@ Students you had withdrawn stay withdrawn.`)) {
           assignmentData.grading_type = 'pages';
           assignmentData.rubric_id = null;
           assignmentData.graded_offline = false;
+          // Omit the default until enabled, keeping older databases compatible.
+          if (document.getElementById('pages-auto-regrade')?.checked) assignmentData.pages_auto_regrade = true;
           assignmentData.pages_continues_from = document.getElementById('pages-continues-from')?.value || null;
           const chosen = assignToSpecific
             ? new Set(Array.from(document.querySelectorAll('.student-checkbox:checked')).map(cb => cb.value))
@@ -25751,7 +25765,7 @@ Students you had withdrawn stay withdrawn.`)) {
           this.closeModal('create-assignment');
           setTimeout(() => this.viewAssignments(classId), 100);
         } catch (error) {
-          this.showNotification('Error creating assignments: ' + error.message, 'error');
+          this.showNotification('Error creating assignments: ' + this.assignmentTemplateError(error), 'error');
         } finally { this._pagesSaving = false; }
         return;
       }
@@ -26200,6 +26214,13 @@ Students you had withdrawn stay withdrawn.`)) {
                 
                 ${isPagesGrading ? `<p>📖 Workbook Pages (auto-graded). Change any student's pages below.</p>
                   <input type="radio" name="edit-grading-type" value="pages" checked hidden>
+                  <label style="display: flex; gap: 8px; align-items: center; margin-bottom: 6px;">
+                    <input type="checkbox" id="edit-pages-auto-regrade" ${assignment.pages_auto_regrade ? 'checked' : ''} data-has-column="${'pages_auto_regrade' in assignment ? '1' : ''}">
+                    Automatically regrade when students update their pages
+                  </label>
+                  <small style="display: block; color: var(--muted); margin-bottom: 12px;">
+                    Applies to future student updates. Teacher-overridden grades stay for your review.
+                  </small>
                   ${pagesLoadFailed
                     ? `<p style="color: var(--danger); font-size: 13px;">Each student's pages could not be loaded, so they cannot be changed here right now. Saving keeps them as they are.</p>`
                     : `<div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
@@ -26442,6 +26463,10 @@ Students you had withdrawn stay withdrawn.`)) {
           }
           const latePassBox = document.getElementById('edit-assignment-late-pass-allowed');
           if (latePassBox) updates.late_pass_allowed = latePassBox.checked;
+          const pagesRegradeBox = document.getElementById('edit-pages-auto-regrade');
+          if (gradingType === 'pages' && pagesRegradeBox && (pagesRegradeBox.checked || pagesRegradeBox.dataset.hasColumn)) {
+            updates.pages_auto_regrade = pagesRegradeBox.checked;
+          }
 
           // RTC reward: only sent while it is unlocked (nobody graded yet).
           const rtcBox = document.getElementById('edit-assignment-rtc-reward');
@@ -29509,6 +29534,8 @@ Students you had withdrawn stay withdrawn.`)) {
       // that the database graded on the way in, or null for anything else.
       _pagesGradedMessage(row) {
         if (!row || row.status !== 'graded' || !row.grade || !/^Pages \d/.test(row.feedback || '')) return null;
+        // An unchanged old Pages grade is awaiting review, not a fresh result.
+        if (row.resubmitted_at && (!row.graded_at || new Date(row.resubmitted_at) > new Date(row.graded_at))) return null;
         return `Turned in - graded ${row.grade}. ${String(row.feedback).replace(/ Grade: .*$/, '')}`;
       }
 

@@ -34,19 +34,33 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
     // Edit the repaired assignment, change its title, save and reload.
     await page.evaluate(()=>app.editAssignment('old'));
     await page.waitForTimeout(150);
+    await page.waitForTimeout(150);
     assert.equal(await page.locator('input[name="edit-grading-type"]:checked').inputValue(),'pages');
+    assert.equal(await page.isChecked('#edit-pages-auto-regrade'),false);
+    await page.check('#edit-pages-auto-regrade');
     await page.fill('#edit-assignment-title','Edited workbook');
     await page.evaluate(()=>app.submitEditAssignment('old','math'));
     assert.equal(await page.evaluate(()=>db.tables.assignments[0].grading_type),'pages');
     assert.equal(await page.evaluate(()=>db.tables.assignment_student_versions[0].page_end),30);
     await page.waitForTimeout(200);
+    assert.equal(await page.evaluate(()=>db.tables.assignments[0].pages_auto_regrade),true);
+    await page.evaluate(()=>app.editAssignment('old'));
+    await page.waitForTimeout(150);
+    assert.equal(await page.isChecked('#edit-pages-auto-regrade'),true);
+    await page.uncheck('#edit-pages-auto-regrade');
+    await page.evaluate(()=>app.submitEditAssignment('old','math'));
+    assert.equal(await page.evaluate(()=>db.tables.assignments[0].pages_auto_regrade),false);
+    await page.waitForTimeout(200);
     // Plan three weeks from the previous targets, with distinct student counts.
     await page.evaluate(()=>app.createAssignment('math'));
+    await page.waitForTimeout(150); // Let the form initialize its editor before closing it.
     await page.selectOption('#assignment-type','pages');
     await page.waitForFunction(()=>app._pagesCtx.loaded);
     assert.equal(await page.inputValue('#pages-continues-from'),'old');
     assert.equal(await page.inputValue('.pages-start[data-id="ivy"]'),'31');
     assert.equal(await page.inputValue('.pages-count[data-id="oren"]'),'6');
+    assert.equal(await page.isChecked('#pages-auto-regrade'),false);
+    await page.check('#pages-auto-regrade');
     await page.fill('#assignment-title','Winter practice');
     await page.fill('#assignment-due-date','2026-11-13T16:00');
     await page.fill('#pages-weeks','3');
@@ -54,6 +68,15 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
     await page.evaluate(()=>app.submitCreateAssignment('math'));
     await page.waitForTimeout(200);
     assert.equal(await page.evaluate(()=>db.tables.assignments.length),4);
+    assert(await page.evaluate(()=>db.tables.assignments.slice(1).every(a=>a.pages_auto_regrade===true)));
+    // Copying a Pages assignment retains its opt-in, including switching it off.
+    await page.evaluate(()=>app.createAssignment('math'));
+    await page.waitForTimeout(150); // Let the form initialize its editor before closing it.
+    await page.evaluate(async()=>{app.assignmentTemplates=[db.tables.assignments[1]];await app.applyAssignmentTemplate(db.tables.assignments[1].id);});
+    assert.equal(await page.isChecked('#pages-auto-regrade'),true);
+    await page.evaluate(async()=>{app.assignmentTemplates=[db.tables.assignments[0]];await app.applyAssignmentTemplate('old');});
+    assert.equal(await page.isChecked('#pages-auto-regrade'),false);
+    await page.evaluate(()=>app.closeModal('create-assignment'));
     assert.equal(await page.locator('.pages-series').count(),1);
     assert((await page.locator('.pages-series summary').first().innerText()).includes('4 linked assignments'));
     assert.deepEqual(await page.evaluate(()=>db.tables.assignment_student_versions.filter(v=>v.student_id==='oren').map(v=>[v.page_start,v.page_end])),[[10,15],[16,21],[22,27],[28,33]]);

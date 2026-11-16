@@ -35,6 +35,19 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 
 ---
 
+## 2026-11-16 — Codex
+**Workbook Pages: optional regrading on student updates.** Create and Edit offer an
+opt-in switch; templates and weekly copies retain it. Existing assignments default to
+off. Numeric page updates use the usual grading and late rules; explicit teacher
+overrides and unreadable work stay for review. Changing targets alone does not regrade.
+**Needs:** apply the backend migration ending in `workbook_pages_regrade_option.sql`
+in the private backend repo. It is prepared and tested locally but NOT applied: the
+connected Supabase account cannot access the Rivertech project. Until then leave the
+switch off; turning it on gives a clear database-update message. Backend regression:
+`tools/tests/workbook-pages-regrade.cjs`; frontend: `tests/workbook-pages.test.js` and
+`debug-tools/workbook-pages-journeys.cjs` (create, toggle, reload, copy, weekly series).
+
+
 ## 2026-10-21 — Jordan's Claude (lessons re-locked when a prerequisite needed review)
 - Reported: T3 Advanced Fractions and Decimals "don't open, I can't click to open the lesson at
   all".

@@ -34,6 +34,11 @@ const names = ['_pagesPlan', '_pagesReadTargets', '_pagesSyncFromInputs', '_page
 const app = eval(`({ ${names.map(method).join(',\n')} })`);
 app.escapeHtml = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+// A retained grade must not be announced as a newly calculated result.
+const retainedGrade = {status:'graded',grade:'B',feedback:'Pages 27–30 were due. Grade: B.',graded_at:'2026-11-16T10:00:00Z'};
+ok('pending regrade asks for teacher review', app._pagesGradedMessage({...retainedGrade,resubmitted_at:'2026-11-16T11:00:00Z'}) === null);
+ok('automatic regrade returns fresh feedback', !!app._pagesGradedMessage({...retainedGrade,resubmitted_at:retainedGrade.graded_at}));
+
 const students = [
   { id: 'a', first_name: 'Pella', last_name: 'Ostrander' },
   { id: 'b', first_name: 'Quill', last_name: 'Marrow' },
