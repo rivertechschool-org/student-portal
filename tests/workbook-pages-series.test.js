@@ -47,6 +47,15 @@ function app(db) { return Object.assign(eval(`({${names.map(method).join(',')}})
   const sub={...db.tables.assignment_submissions[0]};
   assert.equal(a._pagesRecoveryGrade(assignment,v,sub).grade,'B');
   assert.equal(a._pagesRecoveryGrade(assignment,v,{...sub,content:'27-30'}).grade,'A+');
+  for (const content of ['31-34', '29-31', '35']) {
+    for (const submitted_at of [sub.submitted_at,'2026-11-07T10:00:00Z']) {
+      const result=a._pagesRecoveryGrade(assignment,v,{...sub,content,submitted_at});
+      assert.equal(result.grade,'A+');
+      assert.equal(result.points_earned,assignment.max_points);
+      assert(!result.feedback.includes('Missing:'));
+      assert(!result.feedback.includes('one letter grade lower'));
+    }
+  }
   assert.equal(a._pagesRecoveryGrade(assignment,v,{...sub,content:'27-30',submitted_at:'2026-11-07T10:00:00Z'}).grade,'B+');
   assert.equal(a._pagesRecoveryGrade(assignment,v,{...sub,content:'27-30',submitted_at:'2026-11-07T10:00:00Z',late_pass_used_at:'2026-11-07T09:00:00Z'}).grade,'A+');
   for(const patch of [{grade_override:true},{grade:'A'},{status:'excused'},{content:'finished all'},{content:'30-27'},{submitted_at:null}]) assert.equal(a._pagesRecoveryGrade(assignment,v,{...sub,...patch}),null);
