@@ -40,10 +40,11 @@ theirs. Delete an entry once it is settled and the reasoning has landed somewher
 opt-in switch; templates and weekly copies retain it. Existing assignments default to
 off. Numeric page updates use the usual grading and late rules; explicit teacher
 overrides and unreadable work stay for review. Changing targets alone does not regrade.
-**Follow-up:** reporting pages beyond the assigned final page earns 100%, even
-when late. Ordinary incomplete work keeps its previous late rule.
+**Follow-up:** reporting pages beyond the assigned final page earns 100% before
+the usual late penalty, as Luke clarified. Late passes remain honored.
 **Needs:** apply the backend migrations ending in `workbook_pages_regrade_option.sql`
-and `workbook_pages_beyond_target.sql`
+and `workbook_pages_beyond_target_late_penalty.sql` (supersedes the earlier
+`workbook_pages_beyond_target.sql` rule)
 in the private backend repo. It is prepared and tested locally but NOT applied: the
 connected Supabase account cannot access the Rivertech project. Until then leave the
 switch off; turning it on gives a clear database-update message. Backend regression:
