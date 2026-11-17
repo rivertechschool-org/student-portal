@@ -39452,6 +39452,292 @@ Students you had withdrawn stay withdrawn.`)) {
         return issues;
       }
 
+      // ---- D or below: every class under a C in a quarter ------------------
+      //
+      // 2026-11-17, Jordan: "an admin tool that checks a quarter over all
+      // students or filtered student(s) and flags all classes that were a D or
+      // less." A D is 60-69 here (no D+ or D-), so the line is below 70: the
+      // same line the report card marks "at risk". A quarter's grade is the
+      // one the report card prints: the saved quarter snapshot, or, for the
+      // quarter still running and with no snapshot yet, the class's live
+      // grade. Classes left off report cards are left out here too.
+
+      // The flagged rows for one quarter. Pure. snapshots: that quarter's
+      // {enrollment_id, quarter_id, class_grade}; enrollments carry classes();
+      // students: [{id, first_name, last_name, grade_level}].
+      _lowGradeRows({ quarterId, isCurrent, enrollments, snapshots, students, teacherName = {} }) {
+        const snapBy = new Map();
+        for (const s of snapshots || []) if (s.quarter_id === quarterId) snapBy.set(s.enrollment_id, s);
+        const studentBy = new Map((students || []).map(s => [s.id, s]));
+        const byKey = new Map();
+        for (const e of enrollments || []) {
+          const cls = e.classes;
+          if (!cls || cls.on_report_card === false) continue;
+          const st = studentBy.get(e.student_id);
+          if (!st) continue;
+          const snap = snapBy.get(e.id);
+          const live = !snap && !!isCurrent && e.status === 'active' && cls.status !== 'closed';
+          let grade = snap ? snap.class_grade : live ? e.class_grade : null;
+          // 0 means "no grade" (the rounding floor is 55), as on the report card.
+          if (grade === 0 || grade == null || grade === '') continue;
+          grade = Number(grade);
+          if (!Number.isFinite(grade) || grade >= 70) continue;
+          // Enrolled twice in one class (left and rejoined): one row, the
+          // saved grade over a live one.
+          const key = e.student_id + '|' + e.class_id;
+          const prev = byKey.get(key);
+          if (prev && !(prev.live && !live)) continue;
+          byKey.set(key, {
+            studentId: st.id,
+            first: st.first_name || '', last: st.last_name || '',
+            name: `${st.first_name || ''} ${st.last_name || ''}`.trim() || 'Student',
+            gradeLevel: st.grade_level ?? '',
+            classId: cls.id, className: cls.name || 'Class', subject: cls.subject || '',
+            teacher: teacherName[cls.teacher_id] || '',
+            grade: Math.round(grade * 10) / 10, letter: this.percentageToLetter(grade), live,
+          });
+        }
+        return [...byKey.values()].sort((a, b) => a.last.localeCompare(b.last) || a.first.localeCompare(b.first)
+          || a.studentId.localeCompare(b.studentId) || a.grade - b.grade);
+      }
+
+      // Narrow the rows. studentIds: a Set, or null for everyone. bandsOff:
+      // grade band codes unticked; with any unticked, only students in a
+      // ticked band are kept. Pure.
+      _lowGradeFilter(rows, { studentIds = null, bandsOff = new Set(), bands = [] } = {}) {
+        return (rows || []).filter(r => {
+          if (studentIds && studentIds.size && !studentIds.has(r.studentId)) return false;
+          if (bandsOff.size) {
+            const band = this._studentGradeBand(r.gradeLevel, bands);
+            if (!band || bandsOff.has(band.code)) return false;
+          }
+          return true;
+        });
+      }
+
+      // The list as a spreadsheet. Pure.
+      _lowGradeCsv(rows) {
+        const cell = v => {
+          const s = String(v ?? '');
+          // A leading = + - @ would be run as a formula by a spreadsheet.
+          const safe = /^[=+\-@]/.test(s) ? "'" + s : s;
+          return /[",\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
+        };
+        return [['Student', 'Grade level', 'Class', 'Subject', 'Teacher', 'Percent', 'Letter', 'Grade from'].join(','),
+          ...rows.map(r => [r.name, r.gradeLevel, r.className, r.subject, r.teacher, r.grade, r.letter,
+            r.live ? 'Live (quarter in progress)' : 'Saved quarter grade'].map(cell).join(','))].join('\n');
+      }
+
+      async openLowGrades() {
+        if (this.userInfo?.profile?.user_type !== 'admin') {
+          this.showNotification('The D or below check is admin-only', 'info');
+          return;
+        }
+        this.showModal('low-grades', '📉 D or below',
+          `<div style="padding: 20px; text-align: center; color: var(--muted);">Loading quarters and students…</div>`);
+        try {
+          const sb = this.auth.supabase;
+          const [quarters, students, bands] = await Promise.all([
+            this.fetchAllRows((from, to) => sb.from('quarters').select('id, name, school_year, start_date, end_date, is_current')
+              .order('start_date', { ascending: false }).range(from, to)),
+            this.fetchAllRows((from, to) => sb.from('user_profiles')
+              .select('id, first_name, last_name, grade_level, student_status').eq('user_type', 'student')
+              .order('id').range(from, to)),
+            this.loadGradeBands().catch(() => []),
+          ]);
+          const today = this._localDateStr(new Date());
+          // The quarter in progress, else the latest that has started.
+          const pick = quarters.find(q => q.is_current)
+            || quarters.find(q => !q.start_date || String(q.start_date).slice(0, 10) <= today) || quarters[0];
+          let bandsOff = [];
+          try { bandsOff = JSON.parse(localStorage.getItem('lowGradesBandsOff') || '[]'); } catch (_) {}
+          this._lowGrades = { quarters, students, bands: bands || [], quarterId: pick?.id || '', studentIds: new Set(),
+            bandsOff: new Set(Array.isArray(bandsOff) ? bandsOff : []), by: 'student', cache: new Map(), shown: [] };
+          this._lowGradesShell();
+          if (pick) await this._lowGradesLoad();
+        } catch (e) {
+          const body = document.querySelector('#modal-low-grades .modal-content');
+          if (body) body.innerHTML = `<div style="color: var(--danger);">Could not load: ${this.escapeHtml(e?.message || String(e))}</div>`;
+        }
+      }
+
+      // The controls; the list below them is redrawn on its own.
+      _lowGradesShell() {
+        const s = this._lowGrades;
+        const esc = t => this.escapeHtml(String(t ?? ''));
+        this.showModal('low-grades', '📉 D or below', `
+          <div style="display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin-bottom: 12px; font-size: 14px;">
+            <label>Quarter
+              <select id="low-grades-quarter" onchange="app._lowGrades.quarterId = this.value; app._lowGradesLoad()" style="margin-left: 6px;">
+                ${s.quarters.map(q => `<option value="${esc(q.id)}"${q.id === s.quarterId ? ' selected' : ''}>${esc(q.name || 'Quarter')}${q.school_year ? ' · ' + esc(q.school_year) : ''}${q.is_current ? ' (current)' : ''}</option>`).join('')}
+              </select></label>
+            <span>Group by
+              <label style="margin-left: 6px; cursor: pointer;"><input type="radio" name="low-grades-by" value="student" ${s.by === 'student' ? 'checked' : ''} onchange="app._lowGrades.by = 'student'; app._lowGradesRender()"> Student</label>
+              <label style="margin-left: 6px; cursor: pointer;"><input type="radio" name="low-grades-by" value="class" ${s.by === 'class' ? 'checked' : ''} onchange="app._lowGrades.by = 'class'; app._lowGradesRender()"> Class</label>
+            </span>
+          </div>
+          ${s.bands.length ? `<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-bottom: 12px; font-size: 14px;">
+              <span style="color: var(--muted);">Grade bands:</span>
+              ${s.bands.map(b => `<label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+                <input type="checkbox" class="low-grades-band" value="${esc(b.code)}" ${s.bandsOff.has(b.code) ? '' : 'checked'} onchange="app._lowGradesBand(this.value, this.checked)"> ${esc(b.label)}</label>`).join('')}
+            </div>` : ''}
+          <div style="margin-bottom: 12px; font-size: 14px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+              <span style="color: var(--muted);">Students:</span>
+              <span id="low-grades-chosen"></span>
+              <input type="text" id="low-grades-find" placeholder="Add a student…" autocomplete="off" oninput="app._lowGradesSuggest(this.value)"
+                style="padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--text); min-width: 170px;">
+            </div>
+            <div id="low-grades-suggest" style="display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;"></div>
+          </div>
+          <div id="low-grades-results" style="max-height: 55vh; overflow-y: auto;"></div>
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; flex-wrap: wrap;">
+            <button class="btn btn-secondary" id="low-grades-csv" onclick="app._lowGradesDownload()">⬇️ Download CSV</button>
+            <button class="btn btn-primary" onclick="app.closeModal('low-grades')">Close</button>
+          </div>`);
+        this._lowGradesChosen();
+      }
+
+      // One quarter's data, read once per opening.
+      async _lowGradesLoad() {
+        const s = this._lowGrades;
+        if (!s) return;
+        const host = document.getElementById('low-grades-results');
+        const quarter = s.quarters.find(q => q.id === s.quarterId);
+        if (!quarter) return;
+        if (!s.cache.has(quarter.id)) {
+          if (host) host.innerHTML = `<div style="padding: 16px; color: var(--muted);">Reading ${this.escapeHtml(quarter.name || 'the quarter')}…</div>`;
+          try {
+            const sb = this.auth.supabase;
+            const [snapshots, enrollments] = await Promise.all([
+              this.fetchAllRows((from, to) => sb.from('quarter_grade_snapshots')
+                .select('enrollment_id, quarter_id, class_grade').eq('quarter_id', quarter.id).order('enrollment_id').range(from, to)),
+              this.fetchAllRows((from, to) => sb.from('class_enrollments')
+                .select('id, student_id, class_id, status, class_grade, classes(id, name, subject, teacher_id, status, on_report_card)')
+                .in('status', ['active', 'archived']).order('id').range(from, to)),
+            ]);
+            const teacherIds = [...new Set(enrollments.map(e => e.classes?.teacher_id).filter(Boolean))];
+            const teacherName = {};
+            for (const ids of this._chunk(teacherIds)) {
+              const { data: t } = await this.supabaseQuery(() => sb.from('user_profiles').select('id, first_name, last_name').in('id', ids));
+              (t || []).forEach(p => { teacherName[p.id] = `${p.first_name || ''} ${p.last_name || ''}`.trim(); });
+            }
+            s.cache.set(quarter.id, this._lowGradeRows({ quarterId: quarter.id, isCurrent: !!quarter.is_current,
+              enrollments, snapshots, students: s.students, teacherName }));
+          } catch (e) {
+            if (host) host.innerHTML = `<div style="color: var(--danger);">Could not read the grades: ${this.escapeHtml(e?.message || String(e))}</div>`;
+            return;
+          }
+        }
+        if (this._lowGrades === s && s.quarterId === quarter.id) this._lowGradesRender();
+      }
+
+      _lowGradesRender() {
+        const s = this._lowGrades;
+        const host = document.getElementById('low-grades-results');
+        if (!s || !host) return;
+        const esc = t => this.escapeHtml(String(t ?? ''));
+        const quarter = s.quarters.find(q => q.id === s.quarterId) || {};
+        const rows = this._lowGradeFilter(s.cache.get(quarter.id) || [], { studentIds: s.studentIds, bandsOff: s.bandsOff, bands: s.bands });
+        s.shown = rows;
+        const csv = document.getElementById('low-grades-csv');
+        if (csv) csv.disabled = !rows.length;
+        const qName = esc(quarter.name || 'this quarter');
+        const notStarted = quarter.start_date && String(quarter.start_date).slice(0, 10) > this._localDateStr(new Date());
+        const narrowed = s.studentIds.size || s.bandsOff.size;
+        if (!rows.length) {
+          host.innerHTML = `<div style="padding: 16px; color: var(--muted);">${notStarted
+            ? `${qName} has not started yet, so there are no grades to check.`
+            : `No classes at D or below in ${qName}${narrowed ? ' for the students chosen' : ''}.`}</div>`;
+          return;
+        }
+        const students = new Set(rows.map(r => r.studentId)).size;
+        const letter = r => `<span style="font-weight: 700; color: ${r.letter === 'F' ? 'var(--danger)' : '#f59e0b'};">${esc(r.grade)}% ${esc(r.letter)}</span>`
+          + (r.live ? ` <span title="The quarter is still running: this is the live grade" style="font-size: 11px; color: var(--muted);">live</span>` : '');
+        const lvl = g => (g === '' || g == null ? '' : ` <span style="color: var(--muted); font-weight: 400;">· grade ${esc(g)}</span>`);
+        const groups = new Map();
+        for (const r of rows) {
+          const k = s.by === 'class' ? r.classId : r.studentId;
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(r);
+        }
+        let list = [...groups.values()];
+        if (s.by === 'class') list.sort((a, b) => b.length - a.length || a[0].className.localeCompare(b[0].className));
+        host.innerHTML = `
+          <div style="margin-bottom: 10px; font-size: 14px;"><strong>${rows.length} class${rows.length === 1 ? '' : 'es'}</strong> at D or below,
+            ${students} student${students === 1 ? '' : 's'}, ${qName}.
+            ${quarter.is_current ? `<div style="color: var(--muted); font-size: 12px; margin-top: 4px;">This quarter is still running, so most of these are live grades and can still change.</div>` : ''}
+          </div>
+          ${list.map(g => {
+            const head = s.by === 'class'
+              ? `${esc(g[0].className)}${g[0].teacher ? ` <span style="color: var(--muted); font-weight: 400;">· ${esc(g[0].teacher)}</span>` : ''} <span style="color: var(--muted); font-weight: 400;">· ${g.length}</span>`
+              : `${esc(g[0].name)}${lvl(g[0].gradeLevel)}`;
+            return `<div class="low-grades-group" style="border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;">
+              <div style="font-weight: 600; margin-bottom: 4px;">${head}</div>
+              ${g.map(r => `<div class="low-grades-row" style="display: flex; justify-content: space-between; gap: 10px; font-size: 13px; padding: 3px 0;">
+                <span>${s.by === 'class' ? `${esc(r.name)}${lvl(r.gradeLevel)}` : `${esc(r.className)}${r.teacher ? ` <span style="color: var(--muted);">· ${esc(r.teacher)}</span>` : ''}`}</span>
+                <span style="white-space: nowrap;">${letter(r)}</span></div>`).join('')}
+            </div>`;
+          }).join('')}`;
+      }
+
+      _lowGradesBand(code, on) {
+        const s = this._lowGrades;
+        if (!s) return;
+        if (on) s.bandsOff.delete(code); else s.bandsOff.add(code);
+        try { localStorage.setItem('lowGradesBandsOff', JSON.stringify([...s.bandsOff])); } catch (_) {}
+        this._lowGradesRender();
+      }
+
+      // Names matching what was typed, current students only, up to eight.
+      _lowGradesSuggest(text) {
+        const s = this._lowGrades, host = document.getElementById('low-grades-suggest');
+        if (!s || !host) return;
+        const t = String(text || '').trim().toLowerCase();
+        if (!t) { host.innerHTML = ''; return; }
+        const hits = s.students.filter(st => st.student_status !== 'past' && !s.studentIds.has(st.id)
+          && PortalUI.fullNameKey(st).includes(t)).slice(0, 8);
+        host.innerHTML = hits.length ? hits.map(st => `<button type="button" class="btn btn-secondary small low-grades-pick" onclick="app._lowGradesStudent('${this.jsAttr(st.id)}', true)">+ ${this.escapeHtml(`${st.first_name || ''} ${st.last_name || ''}`.trim())}</button>`).join('')
+          : `<span style="color: var(--muted); font-size: 13px;">No student by that name.</span>`;
+      }
+
+      _lowGradesStudent(id, add) {
+        const s = this._lowGrades;
+        if (!s) return;
+        if (add) s.studentIds.add(id); else s.studentIds.delete(id);
+        const find = document.getElementById('low-grades-find');
+        if (add && find) { find.value = ''; find.focus(); }
+        const sug = document.getElementById('low-grades-suggest');
+        if (sug) sug.innerHTML = '';
+        this._lowGradesChosen();
+        this._lowGradesRender();
+      }
+
+      _lowGradesChosen() {
+        const s = this._lowGrades, host = document.getElementById('low-grades-chosen');
+        if (!s || !host) return;
+        if (!s.studentIds.size) { host.innerHTML = '<strong>All</strong>'; return; }
+        const byId = new Map(s.students.map(st => [st.id, st]));
+        host.innerHTML = [...s.studentIds].map(id => {
+          const st = byId.get(id) || {};
+          return `<span class="low-grades-chip" style="display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border-radius: 12px; background: rgba(106,169,255,0.18); margin-right: 4px;">
+            ${this.escapeHtml(`${st.first_name || ''} ${st.last_name || ''}`.trim() || 'Student')}
+            <button type="button" aria-label="Remove" onclick="app._lowGradesStudent('${this.jsAttr(id)}', false)" style="border: none; background: transparent; color: inherit; cursor: pointer; font-size: 15px;">×</button></span>`;
+        }).join('') + `<button type="button" class="btn btn-secondary small" onclick="app._lowGrades.studentIds.clear(); app._lowGradesChosen(); app._lowGradesRender()">All students</button>`;
+      }
+
+      _lowGradesDownload() {
+        const s = this._lowGrades;
+        if (!s?.shown?.length) return;
+        const quarter = s.quarters.find(q => q.id === s.quarterId) || {};
+        const blob = new Blob([this._lowGradeCsv(s.shown)], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `d-or-below-${String(quarter.name || 'quarter').replace(/[^\w-]+/g, '-')}.csv`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      }
+
       // The admin action: Reports > Check report cards.
       // The check stays until the admin presses Close or Check again: following
       // a link to a class hides the window and leaves a "Back to report card
@@ -40914,6 +41200,18 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div>
                       <div style="font-weight: 600; font-size: 14px;">Announcements</div>
                       <div style="color: var(--muted); font-size: 11px;">Banners on a schedule</div>
+                    </div>
+                    </div>
+                  </div>
+
+                <div class="card" style="cursor: pointer; padding: 14px; border-left: 3px solid #f5576c; transition: background 0.2s;"
+                     onmouseover="this.style.background='rgba(245, 87, 108, 0.1)'" onmouseout="this.style.background='var(--card)'"
+                     onclick="app.openLowGrades()">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 24px;">📉</span>
+                    <div>
+                      <div style="font-weight: 600; font-size: 14px;">D or Below</div>
+                      <div style="color: var(--muted); font-size: 11px;">Classes under a C, by quarter</div>
                     </div>
                     </div>
                   </div>

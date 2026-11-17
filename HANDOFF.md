@@ -6495,3 +6495,17 @@ confirmation names the later weeks; undo puts them back too).
   in the Workbook Pages journeys now tolerates a dialog closing before its 100 ms editor
   set-up, which made them fail intermittently.
 **Needs:** nothing (no database change).
+
+## 2026-11-17 — Jordan's Claude
+**Admin → 📉 D or Below.** Pick a quarter and it lists every class a student has below 70%
+(a D or an F; the school has no D+/D-), the same line the report card marks "at risk".
+Narrow it by grade band or by naming students; group by student or by class; download what
+is shown as a CSV.
+- The grade is the one the report card prints: the saved quarter grade, or for the quarter
+  still running, the live class grade (marked "live", with a note that it can change).
+- Left out, as on the report card: classes taken off report cards, a 0 (which means no
+  grade), and a closed class's live grade.
+- Tests: `tests/low-grades.test.js`, `debug-tools/low-grades-journeys.cjs` (8).
+- Unrelated: `tests/assignment-organization-browser.test.js` needs Playwright's own
+  Chromium download on this machine (it ignores `PAGES_CHROME`), so it fails here.
+**Needs:** nothing (reads only; no database change).
