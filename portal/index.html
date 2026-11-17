@@ -26217,6 +26217,8 @@ Students you had withdrawn stay withdrawn.`)) {
             }
           }
           this._pagesCtx = isPagesGrading && pagesRows ? { edit: assignmentId, rows: pagesRows, loaded: true } : null;
+          // Later assignments that carry on from this one get the change too.
+          const pagesFollowing = isPagesGrading && pagesRows ? await this._pagesFollowingCount(assignmentId) : 0;
 
           // The RTC reward is paid when a submission is first graded, at the
           // amount set then. Changing it afterwards would pay the rest of the
@@ -26320,6 +26322,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   ${pagesLoadFailed
                     ? `<p style="color: var(--danger); font-size: 13px;">Each student's pages could not be loaded, so they cannot be changed here right now. Saving keeps them as they are.</p>`
                     : `<div id="pages-targets" style="margin-top: 12px; overflow-x: auto;"></div>
+                       ${this._pagesFollowingBox(pagesFollowing)}
                        <small style="color: var(--muted); display: block; margin-top: 6px;">
                          A grade already given is not recalculated when you change pages; change it on the grading screen.
                        </small>`}` : ''}
@@ -26508,6 +26511,18 @@ Students you had withdrawn stay withdrawn.`)) {
             }
             pagesChanges = changes;
           }
+          // Worked out before saving too, so a failed read stops the save
+          // rather than leaving the later weeks out of step.
+          let pagesFollowingPlan = null;
+          if (pagesChanges.length && document.getElementById('pages-carry-following')?.checked) {
+            try {
+              pagesFollowingPlan = await this._pagesFollowingPlan(assignmentId,
+                pagesChanges.map(c => ({ student_id: c.id, was: c.before, now: c.target })));
+            } catch (e) {
+              this.showNotification('Could not read the later assignments, so nothing was saved: ' + e.message, 'error');
+              return;
+            }
+          }
 
           // An assignment has no quarter column: its DUE DATE decides which
           // quarter it belongs to. Create checks that and clamps the picker;
@@ -26610,6 +26625,15 @@ Students you had withdrawn stay withdrawn.`)) {
                 { onConflict: 'assignment_id,student_id' }));
             if (pagesError) throw new Error('The assignment saved, but the pages did not: ' + pagesError.message);
             pagesNote = await this._pagesEditReportGraded(assignmentId, pagesChanges);
+            if (pagesFollowingPlan) {
+              try {
+                await this._pagesApplyFollowing(pagesFollowingPlan);
+                const more = this._pagesFollowingText(pagesFollowingPlan, new Map(pagesChanges.map(c => [c.id, c.name])));
+                if (more) pagesNote = { ...pagesNote, text: pagesNote.text + ' ' + more };
+              } catch (e) {
+                pagesNote = { type: 'error', text: pagesNote.text + ' The later assignments did not all update (' + e.message + '). Check their pages on each one.' };
+              }
+            }
           }
           this._pagesCtx = null;
 
@@ -28106,6 +28130,7 @@ Students you had withdrawn stay withdrawn.`)) {
           const a = aRes.data, v = vRes.data || null, s = sRes.data || {};
           const name = `${s.first_name || ''} ${s.last_name || ''}`.trim() || 'this student';
           this._studentVersionCtx = { assignment: a, version: v, studentId, name };
+          const following = a.grading_type === 'pages' ? await this._pagesFollowingCount(a.id) : 0;
 
           const content = `
             <div>
@@ -28152,6 +28177,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   </small>
                 </div>` : ''}
               </div>
+              ${this._pagesFollowingBox(following)}
               <div style="display: flex; gap: 10px; margin-top: 20px; justify-content: flex-end; flex-wrap: wrap;">
                 <button class="btn btn-secondary" onclick="app.closeModal('student-version'); app.viewSubmissions('${assignmentId}')">Cancel</button>
                 ${v ? `<button class="btn btn-secondary" onclick="app.saveStudentVersion(true)">↩️ Use the class version</button>` : ''}
@@ -28244,11 +28270,31 @@ Students you had withdrawn stay withdrawn.`)) {
             }
           }
 
+          // Their pages moved: the later assignments that carry on from this
+          // one move with them (read before saving, so a failed read saves
+          // nothing).
+          let following = null;
+          const pv = ctx.version || {};
+          if (row && 'page_start' in row && a.grading_type === 'pages' && document.getElementById('pages-carry-following')?.checked
+              && (row.page_start !== (pv.page_start ?? null) || row.page_end !== (pv.page_end ?? null)
+                || row.page_label !== (pv.page_label ?? null))) {
+            following = await this._pagesFollowingPlan(a.id, [{ student_id: studentId,
+              was: { page_start: pv.page_start ?? null, page_end: pv.page_end ?? null, page_label: pv.page_label ?? null },
+              now: { page_start: row.page_start, page_end: row.page_end, page_label: row.page_label } }]);
+          }
+
           if (row) {
             const { error } = await sb.from('assignment_student_versions')
               .upsert(row, { onConflict: 'assignment_id,student_id' });
             if (error) throw error;
-            this.showNotification(`Saved ${name}'s version`, 'success');
+            let more = '';
+            if (following) {
+              try {
+                await this._pagesApplyFollowing(following);
+                more = this._pagesFollowingText(following, new Map([[studentId, name]]));
+              } catch (e) { more = `The later assignments did not all update (${e.message}). Check their pages on each one.`; }
+            }
+            this.showNotification(`Saved ${name}'s version.${more ? ' ' + more : ''}`, more.startsWith('The later') ? 'warning' : 'success');
           } else {
             // Nothing differs from the class: no row, so class edits flow through.
             const { error } = await sb.from('assignment_student_versions')
@@ -31853,9 +31899,13 @@ Students you had withdrawn stay withdrawn.`)) {
         const changes = [], problems = [];
         for (const r of this._pagesCtx?.rows || []) {
           const w = r.was || {};
+          // What they had, in the row's own shape, for carrying the change on.
+          const before = Number.isInteger(w.start) && Number.isInteger(w.count)
+            ? { page_start: w.start, page_end: w.start + w.count - 1, page_label: null }
+            : { page_start: null, page_end: null, page_label: w.label || null };
           if (r.label) {
             if (r.label === w.label) continue;
-            changes.push({ name: r.name, id: r.id,
+            changes.push({ name: r.name, id: r.id, before,
               target: { student_id: r.id, page_start: null, page_end: null, page_label: r.label.slice(0, 80) } });
             continue;
           }
@@ -31867,7 +31917,7 @@ Students you had withdrawn stay withdrawn.`)) {
             continue;
           }
           if (r.start === w.start && r.count === w.count && !w.label) continue;
-          changes.push({ name: r.name, id: r.id,
+          changes.push({ name: r.name, id: r.id, before,
             target: { student_id: r.id, page_start: r.start, page_end: r.start + r.count - 1, page_label: null } });
         }
         return { changes, problems };
@@ -31929,6 +31979,165 @@ Students you had withdrawn stay withdrawn.`)) {
           targets.push({ student_id: r.id, page_start: r.start, page_end: r.start + r.count - 1, page_label: null });
         }
         return { targets, blank };
+      }
+
+      // ---- Carrying a page change forward ---------------------------------
+      //
+      // 2026-11-17, Jordan: "allow it so you can adjust the page of an earlier
+      // assignment and it updates all the ones following it". Each Pages
+      // assignment remembers the one it carries on from, so changing a
+      // student's pages on week 2 moves that student's pages on week 3, 4...
+      // by the same amount, keeping each week's own page count and any gap the
+      // teacher set by hand. A later week the student has already turned in is
+      // left alone and the chain stops there for them: their work was measured
+      // against those pages, so moving them would change what they were asked
+      // to do after they did it.
+
+      // One student's target on the next assignment, given how their target on
+      // the one before changed (was -> now). null = leave it. Pure.
+      _pagesShift(was, now, v) {
+        if (!v) return null;
+        const num = t => t && Number.isInteger(t.page_start) && Number.isInteger(t.page_end);
+        if (num(v)) {
+          if (!num(now)) return null;
+          // Shift by how far the end moved; with no old pages to measure
+          // from, start the week right after the new end.
+          const d = num(was) ? now.page_end - was.page_end : now.page_end + 1 - v.page_start;
+          if (!d) return null;
+          const s = v.page_start + d, e = v.page_end + d;
+          if (s < 0 || e > 5000) return null;
+          return { page_start: s, page_end: e, page_label: null };
+        }
+        // "Week 3" -> "Week 4" chains follow a relabel the same way.
+        if (v.page_label && was?.page_label && now?.page_label && v.page_label === this._pagesNextLabel(was.page_label)) {
+          const next = this._pagesNextLabel(now.page_label);
+          return next && next !== v.page_label ? { page_start: null, page_end: null, page_label: next } : null;
+        }
+        return null;
+      }
+
+      // Every later write, parent before child. changes: Map studentId ->
+      // {was, now}. children: Map assignmentId -> [assignments carrying on
+      // from it]. versions: Map assignmentId -> Map studentId -> row.
+      // turnedIn: Set of "assignmentId|studentId". Pure.
+      _pagesFollowingTargets(rootId, changes, children, versions, turnedIn) {
+        const writes = [], held = [], seen = new Set([rootId]);
+        const walk = (parentId, ch) => {
+          for (const a of children.get(parentId) || []) {
+            if (seen.has(a.id)) continue;
+            seen.add(a.id);
+            const next = new Map(), targets = [];
+            for (const [sid, c] of ch) {
+              const v = versions.get(a.id)?.get(sid);
+              const t = this._pagesShift(c.was, c.now, v);
+              if (!t) continue;
+              if (turnedIn.has(a.id + '|' + sid)) { held.push({ assignment: a, student_id: sid }); continue; }
+              targets.push({ student_id: sid, ...t,
+                was: { page_start: v.page_start ?? null, page_end: v.page_end ?? null, page_label: v.page_label ?? null } });
+              next.set(sid, { was: v, now: t });
+            }
+            if (targets.length) writes.push({ assignment: a, targets });
+            if (next.size) walk(a.id, next);
+          }
+        };
+        walk(rootId, changes);
+        return { writes, held };
+      }
+
+      // How many assignments carry on directly from this one (to decide
+      // whether to offer carrying a change forward at all).
+      async _pagesFollowingCount(assignmentId) {
+        try {
+          const { count, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignments')
+            .select('id', { count: 'exact', head: true }).eq('pages_continues_from', assignmentId));
+          return error ? 0 : (count || 0);
+        } catch (_) { return 0; }
+      }
+
+      // Read everything needed and work out the writes; writes nothing.
+      // changes: [{student_id, was, now}] with was/now as {page_start,
+      // page_end, page_label}.
+      async _pagesFollowingPlan(assignmentId, changes) {
+        const ch = new Map((changes || []).map(c => [c.student_id, c]));
+        if (!ch.size) return { writes: [], held: [] };
+        // The chain, one generation at a time (a series is a straight line,
+        // but a fork is followed too).
+        const children = new Map(), all = [];
+        let frontier = [assignmentId];
+        for (let depth = 0; frontier.length && depth < 60; depth++) {
+          const { data, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignments')
+            .select('id, title, due_date, pages_continues_from').in('pages_continues_from', frontier));
+          if (error) throw error;
+          const fresh = (data || []).filter(a => a.id !== assignmentId && !all.some(x => x.id === a.id));
+          fresh.sort((x, y) => String(x.due_date || '').localeCompare(String(y.due_date || '')));
+          for (const a of fresh) {
+            if (!children.has(a.pages_continues_from)) children.set(a.pages_continues_from, []);
+            children.get(a.pages_continues_from).push(a);
+          }
+          all.push(...fresh);
+          frontier = fresh.map(a => a.id);
+        }
+        if (!all.length) return { writes: [], held: [] };
+        const versions = await this._pagesLoadTargets(all.map(a => a.id));
+        // Turned in: by profile id or sign-in id, as submissions may hold either.
+        const sids = [...ch.keys()];
+        const alias = new Map(sids.map(id => [id, id]));
+        const { data: profiles } = await this.supabaseQuery(() => this.auth.supabase.from('user_profiles')
+          .select('id, auth_user_id').in('id', sids));
+        for (const p of profiles || []) if (p.auth_user_id) alias.set(p.auth_user_id, p.id);
+        const turnedIn = new Set();
+        const ids = all.map(a => a.id);
+        for (let i = 0; i < ids.length; i += 100) {
+          const { data: subs, error } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_submissions')
+            .select('assignment_id, student_id, status, grade, submitted_at')
+            .in('assignment_id', ids.slice(i, i + 100)).in('student_id', [...alias.keys()]));
+          if (error) throw error;
+          for (const s of subs || []) {
+            if (s.grade != null || s.submitted_at || ['submitted', 'graded'].includes(s.status)) {
+              turnedIn.add(s.assignment_id + '|' + alias.get(s.student_id));
+            }
+          }
+        }
+        return this._pagesFollowingTargets(assignmentId, ch, children, versions, turnedIn);
+      }
+
+      // Write the plan: only the page columns, so each student's own due
+      // date, points and instructions on those rows stay as they are.
+      // restore=true writes each row back to how it was (Riven's undo).
+      async _pagesApplyFollowing(plan, restore = false) {
+        for (const w of plan.writes) {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_student_versions')
+            .upsert(w.targets.map(t => {
+              const p = restore ? t.was : t;
+              return { assignment_id: w.assignment.id, student_id: t.student_id,
+                page_start: p.page_start, page_end: p.page_end, page_label: p.page_label };
+            }), { onConflict: 'assignment_id,student_id' }));
+          if (error) throw error;
+        }
+      }
+
+      // One sentence for the save message. names: Map studentId -> name.
+      _pagesFollowingText(plan, names) {
+        const out = [];
+        if (plan.writes.length) {
+          const who = new Set(plan.writes.flatMap(w => w.targets.map(t => t.student_id)));
+          out.push(`Moved to match in ${plan.writes.length} later assignment${plan.writes.length === 1 ? '' : 's'} `
+            + `(${plan.writes.map(w => w.assignment.title || 'Untitled').join(', ')})`
+            + (who.size > 1 ? ` for ${who.size} students.` : '.'));
+        }
+        if (plan.held.length) {
+          out.push('Left as they were, already turned in: '
+            + plan.held.map(h => `${names?.get(h.student_id) || 'a student'} on ${h.assignment.title || 'Untitled'}`).join(', ') + '.');
+        }
+        return out.join(' ');
+      }
+
+      // The offer under a page editor. Shown only when something carries on.
+      _pagesFollowingBox(count) {
+        return count ? `<label style="display: flex; gap: 8px; align-items: flex-start; margin-top: 10px; font-size: 13px; cursor: pointer;">
+            <input type="checkbox" id="pages-carry-following" checked style="margin-top: 2px;">
+            <span>Also move the pages in the later assignments that carry on from this one, by the same amount. Work already turned in is left as it is.</span>
+          </label>` : '';
       }
 
       // Curriculum subjects whose skills a game saves under this subject. The
@@ -60613,7 +60822,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-12·a';
+      const RIVEN_BUILD = '2026-11-17·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -75171,10 +75380,25 @@ Students you had withdrawn stay withdrawn.`)) {
         ? `They already have a <b>${esc(sub.grade)}</b> on it, which stays as it is - change it on the grading screen if it should follow.`
         : sub ? 'They have turned it in and it is waiting for you to grade.' : '';
 
+      // The later weeks that carry on from this one move by the same amount,
+      // as in the edit form; named here so nothing moves unseen.
+      let following = { writes: [], held: [] };
+      try {
+        following = await this._pagesFollowingPlan(a.id, [{ student_id: student.id,
+          was: { page_start: cur?.page_start ?? null, page_end: cur?.page_end ?? null, page_label: null },
+          now: { page_start: start, page_end: end, page_label: null } }]);
+      } catch (e) {
+        this.terminalPrintError('Could not read the later assignments, so nothing changed: ' + e.message);
+        return;
+      }
+      const followText = this._pagesFollowingText(following, new Map([[student.id, student.full_name]]))
+        .replace(/^Moved to match/, 'Also moves to match');
+
       this._requestConfirmation(
         `Set <b>${esc(student.full_name)}</b>'s pages on <b>${esc(a.title)}</b>${cls ? ` (${esc(cls.name)})` : ''}?<br>` +
         `${esc(was)} → <b>${esc(this._pagesEndText(start, n))}</b> (${n} page${n === 1 ? '' : 's'})` +
-        (note ? `<br><span style="font-size: 12px;">${note}</span>` : ''),
+        (note ? `<br><span style="font-size: 12px;">${note}</span>` : '') +
+        (followText ? `<br><span style="font-size: 12px;">${esc(followText)}</span>` : ''),
         async () => {
           let error;
           if (cur) {
@@ -75185,14 +75409,19 @@ Students you had withdrawn stay withdrawn.`)) {
               .insert({ assignment_id: a.id, student_id: student.id, page_start: start, page_end: end }));
           }
           if (error) throw this._rivenPolicyError(error);
+          let movedLater = 0;
+          try { await this._pagesApplyFollowing(following); movedLater = following.writes.length; }
+          catch (e) { this.terminalPrintError('The later assignments did not all move: ' + e.message); }
           this._pushUndo(`${student.full_name}'s pages on ${a.title}`, async () => {
             const q = sb.from('assignment_student_versions');
             const { error: r } = cur
               ? await q.update({ page_start: cur.page_start, page_end: cur.page_end }).eq('id', cur.id)
               : await q.delete().eq('assignment_id', a.id).eq('student_id', student.id);
             if (r) throw r;
+            if (movedLater) await this._pagesApplyFollowing(following, true);
           });
-          this._naturalSuccess([`${student.full_name} is on ${this._pagesEndText(start, n)} for ${a.title}.`]);
+          this._naturalSuccess([`${student.full_name} is on ${this._pagesEndText(start, n)} for ${a.title}.`
+            + (movedLater ? ` ${movedLater} later assignment${movedLater === 1 ? '' : 's'} moved to match.` : '')]);
         });
     }
 

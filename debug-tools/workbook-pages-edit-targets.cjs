@@ -12,7 +12,7 @@ const {pagesDatabase,pagesSeed}=require('../tests/workbook-pages-fixtures');
     const page=await browser.newPage({timezoneId:'America/Los_Angeles'});
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.route('https://**',r=>r.abort());
-    await page.addInitScript(()=>{window.Quill=class {constructor(selector){this.root=document.querySelector(selector);this.root.innerHTML='<p><br></p>';}on(){} };});
+    await page.addInitScript(()=>{window.Quill=class {constructor(selector){this.root=document.querySelector(selector)||document.createElement('div');this.root.innerHTML='<p><br></p>';}on(){} };});
     await page.goto(process.env.PORTAL_URL || 'http://localhost:8780/portal/index.html');
     await page.waitForFunction(()=>window.app?.auth);
     await page.evaluate(`window.makePagesDatabase=${pagesDatabase.toString()}`);

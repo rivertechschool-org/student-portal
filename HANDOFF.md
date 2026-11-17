@@ -6477,3 +6477,21 @@ browser (it comes back for them only if the banner is edited). The script is
   own sign-up). Students don't get that one.
 - Tests: `tests/announcements.test.js`, `debug-tools/announcement-journeys.cjs` (14).
 **Needs:** nothing (the backend migration was applied the same day).
+
+## 2026-11-17 — Jordan's Claude
+**Workbook Pages: changing an earlier week moves the weeks after it.** When a student's
+pages change on a Pages assignment, the assignments that carry on from it ("Carries on
+from") move that student's pages by the same amount, keeping each week's own page count
+and any gap set by hand. It works from all three places pages are changed: Edit
+Assignment (a ticked "Also move the pages in the later assignments…" box, shown only when
+something carries on), a student's ✏️ Adjust screen, and Riven's "set X's pages" (the
+confirmation names the later weeks; undo puts them back too).
+- A later week the student has **already turned in** is left alone, and the chain stops
+  there for them: their work was measured against those pages. The save message names
+  who was left alone and where.
+- "Week 3" → "Week 4" style word targets follow a relabel the same way.
+- Tests: `tests/workbook-pages-carry-forward.test.js`, `tests/riven-set-pages.test.js`
+  (extended), `debug-tools/workbook-pages-carry-forward.cjs` (5 journeys). The editor stub
+  in the Workbook Pages journeys now tolerates a dialog closing before its 100 ms editor
+  set-up, which made them fail intermittently.
+**Needs:** nothing (no database change).

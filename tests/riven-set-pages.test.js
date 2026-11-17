@@ -14,6 +14,7 @@ function method(name) {
   let start = html.indexOf(`\n    ${name}(`);
   if (start < 0) start = html.indexOf(`\n    async ${name}(`);
   if (start < 0) start = html.indexOf(`\n      ${name}(`);
+  if (start < 0) start = html.indexOf(`\n      async ${name}(`);
   if (start < 0) throw new Error('not found: ' + name);
   let i = html.indexOf('{', start), depth = 0;
   for (; i < html.length; i++) {
@@ -29,7 +30,8 @@ const ok = (label, cond, detail = '') => {
   else { fail++; console.log(`  FAIL  ${label}${detail ? '\n        ' + detail : ''}`); }
 };
 
-const app = eval(`({ ${['_rivenPagesSpec', 'terminalSetPages', '_rivenResolvedStudent', '_pagesEndText'].map(method).join(',\n')} })`);
+const app = eval(`({ ${['_rivenPagesSpec', 'terminalSetPages', '_rivenResolvedStudent', '_pagesEndText',
+  '_pagesShift', '_pagesFollowingTargets', '_pagesFollowingPlan', '_pagesApplyFollowing', '_pagesFollowingText', '_pagesNextLabel', '_pagesLoadTargets'].map(method).join(',\n')} })`);
 
 // ---- reading the sentence ----
 const spec = s => JSON.stringify(app._rivenPagesSpec(s));
@@ -57,10 +59,20 @@ function makeDb(tables) {
       maybeSingle() { single = true; return q; },
       update(p) { op = 'update'; payload = p; return q; },
       insert(p) { op = 'insert'; payload = p; return q; },
+      upsert(p) { op = 'upsert'; payload = p; return q; },
+      order() { return q; },
+      range() { return q; },
       delete() { op = 'delete'; return q; },
       then(res, rej) {
         try {
           if (op === 'insert') { db[name].push({ id: 'new' + db[name].length, ...copy(payload) }); return Promise.resolve({ error: null }).then(res, rej); }
+          if (op === 'upsert') {
+            for (const p of [].concat(payload)) {
+              const r = db[name].find(x => x.assignment_id === p.assignment_id && x.student_id === p.student_id);
+              if (r) Object.assign(r, copy(p)); else db[name].push({ id: 'new' + db[name].length, ...copy(p) });
+            }
+            return Promise.resolve({ error: null }).then(res, rej);
+          }
           if (op === 'update') { rows().forEach(r => Object.assign(r, payload)); return Promise.resolve({ error: null }).then(res, rej); }
           if (op === 'delete') { const keep = db[name].filter(r => !filters.every(f => f(r))); db[name] = keep; return Promise.resolve({ error: null }).then(res, rej); }
           let out = rows().map(copy);
@@ -82,6 +94,7 @@ function setup(tables) {
   const said = { errors: [], messages: [], confirm: null, undo: null, success: [] };
   Object.assign(app, {
     auth: { supabase: { from: stub.from } },
+    supabaseQuery: fn => fn(),
     _terminalAllClasses: [{ id: 'c-math', name: 'Math 7' }, { id: 'c-art', name: 'Art' }],
     _rivenCanManageClass: c => c.id === 'c-math',
     escapeHtml: s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -145,7 +158,25 @@ const base = () => ({
   await said.confirm.fn();
   const v8 = db.assignment_student_versions.find(v => v.id === 'v8');
   ok('a named assignment is the one changed, and "8" in its title is not a page',
-    v8.page_start === 23 && v8.page_end === 28 && v9().page_end === 30, JSON.stringify(v8));
+    v8.page_start === 23 && v8.page_end === 28, JSON.stringify(v8));
+  // 2026-11-17: week 9 carries on from week 8, so his week 9 moves by the
+  // same two pages (same count), and the confirmation said it would.
+  ok('the week after moves to match', v9().page_start === 29 && v9().page_end === 32, JSON.stringify(v9()));
+  ok('named in the confirmation', /Also moves to match in 1 later assignment \(Workbook week 9\)/.test(said.confirm.m), said.confirm.m);
+  ok('and in the result', /1 later assignment moved to match/.test(said.success[0]), said.success[0]);
+  ok('Pella on week 9 is untouched', db.assignment_student_versions.find(v => v.id === 'v9p').page_start === 10);
+  await said.undo();
+  ok('undo puts week 8 back', db.assignment_student_versions.find(v => v.id === 'v8').page_end === 26);
+  ok('undo puts week 9 back too', v9().page_start === 27 && v9().page_end === 30, JSON.stringify(v9()));
+
+  // Already turned in week 9: it stays, and the confirmation says so.
+  const tw = base();
+  tw.assignment_submissions.push({ assignment_id: 'w9', student_id: 'p-noah', status: 'submitted', grade: null, submitted_at: '2026-10-25T10:00:00Z' });
+  ({ db, said } = setup(tw));
+  await run('set noah to 6 pages on workbook week 8', noah);
+  ok('a turned-in week is named as left alone', /already turned in: Noah Wren on Workbook week 9/.test(said.confirm?.m || ''), said.confirm?.m);
+  await said.confirm.fn();
+  ok('and is left alone', v9().page_start === 27 && v9().page_end === 30, JSON.stringify(v9()));
 
   // A student new to the series: a count alone carries on from where they
   // finished the one before.
