@@ -12,9 +12,14 @@
     No sign-in. Three steps, in order: full time or homeschool (homeschool
     stops here: no homeschool conferences at this time), the grade band
     (junior high and high school only), then name, email, students and a
-    time of day. The database checks all of it again, matches the students,
-    holds the earliest free time in that window first come first served, and
-    leaves the request pending for the office. Its answer is the same whether
+    time. The database checks all of it again, matches the students, holds
+    the time picked (brothers and sisters straight after it) first come first
+    served, and leaves the request pending for the office.
+    2026-11-17, Jordan: "have the form reveal available time slots instead of
+    blocks". The open times are listed under the day's blocks; only times
+    with enough back-to-back openings for every name typed are offered. If
+    the database has no times yet (older version), the blocks are offered
+    as before. Its answer is the same whether
     or not anyone matched, so this page never says who goes to the school.
   -->
   <style>
@@ -40,6 +45,15 @@
     .window { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
     .window input { width: 18px; height: 18px; margin: 0; flex: none; }
     .window .full { color: var(--warning); font-size: 12px; }
+    .full { color: var(--warning); font-size: 13px; }
+    .time-group { margin-top: 10px; }
+    .time-group h3 { font-size: 13px; color: var(--muted); font-weight: 600; margin: 0 0 6px; }
+    .times { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+    .time { position: relative; }
+    .time input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .time span { display: block; text-align: center; padding: 10px 6px; border: 2px solid var(--border); border-radius: 8px; cursor: pointer; font-variant-numeric: tabular-nums; }
+    .time input:checked + span { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); font-weight: 700; }
+    .time input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
     .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
     .actions { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-top: 20px; flex-wrap: wrap; }
     .btn { padding: 10px 18px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 15px; cursor: pointer; }
@@ -134,7 +148,8 @@
         }
         state.days = (typeof data === 'string' ? JSON.parse(data) : data) || [];
       }
-      const days = state.days.filter(d => (d.windows || []).length);
+      // A day with open times needs no blocks; an older database sends only blocks.
+      const days = state.days.filter(d => (d.windows || []).length || Array.isArray(d.times));
       if (!days.length) {
         el.innerHTML = `<section class="card stop"><p>Conference sign-up is not open right now. Please check back later.</p>
           <button class="link" onclick="stepBand()">← Back</button></section>`;
@@ -157,9 +172,9 @@
             <label class="field">Student name(s)</label>
             <div id="students"></div>
             <button type="button" class="link" id="add-student" onclick="addStudent()">+ Add another student</button>
-            <div class="hint">Brothers and sisters are booked back to back, so you only come once.</div>
-            <label class="field">Time of day</label>
-            <div class="windows" id="windows" role="radiogroup" aria-label="Time of day"></div>
+            <div class="hint">Brothers and sisters are booked back to back from the time you pick, so you only come once.</div>
+            <label class="field" id="time-label">Time</label>
+            <div id="windows" role="radiogroup" aria-labelledby="time-label"></div>
             <label class="field" for="notes">Anything we should know? <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <textarea id="notes" rows="3" maxlength="500">${esc(f.notes || '')}</textarea>
             <div class="trap" aria-hidden="true"><label>Website <input type="text" id="website" tabindex="-1" autocomplete="off"></label></div>
@@ -188,18 +203,46 @@
     function renderStudents() {
       const box = document.getElementById('students');
       box.innerHTML = state.students.map((s, i) => `<div class="student-row">
-          <input type="text" class="student-name" maxlength="80" placeholder="First and last name" aria-label="Student ${i + 1} name" value="${esc(s)}">
+          <input type="text" class="student-name" maxlength="80" placeholder="First and last name" aria-label="Student ${i + 1} name" value="${esc(s)}" oninput="studentsChanged()">
           ${state.students.length > 1 ? `<button type="button" class="btn" aria-label="Remove student ${i + 1}" onclick="removeStudent(${i})">✕</button>` : ''}
         </div>`).join('');
       document.getElementById('add-student').hidden = state.students.length >= 6;
     }
-    function addStudent() { readStudents(); state.students.push(''); renderStudents(); document.querySelectorAll('.student-name')[state.students.length - 1]?.focus(); }
-    function removeStudent(i) { readStudents(); state.students.splice(i, 1); renderStudents(); }
+    function addStudent() { readStudents(); state.students.push(''); renderStudents(); renderWindows(); document.querySelectorAll('.student-name')[state.students.length - 1]?.focus(); }
+    function removeStudent(i) { readStudents(); state.students.splice(i, 1); renderStudents(); renderWindows(); }
+    // How many times in a row the family needs: one per name typed (at least one).
+    function needed() { return Math.max(1, state.students.filter(x => String(x).trim()).length); }
+    function studentsChanged() {
+      const before = needed();
+      readStudents();
+      if (needed() !== before) renderWindows();
+    }
+
+    // "08:20" -> minutes.
+    const mins = t => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ''); return m ? +m[1] * 60 + +m[2] : NaN; };
+    // The open times that start a run of n back-to-back ones (each starting
+    // when the one before ends, or up to 15 minutes later), as the database
+    // places brothers and sisters.
+    function startsOfRuns(times, n) {
+      const t = (times || []).filter(x => Number.isFinite(mins(x.start)) && Number.isFinite(mins(x.end)));
+      return t.filter((x, i) => {
+        if (i + n > t.length) return false;
+        for (let j = i + 1; j < i + n; j++) {
+          const gap = mins(t[j].start) - mins(t[j - 1].end);
+          if (gap < 0 || gap > 15) return false;
+        }
+        return true;
+      });
+    }
 
     function renderWindows() {
       const day = (state.days || []).find(d => d.id === state.form.day);
       const box = document.getElementById('windows');
       if (!day || !box) return;
+      if (Array.isArray(day.times)) { renderTimes(day, box); return; }
+      // Older database: blocks.
+      document.getElementById('time-label').textContent = 'Time of day';
+      box.className = 'windows';
       if (state.form.window != null && !day.windows.some(w => w.i === state.form.window)) state.form.window = null;
       box.innerHTML = day.windows.map(w => `<label class="window">
           <input type="radio" name="window" value="${w.i}" ${state.form.window === w.i ? 'checked' : ''} onchange="state.form.window = ${Number(w.i)}">
@@ -212,6 +255,30 @@
         </label>`).join('');
     }
 
+    // The open times, under the day's blocks. A pick that no longer fits
+    // (another name typed, or the time went) is dropped.
+    function renderTimes(day, box) {
+      const n = needed();
+      const offer = startsOfRuns(day.times, n);
+      document.getElementById('time-label').textContent = n > 1 ? `Pick a time (your ${n} students go back to back from it)` : 'Pick a time';
+      box.className = '';
+      if (state.form.time && state.form.time !== 'none' && !offer.some(t => t.start === state.form.time)) state.form.time = null;
+      const named = w => w.label === `${clock(w.start)}–${clock(w.end)}` ? w.label : `${w.label} · ${clock(w.start)}–${clock(w.end)}`;
+      const groups = (day.windows || []).map(w => ({ label: named(w),
+        list: offer.filter(t => mins(t.start) >= mins(w.start) && mins(t.start) < mins(w.end)) }));
+      const placed = new Set(groups.flatMap(g => g.list.map(t => t.start)));
+      const other = offer.filter(t => !placed.has(t.start));
+      if (other.length) groups.push({ label: groups.length ? 'Other times' : '', list: other });
+      const chip = t => `<label class="time"><input type="radio" name="time" value="${esc(t.start)}" ${state.form.time === t.start ? 'checked' : ''} onchange="state.form.time = this.value"><span>${esc(clock(t.start))}</span></label>`;
+      box.innerHTML = (offer.length
+          ? groups.filter(g => g.list.length).map(g => `<div class="time-group">${g.label ? `<h3>${esc(g.label)}</h3>` : ''}<div class="times">${g.list.map(chip).join('')}</div></div>`).join('')
+          : `<p class="full" style="margin: 4px 0;">${n > 1 ? `There are no ${n} back-to-back times left on this day.` : 'Every time on this day is taken.'} You can still ask and the office will be in touch.</p>`)
+        + `<label class="window" style="margin-top: 12px;"><input type="radio" name="time" value="none" ${state.form.time === 'none' ? 'checked' : ''} onchange="state.form.time = 'none'"><span>None of these times work for us</span></label>`;
+    }
+
+    // This day offers times (the database is up to date), not blocks.
+    function timesMode() { return Array.isArray((state.days || []).find(d => d.id === state.form.day)?.times); }
+
     async function submitRequest(e) {
       e.preventDefault();
       saveFields();
@@ -221,7 +288,7 @@
       const problem = !String(f.name || '').trim() ? 'Please enter your name.'
         : !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(f.email || '').trim()) ? 'Please enter a valid email address.'
         : !students.length ? 'Please enter at least one student\'s name.'
-        : f.window == null ? 'Please pick a time of day.' : '';
+        : (timesMode() ? !f.time : f.window == null) ? 'Please pick a time.' : '';
       if (problem) { err.textContent = problem; return; }
       err.textContent = '';
       const btn = document.getElementById('submit');
@@ -229,21 +296,29 @@
       const { error } = await sb.rpc('rt_conference_request', {
         p_day: f.day, p_program: state.program, p_band: state.band,
         p_name: f.name.trim(), p_email: f.email.trim(), p_students: students,
-        p_window: f.window, p_notes: (f.notes || '').trim() || null,
+        p_window: timesMode() ? null : f.window, p_notes: (f.notes || '').trim() || null,
         p_trap: document.getElementById('website')?.value || null,
+        // Sent only with times on offer: an older database has no such argument.
+        ...(timesMode() ? { p_time: f.time === 'none' ? null : f.time } : {}),
       });
       if (error) {
         // The database's own words for a refusal (closed day, too many
         // requests); anything else is a plain "try again".
         err.textContent = error.code === '22023' && error.message ? error.message : 'Something went wrong sending your request. Please try again.';
         btn.disabled = false; btn.textContent = 'Request a time';
+        // The time went while they were filling in the form: show what is
+        // open now, and keep everything else they typed.
+        if (timesMode() && /took that time/.test(error.message || '')) {
+          const { data } = await sb.rpc('rt_conference_public_days');
+          if (data) { state.days = (typeof data === 'string' ? JSON.parse(data) : data) || []; renderWindows(); }
+        }
         return;
       }
       const day = state.days.find(d => d.id === f.day);
       el.innerHTML = `<section class="card done">
           <div class="big">✅</div>
           <h2>Request received</h2>
-          <p>Thank you${f.name ? ', ' + esc(f.name.trim().split(' ')[0]) : ''}. We have your request for ${esc(dayLabel(day?.day))}.</p>
+          <p>Thank you${f.name ? ', ' + esc(f.name.trim().split(' ')[0]) : ''}. We have your request for ${esc(dayLabel(day?.day))}${f.time && f.time !== 'none' ? ` at ${esc(clock(f.time))}` : ''}.</p>
           <p class="hint">The office will confirm your conference time by email at <b>${esc(f.email.trim())}</b>.</p>
         </section>`;
     }

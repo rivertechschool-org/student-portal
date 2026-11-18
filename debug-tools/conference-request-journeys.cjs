@@ -70,7 +70,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     await page.locator('.student-name').nth(1).fill('Bram Quillfeather');
     await page.click('#add-student');   // a blank third row is ignored
     await page.click('#submit');
-    assert((await page.innerText('#error')).includes('time of day'));
+    assert((await page.innerText('#error')).includes('pick a time'));
     // Back and forward keeps what was typed.
     await page.click('text=← Back');
     await page.click('button:has-text("High school")');
@@ -104,6 +104,84 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     if (process.env.SHOT) { await page.evaluate(()=>{state.days=null;window.rpcHandlers.rt_conference_public_days=()=>({data:[{id:'d1',day:'2026-11-20',title:'Parent-teacher conferences',windows:[{i:0,label:'Morning',start:'08:20',end:'11:20',open:false},{i:1,label:'Midday',start:'11:20',end:'13:20',open:true}]}],error:null});stepDetails();});
       await page.waitForSelector('#name');await page.screenshot({path:process.env.SHOT.replace('.png','-form.png'),fullPage:true}); }
     assert.deepEqual(errors,[]);
+
+    // ---------------- the public form, with open times (2026-11-17) ----------------
+    // "have the form reveal available time slots instead of blocks"
+    const tp=await browser.newPage({viewport:{width:390,height:844}});
+    const terr=[];tp.on('pageerror',e=>terr.push(e.message));
+    await tp.route('https://**',r=>r.abort());
+    await tp.route('**/shared/supabase.min.js',r=>r.fulfill({contentType:'application/javascript',body:CLIENT_STUB}));
+    const T=(a,b)=>({start:a,end:b});
+    const TDAYS=[{id:'d1',day:'2026-11-20',title:'Parent-teacher conferences',
+      windows:[{i:0,label:'Morning',start:'08:20',end:'11:20',open:true},{i:1,label:'Afternoon',start:'15:00',end:'16:40',open:true}],
+      // 8:20 and 8:40 back to back; 10:00 alone; 3:20, 3:40, 4:00 in a row; 4:40 in no block.
+      times:[T('08:20','08:40'),T('08:40','09:00'),T('10:00','10:20'),T('15:20','15:40'),T('15:40','16:00'),T('16:00','16:20'),T('16:40','17:00')]}];
+    await tp.addInitScript(days=>{window.rpcHandlers={
+      rt_conference_public_days:()=>({data:days,error:null}),
+      rt_conference_request:()=>({data:{ok:true},error:null})};},TDAYS);
+    await tp.goto(BASE+'/conferences/');
+    await tp.click('button.choice:has-text("Full time")');await tp.click('button:has-text("High school")');
+    await tp.waitForSelector('#name');
+    const chips=()=>tp.$$eval('.time span',x=>x.map(e=>e.textContent));
+    const heads=()=>tp.$$eval('.time-group h3',x=>x.map(e=>e.textContent));
+    // 6. One student: every open time, under its block; one outside any block under "Other times".
+    assert.deepEqual(await chips(),['8:20 AM','8:40 AM','10:00 AM','3:20 PM','3:40 PM','4:00 PM','4:40 PM']);
+    assert.deepEqual(await heads(),['Morning · 8:20 AM–11:20 AM','Afternoon · 3:00 PM–4:40 PM','Other times']);
+    assert.equal(await tp.innerText('#time-label'),'Pick a time');
+    // 7. Two students: only times with another straight after.
+    await tp.fill('#name','Maud Ashby');await tp.fill('#email','maud@example.com');
+    await tp.fill('.student-name','Corin Ashby');
+    await tp.click('.time:has-text("10:00 AM")');
+    await tp.click('#add-student');await tp.locator('.student-name').nth(1).fill('Dell Ashby');
+    assert.deepEqual(await chips(),['8:20 AM','3:20 PM','3:40 PM']);
+    assert.equal(await tp.innerText('#time-label'),'Pick a time (your 2 students go back to back from it)');
+    // The 10:00 pick no longer fits, so it is not kept.
+    await tp.click('#submit');
+    assert((await tp.innerText('#error')).includes('pick a time'));
+    // Three: only 3:20 (3:20, 3:40, 4:00).
+    await tp.click('#add-student');await tp.locator('.student-name').nth(2).fill('Fen Ashby');
+    assert.deepEqual(await chips(),['3:20 PM']);
+    await tp.locator('.student-name').nth(2).fill('');
+    assert.deepEqual(await chips(),['8:20 AM','3:20 PM','3:40 PM'],'a name cleared gives the times back');
+    // 8. Send 3:40: the time goes, no block.
+    await tp.click('.time:has-text("3:40 PM")');
+    await tp.click('#submit');
+    await tp.waitForSelector('text=Request received');
+    let tsent=(await tp.evaluate(()=>window.rpcCalls)).find(c=>c.name==='rt_conference_request');
+    assert.deepEqual(tsent.args,{p_day:'d1',p_program:'full_time',p_band:'high_school',p_name:'Maud Ashby',p_email:'maud@example.com',
+      p_students:['Corin Ashby','Dell Ashby'],p_window:null,p_notes:null,p_trap:null,p_time:'15:40'});
+    assert((await tp.innerText('main')).includes('Friday, November 20 at 3:40 PM'));
+    // 9. Taken meanwhile: the message, the times as they are now, and what was typed kept.
+    await tp.reload();
+    await tp.click('button.choice:has-text("Full time")');await tp.click('button:has-text("High school")');
+    await tp.waitForSelector('#name');
+    await tp.fill('#name','Maud Ashby');await tp.fill('#email','maud@example.com');await tp.fill('.student-name','Corin Ashby');
+    await tp.click('.time:has-text("8:20 AM")');
+    await tp.evaluate(()=>{window.rpcHandlers.rt_conference_request=()=>({data:null,error:{code:'22023',message:'Someone just took that time. Please pick another.'}});
+      const now=JSON.parse(JSON.stringify(window.rpcHandlers.rt_conference_public_days().data));now[0].times=now[0].times.slice(1);
+      window.rpcHandlers.rt_conference_public_days=()=>({data:now,error:null});});
+    await tp.click('#submit');
+    await tp.waitForFunction(()=>document.getElementById('error').textContent.includes('Someone just took that time'));
+    await tp.waitForFunction(()=>!document.querySelector('.time input[value="08:20"]'));
+    assert.equal(await tp.inputValue('#name'),'Maud Ashby');
+    assert.equal(await tp.isDisabled('#submit'),false);
+    // 10. None of the times work: sent with no time and no block.
+    await tp.evaluate(()=>{window.rpcHandlers.rt_conference_request=()=>({data:{ok:true},error:null});});
+    await tp.click('label.window:has-text("None of these times work")');
+    await tp.click('#submit');
+    await tp.waitForSelector('text=Request received');
+    tsent=(await tp.evaluate(()=>window.rpcCalls)).filter(c=>c.name==='rt_conference_request').at(-1);
+    assert.equal(tsent.args.p_time,null);assert.equal(tsent.args.p_window,null);
+    // 11. Nothing left for two: says so, and still lets them ask.
+    await tp.evaluate(()=>{window.rpcHandlers.rt_conference_public_days=()=>({data:[{id:'d1',day:'2026-11-20',title:'x',windows:[],times:[{start:'10:00',end:'10:20'}]}],error:null});
+      state.days=null;state.students=['A B','C D'];stepDetails();});
+    await tp.waitForSelector('text=no 2 back-to-back times left');
+    assert(await tp.isVisible('label.window:has-text("None of these times work")'));
+    assert(!(await tp.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth)),'no sideways scroll on a phone');
+    if (process.env.SHOT) { await tp.evaluate(days=>{window.rpcHandlers.rt_conference_public_days=()=>({data:days,error:null});state.days=null;state.students=['Corin Ashby'];stepDetails();},TDAYS);
+      await tp.waitForSelector('.time');await tp.screenshot({path:process.env.SHOT.replace('.png','-times.png'),fullPage:true}); }
+    assert.deepEqual(terr,[]);
+    await tp.close();
 
     // ---------------- the admin conference section ----------------
     const admin=await browser.newPage({viewport:{width:1200,height:900}});
@@ -307,6 +385,6 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     assert(before.includes('once the database update for it is applied') && !before.includes('Sign-up requests') && !before.includes('On the public form'),'degrades');
     assert(before.includes('Finalize & send 3 confirmations'),'nothing held without requests');
     assert.deepEqual(aerr,[]);
-    console.log('Conference requests: 13 journeys passed (public form on a phone, admin section).');
+    console.log('Conference requests: 19 journeys passed (public form on a phone, admin section).');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

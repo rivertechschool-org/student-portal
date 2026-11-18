@@ -6526,3 +6526,16 @@ day's own blocks instead of fixed 8:10 / 12:00 / 3:00 presets.
   (now 13).
 **Needs:** the office to place the afternoon students who got no time (the day card lists
 how many).
+
+## 2026-11-17 — Jordan's Claude
+**Conference sign-up form: open times instead of blocks, and only grades 6-12.**
+- The form at /conferences/ now lists the open times themselves, grouped under the day's
+  blocks. A family picks one; brothers and sisters go back to back from it, and only
+  times with enough back-to-back openings for the names typed are offered. "None of these
+  times work for us" files the request for the office with nothing held. If someone takes
+  the time first, nothing is saved and the form shows what is open now.
+- A child typed on the form who is outside grades 6-12 is listed on the request with their
+  grade ("no time: grade 1 is not junior high or high school") and given no time.
+- Both are database changes in the backend repo, applied 2026-11-17.
+- Tests: `debug-tools/conference-request-journeys.cjs` (19).
+**Needs:** nothing.
