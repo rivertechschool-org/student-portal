@@ -173,6 +173,8 @@ const atLocal = (days, hour = 12) => { const d = new Date(Date.now() + days * DA
     check('exactly on it is not', app._submittedLate({ status: 'submitted', submitted_at: '2026-09-26T19:00:00Z' }, a), false);
     check('excused is never late', app._submittedLate({ status: 'excused', submitted_at: '2026-09-30T08:00:00Z' }, a), false);
     check('not_submitted is never late', app._submittedLate({ status: 'not_submitted', submitted_at: '2026-09-30T08:00:00Z' }, a), false);
+    check('a spelling test graded after class is not late', app._submittedLate(
+      { status: 'graded', submitted_at: '2026-09-27T08:00:00Z' }, { ...a, graded_offline: true }), false);
     check('no submission is not late', app._submittedLate(null, a), false);
     check('no due date is not late', app._submittedLate({ status: 'submitted', submitted_at: '2026-09-30T08:00:00Z' }, {}), false);
     ok('the chip says Submitted late', /Submitted late/.test(app._lateBadge()));

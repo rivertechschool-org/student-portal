@@ -10234,6 +10234,9 @@
                 } else if (isSubmitted) {
                   statusColor = 'var(--accent)';
                   statusText = 'Submitted';
+                } else if (a.graded_offline) {
+                  statusText = 'No submission required';
+                  statusColor = 'var(--muted)';
                 } else if (isPastDue) {
                   statusColor = 'var(--danger)';
                   statusText = 'Missing';
@@ -24318,7 +24321,7 @@ Students you had withdrawn stay withdrawn.`)) {
 
                 const gradedCount = counts.graded + counts.excused;
                 const pendingCount = counts.submitted;
-                const missingCount = expectedCount - counts.total;
+                const missingCount = assignment.graded_offline ? 0 : expectedCount - counts.total;
 
                 // Determine status color
                 let statusColor = 'var(--danger)';
@@ -25296,9 +25299,9 @@ Students you had withdrawn stay withdrawn.`)) {
               <label style="display: flex; align-items: center; gap: 10px;">
                 <input type="checkbox" id="graded-offline">
                 <div>
-                  <strong>Graded Offline / In-Person</strong>
+                  <strong>No student submission required</strong>
                   <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
-                    Check this for tests, presentations, or projects completed in class. Students won't submit work - you'll enter grades manually.
+                    For work graded in class, such as a spelling test. You enter the grade, and students have nothing to turn in.
                   </div>
                 </div>
               </label>
@@ -26326,6 +26329,16 @@ Students you had withdrawn stay withdrawn.`)) {
                 <input type="number" id="edit-assignment-max-points" min="1" max="1000" value="${assignment.max_points || 100}">
               </div>
       
+              ${(!assignment.assignment_type || assignment.assignment_type === 'regular') && !isPagesGrading ? `
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="edit-graded-offline" ${assignment.graded_offline ? 'checked' : ''}>
+                    No student submission required
+                  </label>
+                  <small>For work graded in class, such as a spelling test.</small>
+                </div>
+              ` : ''}
+
               <div class="form-group">
                 <label for="edit-assignment-max-submit-size">Max Submission File Size (MB)</label>
                 <input type="number" id="edit-assignment-max-submit-size" min="1" max="2048" value="${assignment.max_submit_size_mb || 1024}">
@@ -26631,6 +26644,8 @@ Students you had withdrawn stay withdrawn.`)) {
           if (templateBox && (templateBox.checked || templateBox.dataset.hasColumn)) {
             updates.is_template = templateBox.checked;
           }
+          const offlineBox = document.getElementById('edit-graded-offline');
+          if (offlineBox) updates.graded_offline = offlineBox.checked;
           const latePassBox = document.getElementById('edit-assignment-late-pass-allowed');
           if (latePassBox) updates.late_pass_allowed = latePassBox.checked;
           const pagesRegradeBox = document.getElementById('edit-pages-auto-regrade');
@@ -27408,7 +27423,7 @@ Students you had withdrawn stay withdrawn.`)) {
       }
 
       _submittedLate(submission, assignment) {
-        if (!submission || !assignment?.due_date || !submission.submitted_at) return false;
+        if (!submission || !assignment?.due_date || assignment.graded_offline || !submission.submitted_at) return false;
         if (['not_submitted', 'excused'].includes(submission.status)) return false;
         const due = new Date(assignment.due_date), at = new Date(submission.submitted_at);
         if (isNaN(due) || isNaN(at)) return false;
@@ -27488,6 +27503,8 @@ Students you had withdrawn stay withdrawn.`)) {
             urgencyColor = 'var(--accent-2)';
             urgencyText = 'Handed in';
             urgencyIcon = '✅';
+          } else if (assignment.graded_offline) {
+            urgencyText = 'No submission required';
           } else if (daysUntilDue === 0) {
             urgencyColor = 'var(--danger)';
             urgencyText = 'DUE TODAY';
@@ -27516,7 +27533,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <div class="list-item" style="
               border-left: 4px solid ${urgencyColor};
               padding-left: 16px;
-              background: ${daysUntilDue === 0 && !this._isHandedInStatus(assignment.submission_status) ? 'rgba(255, 106, 106, 0.05)' : 'transparent'};
+              background: ${daysUntilDue === 0 && !assignment.graded_offline && !this._isHandedInStatus(assignment.submission_status) ? 'rgba(255, 106, 106, 0.05)' : 'transparent'};
               cursor: pointer;
             " onclick="app.submitAssignment('${assignment.id}')">
               <div class="list-item-content">
@@ -37176,7 +37193,7 @@ Students you had withdrawn stay withdrawn.`)) {
           const [{ data: profiles }, { data: assignments, error: ae }, { data: snapshots }, { data: teacher }] = await Promise.all([
             this.supabaseQuery(() => sb.from('user_profiles').select('id, first_name, last_name').in('id', studentIds)),
             this.supabaseQuery(() => sb.from('assignments')
-              .select('id, title, due_date, max_points, points_possible, is_template, created_at')
+              .select('id, title, due_date, max_points, points_possible, is_template, created_at, graded_offline')
               .eq('class_id', classId)),
             this.supabaseQuery(() => sb.from('quarter_grade_snapshots')
               .select('enrollment_id, academic_grade, participation_grade, class_grade')
@@ -37274,7 +37291,7 @@ Students you had withdrawn stay withdrawn.`)) {
               return own != null && own !== maxOf(a) ? `${x.points_earned} / ${own}` : x.points_earned;
             }
             if (x && (x.submitted_at || x.status === 'submitted')) return 'Turned in';
-            return a.due_date && new Date(a.due_date) < now ? 'Missing' : '';
+            return !a.graded_offline && a.due_date && new Date(a.due_date) < now ? 'Missing' : '';
           });
           const g = snap[e.id] || {};
           const cg = num(g.class_grade);
@@ -61207,7 +61224,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _rivenWidgetHtml() {
-      const RIVEN_BUILD = '2026-11-17·a';
+      const RIVEN_BUILD = '2026-11-18·a';
       return `
         <style>
           /* No transform/filter/will-change on the widget or the panel. See the
@@ -63736,7 +63753,7 @@ Students you had withdrawn stay withdrawn.`)) {
           // Work handed in by someone since unenrolled still shows: it exists
           // and it may still need a mark. Flagged rather than dropped.
           off_roster: assignedTo.has(id) ? undefined : true,
-          status: sub ? (sub.status || 'submitted') : 'missing'
+          status: sub ? (sub.status || 'submitted') : (a.graded_offline ? 'no_submission_required' : 'missing')
         };
         const v = host.studentVersionOf(versions, a.id, [id]);
         if (v) row.own_version = { due_date: v.due_date || undefined, points_possible: v.points_possible ?? undefined,
@@ -63744,7 +63761,7 @@ Students you had withdrawn stay withdrawn.`)) {
         if (!sub) return row;
         const due = dueFor(id);
         row.submitted_at = sub.submitted_at || null;
-        row.late = (due && sub.submitted_at) ? new Date(sub.submitted_at) > due : null;
+        row.late = (!a.graded_offline && due && sub.submitted_at) ? new Date(sub.submitted_at) > due : null;
         if (row.late) row.days_late = Math.max(1, Math.ceil((new Date(sub.submitted_at) - due) / 86400000));
         const text = sub.content || '';
         row.chars = text.length;
@@ -63759,7 +63776,7 @@ Students you had withdrawn stay withdrawn.`)) {
         return row;
       }).sort((x, y) => String(x.student).localeCompare(String(y.student)));
 
-      const handed = rows.filter(r => r.status !== 'missing');
+      const handed = rows.filter(r => latest[r.student_id]);
       return {
         class: klass ? { id: klass.id, name: klass.name } : { id: a.class_id },
         assignment: {
@@ -63837,7 +63854,7 @@ Students you had withdrawn stay withdrawn.`)) {
             attendance: '{"op":"attendance","class":"Filmmaking","date":"2026-09-01"}',
             assignments: '{"op":"assignments","class":"Filmmaking"} — every assignment with the quarter its due_date falls in',
             grade_review: '{"op":"grade_review","class":"Filmmaking"} — every student on the roster with their current grades AND the notes filed on them in that class, for quarter-end grading. Notes never move a grade by themselves.',
-            submissions: '{"op":"submissions","class":"Lower MS English","assignment":"Weeks 1 & 2: Reading Log"} — what each student handed in for one assignment: their text, when it arrived, and whether that is late. Anyone it was set for who has not handed it in comes back as "missing". Add "text":false for the register alone, or "max_chars":N to shorten long answers (default 4000).'
+            submissions: '{"op":"submissions","class":"Lower MS English","assignment":"Weeks 1 & 2: Reading Log"} — what each student handed in for one assignment: their text, when it arrived, and whether that is late. A student with nothing handed in is "missing" when a submission is required, or "no_submission_required" for offline work. Add "text":false for the register alone, or "max_chars":N to shorten long answers (default 4000).'
           },
           dry_run: {
             plan: '{"op":"plan","ops":[{"op":"award","student":"Quinn Sable","amount":5,"reason":"..."}]}',
