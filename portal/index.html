@@ -24550,7 +24550,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 const submission = submissionMap[assignment.id];
                 const dueDate = new Date(assignment.due_date);
                 const now = new Date();
-                const isOverdue = dueDate < now && !submission;
+                const isOverdue = !assignment.graded_offline && dueDate < now && !submission;
                 const isGraded = submission?.status === 'graded';
                 const isExcused = submission?.status === 'excused';
                 const isSubmitted = submission?.status === 'submitted';
@@ -25299,7 +25299,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <label style="display: flex; align-items: center; gap: 10px;">
                 <input type="checkbox" id="graded-offline">
                 <div>
-                  <strong>No student submission required</strong>
+                  <strong>Offline assignment (no student submission required)</strong>
                   <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">
                     For work graded in class, such as a spelling test. You enter the grade, and students have nothing to turn in.
                   </div>
@@ -26333,7 +26333,7 @@ Students you had withdrawn stay withdrawn.`)) {
                 <div class="form-group">
                   <label>
                     <input type="checkbox" id="edit-graded-offline" ${assignment.graded_offline ? 'checked' : ''}>
-                    No student submission required
+                    Offline assignment (no student submission required)
                   </label>
                   <small>For work graded in class, such as a spelling test.</small>
                 </div>
@@ -27553,31 +27553,32 @@ Students you had withdrawn stay withdrawn.`)) {
                   </span>
                 </div>
               </div>
-              <button class="btn ${assignment.submission_status === 'not_submitted' ? 'btn-primary' : 'btn-secondary'} small" 
+              <button class="btn ${!assignment.graded_offline && assignment.submission_status === 'not_submitted' ? 'btn-primary' : 'btn-secondary'} small"
                       onclick="event.stopPropagation(); app.submitAssignment('${assignment.id}')">
-                ${assignment.submission_status === 'submitted' ? '✏️ Edit' : 
+                ${assignment.graded_offline ? '👁️ View' : assignment.submission_status === 'submitted' ? '✏️ Edit' :
                   assignment.submission_status === 'graded' ? '👁️ View' : '📝 Submit'}
               </button>
             </div>
           `;
         }).join('');
       
-        const submittedCount = assignments.filter(a => a.submission_status !== 'not_submitted').length;
-        const totalCount = assignments.length;
+        const onlineAssignments = assignments.filter(a => !a.graded_offline);
+        const submittedCount = onlineAssignments.filter(a => this._isHandedInStatus(a.submission_status)).length;
+        const totalCount = onlineAssignments.length;
         const progressPercent = totalCount > 0 ? (submittedCount / totalCount * 100).toFixed(0) : 0;
       
         return `
           <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
               <h3 style="color: white; margin: 0;">📅 Coming Up (Next 14 Days)</h3>
-              <div style="display: flex; align-items: center; gap: 15px;">
+              ${totalCount ? `<div style="display: flex; align-items: center; gap: 15px;">
                 <div style="color: white; font-size: 14px;">
                   Progress: ${submittedCount}/${totalCount}
                 </div>
                 <div style="background: rgba(255, 255, 255, 0.2); height: 8px; width: 100px; border-radius: 4px; overflow: hidden;">
                   <div style="background: var(--accent-2); height: 100%; width: ${progressPercent}%; transition: width 0.3s ease;"></div>
                 </div>
-              </div>
+              </div>` : ''}
             </div>
           </div>
           
@@ -28697,9 +28698,9 @@ Students you had withdrawn stay withdrawn.`)) {
                               <button class="btn btn-secondary small" onclick="app.excuseStudent('${student.id}', '${assignmentId}')">
                                 ✋ Excuse
                               </button>
-                              <button class="btn btn-secondary small" onclick="app.sendReminderToStudent('${student.id}', '${assignmentId}')">
+                              ${isOffline ? '' : `<button class="btn btn-secondary small" onclick="app.sendReminderToStudent('${student.id}', '${assignmentId}')">
                                 📧 Remind
-                              </button>
+                              </button>`}
                             `}
                           </div>
                         </div>
@@ -29080,7 +29081,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <div style="padding: 15px; background: rgba(106, 169, 255, 0.1); border-radius: 8px; border-left: 3px solid var(--accent); margin-top: 20px;">
                 <p style="font-size: 13px; color: var(--muted);">
                   <strong style="color: var(--accent);">👤 Parent View</strong><br>
-                  You are viewing this assignment as a parent. Only your child can submit work for this assignment.
+                  You are viewing this assignment as a parent. ${assignment.graded_offline ? 'No student submission is required.' : 'Only your child can submit work for this assignment.'}
                 </p>
               </div>
             </div>
@@ -30725,7 +30726,7 @@ Students you had withdrawn stay withdrawn.`)) {
               // submitted_at - nothing was handed in (see the Gradebook).
               res = await this.supabaseQuery(() => this.auth.supabase
                 .from('assignment_submissions')
-                .insert({ assignment_id: assignmentId, student_id: student.id, feedback: 'Assignment not submitted', ...graded })
+                .insert({ assignment_id: assignmentId, student_id: student.id, feedback: ctx.assignment.graded_offline ? null : 'Assignment not submitted', ...graded })
                 .select('id'));
             } else {
               // Only while it is still ungraded.
@@ -30771,11 +30772,16 @@ Students you had withdrawn stay withdrawn.`)) {
 
       async sendReminderToStudent(studentId, assignmentId) {
         try {
-          let { data: assignment } = await this.supabaseQuery(() => this.auth.supabase
+          let { data: assignment, error } = await this.supabaseQuery(() => this.auth.supabase
             .from('assignments')
-            .select('title, due_date')
+            .select('title, due_date, graded_offline')
             .eq('id', assignmentId)
             .single());
+          if (error) throw error;
+          if (assignment.graded_offline) {
+            this.showNotification('Offline assignment: no submission reminder needed.', 'info');
+            return;
+          }
           // Remind them of THEIR due date if the teacher moved it.
           assignment = await this.withVersionFor({ ...assignment, id: assignmentId }, [studentId]);
       

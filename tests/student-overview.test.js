@@ -154,6 +154,10 @@ const atLocal = (days, hour = 12) => { const d = new Date(Date.now() + days * DA
       { id: 'a2', title: 'Seed journal', due_date: atLocal(0, 23), submission_status: 'submitted', classes: { name: 'Invented Science', subject: 'Science' } },
       { id: 'a3', title: 'Map quiz', due_date: atLocal(1, 9), submission_status: 'not_submitted', classes: { name: 'Invented Social', subject: 'Social' } },
     ];
+    const offline = { ...rows[0], title: 'Spelling test', graded_offline: true };
+    const offlineCard = strip(app.renderUpcomingAssignments([offline]));
+    ok('offline work has a view action and no submission or overdue prompt', offlineCard.includes('View') &&
+      !/Submit|Edit|overdue|DUE TODAY|Progress:/i.test(offlineCard));
     const out = app.renderUpcomingAssignments(rows);
     const items = out.split('class="list-item"').slice(1);
     ok('unsubmitted work due tonight says DUE TODAY', /DUE TODAY/.test(items[0]), strip(items[0]));

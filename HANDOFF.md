@@ -6555,3 +6555,5 @@ how many).
 
 ## 2026-11-18 — In-class assignments
 Teachers can choose “No student submission required” when creating or editing a regular assignment or adding one from the calendar. The portal uses the existing graded_offline field for missing-work counts, late badges and grade exports. No migration is needed.
+
+Offline assignments use the same checkbox across create, edit and calendar quick-add. Coming Up offers View and counts only online work toward submission progress. Manual submission reminders are disabled for offline work.
