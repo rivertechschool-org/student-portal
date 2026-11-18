@@ -190,7 +190,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     assert((await admin.evaluate(()=>window.messages.at(-1).message)).includes('"Afternoon" has to start before it ends'));
     await rows.nth(2).locator('.conf-win-end').fill('15:20');
     await admin.locator('.conf-windows').first().locator('text=Save times').click();
-    await admin.waitForFunction(()=>window.messages.at(-1).message==='Public form times saved');
+    await admin.waitForFunction(()=>/^Saved, but .* has no slots/.test(window.messages.at(-1).message));
     assert.deepEqual(await admin.evaluate(()=>db.tables.conference_days[0].request_windows.map(w=>w.label+' '+w.start+'-'+w.end)),
       ['Morning 08:20-11:20','Midday 11:20-13:20','Afternoon 14:00-15:20']);
     if (process.env.SHOT) await admin.locator('#conf-admin-body').screenshot({path:process.env.SHOT.replace('.png','-admin.png')});
@@ -204,7 +204,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     assert.equal(await admin.locator('#conf-wins-d1 > div').count(),4);
     await admin.locator('#conf-wins-d1 .conf-win-label').first().fill('Early');
     await win0.locator('text=Save times').click();
-    await admin.waitForFunction(()=>window.messages.at(-1).message==='Public form times saved');
+    await admin.waitForFunction(()=>/^Saved, but .* has no slots/.test(window.messages.at(-1).message));
     assert.deepEqual(await admin.evaluate(()=>db.tables.conference_days[0].request_windows.map(w=>w.label+' '+w.start+'-'+w.end)),
       ['Early 08:00-09:00','9:00 AM–10:00 AM 09:00-10:00','10:00 AM–11:00 AM 10:00-11:00','11:00 AM–12:00 PM 11:00-12:00']);
     // One block 8:20-10:20 overlapping 9-10 is refused.
@@ -217,7 +217,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     // Just 8:20-10:20, alone, is fine.
     await admin.evaluate(()=>{const rows=[...document.querySelectorAll('#conf-wins-d1 > div')];rows.slice(0,-1).forEach(r=>r.remove());});
     await admin.locator('.conf-windows').first().locator('text=Save times').click();
-    await admin.waitForFunction(()=>window.messages.at(-1).message==='Public form times saved');
+    await admin.waitForFunction(()=>/^Saved, but .* has no slots/.test(window.messages.at(-1).message));
     assert.deepEqual(await admin.evaluate(()=>db.tables.conference_days[0].request_windows),[{label:'8:20 AM–10:20 AM',start:'08:20',end:'10:20'}]);
 
     // 8b. Pick the days: the second day has no slots, so it cannot go on the form yet.
@@ -240,7 +240,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     await admin.fill('#conf-len-d2','20');await admin.fill('#conf-gap-d2','5');
     assert.equal(await admin.innerText('#conf-preview-d2'),'7 slots, 8:20 AM–11:10 AM (10 min left over)');
     await admin.locator('.conf-teacher-d2').first().check();
-    await admin.locator('#modal-conferences button:has-text("Add slots")').nth(1).click();
+    await admin.locator('#conf-add-d2 button:has-text("Add slots")').click();
     await admin.waitForFunction(()=>/7 slots added/.test(window.messages.at(-1).message));
     assert.deepEqual(await admin.evaluate(()=>db.tables.conference_slots.filter(x=>x.day_id==='d2').map(x=>x.starts_at).slice(0,3)),['08:20','08:45','09:10']);
     // Match my slots fills the second day's windows from them; then it can go on the form.
@@ -254,6 +254,48 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     await admin.waitForFunction(()=>window.messages.at(-1).message==='This day is now on the public form');
     assert.equal(await admin.evaluate(()=>db.tables.conference_days[1].public_form),true);
 
+    // 8d. Blocks that run past the slots (2026-11-17: blocks to 4:40, slots
+    //     ending 3:20, so the afternoon's families got no time). The day says
+    //     so, and one press fills in "Add time slots" for the gap.
+    await admin.evaluate(()=>app.closeModal('conferences'));
+    const wed=JSON.parse(JSON.stringify(seed));
+    wed.conference_days=[{...seed.conference_days[0],request_windows:[{label:'Morning',start:'08:20',end:'09:20'},{label:'Afternoon',start:'15:00',end:'16:00'}]}];
+    wed.conference_slots=[...seed.conference_slots,
+      {id:'s4',day_id:'d1',starts_at:'09:20:00',ends_at:'09:40:00',teacher_ids:['tm'],student_id:null},
+      {id:'s5',day_id:'d1',starts_at:'15:00:00',ends_at:'15:20:00',teacher_ids:['tm'],student_id:null}];
+    wed.conference_requests=[{...seed.conference_requests[0],id:'q3',status:'approved',window_label:'Afternoon',
+      placements:[{typed:'Pip',student_id:'pip',slot_id:null,note:'no free time left in this window'},{typed:'Wanda',student_id:'wanda',slot_id:null,note:'no free time left in this window'}]}];
+    wed.user_profiles=[...seed.user_profiles,{id:'wanda',first_name:'Wanda',last_name:'Fenn',user_type:'student',grade_level:'9'}];
+    await admin.evaluate(([w])=>{window.db=window.makeDb(w,{});window.db.rpc=async()=>({data:null,error:{message:'no stub'}});app.auth.supabase=window.db;},[wed]);
+    await admin.evaluate(()=>app.openConferenceAdmin());
+    await admin.waitForSelector('.conf-time-check');
+    const check=(await admin.innerText('.conf-time-check')).replace(/\s+/g,' ');
+    assert(check.includes('Afternoon has no slots 3:20 PM–4:00 PM'),check);
+    assert(check.includes('in no public-form block, so the form never offers it: 9:20 AM–9:40 AM'),check);
+    // Pip has a time already (booked by a parent); Wanda is still waiting.
+    assert(check.includes('1 student from sign-up requests found no free time and has none yet'),check);
+    // "Add time slots" offers the day's own blocks.
+    assert.deepEqual(await admin.$$eval('#conf-zone-d1 option',o=>o.map(x=>x.textContent.trim())),
+      ['Morning (8:20 AM–9:20 AM)','Afternoon (3:00 PM–4:00 PM)','Custom times']);
+    await admin.click('.conf-time-check button:has-text("Add slots for this")');
+    assert.equal(await admin.inputValue('#conf-start-d1'),'15:20');
+    assert.equal(await admin.inputValue('#conf-end-d1'),'16:00');
+    assert.equal(await admin.inputValue('#conf-len-d1'),'20');
+    assert.equal(await admin.innerText('#conf-preview-d1'),'2 slots, 3:20 PM–4:00 PM');
+    // The teachers already on the day are the ones ticked.
+    assert.deepEqual(await admin.$$eval('.conf-teacher-d1:checked',b=>b.map(x=>x.value).sort()),['tm','tx']);
+    assert.equal(await admin.evaluate(()=>db.tables.conference_slots.length),6,'nothing added before pressing Add slots');
+    await admin.locator('#conf-add-d1 button:has-text("Add slots")').click();
+    await admin.waitForFunction(()=>/2 slots added/.test(window.messages.at(-1).message));
+    assert(!(await admin.innerText('#conf-admin-body')).includes('Afternoon has no slots'),'warning gone once covered');
+    // Saving blocks wider than the slots says so at once.
+    await admin.locator('.conf-windows summary').first().click();
+    await admin.locator('#conf-wins-d1 .conf-win-end').last().fill('16:40');
+    await admin.locator('.conf-windows').first().locator('text=Save times').click();
+    await admin.waitForFunction(()=>/^Saved, but Afternoon has no slots 4:00 PM–4:40 PM/.test(window.messages.at(-1).message));
+    assert.equal(await admin.evaluate(()=>window.messages.at(-1).type),'warning');
+    await admin.evaluate(()=>app.closeModal('conferences'));
+
     // 9. Before the database update: the screen still works, and says the form is not on yet.
     await admin.evaluate(()=>app.closeModal('conferences'));
     await setupAdmin({'conference_requests:select':1});
@@ -263,6 +305,6 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     assert(before.includes('once the database update for it is applied') && !before.includes('Sign-up requests') && !before.includes('On the public form'),'degrades');
     assert(before.includes('Finalize & send 3 confirmations'),'nothing held without requests');
     assert.deepEqual(aerr,[]);
-    console.log('Conference requests: 12 journeys passed (public form on a phone, admin section).');
+    console.log('Conference requests: 13 journeys passed (public form on a phone, admin section).');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

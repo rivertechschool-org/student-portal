@@ -8932,12 +8932,85 @@
       // reminder from a scheduled job; nothing on this page sends it.
 
       // Ready-made blocks of time for "Add time slots". Custom times work too.
-      _conferenceZones() {
-        return [
+      // The day's own public-form blocks come first (2026-11-17: Wednesday's
+      // blocks ran 8:20-4:40 but the presets started at 8:10 and the slots
+      // stopped at 3:20, so the presets matched neither).
+      _conferenceZones(wins = []) {
+        const own = (wins || []).filter(w => w && w.start && w.end).map(w => ({ label: w.label || this._conferenceBlockName(w.start, w.end), start: w.start, end: w.end }));
+        return own.length ? own : [
           { label: 'Morning', start: '08:10', end: '11:40' },
           { label: 'Afternoon', start: '12:00', end: '14:40' },
           { label: 'Late afternoon', start: '15:00', end: '16:40' },
         ];
+      }
+
+      // Do a day's blocks and slots agree? A family picks a block, and the
+      // database only holds them in a slot that fits inside it, so:
+      //   gaps    - stretches of a block (10 minutes or more) with no slot:
+      //             a family who picks it cannot be given a time there;
+      //   outside - slots inside no block: the form can never place anyone
+      //             in them (the office and parents in the portal still can).
+      // Pure. (Asked 2026-11-17: blocks said until 4:40, slots ended 3:20.)
+      _conferenceTimeCheck(wins, slots) {
+        const min = (t) => this._confMinutes(t);
+        const ws = (wins || []).filter(w => min(w.start) !== null && min(w.end) !== null && min(w.start) < min(w.end));
+        const ss = (slots || []).filter(x => min(x.starts_at) !== null && min(x.ends_at) !== null);
+        const gaps = [];
+        for (const w of ws) {
+          const a = min(w.start), b = min(w.end);
+          const inside = ss.map(x => [min(x.starts_at), min(x.ends_at)]).filter(([s, e]) => s >= a && e <= b).sort((p, q) => p[0] - q[0]);
+          let t = a;
+          const add = (s, e) => { if (e - s >= 10) gaps.push({ label: w.label || this._conferenceBlockName(w.start, w.end), start: this._confHHMM(s), end: this._confHHMM(e) }); };
+          for (const [s, e] of inside) { if (s > t) add(t, s); t = Math.max(t, e); }
+          if (t < b) add(t, b);
+        }
+        const outside = ws.length ? [...new Map(ss.filter(x => !ws.some(w => min(x.starts_at) >= min(w.start) && min(x.ends_at) <= min(w.end)))
+          .map(x => [x.starts_at + x.ends_at, { start: x.starts_at, end: x.ends_at }])).values()].sort((p, q) => min(p.start) - min(q.start)) : [];
+        return { gaps, outside };
+      }
+
+      // The day card's warning, with a button per gap that fills in "Add
+      // time slots" for it. '' when blocks and slots agree.
+      _renderConferenceTimeCheck(d, c, slots) {
+        if (!c.formReady) return '';
+        const wins = c.windowsByDay?.[d.id] || [];
+        if (!wins.length || !slots.length) return '';
+        const { gaps, outside } = this._conferenceTimeCheck(wins, slots);
+        // Students a sign-up request could not place, still without a time.
+        const placed = new Set(slots.filter(x => x.student_id).map(x => x.student_id));
+        const waiting = new Set();
+        (c.requests || []).filter(q => q.day_id === d.id && q.status !== 'declined').forEach(q => (q.placements || []).forEach(p => {
+          if (p && p.student_id && p.note === 'no free time left in this window' && !placed.has(p.student_id)) waiting.add(p.student_id);
+        }));
+        if (!gaps.length && !outside.length && !waiting.size) return '';
+        const esc = (t) => this.escapeHtml(t);
+        const id = this.jsAttr(d.id);
+        const span = (s, e) => `${esc(this._confClock(s))}–${esc(this._confClock(e))}`;
+        return `<div class="conf-time-check" style="margin-top: 10px; padding: 8px 10px; border: 1px solid var(--warning); border-radius: 6px; font-size: 13px;">
+            ${gaps.map(g => `<div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 2px 0;">
+                <span>⚠ <b>${esc(g.label)}</b> has no slots ${span(g.start, g.end)}, so families who pick it can't be given a time then.</span>
+                <button class="btn btn-secondary small" onclick="app.fillConferenceGap('${id}', '${this.jsAttr(g.start)}', '${this.jsAttr(g.end)}')">Add slots for this</button></div>`).join('')}
+            ${outside.length ? `<div style="margin: 2px 0;">⚠ ${outside.length === 1 ? 'This slot is' : 'These slots are'} in no public-form block, so the form never offers ${outside.length === 1 ? 'it' : 'them'}: ${outside.map(o => span(o.start, o.end)).join(', ')}. Widen a block to cover ${outside.length === 1 ? 'it' : 'them'} under \u{1F552} Public form times.</div>` : ''}
+            ${waiting.size ? `<div style="margin: 2px 0;">⚠ ${waiting.size} student${waiting.size === 1 ? '' : 's'} from sign-up requests found no free time and ${waiting.size === 1 ? 'has' : 'have'} none yet: add them to an open time below (their request under \u{1F4DD} Sign-up requests says which block they picked).</div>` : ''}
+          </div>`;
+      }
+
+      // Fill in "Add time slots" for one gap: its times, the day's usual slot
+      // length, and the teachers already in the day's slots. Nothing is
+      // added until the office presses Add slots.
+      fillConferenceGap(dayId, start, end) {
+        const slots = (this._conf?.slots || []).filter(x => x.day_id === dayId);
+        const lens = {};
+        slots.forEach(x => { const l = this._confMinutes(x.ends_at) - this._confMinutes(x.starts_at); if (l > 0) lens[l] = (lens[l] || 0) + 1; });
+        const len = Number(Object.entries(lens).sort((p, q) => q[1] - p[1])[0]?.[0]) || 20;
+        const teachers = new Set(slots.flatMap(x => x.teacher_ids || []));
+        const set = (k, v) => { const el = document.getElementById(`conf-${k}-${dayId}`); if (el) el.value = v; };
+        set('zone', 'custom'); set('start', start); set('end', end); set('len', len); set('gap', 0);
+        if (teachers.size) document.querySelectorAll(`.conf-teacher-${dayId}`).forEach(b => { b.checked = teachers.has(b.value); });
+        const box = document.getElementById(`conf-add-${dayId}`);
+        if (box) { box.open = true; box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        this.previewConferenceSlots(dayId);
+        this.showNotification('Filled in below with the same teachers and length. Check them, then press Add slots.', 'info');
       }
 
       // "08:10" -> minutes since midnight, and back.
@@ -9310,7 +9383,7 @@
         const slots = c.slots.filter(x => x.day_id === d.id);
         const booked = slots.filter(x => x.student_id).length;
         const past = d.day < this._localDateStr(new Date());
-        const zones = this._conferenceZones();
+        const zones = this._conferenceZones(c.windowsByDay?.[d.id]);
         const first = zones[0] || { start: '08:10', end: '11:40' };
         const teacherBoxes = c.teachers.map(t => `<label style="display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; font-size: 13px; cursor: pointer;">
             <input type="checkbox" class="conf-teacher-${esc(d.id)}" value="${esc(t.id)}" ${t.core ? 'checked' : ''}> ${esc(t.name)}</label>`).join('');
@@ -9370,9 +9443,10 @@
               <button class="btn btn-secondary small" onclick="app.deleteConferenceDay('${id}')">Delete day</button>
             </div>
             ${this._renderConferenceReview(d, c, review)}
+            ${this._renderConferenceTimeCheck(d, c, slots)}
             ${this._renderConferenceWindows(d, c, input)}
             ${this._renderConferenceRequests(d, c, input)}
-            <details style="margin-top: 10px;" ${slots.length ? '' : 'open'}>
+            <details id="conf-add-${esc(d.id)}" style="margin-top: 10px;" ${slots.length ? '' : 'open'}>
               <summary style="cursor: pointer; font-weight: 600;">\u2795 Add time slots</summary>
               <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px;">
                 <select id="conf-zone-${esc(d.id)}" style="${input}" onchange="app.pickConferenceZone('${id}', this.value)">
@@ -9499,7 +9573,7 @@
         const summary = wins.map(w => w.label === this._conferenceBlockName(w.start, w.end) ? w.label : `${w.label} ${this._conferenceBlockName(w.start, w.end)}`).join(' \u00b7 ') || 'none';
         return `<details class="conf-windows" style="margin-top: 10px;">
             <summary style="cursor: pointer; font-weight: 600;">\u{1F552} Public form times <span style="font-weight: 400; font-size: 12px; color: var(--muted);">${esc(summary)}${on ? '' : ' (day not on the form)'}</span></summary>
-            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">The time blocks families pick from on the form: any times you like (8:00\u20139:00, 8:20\u201310:20 ...). A name is optional; without one the block is shown by its times. A request is held in the earliest free slot inside the block it picked (brothers and sisters back to back), so blocks should cover your slots.</div>
+            <div style="font-size: 12px; color: var(--muted); margin-top: 4px;">The time blocks families pick from on the form: any times you like (8:00\u20139:00, 8:20\u201310:20 ...). A name is optional; without one the block is shown by its times. A request is held in the earliest free slot inside the block it picked (brothers and sisters back to back), so every block needs slots for its whole length: the day warns you if one doesn't.</div>
             <div id="conf-wins-${esc(d.id)}">${winRows}</div>
             <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; font-size: 13px;">
               <span style="color: var(--muted);">Make blocks from</span>
@@ -9662,7 +9736,11 @@
         if (problem) { this.showNotification(problem, 'error'); return; }
         const { error } = await this.supabaseQuery(() => this.auth.supabase.from('conference_days').update({ request_windows: wins }).eq('id', dayId));
         if (error) { this.showNotification('Could not save the windows: ' + error.message, 'error'); return; }
-        this.showNotification('Public form times saved', 'success');
+        const { gaps } = this._conferenceTimeCheck(wins, (this._conf?.slots || []).filter(x => x.day_id === dayId));
+        if (gaps.length) {
+          this.showNotification(`Saved, but ${gaps.map(g => `${g.label} has no slots ${this._confClock(g.start)}–${this._confClock(g.end)}`).join('; ')}. `
+            + 'Families who pick those times cannot be given one: use "Add slots for this" on the day.', 'warning');
+        } else this.showNotification('Public form times saved', 'success');
         await this._refreshConferenceAdmin();
       }
 
@@ -9836,7 +9914,7 @@
       }
 
       pickConferenceZone(dayId, value) {
-        const z = this._conferenceZones()[Number(value)];
+        const z = this._conferenceZones(this._conf?.windowsByDay?.[dayId])[Number(value)];
         if (z) {
           document.getElementById(`conf-start-${dayId}`).value = z.start;
           document.getElementById(`conf-end-${dayId}`).value = z.end;

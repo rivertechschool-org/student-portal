@@ -6509,3 +6509,20 @@ is shown as a CSV.
 - Unrelated: `tests/assignment-organization-browser.test.js` needs Playwright's own
   Chromium download on this machine (it ignores `PAGES_CHROME`), so it fails here.
 **Needs:** nothing (reads only; no database change).
+
+## 2026-11-17 — Jordan's Claude
+**Conferences: time blocks and slots now have to agree.** Wednesday's public-form blocks
+ran to 4:40 PM but its slots stopped at 3:20, so families who picked the afternoon got
+"no free time left in this window" (the form only holds a slot that fits inside the
+block picked). Nothing warned about it. Now each day card shows a time check:
+- a block with no slots for part of it ("Afternoon has no slots 3:20–4:40 PM"), with
+  **Add slots for this**, which fills in Add time slots with those times, the day's slot
+  length and its teachers (nothing is added until Add slots is pressed);
+- slots in no block (the public form can never place anyone in them);
+- students from sign-up requests who found no time and still have none.
+Saving blocks that run past the slots says so at once. "Add time slots" now offers the
+day's own blocks instead of fixed 8:10 / 12:00 / 3:00 presets.
+- Tests: `tests/conference-time-check.test.js`, `debug-tools/conference-request-journeys.cjs`
+  (now 13).
+**Needs:** the office to place the afternoon students who got no time (the day card lists
+how many).
