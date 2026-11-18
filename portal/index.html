@@ -10705,7 +10705,7 @@
             // Build assignments query with quarter filter
             let assignmentsQuery = this.auth.supabase
               .from('assignments')
-              .select('id, title, due_date, max_points')
+              .select('id, title, due_date, max_points, graded_offline, assignment_type')
               .eq('class_id', classId)
               .eq('is_published', true)
               .order('due_date', { ascending: false }); // Newest first
@@ -10753,29 +10753,14 @@
               submissions = submissionsData || [];
             }
 
+            const now = new Date();
             const assignmentRows = assignments.map(a => {
               const submission = submissions.find(s => s.assignment_id === a.id);
               const dueDate = a.due_date ? new Date(a.due_date) : null;
-              const isPastDue = dueDate && dueDate < new Date() && !submission;
-              const isGraded = submission?.status === 'graded';
-              const isSubmitted = submission && !isGraded;
-
-              let status, statusColor;
-              if (isGraded) {
-                status = 'Graded';
-                statusColor = 'var(--accent-2)';
-              } else if (isSubmitted) {
-                status = 'Submitted';
-                statusColor = 'var(--accent)';
-              } else if (isPastDue) {
-                status = 'Missing';
-                statusColor = 'var(--danger)';
-              } else {
-                status = 'Pending';
-                statusColor = 'var(--warning)';
-              }
-
-              const grade = isGraded ? (submission.grade || '-') : '-';
+              const shown = this._parentAssignmentStatus(a, submission, now);
+              if (!shown) return ''; // offline work, not graded yet
+              const status = shown.text, statusColor = shown.color;
+              const grade = shown.key === 'graded' ? (submission.grade || '-') : '-';
 
               return `
                 <tr>
@@ -24455,47 +24440,40 @@ Students you had withdrawn stay withdrawn.`)) {
               // Each child's own version, where a teacher changed theirs.
               const childVersions = await this.loadStudentVersions(assignmentIds,
                 enrolledChildren.flatMap(c => [c.id, c.auth_user_id]));
+              const now = new Date();
+              // Each child's copy and what a parent sees of it (null = hidden:
+              // offline work not graded yet).
+              const childRows = classAssignment => enrolledChildren.map(child => {
+                const assignment = this.withStudentVersion(classAssignment,
+                  this.studentVersionOf(childVersions, classAssignment.id, [child.id, child.auth_user_id]));
+                const submission = childSubmissions[child.id]?.[assignment.id];
+                return { child, assignment, submission, status: this._parentAssignmentStatus(assignment, submission, now) };
+              }).filter(r => r.status);
+              // An assignment no child has anything to show for is left out.
+              const shown = assignments.filter(a => childRows(a).length > 0);
 
-              assignmentsHtml = renderOrganizedCards(assignments, assignments.map(classAssignment => {
+              assignmentsHtml = !shown.length ? `
+                <div class="card" style="text-align: center; padding: 40px;">
+                  <h3>No Assignments</h3>
+                  <p style="color: var(--muted);">
+                    ${currentQuarter ? `There are no assignments for ${currentQuarter.name}.` : 'There are no assignments available yet.'}
+                  </p>
+                </div>
+              ` : renderOrganizedCards(shown, shown.map(classAssignment => {
                 const dueDate = new Date(classAssignment.due_date);
-                const now = new Date();
 
                 // Build child status for this assignment
                 let anyChildMissing = false;
-                let childStatusHtml = enrolledChildren.map(child => {
-                  // This child's copy: their due date and points if the teacher changed them.
-                  const assignment = this.withStudentVersion(classAssignment,
-                    this.studentVersionOf(childVersions, classAssignment.id, [child.id, child.auth_user_id]));
-                  const submission = childSubmissions[child.id]?.[assignment.id];
-                  const isGraded = submission?.status === 'graded';
-                  const isExcused = submission?.status === 'excused';
-                  const isSubmitted = submission?.status === 'submitted';
-                  const isMissing = new Date(assignment.due_date) < now && !submission;
-                  if (isMissing) anyChildMissing = true;
-
-                  let statusText = 'Not Submitted';
-                  let statusColor = '#6b7280';
-
-                  if (isExcused) {
-                    statusText = 'Excused';
-                    statusColor = 'var(--muted)';
-                  } else if (isGraded) {
-                    statusText = `Graded: ${submission.grade || ''} (${submission.points_earned || 0}/${assignment.max_points})`;
-                    statusColor = 'var(--accent-2)';
-                  } else if (isSubmitted) {
-                    statusText = 'Submitted - Pending Grade';
-                    statusColor = 'var(--accent)';
-                  } else if (assignment.graded_offline) {
-                    statusText = 'Offline Assignment';
-                    statusColor = 'var(--accent)';
-                  } else if (isMissing) {
-                    statusText = 'Missing';
-                    statusColor = 'var(--danger)';
-                  }
+                let childStatusHtml = childRows(classAssignment).map(({ child, assignment, submission, status }) => {
+                  if (status.key === 'missing') anyChildMissing = true;
+                  const statusColor = status.color;
+                  const statusText = status.key === 'graded'
+                    ? `Graded: ${submission.grade || ''} (${submission.points_earned || 0}/${assignment.max_points})`
+                    : status.text;
 
                   // Parents see "Submitted late" as students do: the same rule
                   // (_submittedLate), so the two views cannot disagree.
-                  const lateChip = (isGraded || isSubmitted) && this._submittedLate(submission, assignment)
+                  const lateChip = (status.key === 'graded' || status.key === 'turned_in') && this._submittedLate(submission, assignment)
                     ? ' ' + this._lateBadge(submission) : '';
 
                   const v = assignment.student_version;
@@ -24518,10 +24496,10 @@ Students you had withdrawn stay withdrawn.`)) {
                     <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px;">
                       <div style="flex: 1;">
                         <h4 style="margin-bottom: 8px;">${assignment.title}</h4>
-                        <p style="color: var(--muted); font-size: 14px; margin: 8px 0;">
+                        ${assignment.due_date ? `<p style="color: var(--muted); font-size: 14px; margin: 8px 0;">
                           Due: ${dueDate.toLocaleDateString()} at ${dueDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                           ${anyChildMissing ? '<span style="color: var(--danger); margin-left: 10px;">(Past Due)</span>' : ''}
-                        </p>
+                        </p>` : ''}
                         <p style="color: var(--muted); font-size: 13px;">
                           Points: ${assignment.max_points}
                         </p>
@@ -27408,6 +27386,27 @@ Students you had withdrawn stay withdrawn.`)) {
       // the staff side derives it (_rtSubmissions): submitted_at against
       // due_date. There is no is_late column. Not-submitted and excused rows
       // are never "late".
+      // How a parent sees one child's assignment. 2026-11-18, Jordan: "how
+      // parents see assignments should show if the assignment was turned in
+      // but not graded and any assignment that is graded offline should not
+      // show up until they have been graded". So: work handed in says so until
+      // the teacher grades it, and work graded offline (on paper, in class)
+      // stays out of sight until it is graded or excused - before then there
+      // is nothing for a parent to see or act on. Info posts are reading, not
+      // work, so they still show. Returns null for "do not show". Every parent
+      // view goes through this, so they cannot disagree.
+      _parentAssignmentStatus(assignment, submission, now = new Date()) {
+        const st = submission?.status;
+        if (st === 'excused') return { key: 'excused', text: 'Excused', color: 'var(--muted)' };
+        if (st === 'graded') return { key: 'graded', text: 'Graded', color: 'var(--accent-2)' };
+        if (assignment?.assignment_type === 'info') return { key: 'info', text: 'Information', color: 'var(--muted)' };
+        if (assignment?.graded_offline) return null;
+        if (submission) return { key: 'turned_in', text: 'Turned in, not graded yet', color: 'var(--accent)' };
+        const due = assignment?.due_date ? new Date(assignment.due_date) : null;
+        if (due && due < now) return { key: 'missing', text: 'Missing', color: 'var(--danger)' };
+        return { key: 'not_turned_in', text: 'Not turned in yet', color: '#6b7280' };
+      }
+
       _submittedLate(submission, assignment) {
         if (!submission || !assignment?.due_date || !submission.submitted_at) return false;
         if (['not_submitted', 'excused'].includes(submission.status)) return false;
@@ -36812,7 +36811,7 @@ Students you had withdrawn stay withdrawn.`)) {
             return assignedToStudentIds.has(assignment.id);
           });
           const versions = await this.loadStudentVersions(visibleAssignments.map(a => a.id), [studentId]);
-          const filteredAssignments = visibleAssignments.map(a =>
+          let filteredAssignments = visibleAssignments.map(a =>
             this.withStudentVersion(a, this.studentVersionOf(versions, a.id, [studentId])));
 
           // Load submissions
@@ -36822,12 +36821,15 @@ Students you had withdrawn stay withdrawn.`)) {
             .select('*')
             .in('assignment_id', assignmentIds)
             .eq('student_id', studentId));
-          
+
           const submissionMap = {};
           submissions?.forEach(s => {
             submissionMap[s.assignment_id] = s;
           });
-          
+          // A parent does not see offline work until it is graded.
+          if (role === 'parent') filteredAssignments = filteredAssignments
+            .filter(a => this._parentAssignmentStatus(a, submissionMap[a.id]));
+
           const modalContent = `
             <div>
               <h3>📝 ${quarter.name} - Assignments</h3>
@@ -36852,8 +36854,12 @@ Students you had withdrawn stay withdrawn.`)) {
                   
                   let statusBadge = '';
                   let statusColor = 'var(--danger)';
+                  const parentStatus = role === 'parent' ? this._parentAssignmentStatus(assignment, submission) : null;
 
-                  if (isExcused) {
+                  if (role === 'parent') {
+                    statusColor = parentStatus.color;
+                    statusBadge = `<span style="background: ${parentStatus.color}; color: ${parentStatus.key === 'graded' || parentStatus.key === 'excused' ? 'black' : 'white'}; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">${parentStatus.key === 'graded' ? '✓ GRADED' : parentStatus.text.toUpperCase()}</span>`;
+                  } else if (isExcused) {
                     statusBadge = '<span style="background: var(--muted); color: black; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600;">EXCUSED</span>';
                     statusColor = 'var(--muted)';
                   } else if (isGraded) {

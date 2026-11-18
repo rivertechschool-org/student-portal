@@ -6539,3 +6539,16 @@ how many).
 - Both are database changes in the backend repo, applied 2026-11-17.
 - Tests: `debug-tools/conference-request-journeys.cjs` (19).
 **Needs:** nothing.
+
+## 2026-11-18 — Jordan's Claude
+**What parents see of assignments: turned in, and offline work only once graded.**
+- Every parent view (a class's assignments, the children's grades table, a quarter's
+  assignments) now uses one rule, `_parentAssignmentStatus`, so they cannot disagree:
+  graded, excused, **"Turned in, not graded yet"** (submitted or under review — before,
+  under review fell through to "Not Submitted"), missing, or not turned in yet.
+- Work graded offline (on paper, in class) does not appear for a parent until the teacher
+  grades or excuses it. A child with no grade yet is left off that assignment; an
+  assignment no child has a grade for is left out. Info posts still show, as "Information".
+- The class list no longer shows "Due 12/31/1969" on a post with no due date.
+- Tests: `tests/parent-assignment-status.test.js`, `debug-tools/parent-assignment-status.cjs`.
+**Needs:** nothing.

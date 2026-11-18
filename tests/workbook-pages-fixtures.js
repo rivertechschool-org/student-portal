@@ -13,6 +13,7 @@ function pagesDatabase(seed, faults = {}) {
       in(k,vs) { filters.push(r => vs.includes(r[k])); return api; },
       gte(k,v) { filters.push(r => r[k] >= v); return api; },
       lte(k,v) { filters.push(r => r[k] <= v); return api; },
+      lt(k,v) { filters.push(r => r[k] < v); return api; },
       or(expr) { if (expr.includes('neq.info')) filters.push(r => r.assignment_type !== 'info'); return api; },
       order(k,opts) { sorts.push([k,opts?.ascending !== false]); return api; },
       range(a,b) { lo=a;hi=b;return api; }, limit(n) { hi=n-1;return api; },
