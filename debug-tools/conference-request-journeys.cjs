@@ -124,7 +124,7 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
       conference_requests:[
         {id:'q1',day_id:'d1',program:'full_time',grade_band:'high_school',parent_name:'Ivo Quillfeather',email:'ivo.q@example.com',students:['Juno','Mystery Kid'],
          window_label:'Morning',window_start:'08:20:00',window_end:'11:20:00',notes:'Either parent can come',email_known:true,status:'pending',decided_at:null,created_at:'2099-11-01T10:00:00Z',
-         placements:[{typed:'Juno',student_id:'juno',how:'parent_email',slot_id:'s1',note:'held',together:true},{typed:'Bram',student_id:'bram',how:'parent_email',slot_id:'s2b',note:'held',together:true},{typed:'Mystery Kid',student_id:null,how:null,slot_id:null,note:'no student found with this name'}]},
+         placements:[{typed:'Juno',student_id:'juno',how:'parent_email',slot_id:'s1',note:'held',together:true},{typed:'Bram',student_id:'bram',how:'parent_email',slot_id:'s2b',note:'held',together:true},{typed:'Mystery Kid',student_id:null,how:null,slot_id:null,note:'no student found with this name'},{typed:'Pim',student_id:'pim',how:'parent_email',slot_id:null,note:'not in junior high or high school',grade:'1'}]},
         {id:'q2',day_id:'d1',program:'full_time',grade_band:'junior_high',parent_name:'Someone',email:'x@example.com',students:['Pip Larkin'],
          window_label:'Morning',window_start:'08:20:00',window_end:'11:20:00',notes:null,email_known:false,status:'declined',decided_at:'2099-11-02T10:00:00Z',created_at:'2099-11-01T11:00:00Z',
          placements:[{typed:'Pip Larkin',student_id:'pip',how:'name',slot_id:'s3',note:'already booked'}]}],
@@ -162,6 +162,8 @@ const CLIENT_STUB=`window.supabase={createClient(){return{async rpc(name,args){
     assert(body.includes('“Juno” → Juno Quillfeather (matched by parent email), held: 8:20 AM–8:40 AM back to back'),body);
     assert(body.includes('“Bram” → Bram Quillfeather (matched by parent email), held: 8:40 AM–9:00 AM back to back'));
     assert(body.includes('no student found with this name: add them to a time yourself'));
+    // A brother or sister outside grades 6-12: listed with the reason, nothing to do.
+    assert(body.includes('“Pim” → no time: grade 1 is not junior high or high school'),body);
     assert(body.includes('sign-up form, waiting for approval'),'held slot labelled in the grid');
     assert(body.includes('2 times are held by sign-up requests not approved yet'),'review warns');
     // The held time is not counted to send; Pip's parent booking is.
