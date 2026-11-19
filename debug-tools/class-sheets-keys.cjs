@@ -117,7 +117,67 @@ const assert=require('node:assert/strict');
     await page.evaluate(()=>app.closeModal('class-sheets'));
     await page.waitForFunction(()=>window.sheet.csv_data.startsWith('Pupil,'),null,{timeout:2000});
 
+    // ---- Formulas -------------------------------------------------------
+    await page.evaluate(()=>{window.sheet.csv_data=['Name,Quiz,Test,Total','Ada,90,80,','Bo,70,60,',',,,'].join('\n');});
+    await page.evaluate(()=>app.showClassSheets('c1'));
+    await page.evaluate(()=>app.openSheet('s1'));
+    await page.waitForSelector('.sheet-cell');
+    const shown=(r,c)=>at(r,c).innerText();
+    // Typed, then references clicked in: =SUM( click B2, shift-click C2 ) Enter.
+    await at(1,3).click();
+    await page.keyboard.type('=SUM(');
+    await at(1,1).click();
+    await at(1,2).click({modifiers:['Shift']});
+    await page.keyboard.type(')');
+    await page.keyboard.press('Enter');
+    assert.equal(await cell(1,3),'=SUM(B2:C2)','clicking and shift-clicking put the range in');
+    assert.equal(await shown(1,3),'170','and the cell shows the result');
+    assert.deepEqual(await sel(),[2,3],'Enter still moves down from the formula cell');
+    // Arrow keys pick a reference: =  Left  *2
+    await page.keyboard.type('=');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.press('ArrowLeft');
+    await page.keyboard.type('*2');
+    await page.keyboard.press('Enter');
+    assert.equal(await cell(2,3),'=B3*2','arrows put the reference in');
+    assert.equal(await shown(2,3),'140');
+    // Results follow their inputs.
+    await at(1,1).click();
+    await page.keyboard.type('100');
+    await page.keyboard.press('Enter');
+    assert.equal(await shown(1,3),'180','changing an input updates the result');
+    // The formula bar shows the formula; the cell its result.
+    await at(1,3).click();
+    assert.equal(await page.inputValue('#sheet-formula-bar'),'=SUM(B2:C2)');
+    // Copy D2, paste into D3: the references move down a row.
+    await page.evaluate(()=>{const dt=new DataTransfer();document.getElementById('sheet-grid-wrapper').dispatchEvent(new ClipboardEvent('copy',{clipboardData:dt,bubbles:true,cancelable:true}));window.__copied=dt.getData('text/plain');});
+    await at(2,3).click();
+    await page.evaluate(()=>{const dt=new DataTransfer();dt.setData('text/plain',window.__copied);document.getElementById('sheet-grid-wrapper').dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,bubbles:true,cancelable:true}));});
+    assert.equal(await cell(2,3),'=SUM(B3:C3)','a pasted formula moves its references');
+    assert.equal(await shown(2,3),'130');
+    // A row inserted above row 3: formulas below follow.
+    await at(1,0).click();
+    await page.evaluate(()=>app.addSheetRow());
+    assert.equal(await page.evaluate(()=>app._sheetData[3][3]),'=SUM(B4:C4)','inserting a row moves the references');
+    assert.equal(await shown(3,3),'130');
+    // An error says what is wrong.
+    await at(0,3).click();
+    await page.keyboard.type('=1/0');
+    await page.keyboard.press('Enter');
+    assert.equal(await shown(0,3),'#DIV/0!');
+    assert(/zero/i.test(await at(0,3).getAttribute('title')),'hovering an error explains it');
+    // Ordinary clicking still works while a value (not a formula) is typed.
+    await at(4,0).click();
+    await page.keyboard.type('Cy');
+    await at(4,1).click();
+    assert.equal(await cell(4,0),'Cy');
+    assert.deepEqual(await sel(),[4,1]);
+    // Saved as formulas; exported as results.
+    await page.waitForFunction(()=>window.sheet.csv_data.includes('=SUM(B2:C2)'),null,{timeout:4000});
+    const exported=await page.evaluate(()=>{let out;app.downloadCSV=(csv)=>{out=csv;};app.exportCurrentSheetCSV();return out;});
+    assert(exported.includes('Ada,100,80,180') && !exported.includes('=SUM'),exported);
+
     assert.deepEqual(errors,[]);
-    console.log('Class sheets: keys behave like Google Sheets (typing once, Tab/Enter, grow, Escape, F2, arrows, undo, paste, autosave) - all passed.');
+    console.log('Class sheets: keys behave like Google Sheets (typing once, Tab/Enter, grow, Escape, F2, arrows, undo, paste, autosave) and formulas (click/arrow references, results, copy, insert, errors, export) - all passed.');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

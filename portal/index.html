@@ -60658,7 +60658,11 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     sheetDataToCSV() {
-      return this._sheetData.map(row =>
+      return this._sheetGridToCSV(this._sheetData);
+    }
+
+    _sheetGridToCSV(grid) {
+      return grid.map(row =>
         row.map(cell => {
           const val = (cell || '').toString();
           if (val.includes(',') || val.includes('"') || val.includes('\n')) {
@@ -60682,6 +60686,8 @@ Students you had withdrawn stay withdrawn.`)) {
     renderSheetEditor(container) {
       const rows = this._sheetData.length;
       const cols = this._sheetData[0].length;
+      // Formulas are stored as typed ("=SUM(A1:A3)") and shown as results.
+      const calc = this._sheetCompute(this._sheetData);
 
       container.innerHTML = `
         <div style="display:flex;flex-direction:column;height:60vh;max-width:100%;overflow:hidden;">
@@ -60691,7 +60697,7 @@ Students you had withdrawn stay withdrawn.`)) {
             <input type="text" id="sheet-name-input" value="${this.escapeHtml(this._activeSheetName)}" style="background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:14px;font-weight:600;width:200px;" onchange="app.renameSheet(this.value)">
             <div style="flex:1;"></div>
             <div id="sheet-cell-ref" style="font-size:13px;color:var(--muted);min-width:50px;"></div>
-            <input type="text" id="sheet-formula-bar" placeholder="Cell value" style="flex:1;max-width:300px;background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:13px;" onkeydown="app.handleFormulaBarKey(event)" onchange="app.applyFormulaBar()">
+            <input type="text" id="sheet-formula-bar" placeholder="Value or =formula" title="Start with = for a formula, e.g. =SUM(B2:B20) or =AVERAGE(B2:D2)" style="flex:1;max-width:300px;font-family:ui-monospace,Consolas,monospace;background:var(--input-bg, rgba(255,255,255,0.05));border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-sm, 4px);padding:6px 12px;color:var(--text);font-size:13px;" onkeydown="app.handleFormulaBarKey(event)" onchange="app.applyFormulaBar()">
             <div style="display:flex;gap:6px;">
               <button class="btn btn-secondary" onclick="app.sheetUndo()" title="Undo (Ctrl+Z)" style="padding:6px 10px;font-size:13px;">↩</button>
               <button class="btn btn-secondary" onclick="app.sheetRedo()" title="Redo (Ctrl+Y)" style="padding:6px 10px;font-size:13px;">↪</button>
@@ -60722,7 +60728,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <tr>
                     <td style="position:sticky;left:0;z-index:1;background:var(--nav-bg, #1a1f27);border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:6px 10px;font-size:12px;color:var(--muted);text-align:center;user-select:none;cursor:pointer;" onclick="app.selectSheetRow(${r})" oncontextmenu="event.preventDefault();app.showRowContextMenu(event,${r})">${r + 1}</td>
                     ${row.map((cell, c) => `
-                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app._sheetTabAnchor = null; app.selectCell(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;">${this.escapeHtml(cell)}</td>
+                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app._sheetCellClick(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;${this._sheetCellStyle(calc, r, c)}"${calc.why[r][c] ? ` title="${this.escapeHtml(calc.why[r][c])}"` : ''}>${this.escapeHtml(calc.values[r][c])}</td>
                     `).join('')}
                   </tr>
                 `).join('')}
@@ -60733,6 +60739,14 @@ Students you had withdrawn stay withdrawn.`)) {
           <!-- Status bar -->
           <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-top:1px solid var(--surface-border, rgba(255,255,255,0.06));font-size:12px;color:var(--muted);">
             <span>${rows} rows x ${cols} columns</span>
+            <details style="position:relative;">
+              <summary style="cursor:pointer;">ƒx Formulas</summary>
+              <div style="position:absolute;bottom:22px;left:0;z-index:5;width:min(420px,80vw);background:var(--card);border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:8px;padding:10px 12px;line-height:1.5;color:var(--text);box-shadow:var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.3));">
+                Start a cell with <b>=</b>. References: <b>B2</b>, ranges <b>B2:B20</b>, whole columns <b>B:B</b>, <b>$B$2</b> stays put when copied.
+                While typing a formula, click a cell (Shift+click for a range) or use the arrow keys to put its reference in.<br>
+                <span style="color:var(--muted);">${this._sheetFunctionNames().join(', ')}</span>
+              </div>
+            </details>
             <span id="sheet-status">Ready</span>
           </div>
         </div>
@@ -60750,6 +60764,8 @@ Students you had withdrawn stay withdrawn.`)) {
         ['copy', 'cut', 'paste'].forEach(t => document.addEventListener(t, this._sheetClipHandler));
       }
       if (this._selectedCell) this.selectCell(this._selectedCell.r, this._selectedCell.c);
+      const gridWrap = document.getElementById('sheet-grid-wrapper');
+      if (gridWrap) gridWrap.addEventListener('mousedown', (e) => this._sheetRefClick(e));
     }
 
     selectCell(r, c) {
@@ -60858,6 +60874,8 @@ Students you had withdrawn stay withdrawn.`)) {
       } else if (e.key === 'Escape') {
         e.preventDefault();
         this._finishCellEdit(true);
+      } else if (arrows[e.key] && this._sheetRefArrow(input, ...arrows[e.key])) {
+        e.preventDefault();
       } else if (arrows[e.key] && ed.mode === 'type') {
         e.preventDefault();
         this._finishCellEdit();
@@ -60893,6 +60911,9 @@ Students you had withdrawn stay withdrawn.`)) {
         if (wrap) wrap.focus({ preventScroll: true });
         if (e.key === 'Enter') this._sheetEnterMove(e.shiftKey ? -1 : 1);
         else this._sheetTabMove(e.shiftKey ? -1 : 1);
+      } else if ({ ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1 }[e.key]) {
+        const d = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] }[e.key];
+        if (this._sheetRefArrow(e.target, ...d)) e.preventDefault();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         if (this._selectedCell) this.selectCell(this._selectedCell.r, this._selectedCell.c);
@@ -61001,7 +61022,7 @@ Students you had withdrawn stay withdrawn.`)) {
         e.preventDefault();
         const val = this._sheetData[r][c] || '';
         if (e.clipboardData) e.clipboardData.setData('text/plain', val);
-        this._clipboard = { value: val };
+        this._clipboard = { value: val, r, c };
         if (e.type === 'cut' && val !== '') {
           this._sheetRecord({ type: 'cell', r, c, oldVal: val, newVal: '' });
           this._sheetData[r][c] = '';
@@ -61022,7 +61043,13 @@ Students you had withdrawn stay withdrawn.`)) {
       const lines = String(text).replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(l => l.split('\t'));
       if (lines.length === 1 && lines[0].length === 1) {
         const oldVal = this._sheetData[r][c];
-        const newVal = lines[0][0];
+        let newVal = lines[0][0];
+        // A formula copied from this sheet: its relative references move with
+        // it, as in Sheets (=A1 copied one row down becomes =A2).
+        const src = this._clipboard;
+        if (src && src.r != null && src.value === newVal && newVal.startsWith('=')) {
+          newVal = this._sheetShiftRefs(newVal, { dr: r - src.r, dc: c - src.c });
+        }
         if (newVal !== oldVal) {
           this._sheetRecord({ type: 'cell', r, c, oldVal, newVal });
           this._sheetData[r][c] = newVal;
@@ -61045,7 +61072,7 @@ Students you had withdrawn stay withdrawn.`)) {
     sheetCopy() {
       if (!this._selectedCell) return;
       const { r, c } = this._selectedCell;
-      this._clipboard = { value: this._sheetData[r][c] };
+      this._clipboard = { value: this._sheetData[r][c], r, c };
     }
 
     sheetPaste() {
@@ -61062,6 +61089,9 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     _scheduleSheetSave() {
+      // The value is written just after the change is recorded; a microtask
+      // runs once it has, so the results include it.
+      queueMicrotask(() => this._sheetRefreshValues());
       clearTimeout(this._sheetSaveTimer);
       const statusEl = document.getElementById('sheet-status');
       if (statusEl) statusEl.textContent = 'Unsaved changes';
@@ -61082,6 +61112,514 @@ Students you had withdrawn stay withdrawn.`)) {
         this._sheetClipHandler = null;
       }
     }
+
+    // ---- Formulas (2026-11-19) -----------------------------------------------
+    //
+    // A cell that starts with = is a formula, stored as typed and shown as its
+    // result, as in Google Sheets. References: A1, $A$1, ranges A1:B5, whole
+    // columns A:A. Operators + - * / ^ & % and = <> < > <= >=, with Sheets'
+    // precedence (so -2^2 is 4). Errors read as Sheets' do: #DIV/0!, #VALUE!,
+    // #REF! (including a formula that depends on itself), #NAME?, #N/A, #NUM!,
+    // #ERROR! for a formula that cannot be read; hovering one says why.
+    //
+    // Pure: takes the grid of raw cells, returns what to show. No DOM, no
+    // database, so tests/class-sheet-formulas.test.js runs it as it is.
+    _sheetCompute(data) {
+      const rows = data.length;
+      const width = Math.max(1, ...data.map(r => r.length));
+      const ERR = (err, why) => ({ err, why });
+      const isErr = v => !!(v && typeof v === 'object' && v.err);
+      const NUM_RE = /^\s*[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?\s*$/i;
+      const colIdx = (letters) => { let n = 0; for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+      const fmt = (n) => Number.isInteger(n) ? String(n) : String(parseFloat(n.toPrecision(10)));
+
+      // A typed value as Sheets reads it: numbers, percentages, TRUE/FALSE, text.
+      const literal = (raw) => {
+        if (raw == null || raw === '') return null;
+        const s = String(raw);
+        if (NUM_RE.test(s)) return parseFloat(s);
+        const pct = s.match(/^\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*%\s*$/);
+        if (pct) return parseFloat(pct[1]) / 100;
+        const u = s.trim().toUpperCase();
+        if (u === 'TRUE') return true;
+        if (u === 'FALSE') return false;
+        return s;
+      };
+
+      const memo = new Map();
+      const visiting = new Set();
+      const cell = (r, c) => {
+        if (r < 0 || c < 0) return ERR('#REF!', 'That reference is off the edge of the sheet');
+        if (r >= rows || c >= (data[r] || []).length) return null;
+        const raw = data[r][c];
+        if (typeof raw !== 'string' || raw[0] !== '=' || raw.length === 1) return literal(raw);
+        const key = r + ',' + c;
+        if (memo.has(key)) return memo.get(key);
+        if (visiting.has(key)) return ERR('#REF!', 'Circular reference: this formula depends on its own result');
+        visiting.add(key);
+        let v;
+        try {
+          v = single(evaluate(parse(raw.slice(1))));
+        } catch (e) {
+          v = isErr(e) ? e : ERR('#ERROR!', 'This formula could not be read');
+        }
+        visiting.delete(key);
+        memo.set(key, v);
+        return v;
+      };
+
+      // ---- Reading a formula ----
+      const TOKEN = /\s+|("(?:[^"]|"")*")|(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?)(?![A-Za-z0-9_(])|(\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3})(?![A-Za-z0-9_(])|((?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)|([A-Za-z_][A-Za-z0-9_.]*)|(<=|>=|<>|[-+*/^&=<>(),%;])/y;
+      const refOf = (txt) => { const m = txt.match(/^\$?([A-Za-z]{1,3})\$?(\d+)$/); return { r: parseInt(m[2], 10) - 1, c: colIdx(m[1]) }; };
+      const tokenize = (src) => {
+        const out = [];
+        TOKEN.lastIndex = 0;
+        while (TOKEN.lastIndex < src.length) {
+          const at = TOKEN.lastIndex;
+          const m = TOKEN.exec(src);
+          if (!m || m.index !== at) throw ERR('#ERROR!', `Cannot read "${src.slice(at, at + 12)}"`);
+          if (m[1] != null) out.push({ t: 'str', v: m[1].slice(1, -1).replace(/""/g, '"') });
+          else if (m[2] != null) {
+            const [a, b] = m[2].split(':');
+            const A = refOf(a), B = b ? refOf(b) : A;
+            out.push({ t: 'ref', r1: Math.min(A.r, B.r), c1: Math.min(A.c, B.c), r2: Math.max(A.r, B.r), c2: Math.max(A.c, B.c), range: !!b });
+          } else if (m[3] != null) {
+            const [a, b] = m[3].replace(/\$/g, '').split(':').map(colIdx);
+            out.push({ t: 'ref', r1: 0, c1: Math.min(a, b), r2: Math.max(rows - 1, 0), c2: Math.max(a, b), range: true });
+          } else if (m[4] != null) out.push({ t: 'num', v: parseFloat(m[4]) });
+          else if (m[5] != null) out.push({ t: 'name', v: m[5].toUpperCase() });
+          else if (m[6] != null) out.push({ t: 'op', v: m[6] === ';' ? ',' : m[6] });
+        }
+        return out;
+      };
+      const parse = (src) => {
+        const toks = tokenize(src);
+        let pos = 0;
+        const isOp = (...vs) => toks[pos] && toks[pos].t === 'op' && vs.includes(toks[pos].v);
+        const expect = (v) => { if (!isOp(v)) throw ERR('#ERROR!', `Expected "${v}"`); pos++; };
+        const compare = () => {
+          let a = concat();
+          while (isOp('=', '<>', '<', '>', '<=', '>=')) { const op = toks[pos++].v; a = { k: 'bin', op, a, b: concat() }; }
+          return a;
+        };
+        const concat = () => { let a = add(); while (isOp('&')) { pos++; a = { k: 'bin', op: '&', a, b: add() }; } return a; };
+        const add = () => { let a = mul(); while (isOp('+', '-')) { const op = toks[pos++].v; a = { k: 'bin', op, a, b: mul() }; } return a; };
+        const mul = () => { let a = pow(); while (isOp('*', '/')) { const op = toks[pos++].v; a = { k: 'bin', op, a, b: pow() }; } return a; };
+        const pow = () => { let a = unary(); while (isOp('^')) { pos++; a = { k: 'bin', op: '^', a, b: unary() }; } return a; };
+        const unary = () => {
+          if (isOp('-')) { pos++; return { k: 'neg', a: unary() }; }
+          if (isOp('+')) { pos++; return unary(); }
+          let a = primary();
+          while (isOp('%')) { pos++; a = { k: 'pct', a }; }
+          return a;
+        };
+        const primary = () => {
+          const t = toks[pos++];
+          if (!t) throw ERR('#ERROR!', 'The formula ends too soon');
+          if (t.t === 'num') return { k: 'lit', v: t.v };
+          if (t.t === 'str') return { k: 'lit', v: t.v };
+          if (t.t === 'ref') return { k: 'ref', ...t };
+          if (t.t === 'op' && t.v === '(') { const e = compare(); expect(')'); return e; }
+          if (t.t === 'name') {
+            if (isOp('(')) {
+              pos++;
+              const args = [];
+              if (!isOp(')')) {
+                do { args.push(isOp(',', ')') ? { k: 'lit', v: null } : compare()); } while (isOp(',') && ++pos);
+              }
+              expect(')');
+              return { k: 'call', name: t.v, args };
+            }
+            if (t.v === 'TRUE') return { k: 'lit', v: true };
+            if (t.v === 'FALSE') return { k: 'lit', v: false };
+            throw ERR('#NAME?', `Unknown name "${t.v}"`);
+          }
+          throw ERR('#ERROR!', `Unexpected "${t.v}"`);
+        };
+        const tree = compare();
+        if (pos < toks.length) throw ERR('#ERROR!', `Unexpected "${toks[pos].v}"`);
+        return tree;
+      };
+
+      // ---- Values ----
+      // A range is { range: [[...], ...] }; everything else is a plain value.
+      const single = (v) => {
+        if (v && v.range) {
+          if (v.range.length === 1 && v.range[0].length === 1) v = v.range[0][0];
+          else return ERR('#VALUE!', 'A range here needs a function, such as SUM(A1:A5)');
+        }
+        return v;
+      };
+      const scalar = (node) => { const v = single(evaluate(node)); if (isErr(v)) throw v; return v; };
+      const num = (v) => {
+        if (v == null) return 0;
+        if (typeof v === 'boolean') return v ? 1 : 0;
+        if (typeof v === 'number') return v;
+        if (NUM_RE.test(v)) return parseFloat(v);
+        throw ERR('#VALUE!', `"${v}" is text, not a number`);
+      };
+      const str = (v) => v == null ? '' : typeof v === 'number' ? fmt(v) : typeof v === 'boolean' ? (v ? 'TRUE' : 'FALSE') : String(v);
+      const bool = (v) => typeof v === 'string' ? (() => { const u = v.toUpperCase(); if (u === 'TRUE') return true; if (u === 'FALSE' || u === '') return false; throw ERR('#VALUE!', `"${v}" is not TRUE or FALSE`); })() : !!num(v);
+      const rank = (v) => typeof v === 'number' || v == null ? 0 : typeof v === 'string' ? 1 : 2;
+      const cmp = (a, b) => {
+        if (a == null && typeof b === 'string') a = '';
+        if (b == null && typeof a === 'string') b = '';
+        if (a == null) a = 0; if (b == null) b = 0;
+        if (rank(a) !== rank(b)) return rank(a) - rank(b);
+        if (typeof a === 'string') { const x = a.toLowerCase(), y = b.toLowerCase(); return x < y ? -1 : x > y ? 1 : 0; }
+        return (a > b) - (a < b);
+      };
+      const finite = (n) => { if (!isFinite(n)) throw ERR('#NUM!', 'The result is too large or not a number'); return n; };
+
+      const evaluate = (n) => {
+        if (n.k === 'lit') return n.v;
+        if (n.k === 'ref') {
+          if (!n.range) { const v = cell(n.r1, n.c1); if (isErr(v)) throw v; return v; }
+          const out = [];
+          for (let r = n.r1; r <= n.r2; r++) { const row = []; for (let c = n.c1; c <= n.c2; c++) row.push(cell(r, c)); out.push(row); }
+          return { range: out };
+        }
+        if (n.k === 'neg') return -num(scalar(n.a));
+        if (n.k === 'pct') return num(scalar(n.a)) / 100;
+        if (n.k === 'bin') {
+          const a = scalar(n.a), b = scalar(n.b);
+          switch (n.op) {
+            case '+': return finite(num(a) + num(b));
+            case '-': return finite(num(a) - num(b));
+            case '*': return finite(num(a) * num(b));
+            case '/': { const d = num(b); if (d === 0) throw ERR('#DIV/0!', 'Dividing by zero (or by an empty cell)'); return finite(num(a) / d); }
+            case '^': return finite(Math.pow(num(a), num(b)));
+            case '&': return str(a) + str(b);
+            case '=': return cmp(a, b) === 0;
+            case '<>': return cmp(a, b) !== 0;
+            case '<': return cmp(a, b) < 0;
+            case '>': return cmp(a, b) > 0;
+            case '<=': return cmp(a, b) <= 0;
+            case '>=': return cmp(a, b) >= 0;
+          }
+        }
+        if (n.k === 'call') return call(n.name, n.args);
+        throw ERR('#ERROR!', 'This formula could not be read');
+      };
+
+      // Arguments flattened. From a range, text and blanks are skipped by the
+      // number functions (as in Sheets); typed straight in, text is an error.
+      const flat = (args) => {
+        const out = [];
+        for (const a of args) {
+          const v = evaluate(a);
+          if (v && v.range) v.range.forEach(row => row.forEach(x => { if (isErr(x)) throw x; out.push({ v: x, fromRange: true }); }));
+          // A reference to one cell counts like a range (text in it is skipped).
+          else { if (isErr(v)) throw v; out.push({ v, fromRange: a.k === 'ref' }); }
+        }
+        return out;
+      };
+      const nums = (args) => flat(args).filter(x => !x.fromRange || typeof x.v === 'number').map(x => num(x.v));
+      const rangeOf = (node) => { const v = evaluate(node); if (v && v.range) return v.range; if (isErr(v)) throw v; return [[v]]; };
+      const arg = (args, i, dflt) => args[i] && !(args[i].k === 'lit' && args[i].v === null) ? scalar(args[i]) : dflt;
+      const need = (args, lo, hi, name) => { if (args.length < lo || args.length > hi) throw ERR('#N/A', `${name} takes ${lo === hi ? lo : lo + ' to ' + (hi === Infinity ? 'any number of' : hi)} argument${hi === 1 ? '' : 's'}`); };
+
+      // COUNTIF-style criteria: 5, ">=90", "<>absent", "A*" (wildcards * ?).
+      const criterion = (c) => {
+        if (typeof c === 'number' || typeof c === 'boolean') return (v) => cmp(v, c) === 0 && typeof v === typeof c;
+        const m = String(c == null ? '' : c).match(/^(<=|>=|<>|<|>|=)?([\s\S]*)$/);
+        const op = m[1] || '=';
+        const rhs = m[2];
+        const rn = NUM_RE.test(rhs) ? parseFloat(rhs) : null;
+        const wild = new RegExp('^' + rhs.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
+        return (v) => {
+          if (rn !== null && typeof v === 'number') {
+            return { '=': v === rn, '<>': v !== rn, '<': v < rn, '>': v > rn, '<=': v <= rn, '>=': v >= rn }[op];
+          }
+          if (rn !== null && (op === '<' || op === '>' || op === '<=' || op === '>=')) return false;
+          const t = v == null ? '' : str(v);
+          if (op === '=') return rn !== null ? false : wild.test(t);
+          if (op === '<>') return rn !== null ? true : !wild.test(t);
+          const k = cmp(t, rhs);
+          return { '<': k < 0, '>': k > 0, '<=': k <= 0, '>=': k >= 0 }[op];
+        };
+      };
+      const lookupEq = (a, b) => (a == null ? '' : a) !== '' && cmp(a, b) === 0 && rank(a) === rank(b);
+
+      const FN = {
+        SUM: (a) => nums(a).reduce((s, x) => s + x, 0),
+        AVERAGE: (a) => { const n = nums(a); if (!n.length) throw ERR('#DIV/0!', 'No numbers to average'); return n.reduce((s, x) => s + x, 0) / n.length; },
+        MIN: (a) => { const n = nums(a); return n.length ? Math.min(...n) : 0; },
+        MAX: (a) => { const n = nums(a); return n.length ? Math.max(...n) : 0; },
+        MEDIAN: (a) => { const n = nums(a).sort((x, y) => x - y); if (!n.length) throw ERR('#NUM!', 'No numbers'); const m = n.length >> 1; return n.length % 2 ? n[m] : (n[m - 1] + n[m]) / 2; },
+        PRODUCT: (a) => nums(a).reduce((s, x) => s * x, 1),
+        COUNT: (a) => flat(a).filter(x => typeof x.v === 'number' || (!x.fromRange && x.v != null && NUM_RE.test(String(x.v)))).length,
+        COUNTA: (a) => flat(a).filter(x => x.v != null && x.v !== '').length,
+        COUNTBLANK: (a) => flat(a).filter(x => x.v == null || x.v === '').length,
+        ROUND: (a) => { need(a, 1, 2, 'ROUND'); const p = Math.pow(10, num(arg(a, 1, 0))); const x = num(scalar(a[0])); return Math.sign(x) * Math.round(Math.abs(x) * p + 1e-9) / p; },
+        ROUNDUP: (a) => { need(a, 1, 2, 'ROUNDUP'); const p = Math.pow(10, num(arg(a, 1, 0))); const x = num(scalar(a[0])); return Math.sign(x) * Math.ceil(Math.abs(x) * p - 1e-9) / p; },
+        ROUNDDOWN: (a) => { need(a, 1, 2, 'ROUNDDOWN'); const p = Math.pow(10, num(arg(a, 1, 0))); const x = num(scalar(a[0])); return Math.sign(x) * Math.floor(Math.abs(x) * p + 1e-9) / p; },
+        INT: (a) => { need(a, 1, 1, 'INT'); return Math.floor(num(scalar(a[0]))); },
+        ABS: (a) => { need(a, 1, 1, 'ABS'); return Math.abs(num(scalar(a[0]))); },
+        SQRT: (a) => { need(a, 1, 1, 'SQRT'); const x = num(scalar(a[0])); if (x < 0) throw ERR('#NUM!', 'Square root of a negative number'); return Math.sqrt(x); },
+        POWER: (a) => { need(a, 2, 2, 'POWER'); return finite(Math.pow(num(scalar(a[0])), num(scalar(a[1])))); },
+        MOD: (a) => { need(a, 2, 2, 'MOD'); const d = num(scalar(a[1])); if (d === 0) throw ERR('#DIV/0!', 'MOD by zero'); const x = num(scalar(a[0])); return x - d * Math.floor(x / d); },
+        PI: () => Math.PI,
+        IF: (a) => { need(a, 2, 3, 'IF'); return bool(scalar(a[0])) ? single(evaluate(a[1])) : (a[2] ? single(evaluate(a[2])) : false); },
+        IFERROR: (a) => { need(a, 1, 2, 'IFERROR'); try { const v = single(evaluate(a[0])); if (isErr(v)) throw v; return v; } catch (e) { if (!isErr(e)) throw e; return a[1] ? single(evaluate(a[1])) : ''; } },
+        IFS: (a) => { for (let i = 0; i + 1 < a.length; i += 2) if (bool(scalar(a[i]))) return single(evaluate(a[i + 1])); throw ERR('#N/A', 'No condition in IFS was true'); },
+        AND: (a) => flat(a).filter(x => !(x.fromRange && (x.v == null || typeof x.v === 'string'))).every(x => bool(x.v)),
+        OR: (a) => flat(a).filter(x => !(x.fromRange && (x.v == null || typeof x.v === 'string'))).some(x => bool(x.v)),
+        NOT: (a) => { need(a, 1, 1, 'NOT'); return !bool(scalar(a[0])); },
+        ISBLANK: (a) => { need(a, 1, 1, 'ISBLANK'); const v = single(evaluate(a[0])); return v == null; },
+        ISNUMBER: (a) => { need(a, 1, 1, 'ISNUMBER'); try { return typeof single(evaluate(a[0])) === 'number'; } catch (e) { if (isErr(e)) return false; throw e; } },
+        ISTEXT: (a) => { need(a, 1, 1, 'ISTEXT'); try { return typeof single(evaluate(a[0])) === 'string'; } catch (e) { if (isErr(e)) return false; throw e; } },
+        ISERROR: (a) => { need(a, 1, 1, 'ISERROR'); try { return isErr(single(evaluate(a[0]))); } catch (e) { if (isErr(e)) return true; throw e; } },
+        CONCATENATE: (a) => flat(a).map(x => str(x.v)).join(''),
+        CONCAT: (a) => flat(a).map(x => str(x.v)).join(''),
+        TEXTJOIN: (a) => { need(a, 3, Infinity, 'TEXTJOIN'); const d = str(scalar(a[0])); const skip = bool(scalar(a[1])); return flat(a.slice(2)).map(x => str(x.v)).filter(t => !skip || t !== '').join(d); },
+        LEN: (a) => { need(a, 1, 1, 'LEN'); return str(scalar(a[0])).length; },
+        UPPER: (a) => { need(a, 1, 1, 'UPPER'); return str(scalar(a[0])).toUpperCase(); },
+        LOWER: (a) => { need(a, 1, 1, 'LOWER'); return str(scalar(a[0])).toLowerCase(); },
+        PROPER: (a) => { need(a, 1, 1, 'PROPER'); return str(scalar(a[0])).toLowerCase().replace(/(^|[^a-z])([a-z])/g, (m, p, ch) => p + ch.toUpperCase()); },
+        TRIM: (a) => { need(a, 1, 1, 'TRIM'); return str(scalar(a[0])).trim().replace(/\s+/g, ' '); },
+        LEFT: (a) => { need(a, 1, 2, 'LEFT'); return str(scalar(a[0])).slice(0, Math.max(0, num(arg(a, 1, 1)))); },
+        RIGHT: (a) => { need(a, 1, 2, 'RIGHT'); const t = str(scalar(a[0])); const k = Math.max(0, num(arg(a, 1, 1))); return k ? t.slice(-k) : ''; },
+        MID: (a) => { need(a, 3, 3, 'MID'); const st = num(scalar(a[1])); if (st < 1) throw ERR('#VALUE!', 'MID starts at 1'); return str(scalar(a[0])).substr(st - 1, Math.max(0, num(scalar(a[2])))); },
+        COUNTIF: (a) => { need(a, 2, 2, 'COUNTIF'); const t = criterion(scalar(a[1])); return rangeOf(a[0]).flat().filter(v => !isErr(v) && t(v)).length; },
+        SUMIF: (a) => {
+          need(a, 2, 3, 'SUMIF');
+          const r = rangeOf(a[0]), t = criterion(scalar(a[1])), s = a[2] ? rangeOf(a[2]) : r;
+          let sum = 0;
+          r.forEach((row, i) => row.forEach((v, j) => { const x = (s[i] || [])[j]; if (t(v) && typeof x === 'number') sum += x; }));
+          return sum;
+        },
+        AVERAGEIF: (a) => {
+          need(a, 2, 3, 'AVERAGEIF');
+          const r = rangeOf(a[0]), t = criterion(scalar(a[1])), s = a[2] ? rangeOf(a[2]) : r;
+          const picked = [];
+          r.forEach((row, i) => row.forEach((v, j) => { const x = (s[i] || [])[j]; if (t(v) && typeof x === 'number') picked.push(x); }));
+          if (!picked.length) throw ERR('#DIV/0!', 'Nothing matched to average');
+          return picked.reduce((p, x) => p + x, 0) / picked.length;
+        },
+        RANK: (a) => {
+          need(a, 2, 3, 'RANK');
+          const v = num(scalar(a[0])); const asc = num(arg(a, 2, 0)) !== 0;
+          const list = rangeOf(a[1]).flat().filter(x => typeof x === 'number');
+          if (!list.includes(v)) throw ERR('#N/A', 'That value is not in the range');
+          return 1 + list.filter(x => asc ? x < v : x > v).length;
+        },
+        VLOOKUP: (a) => {
+          need(a, 3, 4, 'VLOOKUP');
+          const key = scalar(a[0]), tbl = rangeOf(a[1]), col = Math.floor(num(scalar(a[2]))), sorted = bool(arg(a, 3, true));
+          if (col < 1 || col > (tbl[0] || []).length) throw ERR('#REF!', 'The column number is outside the range');
+          let hit = -1;
+          if (!sorted) hit = tbl.findIndex(row => lookupEq(row[0], key));
+          else tbl.forEach((row, i) => { if (row[0] != null && rank(row[0]) === rank(key) && cmp(row[0], key) <= 0) hit = i; });
+          if (hit < 0) throw ERR('#N/A', `"${str(key)}" was not found`);
+          return tbl[hit][col - 1];
+        },
+        MATCH: (a) => {
+          need(a, 2, 3, 'MATCH');
+          const key = scalar(a[0]), list = rangeOf(a[1]).flat(), type = num(arg(a, 2, 1));
+          let hit = -1;
+          if (type === 0) hit = list.findIndex(v => lookupEq(v, key));
+          else list.forEach((v, i) => { if (v != null && rank(v) === rank(key) && (type > 0 ? cmp(v, key) <= 0 : cmp(v, key) >= 0)) hit = i; });
+          if (hit < 0) throw ERR('#N/A', `"${str(key)}" was not found`);
+          return hit + 1;
+        },
+        INDEX: (a) => {
+          need(a, 2, 3, 'INDEX');
+          const tbl = rangeOf(a[0]);
+          let r = Math.floor(num(scalar(a[1]))), c = Math.floor(num(arg(a, 2, 1)));
+          if (tbl.length === 1 && a.length === 2) { c = r; r = 1; }
+          if (r < 1 || c < 1 || r > tbl.length || c > (tbl[0] || []).length) throw ERR('#REF!', 'That position is outside the range');
+          return tbl[r - 1][c - 1];
+        },
+      };
+      const call = (name, args) => {
+        const f = FN[name];
+        if (!f) throw ERR('#NAME?', `Unknown function ${name}`);
+        const v = f(args);
+        return typeof v === 'number' ? finite(v) : v;
+      };
+
+      // ---- Every cell ----
+      const values = [], kinds = [], why = [];
+      for (let r = 0; r < rows; r++) {
+        const vr = [], kr = [], wr = [];
+        for (let c = 0; c < width; c++) {
+          const raw = data[r][c];
+          const isFormula = typeof raw === 'string' && raw[0] === '=' && raw.length > 1;
+          const v = isFormula ? cell(r, c) : literal(raw);
+          if (isErr(v)) { vr.push(v.err); kr.push('err'); wr.push(v.why || ''); continue; }
+          // Typed values show as typed ("007" stays "007"); results are formatted.
+          vr.push(isFormula ? str(v) : (raw == null ? '' : String(raw)));
+          kr.push(typeof v === 'number' ? 'num' : typeof v === 'boolean' ? 'bool' : 'text');
+          wr.push('');
+        }
+        values.push(vr); kinds.push(kr); why.push(wr);
+      }
+      return { values, kinds, why, functions: Object.keys(FN).filter(k => FN[k]).sort() };
+    }
+
+    _sheetFunctionNames() {
+      return this._sheetCompute([['']]).functions;
+    }
+
+    // How a computed cell looks: numbers to the right, errors in red.
+    _sheetCellStyle(calc, r, c) {
+      const k = calc.kinds[r] && calc.kinds[r][c];
+      if (k === 'err') return 'color:var(--danger, #ff6a6a);font-weight:600;';
+      if (k === 'num') return 'text-align:right;font-variant-numeric:tabular-nums;';
+      if (k === 'bool') return 'text-align:center;';
+      return '';
+    }
+
+    // Recompute after a change and repaint the cells whose result moved.
+    _sheetRefreshValues() {
+      if (!this._activeSheetId || !this._sheetData || !this._sheetData.length) return;
+      const calc = this._sheetCompute(this._sheetData);
+      document.querySelectorAll('.sheet-cell').forEach(td => {
+        const r = +td.dataset.r, c = +td.dataset.c;
+        if (!calc.values[r] || calc.values[r][c] === undefined) return;
+        if (this._sheetEdit && this._sheetEdit.r === r && this._sheetEdit.c === c) return;
+        if (td.textContent !== calc.values[r][c]) td.textContent = calc.values[r][c];
+        const k = calc.kinds[r][c];
+        td.style.textAlign = k === 'num' ? 'right' : k === 'bool' ? 'center' : '';
+        td.style.fontVariantNumeric = k === 'num' ? 'tabular-nums' : '';
+        td.style.color = k === 'err' ? 'var(--danger, #ff6a6a)' : 'var(--text)';
+        td.style.fontWeight = k === 'err' ? '600' : '';
+        if (calc.why[r][c]) td.title = calc.why[r][c]; else td.removeAttribute('title');
+      });
+    }
+
+    // Moves the references in a formula. Two kinds of move:
+    //   { dr, dc }            - pasted somewhere else: relative refs move,
+    //                           $-anchored parts stay (as Sheets does)
+    //   { axis, at, delta }   - a row/column inserted (+1) or deleted (-1) at
+    //                           index `at`: every ref past it moves, anchored
+    //                           or not; a ref to a deleted cell becomes #REF!
+    // Text inside "quotes" is left alone. Pure, like _sheetCompute.
+    _sheetShiftRefs(formula, op) {
+      if (typeof formula !== 'string' || formula[0] !== '=') return formula;
+      const colIdx = (l) => { let n = 0; for (const ch of l.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64); return n - 1; };
+      const colLab = (i) => { let s = ''; let n = i; do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0); return s; };
+      const BAD = '#REF!';
+      // One endpoint: { cAbs, c, rAbs, r } with 0-based c/r (r null for A:A).
+      const moveRel = (p) => {
+        if (op.dr == null) return p;
+        const q = { ...p };
+        if (!q.cAbs) q.c += op.dc;
+        if (q.r != null && !q.rAbs) q.r += op.dr;
+        if (q.c < 0 || (q.r != null && q.r < 0)) return null;
+        return q;
+      };
+      const show = (p) => (p.cAbs ? '$' : '') + colLab(p.c) + (p.r == null ? '' : (p.rAbs ? '$' : '') + (p.r + 1));
+      const structural = (a, b) => {
+        // a..b is a ref (a === b for a single cell). Returns [a, b] or null.
+        const key = op.axis === 'row' ? 'r' : 'c';
+        if (a[key] == null) return [a, b];               // A:A and a row change
+        const A = { ...a }, B = { ...b };
+        if (op.delta > 0) {
+          if (A[key] >= op.at) A[key] += 1;
+          if (B[key] >= op.at) B[key] += 1;
+          return [A, B];
+        }
+        const single = a[key] === b[key];
+        if (single) {
+          if (A[key] === op.at) return null;
+          if (A[key] > op.at) { A[key] -= 1; B[key] -= 1; }
+          return [A, B];
+        }
+        if (A[key] > op.at) A[key] -= 1;
+        if (B[key] >= op.at) B[key] -= 1;
+        if (A[key] > B[key]) return null;
+        return [A, B];
+      };
+      const parsePt = (cAbs, col, rAbs, row) => ({ cAbs: !!cAbs, c: colIdx(col), rAbs: !!rAbs, r: row == null ? null : parseInt(row, 10) - 1 });
+      const REF = /(?<![A-Za-z0-9_$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?::(\$?)([A-Za-z]{1,3})(\$?)(\d+))?(?![A-Za-z0-9_(])|(?<![A-Za-z0-9_$])(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})(?![A-Za-z0-9_(])/g;
+      const fix = (seg) => seg.replace(REF, (m, a1, c1, a2, r1, b1, c2, b2, r2, x1, xc1, x2, xc2) => {
+        let A, B;
+        if (c1 != null) { A = parsePt(a1, c1, a2, r1); B = c2 != null ? parsePt(b1, c2, b2, r2) : A; }
+        else { A = parsePt(x1, xc1, '', null); B = parsePt(x2, xc2, '', null); }
+        const isRange = c2 != null || xc1 != null;
+        let res;
+        if (op.axis) res = structural(A, B);
+        else { const P = moveRel(A), Q = moveRel(B); res = P && Q ? [P, Q] : null; }
+        if (!res) return BAD;
+        return isRange ? show(res[0]) + ':' + show(res[1]) : show(res[0]);
+      });
+      // Outside quotes only.
+      return formula.split(/("(?:[^"]|"")*")/).map((part, i) => i % 2 ? part : fix(part)).join('');
+    }
+
+    // After a row/column is inserted or deleted, every formula follows.
+    _sheetShiftAll(op) {
+      this._sheetData.forEach((row, r) => row.forEach((v, c) => {
+        if (typeof v === 'string' && v[0] === '=') row[c] = this._sheetShiftRefs(v, op);
+      }));
+    }
+
+    // While a formula is being typed, at a point where a reference can go
+    // (after =, (, a comma or an operator), clicking a cell puts its
+    // reference in instead of leaving the cell; Shift+click makes a range.
+    // Clicking again replaces the reference just put in, as Sheets does.
+    _sheetRefTarget() {
+      const bar = document.getElementById('sheet-formula-bar');
+      const input = this._sheetEdit ? this._sheetEdit.input : (document.activeElement === bar ? bar : null);
+      if (!input || !String(input.value).startsWith('=')) return null;
+      const caret = input.selectionStart;
+      const last = this._sheetRefInsert && this._sheetRefInsert.input === input && caret === this._sheetRefInsert.end
+        && input.selectionEnd === caret ? this._sheetRefInsert : null;
+      const before = input.value.slice(0, caret).replace(/\s+$/, '');
+      if (!last && !/[=(,+\-*/^&<>:;]$/.test(before)) return null;
+      return { input, caret, last };
+    }
+
+    _sheetInsertRef(t, r, c, extend) {
+      const { input, caret, last } = t;
+      const here = this.getColLabel(c) + (r + 1);
+      const anchor = last && extend ? last.anchor : here;
+      const ref = last && extend && anchor !== here ? anchor + ':' + here : here;
+      const start = last ? last.start : caret;
+      const end0 = last ? last.end : caret;
+      input.value = input.value.slice(0, start) + ref + input.value.slice(end0);
+      const end = start + ref.length;
+      input.setSelectionRange(end, end);
+      this._sheetRefInsert = { input, start, end, anchor: extend && last ? last.anchor : here, r, c };
+    }
+
+    // A plain click on a cell selects it - unless it just put a reference
+    // into a formula being typed.
+    _sheetCellClick(r, c) {
+      if (this._sheetSwallowClick) { this._sheetSwallowClick = false; return; }
+      this._sheetTabAnchor = null;
+      this.selectCell(r, c);
+    }
+
+    _sheetRefClick(e) {
+      const td = e.target && e.target.closest && e.target.closest('.sheet-cell');
+      if (!td) return;
+      const r = +td.dataset.r, c = +td.dataset.c;
+      const ed = this._sheetEdit;
+      if (ed && ed.r === r && ed.c === c) return;   // placing the caret in its own cell
+      const t = this._sheetRefTarget();
+      if (!t) return;                                 // an ordinary click: the edit ends
+      e.preventDefault();                             // keep the typing where it is
+      e.stopPropagation();
+      this._sheetSwallowClick = true;                 // and the click that follows is not a selection
+      this._sheetInsertRef(t, r, c, e.shiftKey);
+    }
+
+    // Arrow keys do the same from the keyboard: from the cell being edited,
+    // or from the reference just put in. Returns true when it took the key.
+    _sheetRefArrow(input, dr, dc) {
+      const t = this._sheetRefTarget();
+      if (!t || t.input !== input) return false;
+      const base = t.last ? { r: t.last.r, c: t.last.c } : (this._sheetEdit ? { r: this._sheetEdit.r, c: this._sheetEdit.c } : this._selectedCell);
+      if (!base) return false;
+      const r = Math.max(0, Math.min(this._sheetData.length - 1, base.r + dr));
+      const c = Math.max(0, Math.min(this._sheetData[0].length - 1, base.c + dc));
+      this._sheetInsertRef(t, r, c, false);
+      return true;
+    }
+
 
     // NOTE: `_undoStack` here is the SPREADSHEET undo (cell/grid entries).
     // Riven keeps its own `_rivenUndoStack` — see _pushUndo. Don't merge them:
@@ -61131,6 +61669,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const cols = this._sheetData[0].length;
       const insertAt = this._selectedCell ? this._selectedCell.r + 1 : this._sheetData.length;
       this._sheetData.splice(insertAt, 0, Array(cols).fill(''));
+      this._sheetShiftAll({ axis: 'row', at: insertAt, delta: 1 });
       this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this.renderSheetEditor(this._getSheetContainer());
     }
@@ -61139,6 +61678,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const oldData = this._sheetData.map(r => [...r]);
       const insertAt = this._selectedCell ? this._selectedCell.c + 1 : this._sheetData[0].length;
       this._sheetData.forEach(row => row.splice(insertAt, 0, ''));
+      this._sheetShiftAll({ axis: 'col', at: insertAt, delta: 1 });
       this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this.renderSheetEditor(this._getSheetContainer());
     }
@@ -61148,6 +61688,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const oldData = this._sheetData.map(r => [...r]);
       const removeAt = this._selectedCell ? this._selectedCell.r : this._sheetData.length - 1;
       this._sheetData.splice(removeAt, 1);
+      this._sheetShiftAll({ axis: 'row', at: removeAt, delta: -1 });
       if (this._selectedCell && this._selectedCell.r >= this._sheetData.length) {
         this._selectedCell.r = this._sheetData.length - 1;
       }
@@ -61160,6 +61701,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const oldData = this._sheetData.map(r => [...r]);
       const removeAt = this._selectedCell ? this._selectedCell.c : this._sheetData[0].length - 1;
       this._sheetData.forEach(row => row.splice(removeAt, 1));
+      this._sheetShiftAll({ axis: 'col', at: removeAt, delta: -1 });
       if (this._selectedCell && this._selectedCell.c >= this._sheetData[0].length) {
         this._selectedCell.c = this._sheetData[0].length - 1;
       }
@@ -61249,7 +61791,8 @@ Students you had withdrawn stay withdrawn.`)) {
             .single()
         );
         if (error) throw error;
-        this.downloadCSV(data.csv_data, data.name);
+        const grid = this._parseSheetGrid(data.csv_data || '');
+        this.downloadCSV(this._sheetGridToCSV(this._sheetCompute(grid).values), data.name);
       } catch (e) {
         console.error('Error exporting sheet:', e);
       }
@@ -61257,7 +61800,8 @@ Students you had withdrawn stay withdrawn.`)) {
 
     exportCurrentSheetCSV() {
       if (!this._activeSheetId) return;
-      const csvData = this.sheetDataToCSV();
+      // Results, not formulas: the file is for reading elsewhere.
+      const csvData = this._sheetGridToCSV(this._sheetCompute(this._sheetData).values);
       this.downloadCSV(csvData, this._activeSheetName);
     }
 

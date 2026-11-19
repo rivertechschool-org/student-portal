@@ -6593,3 +6593,13 @@ teacher communication).**
 - **Done:** typing on a cell replaces it (each letter once now). Enter or F2 or a double click edits what is there. Tab moves right and Shift+Tab left. Enter moves down, back to the column where a run of Tabs started. Escape cancels an edit. Arrows end an edit you started by typing. Going past the last row or column adds one. Copy, cut and paste use the real clipboard, so a block pasted from Google Sheets fills in. Ctrl+Z and Ctrl+Y undo and redo.
 - **Changed behaviour:** sheets now save themselves about a second after each change, and when you leave the sheet. The Save button still works.
 - **Check:** `node debug-tools/class-sheets-keys.cjs` (serve on 8780 first).
+
+## 2026-11-19 · Class sheets: formulas and cell references
+
+- A cell starting with `=` is a formula. The cell shows the result, and the formula bar shows the formula. References work as in Sheets: `B2`, `$B$2`, ranges `B2:D9`, whole columns `B:B`. There are about 50 functions, including SUM, AVERAGE, IF, COUNTIF, SUMIF, VLOOKUP, ROUND and TEXTJOIN; the full list is under "ƒx Formulas" at the bottom of a sheet.
+- While typing a formula, clicking a cell (Shift+click for a range) or using the arrow keys puts its reference in.
+- References move like Sheets': a copied formula's relative references shift when pasted, and adding or deleting rows or columns updates every formula. A reference to a deleted cell becomes #REF!.
+- Errors look like Sheets' (#DIV/0!, #VALUE!, #REF!, #NAME?, #N/A), and hovering one says why. A formula that depends on itself is #REF!.
+- Saved as formulas. Export CSV gives the results, as Sheets' CSV download does.
+- Not done: selecting a range with Shift+arrows, fill-down, references to other sheets, dates.
+- Tests: `tests/class-sheet-formulas.test.js`, and formula steps in `debug-tools/class-sheets-keys.cjs`.
