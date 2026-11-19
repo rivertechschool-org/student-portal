@@ -227,6 +227,23 @@ await page.evaluate((id) => { window.__writes = []; return app.deleteLateEarly(i
 writes = await page.evaluate(() => window.__writes);
 ok('Remove deletes that plan', writes.some(w => w.op === 'delete' && w.where.id === firstId));
 
+console.log('\nThe office adds a late arrival by hand');
+await page.evaluate(() => { window.__writes = []; document.querySelectorAll('[id^="modal-"]').forEach(m => m.remove()); return app.showAddLateEarlyModal(); });
+await page.waitForSelector('#le-time');
+txt = await modalText(page);
+ok('both choices are on screen', /Arriving late/.test(txt) && /Leaving early/.test(txt));
+await page.evaluate(() => { const s = document.getElementById('le-student'); s.value = s.options[1]?.value || ''; });
+await page.fill('#le-date', DATE);
+await page.fill('#le-time', '10:15');
+await page.evaluate(() => app.saveLateEarly());
+ok('  and neither is picked for you', !(await page.evaluate(() => (window.__writes || []).some(w => w.op === 'rpc'))));
+await page.click('.le-kind-btn[data-kind="late"]');
+await page.evaluate(() => app.saveLateEarly());
+await page.waitForTimeout(150);
+writes = await page.evaluate(() => window.__writes);
+const staffSent = writes.find(w => w.op === 'rpc');
+check('choosing "Arriving late" saves a late arrival', staffSent && [staffSent.args.p_kind, staffSent.args.p_time, staffSent.args.p_date], ['late', '10:15', DATE]);
+
 console.log('\nA parent reports an early pickup');
 await page.evaluate(() => {
   window.__writes = [];
@@ -240,7 +257,12 @@ await page.waitForSelector('#ple-time');
 txt = await modalText(page);
 ok('the form lists what the school already has', /Already reported/.test(txt) && /entered by the school/.test(txt));
 ok('  with no Withdraw on the school\'s entries', !/Withdraw/.test(txt));
-await page.selectOption('#ple-kind', 'early');
+await page.fill('#ple-date', DATE);
+await page.fill('#ple-time', '13:30');
+await page.click('#ple-send');
+await page.waitForTimeout(150);
+ok('nothing is sent until late or early is chosen', !(await page.evaluate(() => (window.__writes || []).some(w => w.op === 'rpc'))));
+await page.click('.le-kind-btn[data-kind="early"]');
 await page.fill('#ple-date', DATE);
 await page.fill('#ple-time', '13:30');
 await page.fill('#ple-reason', 'orthodontist');
