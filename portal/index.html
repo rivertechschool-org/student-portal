@@ -10282,6 +10282,22 @@
               </div>
             `).join('')
           : '<p style="color: var(--muted); text-align: center;">Not enrolled in any classes.</p>';
+        // Classes they have left (last year's, withdrawn): folded away, but
+        // still listed so a parent can see where past grades came from.
+        const pastClasses = child.activeClassIds
+          ? (child.classes || []).filter((c, i, all) => !child.activeClassIds.includes(c.id) && all.findIndex(k => k.id === c.id) === i)
+          : [];
+        const pastClassesHTML = pastClasses.length ? `
+            <details style="margin-top: 10px;">
+              <summary style="cursor: pointer; color: var(--muted);">Past classes (${pastClasses.length})</summary>
+              ${pastClasses.map(c => `
+                <div class="list-item" style="opacity: 0.8; cursor: pointer;" onclick="app.openClass('${c.id}')">
+                  <div class="list-item-content">
+                    <div class="list-item-title">${c.name}</div>
+                    ${c.teacher_name ? `<div class="list-item-meta">🧑‍🏫 ${this.escapeHtml(c.teacher_name)}${c.secondary_teacher_name ? ` (with ${this.escapeHtml(c.secondary_teacher_name)})` : ''}</div>` : ''}
+                  </div>
+                </div>`).join('')}
+            </details>` : '';
 
         // Calculate child's GPA
         const gpaData = await this.calculateStudentGPA(childId);
@@ -10335,6 +10351,7 @@
           <div style="margin-bottom: 20px;">
             <h4 style="margin-bottom: 10px;">📚 Classes (${currentClasses.length})</h4>
             <div class="list">${classesHTML}</div>
+            ${pastClassesHTML}
           </div>
 
           ${this.renderChildOverviewSection(childOverview, child)}
@@ -19373,9 +19390,19 @@
             </div>
           `;
         } else if (userType === 'parent') {
-          // Parents have read-only view, no action buttons
+          // Read-only view. Past classes (closed, or ones no child is in any
+          // more, such as last year's) are hidden behind a button: their work
+          // and grades stay reachable, they just don't crowd this year's list.
+          const pastCount = this._parentClassSplit(matched).past.length;
           classesActions.innerHTML = `
-            <span style="color: var(--muted); font-size: 14px;">Viewing your children's classes</span>
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+              <span style="color: var(--muted); font-size: 14px;">Viewing your children's classes</span>
+              ${pastCount ? `
+                <button class="btn btn-secondary" onclick="app.toggleClosedClasses()" id="toggle-closed-btn">
+                  ${this.showClosedClasses ? 'Hide' : 'Show'} Past Classes (${pastCount})
+                </button>
+              ` : ''}
+            </div>
           `;
         }
 
@@ -19505,13 +19532,14 @@
 
           classesContent.innerHTML = filterBarHtml + html;
         } else {
-          // Parent view - show active classes, with closed classes in a separate section
+          // Parent view - this year's classes; past ones only when asked for.
+          const { current, past } = this._parentClassSplit(matched);
           let html = '';
 
-          if (activeClasses.length > 0) {
+          if (current.length > 0) {
             html += `
               <div class="grid grid-3">
-                ${activeClasses.map(cls => this.renderClassCard(cls)).join('')}
+                ${current.map(cls => this.renderClassCard(cls)).join('')}
               </div>
             `;
           } else {
@@ -19523,8 +19551,8 @@
             `;
           }
 
-          // Show closed classes section for parents to access past grades
-          if (closedClasses.length > 0) {
+          // Past classes, to reach past grades - hidden until shown.
+          if (this.showClosedClasses && past.length > 0) {
             html += `
               <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid var(--border);">
                 <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
@@ -19532,7 +19560,7 @@
                   <span style="font-size: 12px; color: var(--muted);">Click to view grades and history</span>
                 </div>
                 <div class="grid grid-3">
-                  ${closedClasses.map(cls => this.renderClassCard(cls)).join('')}
+                  ${past.map(cls => this.renderClassCard(cls)).join('')}
                 </div>
               </div>
             `;
@@ -20227,6 +20255,14 @@
         this.showHiddenClasses = !!on;
         this._saveClassPrefs();
         this.renderClasses();
+      }
+
+      // A parent's classes: current = open and some child is actively in it.
+      // Everything else (closed, or every child has left it) is past.
+      _parentClassSplit(classes) {
+        const activeIds = new Set((this.children || []).flatMap(ch => ch.activeClassIds || []));
+        const isCurrent = c => c.status !== 'closed' && activeIds.has(c.id);
+        return { current: (classes || []).filter(isCurrent), past: (classes || []).filter(c => !isCurrent(c)) };
       }
 
       toggleClosedClasses() {

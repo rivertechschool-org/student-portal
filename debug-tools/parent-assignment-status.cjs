@@ -112,6 +112,7 @@ const seed={
     assert(!d.includes('Old class quiz')&&!d.includes('Old Math'),'a class she has left is not listed');
     assert(!d.includes('Paper quiz'),'offline, not graded: hidden');
     for (const h of ['Late (1)','Due (1)','Turned in, waiting for a grade (1)','Graded (2)','Classes (1)']) assert(d.includes(h),h);
+    assert(d.includes('Past classes (1)'),'a class she has left is folded away, not gone');
     assert(d.includes('Tess Hale (with Cass Rowe)'),'each class names its teacher and co-teacher');
     assert(d.includes('A- (9/10)'),'a grade with points and no letter gets its letter');
     assert(d.includes('B (8/10)'));
@@ -143,6 +144,23 @@ const seed={
     assert(prec.includes('Teacher: Tess Hale')&&prec.includes('Teacher: Cass Rowe'),JSON.stringify(prec));
     assert(!prec.some(r=>r.includes('Old Teacher')),'not the teacher of a class she has left');
 
-    console.log('Parent assignment status: 7 journeys passed (class list, children\'s grades, quarter, child page, home line, teacher messaging a parent, parent messaging teachers).');
+    // 8. The Classes tab: this year's classes; past ones (left, or closed)
+    //    behind a button, and back when it is pressed.
+    const tab=await page.evaluate(()=>{const a=app;document.querySelectorAll('.modal').forEach(m=>m.remove());
+      a.classFilterSubject=a.classFilterGrade=a.classFilterDay='all';a._loadClassPrefs=()=>{};a.showClosedClasses=false;
+      a.children=[{id:'ivy',first_name:'Ivy',activeClassIds:['math','shut'],classes:[{id:'math'},{id:'oldmath'},{id:'shut'}]}];
+      a.classes=[{id:'math',name:'Invented Math',subject:'Math',teacher_name:'Tess Hale'},{id:'oldmath',name:'Old Math',subject:'Math'},
+        {id:'shut',name:'Closed Art',subject:'Art',status:'closed'}];
+      a.renderClasses();
+      const before=document.getElementById('classes-content').innerText, btn=document.getElementById('toggle-closed-btn')?.innerText;
+      a.toggleClosedClasses();
+      return {before,btn,after:document.getElementById('classes-content').innerText};});
+    assert(tab.before.includes('Invented Math')&&tab.before.includes('Tess Hale'),tab.before);
+    assert(!tab.before.includes('Old Math')&&!tab.before.includes('Closed Art'),'past classes hidden: '+tab.before);
+    assert.equal(tab.btn?.trim(),'Show Past Classes (2)');
+    assert(tab.after.includes('Past Classes')&&tab.after.includes('Old Math')&&tab.after.includes('Closed Art'),tab.after);
+    assert.deepEqual(errors,[]);
+
+    console.log('Parent assignment status: 8 journeys passed (class list, children\'s grades, quarter, child page, home line, teacher messaging a parent, parent messaging teachers, classes tab).');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
