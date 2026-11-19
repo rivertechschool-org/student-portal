@@ -33,7 +33,8 @@ const seed={
     {parent_id:'gone',child_id:'ivy',status:'inactive'}],
   user_profiles:[{id:'ivy',first_name:'Ivy',last_name:'Marsh',user_type:'student'},{id:'oren',first_name:'Oren',last_name:'Pike',user_type:'student'},
     {id:'mom',first_name:'Wren',last_name:'Marsh',user_type:'parent'},{id:'gone',first_name:'Old',last_name:'Link',user_type:'parent'},
-    {id:'t',first_name:'Tess',last_name:'Hale',user_type:'teacher'}],
+    {id:'t',first_name:'Tess',last_name:'Hale',user_type:'teacher'},{id:'co',first_name:'Cass',last_name:'Rowe',user_type:'teacher'},
+    {id:'old',first_name:'Old',last_name:'Teacher',user_type:'teacher'}],
   quarters:[{id:'q',name:'Fall',school_year:'2026-27',is_current:true,is_archived:false,start_date:'2026-09-01',end_date:'2026-12-20'}],
 };
 (async()=>{
@@ -131,6 +132,15 @@ const seed={
     assert(!rec.some(r=>r.includes('Old Link')),'an inactive link is not offered');
     assert(rec.includes('Student: Ivy Marsh'));
 
-    console.log('Parent assignment status: 6 journeys passed (class list, children\'s grades, quarter, child page, home line, teacher messaging a parent).');
+    // 7. A parent's list has their children's teachers: teacher and co-teacher
+    //    of the classes they are in now, not of a class they have left.
+    const prec=await page.evaluate(()=>{app.userInfo={profile:{id:'mom',user_type:'parent'},user:{id:'mom'}};
+      app.children=[{id:'ivy',first_name:'Ivy',activeClassIds:['math'],
+        classes:[{id:'math',teacher_id:'t',secondary_teacher_id:'co'},{id:'oldmath',teacher_id:'old'}]}];
+      return app.loadMessageRecipients().then(()=>app.messageRecipients.map(r=>r.type+': '+r.name));});
+    assert(prec.includes('Teacher: Tess Hale')&&prec.includes('Teacher: Cass Rowe'),JSON.stringify(prec));
+    assert(!prec.some(r=>r.includes('Old Teacher')),'not the teacher of a class she has left');
+
+    console.log('Parent assignment status: 7 journeys passed (class list, children\'s grades, quarter, child page, home line, teacher messaging a parent, parent messaging teachers).');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -6580,4 +6580,9 @@ teacher communication).**
 - Also: a child's page no longer fails to open when the GPA cannot be worked out, and a
   child with no email shows "None on file", not "undefined".
 - Tests: `tests/parent-assignment-status.test.js`, `debug-tools/parent-assignment-status.cjs` (6).
+- **Parents messaging teachers:** a parent's Messages list was empty of teachers - the
+  database did not let a parent see their children's teachers. Fixed in the backend repo
+  (applied 2026-11-18): they now see the teacher and co-teacher of each class their child
+  is in now. The page lists co-teachers too, and not the teacher of a class the child has
+  left. Parents still cannot see admins, so "message the office" from a parent lists no one.
 **Needs:** "Luke Math check" on Jordan's list is not done; what it means is with Jordan.
