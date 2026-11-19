@@ -6551,6 +6551,9 @@ how many).
   assignment no child has a grade for is left out. Info posts still show, as "Information".
 - The class list no longer shows "Due 12/31/1969" on a post with no due date.
 - Tests: `tests/parent-assignment-status.test.js`, `debug-tools/parent-assignment-status.cjs`.
+- The nightly "Missed Assignment Alert" email to parents follows the same rule (backend
+  repo, deployed 2026-11-18): never for work turned in and waiting for a grade, never for
+  offline work, and not before a child's own later due date.
 **Needs:** nothing.
 
 ## 2026-11-18 — In-class assignments
