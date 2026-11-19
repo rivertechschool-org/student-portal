@@ -42,3 +42,12 @@ assert.equal(key(offline(), { status: 'excused' }), 'excused');
 assert.equal(key({ ...offline(), assignment_type: 'info' }, undefined), 'info');
 
 console.log('parent-assignment-status: all passed');
+
+// A grade with points and no letter (rubric / points grading) gets its letter.
+const g = eval(`({${method('_gradeText')},${method('percentageToLetter')}})`);
+assert.equal(g._gradeText({ grade: null, points_earned: 9 }, { max_points: 10 }), 'A- (9/10)');
+assert.equal(g._gradeText({ grade: 'b+', points_earned: 8 }, { max_points: 10 }), 'B+ (8/10)', 'the teacher\'s letter wins');
+assert.equal(g._gradeText({ grade: 'C', points_earned: null }, { max_points: 10 }), 'C');
+assert.equal(g._gradeText({ grade: '', points_earned: 0 }, { max_points: 10 }), 'F (0/10)');
+assert.equal(g._gradeText({ grade: null, points_earned: null }, { max_points: 0 }), 'Graded');
+console.log('grade text: all passed');

@@ -18,13 +18,22 @@ const seed={
     A('Online worksheet'),                               // nobody turned in: missing
     A('Paper project',{graded_offline:true}),            // offline, Oren excused: Oren only
     A('Reading list',{assignment_type:'info',graded_offline:true,due_date:null}),
+    A('Rubric poster',{grading_type:'rubric'}),          // Ivy graded with points and no letter
+    A('Next week reading',{due_date:new Date(Date.now()+3*864e5).toISOString()}), // due this week
+    A('Old class quiz',{class_id:'oldmath'}),            // a class Ivy has left
+    A('Last year essay',{due_date:'2025-10-01T16:00:00.000Z'}), // last school year
   ],
   assignment_submissions:[S('Online essay','ivy','submitted'),S('Online essay','oren','under_review'),
-    S('Paper test','ivy','graded'),S('Paper project','oren','excused')],
+    S('Paper test','ivy','graded'),S('Paper project','oren','excused'),
+    S('Rubric poster','ivy','graded',{grade:null,points_earned:9})],
   assignment_student_versions:[],assignment_students:[],grade_categories:[],
   classes:[{id:'math',name:'Invented Math',subject:'Math',teacher_id:'t'}],
   class_enrollments:[{id:'e1',class_id:'math',student_id:'ivy',status:'active'},{id:'e2',class_id:'math',student_id:'oren',status:'active'}],
-  parent_child_links:[{parent_id:'mom',child_id:'ivy'},{parent_id:'mom',child_id:'oren'}],
+  parent_child_links:[{parent_id:'mom',child_id:'ivy',status:'active'},{parent_id:'mom',child_id:'oren',status:'active'},
+    {parent_id:'gone',child_id:'ivy',status:'inactive'}],
+  user_profiles:[{id:'ivy',first_name:'Ivy',last_name:'Marsh',user_type:'student'},{id:'oren',first_name:'Oren',last_name:'Pike',user_type:'student'},
+    {id:'mom',first_name:'Wren',last_name:'Marsh',user_type:'parent'},{id:'gone',first_name:'Old',last_name:'Link',user_type:'parent'},
+    {id:'t',first_name:'Tess',last_name:'Hale',user_type:'teacher'}],
   quarters:[{id:'q',name:'Fall',school_year:'2026-27',is_current:true,is_archived:false,start_date:'2026-09-01',end_date:'2026-12-20'}],
 };
 (async()=>{
@@ -89,6 +98,39 @@ const seed={
     assert(!(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth)),'no sideways scroll on a phone');
     assert.deepEqual(errors,[]);
     assert.equal(await page.evaluate(()=>messages.filter(m=>m.type==='error').length),0,JSON.stringify(await page.evaluate(()=>messages)));
-    console.log('Parent assignment status: 3 journeys passed (class list, children\'s grades, quarter).');
+    // 4. Ivy's page: this quarter's work in the classes she is in now, sorted.
+    await page.evaluate(()=>{for(const id of ['view-quarter-assignments','view-assignments'])app.closeModal(id);
+      const a=app;a.loadStudentOverview=async()=>null;a.calculateStudentGPA=async()=>null;
+      a.getStudentStrikes=async()=>({strikes:[],count:0,nextDecayDate:null});a.renderChildOverviewSection=()=>'';
+      a.children[0].classes=[{id:'math',name:'Invented Math'},{id:'oldmath',name:'Old Math'}];a.children[0].activeClassIds=['math'];});
+    await page.evaluate(()=>app.showChildDetails('ivy'));
+    await page.waitForSelector('text=Turned in, waiting for a grade');
+    const d=await page.innerText('body');
+    assert(!d.includes('Last year essay'),'last year is not listed');
+    assert(!d.includes('Old class quiz')&&!d.includes('Old Math'),'a class she has left is not listed');
+    assert(!d.includes('Paper quiz'),'offline, not graded: hidden');
+    for (const h of ['Late (1)','Due (1)','Turned in, waiting for a grade (1)','Graded (2)','Classes (1)']) assert(d.includes(h),h);
+    assert(d.includes('A- (9/10)'),'a grade with points and no letter gets its letter');
+    assert(d.includes('B (8/10)'));
+    const order=['Online worksheet','Next week reading','Online essay'].map(t=>d.indexOf(t));
+    assert(order.every((x,i)=>x>0&&(i===0||x>order[i-1])),'late, then due, then waiting');
+    if (process.env.SHOT) await page.screenshot({path:process.env.SHOT.replace('.png','-child.png'),fullPage:true});
+    // 5. The home page line under each child.
+    await page.evaluate(()=>{const el=document.createElement('div');el.id='child-work-ivy';document.body.prepend(el);return app.loadChildrenWorkSummaries();});
+    assert.equal(await page.innerText('#child-work-ivy'),'1 late · 1 due this week · 1 waiting for a grade');
+    // The class list shows the letter too.
+    await page.evaluate(()=>{document.querySelectorAll('.modal').forEach(m=>m.remove());return app.viewAssignments('math');});
+    await page.waitForSelector('text=Rubric poster');
+    assert.deepEqual(await statusOf('Rubric poster'),['Ivy','Graded: A- (9/10)','Oren','Missing']);
+
+    // 6. A teacher can start a message to a student's parent.
+    await page.evaluate(()=>{app.userInfo={profile:{id:'t',user_type:'teacher'},user:{id:'t'}};app.classes=[{id:'math',teacher_id:'t'}];
+      app.updateMessageRecipientsDropdown=()=>{};return app.loadMessageRecipients();});
+    const rec=await page.evaluate(()=>app.messageRecipients.map(r=>r.type+': '+r.name));
+    assert(rec.includes("Parent: Wren Marsh (Ivy & Oren's parent)"),JSON.stringify(rec));
+    assert(!rec.some(r=>r.includes('Old Link')),'an inactive link is not offered');
+    assert(rec.includes('Student: Ivy Marsh'));
+
+    console.log('Parent assignment status: 6 journeys passed (class list, children\'s grades, quarter, child page, home line, teacher messaging a parent).');
   } finally {await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

@@ -6855,7 +6855,7 @@
             const { data: enrollments } = await this.supabaseQuery(() =>
               this.auth.supabase
                 .from('class_enrollments')
-                .select('student_id, class_id, classes(*)')
+                .select('student_id, class_id, status, classes(*)')
                 .in('student_id', childIds)
                 .in('status', ['active', 'archived']));
 
@@ -6865,6 +6865,12 @@
                 .filter(e => e.student_id === child.id)
                 .map(e => e.classes)
                 .filter(c => c); // Filter out any null classes
+              // The classes they are in now. Archived enrolments are classes
+              // they have left, including last year's: kept on child.classes
+              // for history, but what is due and late comes from these only.
+              child.activeClassIds = [...new Set((enrollments || [])
+                .filter(e => e.student_id === child.id && e.status === 'active' && e.classes)
+                .map(e => e.class_id))];
             });
 
             // Get unique classes for parent view
@@ -7155,9 +7161,46 @@
                     });
                   });
                 }
+
+                // Their parents too. 2026-11-18, Jordan's list: "teacher
+                // communication on portal". A parent could write to the
+                // teacher, and Riven could message "Ivy's parents", but the
+                // teacher's own Messages list had no parents to start a
+                // conversation with. Named with whose parent they are.
+                try {
+                  const childName = new Map((students || []).map(s => [s.id, s.first_name]));
+                  const links = [];
+                  for (let i = 0; i < studentIds.length; i += 300) {
+                    const { data, error } = await this.supabaseQuery(() => this.auth.supabase
+                      .from('parent_child_links').select('parent_id, child_id')
+                      .eq('status', 'active').in('child_id', studentIds.slice(i, i + 300)));
+                    if (error) throw error;
+                    links.push(...(data || []));
+                  }
+                  const parentIds = [...new Set(links.map(l => l.parent_id))];
+                  for (let i = 0; i < parentIds.length; i += 300) {
+                    const { data: parents } = await this.supabaseQuery(() => this.auth.supabase
+                      .from('user_profiles')
+                      .select('id, first_name, last_name, email, user_type, account_status')
+                      .in('id', parentIds.slice(i, i + 300)));
+                    (parents || []).forEach(p => {
+                      const kids = [...new Set(links.filter(l => l.parent_id === p.id).map(l => childName.get(l.child_id)).filter(Boolean))];
+                      recipients.push({
+                        id: p.id,
+                        name: `${p.first_name} ${p.last_name}${kids.length ? ` (${kids.join(' & ')}'s parent)` : ''}`,
+                        email: p.email,
+                        account_status: p.account_status,
+                        type: 'Parent'
+                      });
+                    });
+                  }
+                } catch (e) {
+                  // Students and staff still load if parents cannot.
+                  console.error('Error loading parents for messages:', e);
+                }
               }
             }
-      
+
             // Get other teachers and staff
             const { data: teachers } = await this.supabaseQuery(() => 
         this.auth.supabase
@@ -7375,6 +7418,7 @@
           homeContent.innerHTML = this.getParentHomeContent();
           // Load strikes for each child
           this.loadChildrenStrikesDisplay();
+          this.loadChildrenWorkSummaries();
         }
       }
       
@@ -8796,8 +8840,9 @@
               <div class="list-item-content">
                 <div class="list-item-title">${child.first_name} ${child.last_name}</div>
                 <div class="list-item-meta">
-                  Grade ${child.grade_level || 'N/A'} • ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'} • ${child.classes?.length || 0} class${child.classes?.length !== 1 ? 'es' : ''}
+                  Grade ${child.grade_level || 'N/A'} • ${child.enrollment_type === 'homeschool' ? 'Homeschool' : 'Full-Time'} • ${(child.activeClassIds || child.classes || []).length} class${(child.activeClassIds || child.classes || []).length !== 1 ? 'es' : ''}
                 </div>
+                <div id="child-work-${child.id}" class="list-item-meta" style="margin-top: 4px;"></div>
                 ${this.isActivated(child) ? '' : `
                 <div style="margin-top: 6px;">
                   <span style="font-size: 11px; color: var(--warning); font-weight: 600;">No sign-in yet</span>
@@ -10186,88 +10231,44 @@
         // assignments below do. Parents used to see grades only.
         const overviewP = this.loadStudentOverview(childId);
 
-        // Load child's assignments
-        let assignmentsHTML = '<p style="color: var(--muted);">Loading assignments...</p>';
-
+        // This quarter's work in the classes they are in now: late, due,
+        // waiting for a grade, graded (_parentChildWork). It used to be every
+        // assignment from every class they had ever been in, oldest first, so
+        // last year's work came at the top.
+        let assignmentsHTML;
         try {
-          const classIds = child.classes?.map(c => c.id) || [];
-          if (classIds.length > 0) {
-            const { data: classAssignments } = await this.supabaseQuery(() =>
-              this.auth.supabase
-                .from('assignments')
-                .select('*, classes(name)')
-                .in('class_id', classIds)
-                .eq('is_published', true)
-                .order('due_date', { ascending: true }));
-            // This child's own versions: their due dates and points.
-            const childIds = [childId, child.auth_user_id];
-            const versions = await this.loadStudentVersions((classAssignments || []).map(a => a.id), childIds);
-            const assignments = (classAssignments || [])
-              .map(a => this.withStudentVersion(a, this.studentVersionOf(versions, a.id, childIds)))
-              .sort((a, b) => new Date(a.due_date || 0) - new Date(b.due_date || 0));
-
-            // Get submissions for these assignments
-            const assignmentIds = (assignments || []).map(a => a.id);
-            let submissions = [];
-            if (assignmentIds.length > 0) {
-              const { data: subs } = await this.supabaseQuery(() =>
-                this.auth.supabase
-                  .from('assignment_submissions')
-                  .select('assignment_id, submitted_at, grade, status, points_earned')
-                  .eq('student_id', childId)
-                  .in('assignment_id', assignmentIds));
-              submissions = subs || [];
-            }
-
-            if (assignments && assignments.length > 0) {
-              assignmentsHTML = assignments.map(a => {
-                const submission = submissions.find(s => s.assignment_id === a.id);
-                const dueDate = a.due_date ? new Date(a.due_date) : null;
-                const isPastDue = dueDate && dueDate < new Date() && !submission;
-                const isGraded = submission?.status === 'graded';
-                const isSubmitted = submission && !isGraded;
-
-                let statusColor, statusText;
-                if (isGraded) {
-                  statusColor = 'var(--accent-2)';
-                  statusText = `Graded: ${submission.grade || ''} (${submission.points_earned || 0}/${a.max_points || 0})`;
-                } else if (isSubmitted) {
-                  statusColor = 'var(--accent)';
-                  statusText = 'Submitted';
-                } else if (a.graded_offline) {
-                  statusText = 'No submission required';
-                  statusColor = 'var(--muted)';
-                } else if (isPastDue) {
-                  statusColor = 'var(--danger)';
-                  statusText = 'Missing';
-                } else {
-                  statusColor = 'var(--warning)';
-                  statusText = 'Pending';
-                }
-
-                return `
-                  <div class="list-item">
-                    <div class="list-item-content">
-                      <div class="list-item-title">${a.title}${this.studentVersionBadge(a, child.first_name || 'them')}</div>
-                      <div class="list-item-meta">${a.classes?.name || 'Unknown Class'} • Due: ${dueDate ? dueDate.toLocaleDateString() : 'No due date'}</div>
-                    </div>
-                    <span style="color: ${statusColor}; font-size: 12px;">${statusText}</span>
-                  </div>
-                `;
-              }).join('');
-            } else {
-              assignmentsHTML = '<p style="color: var(--muted); text-align: center;">No assignments found.</p>';
-            }
-          } else {
-            assignmentsHTML = '<p style="color: var(--muted); text-align: center;">Not enrolled in any classes.</p>';
-          }
+          const work = await this._parentChildWork(child);
+          const item = ({ assignment: a, submission, status }) => {
+            const due = a.due_date ? new Date(a.due_date) : null;
+            const text = status.key === 'graded' ? this._gradeText(submission, a) : status.text;
+            const late = (status.key === 'graded' || status.key === 'turned_in') && this._submittedLate(submission, a) ? ' ' + this._lateBadge(submission) : '';
+            return `<div class="list-item">
+              <div class="list-item-content">
+                <div class="list-item-title">${this.escapeHtml(a.title || 'Assignment')}${this.studentVersionBadge(a, child.first_name || 'them')}</div>
+                <div class="list-item-meta">${[this.escapeHtml(a.classes?.name || ''), due ? `Due ${due.toLocaleDateString()}` : ''].filter(Boolean).join(' • ')}</div>
+              </div>
+              <span style="color: ${status.color}; font-size: 12px; text-align: right;">${this.escapeHtml(text)}${late}</span>
+            </div>`;
+          };
+          const group = (title, rows, empty) => `<h5 style="margin: 14px 0 6px; font-size: 13px; color: var(--muted);">${title} (${rows.length})</h5>
+            ${rows.length ? `<div class="list">${rows.map(item).join('')}</div>` : `<p style="color: var(--muted); font-size: 13px; margin: 0;">${empty}</p>`}`;
+          assignmentsHTML = !(child.activeClassIds || []).length && !(child.classes || []).length
+            ? '<p style="color: var(--muted); text-align: center;">Not enrolled in any classes.</p>'
+            : `${work.quarter ? `<p style="color: var(--muted); font-size: 12px; margin: 0;">${this.escapeHtml(work.quarter.name || 'This quarter')}</p>` : ''}
+              ${group('⚠️ Late', work.late, 'Nothing late.')}
+              ${group('📅 Due', work.due, 'Nothing else due this quarter.')}
+              ${group('📥 Turned in, waiting for a grade', work.waiting, 'Nothing waiting.')}
+              ${group('✅ Graded', work.graded, 'Nothing graded yet this quarter.')}`;
         } catch (error) {
           console.error('Error loading child assignments:', error);
           assignmentsHTML = '<p style="color: var(--danger);">Error loading assignments.</p>';
         }
 
-        const classesHTML = child.classes && child.classes.length > 0
-          ? child.classes.map(c => `
+        const currentClasses = child.activeClassIds
+          ? (child.classes || []).filter((c, i, all) => child.activeClassIds.includes(c.id) && all.findIndex(k => k.id === c.id) === i)
+          : (child.classes || []);
+        const classesHTML = currentClasses.length > 0
+          ? currentClasses.map(c => `
               <div class="list-item">
                 <div class="list-item-content">
                   <div class="list-item-title">${c.name}</div>
@@ -10313,7 +10314,7 @@
               </div>
               <div style="text-align: center; background: rgba(255,255,255,0.15); padding: 12px 20px; border-radius: 8px;">
                 <div style="font-size: 11px; opacity: 0.9;">Cumulative GPA</div>
-                <div style="font-size: 28px; font-weight: 700;">${gpaData?.cumulativeGPA !== null ? this.formatGPA(gpaData.cumulativeGPA) : '-'}</div>
+                <div style="font-size: 28px; font-weight: 700;">${gpaData?.cumulativeGPA != null ? this.formatGPA(gpaData.cumulativeGPA) : '-'}</div>
                 ${gpaData?.schoolYear ? `<div style="font-size: 10px; opacity: 0.7;">${gpaData.schoolYear}</div>` : ''}
               </div>
             </div>
@@ -10323,11 +10324,11 @@
           </div>
 
           <div style="margin-bottom: 20px;">
-            <p><strong>Email:</strong> ${child.email}</p>
+            <p><strong>Email:</strong> ${child.email ? this.escapeHtml(child.email) : '<span style="color: var(--muted);">None on file</span>'}</p>
           </div>
 
           <div style="margin-bottom: 20px;">
-            <h4 style="margin-bottom: 10px;">📚 Classes (${child.classes?.length || 0})</h4>
+            <h4 style="margin-bottom: 10px;">📚 Classes (${currentClasses.length})</h4>
             <div class="list">${classesHTML}</div>
           </div>
 
@@ -10335,7 +10336,7 @@
 
           <div style="margin-bottom: 20px;">
             <h4 style="margin-bottom: 10px;">📝 Assignments</h4>
-            <div class="list" style="max-height: 300px; overflow-y: auto;">
+            <div style="max-height: 420px; overflow-y: auto;">
               ${assignmentsHTML}
             </div>
           </div>
@@ -10745,7 +10746,7 @@
               const { data: submissionsData, error: subError } = await this.supabaseQuery(() =>
                 this.auth.supabase
                   .from('assignment_submissions')
-                  .select('assignment_id, grade, submitted_at, status')
+                  .select('assignment_id, grade, points_earned, submitted_at, status')
                   .eq('student_id', child.id)
                   .in('assignment_id', assignmentIds));
 
@@ -10763,14 +10764,14 @@
               const shown = this._parentAssignmentStatus(a, submission, now);
               if (!shown) return ''; // offline work, not graded yet
               const status = shown.text, statusColor = shown.color;
-              const grade = shown.key === 'graded' ? (submission.grade || '-') : '-';
+              const grade = shown.key === 'graded' ? this._gradeText(submission, a) : '-';
 
               return `
                 <tr>
                   <td style="padding: 8px; border-bottom: 1px solid var(--border);">${a.title}${this.studentVersionBadge(a, child.first_name || 'them')}</td>
                   <td style="padding: 8px; border-bottom: 1px solid var(--border);">${dueDate ? dueDate.toLocaleDateString() : 'N/A'}</td>
                   <td style="padding: 8px; border-bottom: 1px solid var(--border); color: ${statusColor};">${status}</td>
-                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${grade}${a.max_points ? ` / ${a.max_points}` : ''}</td>
+                  <td style="padding: 8px; border-bottom: 1px solid var(--border);">${grade}${shown.key !== 'graded' && a.max_points ? ` / ${a.max_points}` : ''}</td>
                 </tr>
               `;
             }).join('');
@@ -24471,7 +24472,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   if (status.key === 'missing') anyChildMissing = true;
                   const statusColor = status.color;
                   const statusText = status.key === 'graded'
-                    ? `Graded: ${submission.grade || ''} (${submission.points_earned || 0}/${assignment.max_points})`
+                    ? `Graded: ${this._gradeText(submission, assignment)}`
                     : status.text;
 
                   // Parents see "Submitted late" as students do: the same rule
@@ -27410,6 +27411,95 @@ Students you had withdrawn stay withdrawn.`)) {
       // is nothing for a parent to see or act on. Info posts are reading, not
       // work, so they still show. Returns null for "do not show". Every parent
       // view goes through this, so they cannot disagree.
+      // A grade as a parent (or student) reads it: the letter, and the points.
+      // Rubric and points grading save points with no letter, which showed as
+      // a blank grade - "Graded:  (8/10)" or "-". The letter is worked out
+      // from the points then, on the school's scale (percentageToLetter).
+      _gradeText(submission, assignment) {
+        const max = Number(assignment?.max_points) || 0;
+        const pts = submission?.points_earned;
+        const hasPts = pts !== null && pts !== undefined && pts !== '' && max > 0;
+        const letter = String(submission?.grade || '').trim().toUpperCase()
+          || (hasPts ? this.percentageToLetter(Number(pts) / max * 100) : '');
+        return [letter, hasPts ? `(${pts}/${max})` : ''].filter(Boolean).join(' ') || 'Graded';
+      }
+
+      // One child's work this quarter, sorted for a parent: late, due, turned
+      // in and waiting for a grade, graded. 2026-11-18, Jordan's list: "Parent
+      // Portal: students due and late" and "parents seeing last year's
+      // assignments". Only classes the child is in now, only the current
+      // quarter (as on the class page), each item through
+      // _parentAssignmentStatus (so offline work appears once graded).
+      async _parentChildWork(child) {
+        const out = { late: [], due: [], waiting: [], graded: [], quarter: null };
+        const classIds = child?.activeClassIds || (child?.classes || []).map(c => c.id);
+        if (!classIds.length) return out;
+        if (!this._currentQuarterP) this._currentQuarterP = this.supabaseQuery(() => this.auth.supabase
+          .from('quarters').select('*').eq('is_current', true).maybeSingle()).then(r => r?.data || null, () => null);
+        const quarter = out.quarter = await this._currentQuarterP;
+        const { data: classAssignments, error } = await this.supabaseQuery(() => {
+          let q = this.auth.supabase.from('assignments').select('*, classes(name)')
+            .in('class_id', classIds).eq('is_published', true);
+          if (quarter) q = q.gte('due_date', quarter.start_date).lt('due_date', this._dayAfterDateOnly(quarter.end_date));
+          return q;
+        });
+        if (error) throw error;
+        const childIds = [child.id, child.auth_user_id].filter(Boolean);
+        // Assigned to the whole class, or to this child by name.
+        const picked = (classAssignments || []).filter(a => a.assigned_to_all !== false);
+        const selective = (classAssignments || []).filter(a => a.assigned_to_all === false).map(a => a.id);
+        if (selective.length) {
+          const { data: mine } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_students')
+            .select('assignment_id').in('assignment_id', selective).in('student_id', childIds));
+          const ids = new Set((mine || []).map(r => r.assignment_id));
+          picked.push(...(classAssignments || []).filter(a => ids.has(a.id)));
+        }
+        if (!picked.length) return out;
+        const versions = await this.loadStudentVersions(picked.map(a => a.id), childIds);
+        const assignments = picked.map(a => this.withStudentVersion(a, this.studentVersionOf(versions, a.id, childIds)));
+        const { data: subs } = await this.supabaseQuery(() => this.auth.supabase.from('assignment_submissions')
+          .select('assignment_id, student_id, submitted_at, graded_at, grade, status, points_earned, late_pass_used_at')
+          .in('student_id', childIds).in('assignment_id', assignments.map(a => a.id)));
+        const subOf = new Map((subs || []).map(x => [x.assignment_id, x]));
+        const now = new Date();
+        const t = a => new Date(a.due_date || 0).getTime();
+        for (const a of assignments) {
+          const submission = subOf.get(a.id);
+          const status = this._parentAssignmentStatus(a, submission, now);
+          if (!status || status.key === 'info') continue;
+          const row = { assignment: a, submission, status };
+          if (status.key === 'missing') out.late.push(row);
+          else if (status.key === 'not_turned_in') out.due.push(row);
+          else if (status.key === 'turned_in') out.waiting.push(row);
+          else out.graded.push(row);
+        }
+        out.late.sort((x, y) => t(x.assignment) - t(y.assignment));
+        out.due.sort((x, y) => t(x.assignment) - t(y.assignment));
+        out.waiting.sort((x, y) => t(y.assignment) - t(x.assignment));
+        out.graded.sort((x, y) => new Date(y.submission?.graded_at || y.assignment.due_date || 0) - new Date(x.submission?.graded_at || x.assignment.due_date || 0));
+        return out;
+      }
+
+      // "2 late · 3 due this week", for the parent home page.
+      _parentWorkSummary(work, now = new Date()) {
+        const week = new Date(now.getTime() + 7 * 864e5);
+        const dueWeek = work.due.filter(r => new Date(r.assignment.due_date) <= week).length;
+        const parts = [];
+        if (work.late.length) parts.push(`<span style="color: var(--danger); font-weight: 600;">${work.late.length} late</span>`);
+        if (dueWeek) parts.push(`${dueWeek} due this week`);
+        if (work.waiting.length) parts.push(`${work.waiting.length} waiting for a grade`);
+        return parts.length ? parts.join(' · ') : 'Nothing late or due this week';
+      }
+
+      async loadChildrenWorkSummaries() {
+        for (const child of this.children || []) {
+          const el = document.getElementById(`child-work-${child.id}`);
+          if (!el) continue;
+          try { el.innerHTML = this._parentWorkSummary(await this._parentChildWork(child)); }
+          catch (e) { console.error('Work summary for child failed:', e); el.textContent = ''; }
+        }
+      }
+
       _parentAssignmentStatus(assignment, submission, now = new Date()) {
         const st = submission?.status;
         if (st === 'excused') return { key: 'excused', text: 'Excused', color: 'var(--muted)' };
@@ -36910,8 +37000,7 @@ Students you had withdrawn stay withdrawn.`)) {
                           </div>
                           ${isGraded && !isExcused ? `
                             <div style="font-size: 14px; margin-top: 10px;">
-                              <strong>Grade:</strong> ${submission.grade || 'N/A'} 
-                              (${submission.points_earned || 0}/${assignment.max_points} points)
+                              <strong>Grade:</strong> ${this._gradeText(submission, assignment)}
                             </div>
                           ` : ''}
                         </div>
@@ -45097,7 +45186,7 @@ Students you had withdrawn stay withdrawn.`)) {
       renderStudentHub() {
         const { student, enrollments, gpaData } = this._studentHubData;
         const studentId = this._studentHubId;
-        const gpaDisplay = gpaData?.cumulativeGPA !== null ? this.formatGPA(gpaData.cumulativeGPA) : '-';
+        const gpaDisplay = gpaData?.cumulativeGPA != null ? this.formatGPA(gpaData.cumulativeGPA) : '-';
 
         const quarterLabels = ['Q1', 'Q2', 'Q3', 'Q4'];
         const gpaQuartersHTML = gpaData ? quarterLabels.map((label, i) => {

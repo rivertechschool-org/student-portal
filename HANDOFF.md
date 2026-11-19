@@ -6560,3 +6560,24 @@ how many).
 Teachers can choose “No student submission required” when creating or editing a regular assignment or adding one from the calendar. The portal uses the existing graded_offline field for missing-work counts, late badges and grade exports. No migration is needed.
 
 Offline assignments use the same checkbox across create, edit and calendar quick-add. Coming Up offers View and counts only online work toward submission progress. Manual submission reminders are disabled for offline work.
+
+## 2026-11-18 — Jordan's Claude
+**Parent portal pass (Jordan's list: due and late, last year's assignments, blank grades,
+teacher communication).**
+- **Due and late:** each child on the parent home page now has a line like "2 late ·
+  3 due this week · 1 waiting for a grade". Their page lists this quarter's work as
+  Late, Due, Turned in (waiting for a grade) and Graded (`_parentChildWork`, one loader
+  for both).
+- **Last year's assignments:** a child's page used to list every assignment from every
+  class they had ever been in, oldest first. Now it shows the current quarter, in the
+  classes they are in now only; their class list and count are current classes only.
+- **Blank grades:** rubric and points grading save points with no letter, so parents saw
+  "Graded:  (8/10)" or "-". `_gradeText` adds the letter from the points (school scale)
+  on every parent view and on the quarter view.
+- **Teacher communication:** parents could already message their children's teachers, and
+  Riven could message "Ivy's parents", but a teacher's Messages list had no parents.
+  It now lists the parents of their students, named with whose parent they are.
+- Also: a child's page no longer fails to open when the GPA cannot be worked out, and a
+  child with no email shows "None on file", not "undefined".
+- Tests: `tests/parent-assignment-status.test.js`, `debug-tools/parent-assignment-status.cjs` (6).
+**Needs:** "Luke Math check" on Jordan's list is not done; what it means is with Jordan.
