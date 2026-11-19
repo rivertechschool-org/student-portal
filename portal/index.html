@@ -3358,10 +3358,7 @@
           // Clean up sheets keyboard handler when class-sheets modal closes
           if (modalId === 'class-sheets') {
             this._sheetsModalOpen = false;
-            if (this._sheetKeyHandler) {
-              document.removeEventListener('keydown', this._sheetKeyHandler);
-              this._sheetKeyHandler = null;
-            }
+            this._sheetUnbind();
           }
 
           console.log('📋 Modal closed:', modalId, 'Remaining:', this.modalStack.length);
@@ -60581,6 +60578,9 @@ Students you had withdrawn stay withdrawn.`)) {
 
         this._activeSheetId = sheetId;
         this._activeSheetName = data.name;
+        this._sheetEdit = null;
+        this._sheetTabAnchor = null;
+        this._sheetDirty = false;
         this._sheetData = this._parseSheetGrid(data.csv_data || '');
         this._selectedCell = null;
         this._undoStack = [];
@@ -60707,7 +60707,7 @@ Students you had withdrawn stay withdrawn.`)) {
           </div>
 
           <!-- Grid -->
-          <div id="sheet-grid-wrapper" style="flex:1;overflow:auto;position:relative;">
+          <div id="sheet-grid-wrapper" tabindex="-1" style="flex:1;overflow:auto;position:relative;outline:none;">
             <table id="sheet-grid" style="border-collapse:collapse;table-layout:fixed;min-width:100%;">
               <thead>
                 <tr>
@@ -60722,7 +60722,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <tr>
                     <td style="position:sticky;left:0;z-index:1;background:var(--nav-bg, #1a1f27);border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:6px 10px;font-size:12px;color:var(--muted);text-align:center;user-select:none;cursor:pointer;" onclick="app.selectSheetRow(${r})" oncontextmenu="event.preventDefault();app.showRowContextMenu(event,${r})">${r + 1}</td>
                     ${row.map((cell, c) => `
-                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app.selectCell(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;">${this.escapeHtml(cell)}</td>
+                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app._sheetTabAnchor = null; app.selectCell(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;">${this.escapeHtml(cell)}</td>
                     `).join('')}
                   </tr>
                 `).join('')}
@@ -60738,9 +60738,18 @@ Students you had withdrawn stay withdrawn.`)) {
         </div>
       `;
 
-      // Attach keyboard listener
-      this._sheetKeyHandler = (e) => this.handleSheetKeydown(e);
-      document.addEventListener('keydown', this._sheetKeyHandler);
+      // One keyboard listener however often the grid is redrawn. Adding a row
+      // redraws it, and each redraw used to add another listener, so every
+      // key after that was handled twice (2026-11-19).
+      if (!this._sheetKeyHandler) {
+        this._sheetKeyHandler = (e) => this.handleSheetKeydown(e);
+        document.addEventListener('keydown', this._sheetKeyHandler);
+      }
+      if (!this._sheetClipHandler) {
+        this._sheetClipHandler = (e) => this.handleSheetClipboard(e);
+        ['copy', 'cut', 'paste'].forEach(t => document.addEventListener(t, this._sheetClipHandler));
+      }
+      if (this._selectedCell) this.selectCell(this._selectedCell.r, this._selectedCell.c);
     }
 
     selectCell(r, c) {
@@ -60762,60 +60771,133 @@ Students you had withdrawn stay withdrawn.`)) {
       const barEl = document.getElementById('sheet-formula-bar');
       if (refEl) refEl.textContent = `${this.getColLabel(c)}${r + 1}`;
       if (barEl) barEl.value = this._sheetData[r][c] || '';
+      if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      // Keys go to the grid, not to the button that was clicked last.
+      const wrap = document.getElementById('sheet-grid-wrapper');
+      const ae = document.activeElement;
+      if (wrap && (!ae || ae === document.body || !ae.closest || !ae.closest('#sheet-grid-wrapper, #sheet-formula-bar, #sheet-name-input'))) {
+        wrap.focus({ preventScroll: true });
+      }
     }
 
-    editCell(r, c) {
+    // ---- Keyboard: Google Sheets behaviour (2026-11-19) ----------------------
+    //
+    // Typing on a selected cell replaces it; Enter or F2 or a double click
+    // edits what is there. While editing, Enter commits and moves down, Tab
+    // moves right (Shift goes the other way), Escape abandons the edit. When
+    // the edit began by typing, the arrow keys also commit and move; when it
+    // began with Enter/F2/double click they move the caret. Enter after a run
+    // of Tabs goes back to the column the run started in, one row down.
+    // Moving off the last row or column grows the grid, as Sheets has room.
+    //
+    // The first key typed used to appear twice: the handler put it in the new
+    // box, then the browser typed it there too.
+
+    // mode 'type' = started by typing (arrows commit), 'edit' = Enter/F2/dblclick.
+    editCell(r, c, mode = 'edit', initial = null) {
+      if (this._sheetEdit) this._finishCellEdit();
       this.selectCell(r, c);
       const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
       if (!cell) return;
 
-      const val = this._sheetData[r][c] || '';
+      const orig = this._sheetData[r][c] || '';
       cell.innerHTML = '';
       const input = document.createElement('input');
       input.type = 'text';
-      input.value = val;
+      input.value = initial != null ? initial : orig;
       input.style.cssText = 'width:100%;height:100%;border:none;outline:none;background:transparent;color:var(--text);font-size:13px;padding:0;margin:0;';
       input.dataset.r = r;
       input.dataset.c = c;
+      this._sheetEdit = { r, c, input, orig, mode };
 
-      input.addEventListener('blur', () => this.commitCellEdit(input));
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); input.blur(); this.moveSelection(1, 0); }
-        else if (e.key === 'Tab') { e.preventDefault(); input.blur(); this.moveSelection(0, e.shiftKey ? -1 : 1); }
-        else if (e.key === 'Escape') { input.value = val; input.blur(); }
-        e.stopPropagation();
-      });
+      // Clicking somewhere else keeps what was typed, as Sheets does.
+      input.addEventListener('blur', () => { if (this._sheetEdit && this._sheetEdit.input === input) this._finishCellEdit(); });
+      input.addEventListener('keydown', (e) => this._sheetEditKeydown(e, input));
 
       cell.appendChild(input);
       input.focus();
-      input.select();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
     }
 
-    commitCellEdit(input) {
-      const r = parseInt(input.dataset.r);
-      const c = parseInt(input.dataset.c);
-      const newVal = input.value;
-      const oldVal = this._sheetData[r][c];
-
-      if (newVal !== oldVal) {
-        this._undoStack.push({ type: 'cell', r, c, oldVal, newVal });
-        this._redoStack = [];
+    // Ends the edit in progress: keeps the value, or puts the old one back.
+    _finishCellEdit(cancel = false) {
+      const ed = this._sheetEdit;
+      if (!ed) return;
+      this._sheetEdit = null;
+      const { r, c, input, orig } = ed;
+      const newVal = cancel ? orig : input.value;
+      if (!cancel && newVal !== (this._sheetData[r][c] || '')) {
+        this._sheetRecord({ type: 'cell', r, c, oldVal: this._sheetData[r][c], newVal });
         this._sheetData[r][c] = newVal;
       }
-
       const cell = input.parentElement;
-      if (cell) cell.textContent = newVal;
-
+      if (cell) cell.textContent = this._sheetData[r][c] || '';
       const barEl = document.getElementById('sheet-formula-bar');
-      if (barEl && this._selectedCell && this._selectedCell.r === r && this._selectedCell.c === c) {
-        barEl.value = newVal;
+      if (barEl && this._selectedCell && this._selectedCell.r === r && this._selectedCell.c === c) barEl.value = this._sheetData[r][c] || '';
+      const wrap = document.getElementById('sheet-grid-wrapper');
+      if (wrap) wrap.focus({ preventScroll: true });
+    }
+
+    // Kept under its old name: the blur path and older callers commit with it.
+    commitCellEdit() { this._finishCellEdit(); }
+
+    _sheetEditKeydown(e, input) {
+      e.stopPropagation();
+      const ed = this._sheetEdit;
+      if (!ed || ed.input !== input) return;
+      const arrows = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        this._finishCellEdit();
+        this._sheetEnterMove(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        this._finishCellEdit();
+        this._sheetTabMove(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        this._finishCellEdit(true);
+      } else if (arrows[e.key] && ed.mode === 'type') {
+        e.preventDefault();
+        this._finishCellEdit();
+        this._sheetTabAnchor = null;
+        this.moveSelection(...arrows[e.key]);
+      }
+    }
+
+    // Tab: right (or left), remembering where a run of Tabs began.
+    _sheetTabMove(dir) {
+      if (!this._selectedCell) return;
+      if (this._sheetTabAnchor == null) this._sheetTabAnchor = this._selectedCell.c;
+      this.moveSelection(0, dir, true);
+    }
+
+    // Enter: down (or up); after Tabs, back to the column they started in.
+    _sheetEnterMove(dir) {
+      if (!this._selectedCell) return;
+      const anchor = this._sheetTabAnchor;
+      this._sheetTabAnchor = null;
+      if (anchor != null && dir > 0) {
+        this.moveSelection(1, anchor - this._selectedCell.c, true);
+      } else {
+        this.moveSelection(dir, 0, dir > 0);
       }
     }
 
     handleFormulaBarKey(e) {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter' || e.key === 'Tab') {
         e.preventDefault();
         this.applyFormulaBar();
+        const wrap = document.getElementById('sheet-grid-wrapper');
+        if (wrap) wrap.focus({ preventScroll: true });
+        if (e.key === 'Enter') this._sheetEnterMove(e.shiftKey ? -1 : 1);
+        else this._sheetTabMove(e.shiftKey ? -1 : 1);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        if (this._selectedCell) this.selectCell(this._selectedCell.r, this._selectedCell.c);
+        const wrap = document.getElementById('sheet-grid-wrapper');
+        if (wrap) wrap.focus({ preventScroll: true });
       }
     }
 
@@ -60828,62 +60910,136 @@ Students you had withdrawn stay withdrawn.`)) {
       const newVal = barEl.value;
       const oldVal = this._sheetData[r][c];
       if (newVal !== oldVal) {
-        this._undoStack.push({ type: 'cell', r, c, oldVal, newVal });
-        this._redoStack = [];
+        this._sheetRecord({ type: 'cell', r, c, oldVal, newVal });
         this._sheetData[r][c] = newVal;
         const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
         if (cell) cell.textContent = newVal;
       }
     }
 
-    moveSelection(dr, dc) {
+    // grow: moving past the last row or column adds one (Tab, Enter).
+    moveSelection(dr, dc, grow = false) {
       if (!this._selectedCell) return;
-      const newR = Math.max(0, Math.min(this._sheetData.length - 1, this._selectedCell.r + dr));
-      const newC = Math.max(0, Math.min(this._sheetData[0].length - 1, this._selectedCell.c + dc));
+      let newR = this._selectedCell.r + dr;
+      let newC = this._selectedCell.c + dc;
+      if (grow && (newR >= this._sheetData.length || newC >= this._sheetData[0].length)) {
+        const cols = this._sheetData[0].length;
+        while (newC >= this._sheetData[0].length) this._sheetData.forEach(row => row.push(''));
+        while (newR >= this._sheetData.length) this._sheetData.push(Array(Math.max(cols, this._sheetData[0].length)).fill(''));
+        this._selectedCell = { r: Math.max(0, newR), c: Math.max(0, newC) };
+        this.renderSheetEditor(this._getSheetContainer());
+        return;
+      }
+      newR = Math.max(0, Math.min(this._sheetData.length - 1, newR));
+      newC = Math.max(0, Math.min(this._sheetData[0].length - 1, newC));
       this.selectCell(newR, newC);
     }
 
+    // Keys on the grid itself (no cell being edited).
     handleSheetKeydown(e) {
-      if (!this._sheetsModalOpen) return;
+      if (!this._sheetsModalOpen || !this._activeSheetId) return;
       if (!document.getElementById('modal-class-sheets')) return;
-      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+      if (this._sheetEdit) return;
+      // Only when the grid has the keys: not the name box, the formula bar,
+      // or a toolbar button someone tabbed to.
+      const t = e.target;
+      if (t !== document.body && !(t && t.id === 'sheet-grid-wrapper')) return;
+      if (!this._selectedCell) {
+        if (/^(Arrow|Tab|Enter)/.test(e.key)) { e.preventDefault(); this.selectCell(0, 0); }
+        return;
+      }
+      const { r, c } = this._selectedCell;
+      const mod = e.ctrlKey || e.metaKey;
+      const lastR = this._sheetData.length - 1, lastC = this._sheetData[0].length - 1;
 
-      if (e.key === 'ArrowUp') { e.preventDefault(); this.moveSelection(-1, 0); }
-      else if (e.key === 'ArrowDown') { e.preventDefault(); this.moveSelection(1, 0); }
-      else if (e.key === 'ArrowLeft') { e.preventDefault(); this.moveSelection(0, -1); }
-      else if (e.key === 'ArrowRight') { e.preventDefault(); this.moveSelection(0, 1); }
-      else if (e.key === 'Tab') { e.preventDefault(); this.moveSelection(0, e.shiftKey ? -1 : 1); }
-      else if (e.key === 'Enter') { e.preventDefault(); if (this._selectedCell) this.editCell(this._selectedCell.r, this._selectedCell.c); }
+      if (e.key === 'ArrowUp') { e.preventDefault(); this._sheetTabAnchor = null; this.moveSelection(mod ? -r : -1, 0); }
+      else if (e.key === 'ArrowDown') { e.preventDefault(); this._sheetTabAnchor = null; this.moveSelection(mod ? lastR - r : 1, 0); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); this._sheetTabAnchor = null; this.moveSelection(0, mod ? -c : -1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); this._sheetTabAnchor = null; this.moveSelection(0, mod ? lastC - c : 1); }
+      else if (e.key === 'Home') { e.preventDefault(); this.moveSelection(mod ? -r : 0, -c); }
+      else if (e.key === 'End') { e.preventDefault(); this.moveSelection(mod ? lastR - r : 0, lastC - c); }
+      else if (e.key === 'Tab') { e.preventDefault(); this._sheetTabMove(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) this._sheetEnterMove(-1);
+        else this.editCell(r, c, 'edit');
+      }
+      else if (e.key === 'F2') { e.preventDefault(); this.editCell(r, c, 'edit'); }
       else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (this._selectedCell) {
-          const { r, c } = this._selectedCell;
-          const oldVal = this._sheetData[r][c];
-          if (oldVal !== '') {
-            this._undoStack.push({ type: 'cell', r, c, oldVal, newVal: '' });
-            this._redoStack = [];
-            this._sheetData[r][c] = '';
-            const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
-            if (cell) cell.textContent = '';
-            const barEl = document.getElementById('sheet-formula-bar');
-            if (barEl) barEl.value = '';
-          }
+        e.preventDefault();
+        const oldVal = this._sheetData[r][c];
+        if (oldVal !== '') {
+          this._sheetRecord({ type: 'cell', r, c, oldVal, newVal: '' });
+          this._sheetData[r][c] = '';
+          const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+          if (cell) cell.textContent = '';
+          const barEl = document.getElementById('sheet-formula-bar');
+          if (barEl) barEl.value = '';
         }
       }
-      else if (e.ctrlKey && e.key === 'z') { e.preventDefault(); this.sheetUndo(); }
-      else if (e.ctrlKey && e.key === 'y') { e.preventDefault(); this.sheetRedo(); }
-      else if (e.ctrlKey && e.key === 's') { e.preventDefault(); this.saveSheet(); }
-      else if (e.ctrlKey && e.key === 'c') { this.sheetCopy(); }
-      else if (e.ctrlKey && e.key === 'v') { this.sheetPaste(); }
-      else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && this._selectedCell) {
-        // Start typing into cell
-        this._sheetData[this._selectedCell.r][this._selectedCell.c] = '';
-        this.editCell(this._selectedCell.r, this._selectedCell.c);
-        const cell = document.querySelector(`.sheet-cell[data-r="${this._selectedCell.r}"][data-c="${this._selectedCell.c}"]`);
-        if (cell) {
-          const input = cell.querySelector('input');
-          if (input) { input.value = e.key; }
-        }
+      else if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) this.sheetRedo(); else this.sheetUndo(); }
+      else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); this.sheetRedo(); }
+      else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); this.saveSheet(); }
+      else if (e.key.length === 1 && !mod && !e.altKey) {
+        // Typing replaces the cell. preventDefault, or the browser types the
+        // same key into the new box a second time.
+        e.preventDefault();
+        this.editCell(r, c, 'type', e.key);
       }
+    }
+
+    // Copy, cut and paste through the real clipboard, so cells go to and
+    // from Google Sheets or Excel: a pasted block (tab and newline separated)
+    // fills from the selected cell and grows the grid to fit.
+    handleSheetClipboard(e) {
+      if (!this._sheetsModalOpen || !this._activeSheetId || this._sheetEdit || !this._selectedCell) return;
+      if (!document.getElementById('modal-class-sheets')) return;
+      const t = e.target;
+      if (t !== document.body && !(t && (t.id === 'sheet-grid-wrapper' || (t.closest && t.closest('#sheet-grid-wrapper'))))) return;
+      const { r, c } = this._selectedCell;
+      if (e.type === 'copy' || e.type === 'cut') {
+        e.preventDefault();
+        const val = this._sheetData[r][c] || '';
+        if (e.clipboardData) e.clipboardData.setData('text/plain', val);
+        this._clipboard = { value: val };
+        if (e.type === 'cut' && val !== '') {
+          this._sheetRecord({ type: 'cell', r, c, oldVal: val, newVal: '' });
+          this._sheetData[r][c] = '';
+          const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+          if (cell) cell.textContent = '';
+        }
+        return;
+      }
+      e.preventDefault();
+      const text = e.clipboardData ? e.clipboardData.getData('text/plain') : (this._clipboard?.value || '');
+      this._sheetPasteText(text);
+    }
+
+    // A pasted block into the grid at the selected cell. One undo step.
+    _sheetPasteText(text) {
+      if (!this._selectedCell || text == null) return;
+      const { r, c } = this._selectedCell;
+      const lines = String(text).replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(l => l.split('\t'));
+      if (lines.length === 1 && lines[0].length === 1) {
+        const oldVal = this._sheetData[r][c];
+        const newVal = lines[0][0];
+        if (newVal !== oldVal) {
+          this._sheetRecord({ type: 'cell', r, c, oldVal, newVal });
+          this._sheetData[r][c] = newVal;
+          const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
+          if (cell) cell.textContent = newVal;
+          const barEl = document.getElementById('sheet-formula-bar');
+          if (barEl) barEl.value = newVal;
+        }
+        return;
+      }
+      const oldData = this._sheetData.map(row => [...row]);
+      const width = Math.max(...lines.map(l => l.length));
+      while (this._sheetData[0].length < c + width) this._sheetData.forEach(row => row.push(''));
+      while (this._sheetData.length < r + lines.length) this._sheetData.push(Array(this._sheetData[0].length).fill(''));
+      lines.forEach((l, i) => l.forEach((v, j) => { this._sheetData[r + i][c + j] = v; }));
+      this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(row => [...row]) });
+      this.renderSheetEditor(this._getSheetContainer());
     }
 
     sheetCopy() {
@@ -60893,18 +61049,37 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     sheetPaste() {
-      if (!this._selectedCell || !this._clipboard) return;
-      const { r, c } = this._selectedCell;
-      const oldVal = this._sheetData[r][c];
-      const newVal = this._clipboard.value;
-      if (newVal !== oldVal) {
-        this._undoStack.push({ type: 'cell', r, c, oldVal, newVal });
-        this._redoStack = [];
-        this._sheetData[r][c] = newVal;
-        const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
-        if (cell) cell.textContent = newVal;
-        const barEl = document.getElementById('sheet-formula-bar');
-        if (barEl) barEl.value = newVal;
+      if (!this._clipboard) return;
+      this._sheetPasteText(this._clipboard.value);
+    }
+
+    // Every change goes through here: undo entry, redo cleared, and a save a
+    // moment later - Sheets has no Save button to forget.
+    _sheetRecord(action) {
+      this._undoStack.push(action);
+      this._redoStack = [];
+      this._scheduleSheetSave();
+    }
+
+    _scheduleSheetSave() {
+      clearTimeout(this._sheetSaveTimer);
+      const statusEl = document.getElementById('sheet-status');
+      if (statusEl) statusEl.textContent = 'Unsaved changes';
+      this._sheetDirty = true;
+      this._sheetSaveTimer = setTimeout(() => this.saveSheet({ quiet: true }), 1200);
+    }
+
+    // Leaving the sheet: save anything still waiting, drop the listeners.
+    _sheetUnbind() {
+      if (this._sheetEdit) this._finishCellEdit();
+      if (this._sheetDirty && this._activeSheetId) { clearTimeout(this._sheetSaveTimer); this.saveSheet({ quiet: true }); }
+      if (this._sheetKeyHandler) {
+        document.removeEventListener('keydown', this._sheetKeyHandler);
+        this._sheetKeyHandler = null;
+      }
+      if (this._sheetClipHandler) {
+        ['copy', 'cut', 'paste'].forEach(t => document.removeEventListener(t, this._sheetClipHandler));
+        this._sheetClipHandler = null;
       }
     }
 
@@ -60915,6 +61090,7 @@ Students you had withdrawn stay withdrawn.`)) {
       if (this._undoStack.length === 0) return;
       const action = this._undoStack.pop();
       this._redoStack.push(action);
+      this._scheduleSheetSave();
 
       if (action.type === 'cell') {
         this._sheetData[action.r][action.c] = action.oldVal;
@@ -60934,6 +61110,7 @@ Students you had withdrawn stay withdrawn.`)) {
       if (this._redoStack.length === 0) return;
       const action = this._redoStack.pop();
       this._undoStack.push(action);
+      this._scheduleSheetSave();
 
       if (action.type === 'cell') {
         this._sheetData[action.r][action.c] = action.newVal;
@@ -60954,8 +61131,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const cols = this._sheetData[0].length;
       const insertAt = this._selectedCell ? this._selectedCell.r + 1 : this._sheetData.length;
       this._sheetData.splice(insertAt, 0, Array(cols).fill(''));
-      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
-      this._redoStack = [];
+      this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this.renderSheetEditor(this._getSheetContainer());
     }
 
@@ -60963,8 +61139,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const oldData = this._sheetData.map(r => [...r]);
       const insertAt = this._selectedCell ? this._selectedCell.c + 1 : this._sheetData[0].length;
       this._sheetData.forEach(row => row.splice(insertAt, 0, ''));
-      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
-      this._redoStack = [];
+      this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this.renderSheetEditor(this._getSheetContainer());
     }
 
@@ -60976,8 +61151,7 @@ Students you had withdrawn stay withdrawn.`)) {
       if (this._selectedCell && this._selectedCell.r >= this._sheetData.length) {
         this._selectedCell.r = this._sheetData.length - 1;
       }
-      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
-      this._redoStack = [];
+      this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this.renderSheetEditor(this._getSheetContainer());
     }
 
@@ -60989,8 +61163,7 @@ Students you had withdrawn stay withdrawn.`)) {
       if (this._selectedCell && this._selectedCell.c >= this._sheetData[0].length) {
         this._selectedCell.c = this._sheetData[0].length - 1;
       }
-      this._undoStack.push({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
-      this._redoStack = [];
+      this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(r => [...r]) });
       this.renderSheetEditor(this._getSheetContainer());
     }
 
@@ -61033,8 +61206,11 @@ Students you had withdrawn stay withdrawn.`)) {
       if (menu) menu.remove();
     }
 
-    async saveSheet() {
+    async saveSheet({ quiet = false } = {}) {
       if (!this._activeSheetId) return;
+      if (this._sheetEdit && !quiet) this._finishCellEdit();
+      clearTimeout(this._sheetSaveTimer);
+      this._sheetDirty = false;
       const statusEl = document.getElementById('sheet-status');
       if (statusEl) statusEl.textContent = 'Saving...';
 
@@ -61047,12 +61223,12 @@ Students you had withdrawn stay withdrawn.`)) {
             .eq('user_id', this.userInfo.user.id)
         );
         if (error) throw error;
-        if (statusEl) statusEl.textContent = 'Saved!';
-        setTimeout(() => { if (statusEl) statusEl.textContent = 'Ready'; }, 2000);
-        if (window.portalUI) portalUI.showNotification('Sheet saved', 'success');
+        if (statusEl && !this._sheetDirty) statusEl.textContent = 'All changes saved';
+        if (!quiet && window.portalUI) portalUI.showNotification('Sheet saved', 'success');
       } catch (e) {
         console.error('Error saving sheet:', e);
-        if (statusEl) statusEl.textContent = 'Save failed';
+        this._sheetDirty = true;
+        if (statusEl) statusEl.textContent = 'Save failed - press Save to retry';
         if (window.portalUI) portalUI.showNotification('Failed to save sheet', 'error');
       }
     }
@@ -61060,6 +61236,7 @@ Students you had withdrawn stay withdrawn.`)) {
     async renameSheet(newName) {
       if (!newName.trim()) return;
       this._activeSheetName = newName.trim();
+      this._scheduleSheetSave();
     }
 
     async exportSheetCSV(sheetId, name) {
@@ -61097,11 +61274,7 @@ Students you had withdrawn stay withdrawn.`)) {
     }
 
     backToSheetsList() {
-      // Clean up keyboard listener
-      if (this._sheetKeyHandler) {
-        document.removeEventListener('keydown', this._sheetKeyHandler);
-        this._sheetKeyHandler = null;
-      }
+      this._sheetUnbind();
       this._activeSheetId = null;
       this._selectedCell = null;
       this.loadSheetsList().then(() => {

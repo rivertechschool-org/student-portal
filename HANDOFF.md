@@ -6586,3 +6586,10 @@ teacher communication).**
   is in now. The page lists co-teachers too, and not the teacher of a class the child has
   left. Parents still cannot see admins, so "message the office" from a parent lists no one.
 **Needs:** "Luke Math check" on Jordan's list is not done; what it means is with Jordan.
+
+## 2026-11-19 · Class sheets work like Google Sheets
+
+- **Asked:** typing into a class sheet put the first letter in twice, and Tab didn't move to the next cell. Wanted it to work like Google Sheets.
+- **Done:** typing on a cell replaces it (each letter once now). Enter or F2 or a double click edits what is there. Tab moves right and Shift+Tab left. Enter moves down, back to the column where a run of Tabs started. Escape cancels an edit. Arrows end an edit you started by typing. Going past the last row or column adds one. Copy, cut and paste use the real clipboard, so a block pasted from Google Sheets fills in. Ctrl+Z and Ctrl+Y undo and redo.
+- **Changed behaviour:** sheets now save themselves about a second after each change, and when you leave the sheet. The Save button still works.
+- **Check:** `node debug-tools/class-sheets-keys.cjs` (serve on 8780 first).
