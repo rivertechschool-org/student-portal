@@ -103,7 +103,8 @@ const seed={
     await page.evaluate(()=>{for(const id of ['view-quarter-assignments','view-assignments'])app.closeModal(id);
       const a=app;a.loadStudentOverview=async()=>null;a.calculateStudentGPA=async()=>null;
       a.getStudentStrikes=async()=>({strikes:[],count:0,nextDecayDate:null});a.renderChildOverviewSection=()=>'';
-      a.children[0].classes=[{id:'math',name:'Invented Math'},{id:'oldmath',name:'Old Math'}];a.children[0].activeClassIds=['math'];});
+      a.children[0].classes=[{id:'math',name:'Invented Math',teacher_id:'t',secondary_teacher_id:'co'},{id:'oldmath',name:'Old Math'}];a.children[0].activeClassIds=['math'];
+      return a.attachTeacherNames(a.children[0].classes);});
     await page.evaluate(()=>app.showChildDetails('ivy'));
     await page.waitForSelector('text=Turned in, waiting for a grade');
     const d=await page.innerText('body');
@@ -111,6 +112,7 @@ const seed={
     assert(!d.includes('Old class quiz')&&!d.includes('Old Math'),'a class she has left is not listed');
     assert(!d.includes('Paper quiz'),'offline, not graded: hidden');
     for (const h of ['Late (1)','Due (1)','Turned in, waiting for a grade (1)','Graded (2)','Classes (1)']) assert(d.includes(h),h);
+    assert(d.includes('Tess Hale (with Cass Rowe)'),'each class names its teacher and co-teacher');
     assert(d.includes('A- (9/10)'),'a grade with points and no letter gets its letter');
     assert(d.includes('B (8/10)'));
     const order=['Online worksheet','Next week reading','Online essay'].map(t=>d.indexOf(t));
