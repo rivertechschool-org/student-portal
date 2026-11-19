@@ -544,6 +544,12 @@
       overflow-y: auto;
     }
 
+    /* A pair of choice buttons (note/checklist, late/early): the one not
+       chosen is dimmed, the chosen one ringed - the two button styles look
+       alike on several themes. */
+    .class-note-mode[aria-pressed="false"], .le-kind-btn[aria-pressed="false"] { opacity: 0.5; }
+    .class-note-mode[aria-pressed="true"], .le-kind-btn[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 2px; opacity: 1; }
+
     /* Large modal for private notes */
     #modal-private-notes .modal-content,
     #modal-class-notes .modal-content {
@@ -23162,6 +23168,9 @@
             .order('note_date', { ascending: false }));
 
           if (error) throw error;
+          // Kept so ticking a checklist item can rewrite the note in place.
+          this._classNotesById = {};
+          (notes || []).forEach(n => { this._classNotesById[n.id] = n; });
 
           const notesHtml = notes && notes.length > 0
             ? notes.map(note => {
@@ -23187,7 +23196,7 @@
                         </button>
                       </div>
                     </div>
-                    <div style="white-space: pre-wrap; line-height: 1.5;">${this.escapeHtml(note.note)}</div>
+                    <div id="class-note-body-${note.id}">${this._classNoteBodyHtml(note, classId)}</div>
                   </div>
                 `;
               }).join('')
@@ -23218,7 +23227,16 @@
                   <input type="date" id="class-note-date" value="${today}"
                     style="padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text);">
                 </div>
-                <textarea id="class-note-input" rows="4" placeholder="What happened in class today? What's planned for next time?"
+                <!-- A note or a checklist. A checklist is stored as a note whose
+                     lines start "- [ ]" (ticked: "- [x]"), so it needs nothing
+                     new in the database and still reads sensibly as text. -->
+                <div style="display: flex; gap: 6px; margin-bottom: 8px;" role="group" aria-label="Note or checklist">
+                  <button type="button" class="btn btn-primary small class-note-mode" data-mode="note" aria-pressed="true"
+                    onclick="app._setClassNoteMode('note')">📝 Note</button>
+                  <button type="button" class="btn btn-secondary small class-note-mode" data-mode="checklist" aria-pressed="false"
+                    onclick="app._setClassNoteMode('checklist')">☑️ Checklist</button>
+                </div>
+                <textarea id="class-note-input" rows="4" data-mode="note" placeholder="What happened in class today? What's planned for next time?"
                   style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); resize: vertical; font-family: inherit;"></textarea>
                 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
                   <button class="btn btn-primary" onclick="app.addClassNote('${classId}')">
@@ -23248,13 +23266,15 @@
       async addClassNote(classId) {
         const noteInput = document.getElementById('class-note-input');
         const dateInput = document.getElementById('class-note-date');
-        const noteText = noteInput?.value?.trim();
+        let noteText = noteInput?.value?.trim();
         const noteDate = dateInput?.value;
 
         if (!noteText) {
           this.showNotification('Please enter a note', 'warning');
           return;
         }
+        // Checklist: one item per line, each made an unticked box.
+        if (noteInput.dataset.mode === 'checklist') noteText = this._toChecklistText(noteText);
 
         try {
           await this._insertNote({ classId, visibility: 'private', note: noteText, noteDate: noteDate || this._localDateStr(new Date()) });
@@ -23268,6 +23288,114 @@
         } catch (error) {
           console.error('Error adding class note:', error);
           this.showNotification('Error adding note: ' + error.message, 'error');
+        }
+      }
+
+      // ---- Checklists in class notes (2026-11-19) ----------------------------
+      //
+      // A checklist line is "- [ ] item" or "- [x] item" (the dash optional);
+      // any other line is ordinary text, so a note can have a heading and a
+      // list. Parsing is pure: tests/class-note-checklist.test.js runs it.
+      _parseChecklist(text) {
+        return String(text || '').split('\n').map(raw => {
+          const m = raw.match(/^(\s*)(?:[-*]\s*)?\[( |x|X)\]\s?(.*)$/);
+          return m ? { item: true, done: m[2] !== ' ', text: m[3], indent: m[1] } : { item: false, text: raw };
+        });
+      }
+
+      _checklistText(lines) {
+        return lines.map(l => l.item ? `${l.indent || ''}- [${l.done ? 'x' : ' '}] ${l.text}` : l.text).join('\n');
+      }
+
+      // Every non-empty line becomes an item; lines that already are stay as they are.
+      _toChecklistText(text) {
+        return this._checklistText(String(text || '').split('\n').filter(l => l.trim()).map(l => {
+          const [p] = this._parseChecklist(l);
+          return p.item ? p : { item: true, done: false, text: l.trim(), indent: '' };
+        }));
+      }
+
+      _setClassNoteMode(mode) {
+        const ta = document.getElementById('class-note-input');
+        if (!ta) return;
+        ta.dataset.mode = mode;
+        ta.placeholder = mode === 'checklist'
+          ? 'One item per line - each becomes a box to tick'
+          : "What happened in class today? What's planned for next time?";
+        document.querySelectorAll('.class-note-mode').forEach(b => {
+          const on = b.dataset.mode === mode;
+          b.classList.toggle('btn-primary', on);
+          b.classList.toggle('btn-secondary', !on);
+          b.setAttribute('aria-pressed', on);
+        });
+        ta.focus();
+      }
+
+      // A note's body: plain text, or the checklist with its boxes, a count,
+      // and one button that ticks everything (or clears it when all are ticked).
+      _classNoteBodyHtml(note, classId) {
+        const lines = this._parseChecklist(note.note);
+        const items = lines.filter(l => l.item);
+        if (!items.length) return `<div style="white-space: pre-wrap; line-height: 1.5;">${this.escapeHtml(note.note)}</div>`;
+        const done = items.filter(l => l.done).length;
+        const all = done === items.length;
+        const id = this.jsAttr(note.id), cls = this.jsAttr(classId);
+        let k = -1;
+        const body = lines.map((l, i) => {
+          if (!l.item) return l.text.trim() ? `<div style="white-space: pre-wrap; line-height: 1.5; margin: 2px 0;">${this.escapeHtml(l.text)}</div>` : '<div style="height: 6px;"></div>';
+          k++;
+          return `
+            <label class="class-note-check" style="display: flex; align-items: flex-start; gap: 8px; padding: 3px 0; cursor: pointer; ${l.indent ? 'margin-left: 18px;' : ''}">
+              <input type="checkbox" ${l.done ? 'checked' : ''} style="margin-top: 3px; width: 16px; height: 16px; flex: none;"
+                onchange="app.toggleClassNoteItem('${id}', '${cls}', ${i}, this.checked)">
+              <span style="line-height: 1.4; ${l.done ? 'text-decoration: line-through; color: var(--muted);' : ''}">${this.escapeHtml(l.text)}</span>
+            </label>`;
+        }).join('');
+        return `
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; flex-wrap: wrap;">
+            <span style="font-size: 12px; color: var(--muted);">${done}/${items.length} done</span>
+            <button class="btn btn-secondary small" onclick="app.toggleAllClassNoteItems('${id}', '${cls}')">
+              ${all ? '☐ Untick all' : '☑ Tick all'}
+            </button>
+          </div>
+          ${body}`;
+      }
+
+      async toggleClassNoteItem(noteId, classId, lineIndex, checked) {
+        const note = this._classNotesById?.[noteId];
+        if (!note) return;
+        const lines = this._parseChecklist(note.note);
+        if (!lines[lineIndex] || !lines[lineIndex].item) return;
+        lines[lineIndex].done = !!checked;
+        await this._saveChecklist(note, classId, lines);
+      }
+
+      // All on, or - when they are all on already - all off.
+      async toggleAllClassNoteItems(noteId, classId) {
+        const note = this._classNotesById?.[noteId];
+        if (!note) return;
+        const lines = this._parseChecklist(note.note);
+        const items = lines.filter(l => l.item);
+        const to = !items.every(l => l.done);
+        items.forEach(l => { l.done = to; });
+        await this._saveChecklist(note, classId, lines);
+      }
+
+      // Shown at once, then saved; put back if the save fails. A tick is not
+      // an edit, so updated_at is left alone (no "(edited)" for ticking).
+      async _saveChecklist(note, classId, lines) {
+        const before = note.note;
+        note.note = this._checklistText(lines);
+        const host = document.getElementById(`class-note-body-${note.id}`);
+        if (host) host.innerHTML = this._classNoteBodyHtml(note, classId);
+        try {
+          const { error } = await this.supabaseQuery(() => this.auth.supabase
+            .from('notes').update({ note: note.note }).eq('id', note.id));
+          if (error) throw error;
+        } catch (err) {
+          note.note = before;
+          if (host) host.innerHTML = this._classNoteBodyHtml(note, classId);
+          this.showNotification('Could not save the tick: ' + (err.message || err), 'error');
         }
       }
 
@@ -23292,6 +23420,10 @@
               </div>
               <textarea id="edit-class-note-input" rows="10"
                 style="width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); resize: vertical; font-family: inherit;">${this.escapeHtml(note.note)}</textarea>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 6px;">
+                Checklist items are lines starting <code>- [ ]</code> (ticked: <code>- [x]</code>).
+                <a href="#" onclick="event.preventDefault(); const t = document.getElementById('edit-class-note-input'); t.value = app._toChecklistText(t.value);" style="color: var(--accent);">Make every line a checklist item</a>
+              </div>
             </div>
 
             <div style="display: flex; gap: 10px; margin-top: 15px; justify-content: flex-end;">
@@ -60707,6 +60839,7 @@ Students you had withdrawn stay withdrawn.`)) {
               <button class="btn btn-secondary" onclick="app.addSheetCol()" title="Add Column" style="padding:6px 10px;font-size:13px;">+ Col</button>
               <button class="btn btn-secondary" onclick="app.removeSheetRow()" title="Remove Row" style="padding:6px 10px;font-size:13px;">- Row</button>
               <button class="btn btn-secondary" onclick="app.removeSheetCol()" title="Remove Column" style="padding:6px 10px;font-size:13px;">- Col</button>
+              <button class="btn btn-secondary" onclick="event.stopPropagation(); app.showCheckboxMenu(event)" title="Checkboxes" style="padding:6px 10px;font-size:13px;">☑ Checkbox</button>
             </div>
             <button class="btn btn-primary" onclick="app.saveSheet()" style="padding:6px 18px;font-size:13px;">Save</button>
             <button class="btn btn-secondary" onclick="app.exportCurrentSheetCSV()" style="padding:6px 14px;font-size:13px;">Export CSV</button>
@@ -60728,7 +60861,7 @@ Students you had withdrawn stay withdrawn.`)) {
                   <tr>
                     <td style="position:sticky;left:0;z-index:1;background:var(--nav-bg, #1a1f27);border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:6px 10px;font-size:12px;color:var(--muted);text-align:center;user-select:none;cursor:pointer;" onclick="app.selectSheetRow(${r})" oncontextmenu="event.preventDefault();app.showRowContextMenu(event,${r})">${r + 1}</td>
                     ${row.map((cell, c) => `
-                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app._sheetCellClick(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;${this._sheetCellStyle(calc, r, c)}"${calc.why[r][c] ? ` title="${this.escapeHtml(calc.why[r][c])}"` : ''}>${this.escapeHtml(calc.values[r][c])}</td>
+                      <td class="sheet-cell" data-r="${r}" data-c="${c}" onclick="app._sheetCellClick(${r},${c})" ondblclick="app.editCell(${r},${c})" style="border:1px solid var(--surface-border, rgba(255,255,255,0.1));padding:4px 8px;font-size:13px;color:var(--text);cursor:cell;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:${this._colWidths[c] || 100}px;min-height:28px;${this._sheetCellStyle(calc, r, c)}"${calc.why[r][c] ? ` title="${this.escapeHtml(calc.why[r][c])}"` : ''}>${this._sheetCellInner(calc, r, c)}</td>
                     `).join('')}
                   </tr>
                 `).join('')}
@@ -60786,7 +60919,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const refEl = document.getElementById('sheet-cell-ref');
       const barEl = document.getElementById('sheet-formula-bar');
       if (refEl) refEl.textContent = `${this.getColLabel(c)}${r + 1}`;
-      if (barEl) barEl.value = this._sheetData[r][c] || '';
+      if (barEl) barEl.value = this._sheetShownRaw(this._sheetData[r][c]);
       if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       // Keys go to the grid, not to the button that was clicked last.
       const wrap = document.getElementById('sheet-grid-wrapper');
@@ -60816,7 +60949,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const cell = document.querySelector(`.sheet-cell[data-r="${r}"][data-c="${c}"]`);
       if (!cell) return;
 
-      const orig = this._sheetData[r][c] || '';
+      const orig = this._sheetShownRaw(this._sheetData[r][c]);
       cell.innerHTML = '';
       const input = document.createElement('input');
       input.type = 'text';
@@ -60842,7 +60975,7 @@ Students you had withdrawn stay withdrawn.`)) {
       if (!ed) return;
       this._sheetEdit = null;
       const { r, c, input, orig } = ed;
-      const newVal = cancel ? orig : input.value;
+      const newVal = cancel ? this._sheetData[r][c] || '' : this._sheetKeepCheck(this._sheetData[r][c], input.value);
       if (!cancel && newVal !== (this._sheetData[r][c] || '')) {
         this._sheetRecord({ type: 'cell', r, c, oldVal: this._sheetData[r][c], newVal });
         this._sheetData[r][c] = newVal;
@@ -60928,7 +61061,7 @@ Students you had withdrawn stay withdrawn.`)) {
       const barEl = document.getElementById('sheet-formula-bar');
       if (!barEl) return;
 
-      const newVal = barEl.value;
+      const newVal = this._sheetKeepCheck(this._sheetData[r][c], barEl.value);
       const oldVal = this._sheetData[r][c];
       if (newVal !== oldVal) {
         this._sheetRecord({ type: 'cell', r, c, oldVal, newVal });
@@ -61001,6 +61134,10 @@ Students you had withdrawn stay withdrawn.`)) {
       else if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); if (e.shiftKey) this.sheetRedo(); else this.sheetUndo(); }
       else if (mod && e.key.toLowerCase() === 'y') { e.preventDefault(); this.sheetRedo(); }
       else if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); this.saveSheet(); }
+      else if (e.key === ' ' && this._isSheetCheck(this._sheetData[r][c])) {
+        e.preventDefault();
+        this._sheetToggleCheckAt(r, c);
+      }
       else if (e.key.length === 1 && !mod && !e.altKey) {
         // Typing replaces the cell. preventDefault, or the browser types the
         // same key into the new box a second time.
@@ -61141,10 +61278,11 @@ Students you had withdrawn stay withdrawn.`)) {
         const pct = s.match(/^\s*([-+]?(?:\d+\.?\d*|\.\d+))\s*%\s*$/);
         if (pct) return parseFloat(pct[1]) / 100;
         const u = s.trim().toUpperCase();
-        if (u === 'TRUE') return true;
-        if (u === 'FALSE') return false;
+        if (u === 'TRUE' || u === '[X]') return true;
+        if (u === 'FALSE' || u === '[ ]') return false;
         return s;
       };
+      const isCheck = (raw) => typeof raw === 'string' && /^\[( |x|X)\]$/.test(raw);
 
       const memo = new Map();
       const visiting = new Set();
@@ -61448,6 +61586,8 @@ Students you had withdrawn stay withdrawn.`)) {
           const isFormula = typeof raw === 'string' && raw[0] === '=' && raw.length > 1;
           const v = isFormula ? cell(r, c) : literal(raw);
           if (isErr(v)) { vr.push(v.err); kr.push('err'); wr.push(v.why || ''); continue; }
+          // A checkbox cell: TRUE/FALSE (what export and formulas see), drawn as a box.
+          if (!isFormula && isCheck(raw)) { vr.push(v ? 'TRUE' : 'FALSE'); kr.push('check'); wr.push(''); continue; }
           // Typed values show as typed ("007" stays "007"); results are formatted.
           vr.push(isFormula ? str(v) : (raw == null ? '' : String(raw)));
           kr.push(typeof v === 'number' ? 'num' : typeof v === 'boolean' ? 'bool' : 'text');
@@ -61467,8 +61607,98 @@ Students you had withdrawn stay withdrawn.`)) {
       const k = calc.kinds[r] && calc.kinds[r][c];
       if (k === 'err') return 'color:var(--danger, #ff6a6a);font-weight:600;';
       if (k === 'num') return 'text-align:right;font-variant-numeric:tabular-nums;';
-      if (k === 'bool') return 'text-align:center;';
+      if (k === 'bool' || k === 'check') return 'text-align:center;';
       return '';
+    }
+
+    _sheetCellInner(calc, r, c) {
+      if (calc.kinds[r][c] === 'check') {
+        const on = calc.values[r][c] === 'TRUE';
+        return `<input type="checkbox" class="sheet-check" tabindex="-1" ${on ? 'checked' : ''} aria-label="${on ? 'Ticked' : 'Not ticked'}"
+          style="width:15px;height:15px;margin:0;cursor:pointer;vertical-align:middle;"
+          onclick="event.stopPropagation(); event.preventDefault(); app._sheetToggleCheckAt(${r}, ${c})">`;
+      }
+      return this.escapeHtml(calc.values[r][c]);
+    }
+
+    // ---- Checkboxes in sheets (2026-11-19) ---------------------------------
+    // As Sheets' Insert > Checkbox: a cell holding "[ ]" or "[x]" is a box.
+    // Click or Space ticks it; formulas see TRUE/FALSE, so
+    // =COUNTIF(B2:B30,TRUE) counts the ticks. The menu adds boxes to a cell
+    // or a column, and ticks or clears a whole column at once.
+    _isSheetCheck(v) { return typeof v === 'string' && /^\[( |x|X)\]$/.test(v); }
+
+    // What the formula bar shows for a cell: a box reads TRUE or FALSE.
+    _sheetShownRaw(v) {
+      if (this._isSheetCheck(v)) return /x/i.test(v) ? 'TRUE' : 'FALSE';
+      return v || '';
+    }
+
+    // Typed into a box cell: TRUE/FALSE (or unchanged) keeps it a box.
+    _sheetKeepCheck(oldVal, typed) {
+      if (!this._isSheetCheck(oldVal)) return typed;
+      const u = String(typed).trim().toUpperCase();
+      if (u === 'TRUE') return '[x]';
+      if (u === 'FALSE') return '[ ]';
+      return typed;
+    }
+
+    _sheetToggleCheckAt(r, c) {
+      if (this._sheetEdit) this._finishCellEdit();
+      this._sheetTabAnchor = null;
+      const oldVal = this._sheetData[r][c];
+      if (this._isSheetCheck(oldVal)) {
+        const newVal = /x/i.test(oldVal) ? '[ ]' : '[x]';
+        this._sheetRecord({ type: 'cell', r, c, oldVal, newVal });
+        this._sheetData[r][c] = newVal;
+      }
+      // Selected after the tick, so the formula bar shows the new value.
+      this.selectCell(r, c);
+    }
+
+    // what: 'cell' | 'column' | 'tick' | 'untick' | 'remove'. Column actions
+    // skip row 1 when it is a heading (text that is not a box).
+    sheetCheckboxes(what) {
+      this.removeContextMenu();
+      if (!this._selectedCell) { this.showNotification('Select a cell first', 'info'); return; }
+      const { r, c } = this._selectedCell;
+      const oldData = this._sheetData.map(row => [...row]);
+      const first = (this._sheetData[0][c] && !this._isSheetCheck(this._sheetData[0][c])) ? 1 : 0;
+      const col = [];
+      for (let i = first; i < this._sheetData.length; i++) col.push(i);
+      if (what === 'cell') {
+        if (!this._isSheetCheck(this._sheetData[r][c])) this._sheetData[r][c] = /^(true|yes|y|x|1)$/i.test(String(this._sheetData[r][c] || '').trim()) ? '[x]' : '[ ]';
+      } else if (what === 'column') {
+        col.forEach(i => { const v = this._sheetData[i][c]; if (!this._isSheetCheck(v)) this._sheetData[i][c] = /^(true|yes|y|x|1)$/i.test(String(v || '').trim()) ? '[x]' : '[ ]'; });
+      } else if (what === 'tick' || what === 'untick') {
+        col.forEach(i => { if (this._isSheetCheck(this._sheetData[i][c])) this._sheetData[i][c] = what === 'tick' ? '[x]' : '[ ]'; });
+      } else if (what === 'remove') {
+        col.forEach(i => { if (this._isSheetCheck(this._sheetData[i][c])) this._sheetData[i][c] = ''; });
+      }
+      if (JSON.stringify(oldData) === JSON.stringify(this._sheetData)) return;
+      this._sheetRecord({ type: 'grid', oldData, newData: this._sheetData.map(row => [...row]) });
+      this.renderSheetEditor(this._getSheetContainer());
+    }
+
+    showCheckboxMenu(event) {
+      this.removeContextMenu();
+      const sel = this._selectedCell;
+      const colName = sel ? this.getColLabel(sel.c) : '';
+      const hasBoxes = sel && this._sheetData.some(row => this._isSheetCheck(row[sel.c]));
+      const allOn = hasBoxes && this._sheetData.every(row => !this._isSheetCheck(row[sel.c]) || /x/i.test(row[sel.c]));
+      const item = (label, what, danger) => `<div style="padding:8px 16px;cursor:pointer;color:${danger ? 'var(--danger)' : 'var(--text)'};font-size:13px;white-space:nowrap;" onmouseover="this.style.background='var(--accent)';this.style.color='#fff'" onmouseout="this.style.background='';this.style.color='${danger ? 'var(--danger)' : 'var(--text)'}'" onclick="event.stopPropagation(); app.sheetCheckboxes('${what}')">${label}</div>`;
+      const menu = document.createElement('div');
+      menu.id = 'sheet-context-menu';
+      const box = event.currentTarget.getBoundingClientRect();
+      menu.style.cssText = `position:fixed;top:${box.bottom + 4}px;left:${Math.max(8, Math.min(box.left, window.innerWidth - 240))}px;z-index:9999;background:var(--card);border:1px solid var(--surface-border, rgba(255,255,255,0.1));border-radius:var(--radius-md, 8px);padding:4px 0;min-width:200px;box-shadow:var(--shadow-lg, 0 8px 24px rgba(0,0,0,0.3));`;
+      menu.innerHTML = sel ? `
+        ${item('Checkbox in this cell', 'cell')}
+        ${item(`Checkboxes down column ${colName}`, 'column')}
+        ${hasBoxes ? item(allOn ? `☐ Untick all in ${colName}` : `☑ Tick all in ${colName}`, allOn ? 'untick' : 'tick') : ''}
+        ${hasBoxes ? item(`Remove checkboxes from ${colName}`, 'remove', true) : ''}`
+        : '<div style="padding:8px 16px;font-size:13px;color:var(--muted);">Select a cell first</div>';
+      document.body.appendChild(menu);
+      setTimeout(() => document.addEventListener('click', () => this.removeContextMenu(), { once: true }), 10);
     }
 
     // Recompute after a change and repaint the cells whose result moved.
@@ -61479,8 +61709,9 @@ Students you had withdrawn stay withdrawn.`)) {
         const r = +td.dataset.r, c = +td.dataset.c;
         if (!calc.values[r] || calc.values[r][c] === undefined) return;
         if (this._sheetEdit && this._sheetEdit.r === r && this._sheetEdit.c === c) return;
-        if (td.textContent !== calc.values[r][c]) td.textContent = calc.values[r][c];
         const k = calc.kinds[r][c];
+        if (k === 'check' || td.querySelector('.sheet-check')) td.innerHTML = this._sheetCellInner(calc, r, c);
+        else if (td.textContent !== calc.values[r][c]) td.textContent = calc.values[r][c];
         td.style.textAlign = k === 'num' ? 'right' : k === 'bool' ? 'center' : '';
         td.style.fontVariantNumeric = k === 'num' ? 'tabular-nums' : '';
         td.style.color = k === 'err' ? 'var(--danger, #ff6a6a)' : 'var(--text)';

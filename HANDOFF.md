@@ -6603,3 +6603,11 @@ teacher communication).**
 - Saved as formulas. Export CSV gives the results, as Sheets' CSV download does.
 - Not done: selecting a range with Shift+arrows, fill-down, references to other sheets, dates.
 - Tests: `tests/class-sheet-formulas.test.js`, and formula steps in `debug-tools/class-sheets-keys.cjs`.
+
+## 2026-11-19 · Checklists in class notes and class sheets
+
+- **Notes:** a Note / Checklist switch when adding a class note. In Checklist mode each line becomes a box to tick. A checklist note shows its boxes, "2/5 done", and one button that ticks every item (or unticks them all when all are ticked). Ticking saves straight away and doesn't mark the note "(edited)". A note can mix plain lines and items. The edit screen can turn every line into an item.
+- Stored as ordinary note text: items are lines starting `- [ ]` (ticked `- [x]`). Nothing changed in the database.
+- **Sheets:** a ☑ Checkbox menu, like Sheets' Insert → Checkbox. It adds a box to the selected cell or down its column (skipping a heading), ticks or unticks the whole column, or removes the boxes. Click or Space ticks a box. Formulas see TRUE/FALSE, so `=COUNTIF(B2:B30,TRUE)` counts the ticks. Export gives TRUE/FALSE. Stored in the sheet as `[x]` / `[ ]`.
+- Also: the chosen button in a pair (Note/Checklist, Arriving late/Leaving early) is now ringed and the other dimmed, because the two button styles look alike on some themes.
+- Tests: `tests/class-note-checklist.test.js`, `debug-tools/class-checklists.cjs`.
