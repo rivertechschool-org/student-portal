@@ -6611,3 +6611,10 @@ teacher communication).**
 - **Sheets:** a ☑ Checkbox menu, like Sheets' Insert → Checkbox. It adds a box to the selected cell or down its column (skipping a heading), ticks or unticks the whole column, or removes the boxes. Click or Space ticks a box. Formulas see TRUE/FALSE, so `=COUNTIF(B2:B30,TRUE)` counts the ticks. Export gives TRUE/FALSE. Stored in the sheet as `[x]` / `[ ]`.
 - Also: the chosen button in a pair (Note/Checklist, Arriving late/Leaving early) is now ringed and the other dimmed, because the two button styles look alike on some themes.
 - Tests: `tests/class-note-checklist.test.js`, `debug-tools/class-checklists.cjs`.
+
+## 2026-11-19 · Class attendance: automatic matching only from the card
+
+- The automatic "Match Master" (fill the class register from the morning register and save it) now runs only from the quick 📋 on a class card and its cell in the week view.
+- **📋 Class Attendance** inside a class now opens the manual register. Asked because opening attendance there to cancel a class matched and saved the day first.
+- The quick-match summary also has a 🚫 Cancel Class button. Cancelling clears the marks the match saved.
+- Test: `tests/class-attendance-entry-points.test.js`.
